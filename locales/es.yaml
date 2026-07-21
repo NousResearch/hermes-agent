@@ -403,8 +403,10 @@ gateway:
     help_channels:         "\n\n**Canales de voz en vivo (Discord)**\n• Únete primero a un canal de voz, luego `/voice channel` — me uno, escucho y digo mis respuestas\n• `/voice leave` — desconectar del canal de voz"
 
   yolo:
+    disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión."
+    enabled:                    "⚡ Modo YOLO **ACTIVADO** en esta sesión."
     status_off:                 "⚠️ El modo YOLO está **DESACTIVADO**."
-    status_on:                  "⚡ El modo YOLO está **ACTIVADO**. Los bloqueos hardline y las reglas approvals.deny siguen aplicándose."
+    status_on:                  "⚡ El modo YOLO está **ACTIVADO**. Se omiten las solicitudes de aprobación para comandos peligrosos."
     usage:                      "Uso: /yolo [status]"
 
   shared:

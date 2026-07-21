@@ -27,7 +27,7 @@ const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 
 const yoloModeStatusText = (active: boolean) =>
-  active ? 'YOLO mode is ON - hardline blocks and approvals.deny rules still apply' : 'YOLO mode is OFF'
+  active ? 'YOLO mode is ON - dangerous-command approval prompts are bypassed' : 'YOLO mode is OFF'
 
 const yoloSessionStatusText = (active: boolean) => `YOLO ${active ? 'on' : 'off'} for this session`
 

@@ -150,7 +150,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
                "Configuration", args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
-    CommandDef("yolo", "Toggle or inspect YOLO mode (hardline and deny rules remain)",
+    CommandDef("yolo", "Toggle or inspect dangerous-command approval bypass",
                "Configuration", args_hint="[status]", subcommands=("status",)),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide|full|clamp] [--global]",

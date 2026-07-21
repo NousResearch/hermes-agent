@@ -88,6 +88,19 @@ class TestToggleYoloIsSessionScoped:
             HermesCLI._toggle_yolo(stand_in)  # OFF
             assert approval_module.is_session_yolo_enabled(SESSION_KEY) is False
 
+    def test_toggle_reports_session_source_when_global_bypass_remains_active(self, monkeypatch):
+        stand_in = _make_stand_in()
+        approval_module.enable_session_yolo(SESSION_KEY)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "off")
+
+        with patch("cli._cprint") as output:
+            HermesCLI._toggle_yolo(stand_in)
+
+        assert approval_module.is_session_yolo_enabled(SESSION_KEY) is False
+        message = output.call_args.args[0]
+        assert "OFF" in message
+        assert "for this session" in message
+
     def test_toggle_yolo_does_not_mutate_env_var(self):
         """Toggling /yolo must not write ``HERMES_YOLO_MODE`` — that path is
         frozen at import time and would mislead anyone reading the env later
@@ -136,6 +149,17 @@ class TestYoloStatusCommand:
         assert approval_module.is_session_yolo_enabled(SESSION_KEY) is False
         assert "yolo mode" in output.call_args.args[0].lower()
         assert "OFF" in output.call_args.args[0]
+
+    def test_active_status_reports_bypassed_prompts_without_overstating_backend_guards(self):
+        stand_in = _make_stand_in()
+        approval_module.enable_session_yolo(SESSION_KEY)
+
+        with patch("cli._cprint") as output:
+            HermesCLI._toggle_yolo(stand_in, "/yolo status")
+
+        message = output.call_args.args[0].lower()
+        assert "dangerous-command approval prompts are bypassed" in message
+        assert "hardline" not in message
 
 
 class TestIsSessionYoloActiveHelper:

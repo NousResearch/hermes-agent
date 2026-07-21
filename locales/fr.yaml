@@ -406,8 +406,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Salons vocaux en direct (Discord)**\n• Rejoignez d'abord un salon vocal, puis `/voice channel` — je rejoins, j'écoute et je parle mes réponses\n• `/voice leave` — se déconnecter du salon vocal"
 
   yolo:
+    disabled:                   "⚠️ Mode YOLO **DÉSACTIVÉ** pour cette session."
+    enabled:                    "⚡ Mode YOLO **ACTIVÉ** pour cette session."
     status_off:                 "⚠️ Le mode YOLO est **DÉSACTIVÉ**."
-    status_on:                  "⚡ Le mode YOLO est **ACTIVÉ**. Les blocages hardline et les règles approvals.deny s'appliquent toujours."
+    status_on:                  "⚡ Le mode YOLO est **ACTIVÉ**. Les demandes d'approbation des commandes dangereuses sont ignorées."
     usage:                      "Utilisation : /yolo [status]"
 
   shared:

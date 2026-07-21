@@ -253,6 +253,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           if (action === 'status') {
             const draftActive = !sid ? $yoloActive.get() : false
             const cachedActive = !sid ? draftActive : sid === activeSessionIdRef.current ? $yoloActive.get() : null
+
             const renderStatus = (active: boolean) => {
               if (sid) {
                 appendSessionTextMessage(sid, 'system', copy.yoloStatus(active), { preserveStoredSessionId: true })

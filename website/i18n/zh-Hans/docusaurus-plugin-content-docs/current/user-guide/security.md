@@ -38,16 +38,18 @@ approvals:
 |------|----------|
 | **smart**（默认） | 使用辅助 LLM 评估风险。低风险命令（如 `python -c "print('hello')"`）仅对当前命令自动批准，真正危险的命令自动拒绝，不确定的情况升级为手动提示。 |
 | **manual** | 始终提示用户审批危险命令。 |
-| **off** | 全局跳过危险命令审批提示，等同于使用 `--yolo` 运行。硬性黑名单和 `approvals.deny` 规则仍会生效。 |
+| **off** | 全局跳过危险命令审批提示，等同于使用 `--yolo` 运行。可访问主机的后端仍会执行硬性黑名单和 `approvals.deny`；隔离容器后端会跳过命令防护栈。 |
 
 :::warning
 设置 `approvals.mode: off` 会全局禁用危险命令审批提示。
-硬性黑名单和 `approvals.deny` 规则仍会生效，但仍应只在 CI/CD 或容器等受信任环境中使用此模式。
+可访问主机的后端仍会执行硬性黑名单和 `approvals.deny`；隔离容器后端会跳过命令防护栈。
+仅在 CI/CD 或容器等受信任环境中使用此模式。
 :::
 
 ### YOLO 模式
 
-YOLO 模式会跳过危险命令审批提示，同时保留硬性黑名单和 `approvals.deny` 规则。
+YOLO 模式会跳过危险命令审批提示。
+可访问主机的后端仍会执行硬性黑名单和 `approvals.deny`；隔离容器后端将容器本身视为安全边界，因此会跳过命令防护栈。
 以下任一来源启用时，有效 YOLO 模式即为 ON：
 
 1. **全局配置**：在 `~/.hermes/config.yaml` 中设置 `approvals.mode: off`。
@@ -60,10 +62,10 @@ YOLO 模式会跳过危险命令审批提示，同时保留硬性黑名单和 `a
 
 ```
 > /yolo
-  ⚡ YOLO mode ON - hardline blocks and approvals.deny rules still apply.
+  ⚡ YOLO mode ON for this session.
 
 > /yolo status
-  YOLO mode is ON - hardline blocks and approvals.deny rules still apply.
+  YOLO mode is ON - dangerous-command approval prompts are bypassed.
 ```
 
 `/yolo` 切换和 `/yolo status` 可用于经典 CLI、消息 gateway、TUI 和桌面应用。
@@ -75,22 +77,23 @@ YOLO 模式会跳过危险命令审批提示，同时保留硬性黑名单和 `a
 - 状态栏中所有宽度层级均显示 `⚠ YOLO` 片段，随着 YOLO 的切换实时更新（富文本渲染器和纯文本回退均支持）。
 
 :::danger
-YOLO 模式会跳过危险命令审批提示，但硬性黑名单和 `approvals.deny` 规则仍会生效。
+YOLO 模式会跳过危险命令审批提示。
+可访问主机的后端仍会执行硬性黑名单和 `approvals.deny`；隔离容器后端会跳过命令防护栈。
 仅在完全信任所生成命令时使用，例如在一次性环境中运行经过充分测试的自动化脚本。
 :::
 
 对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
 
-### 硬性黑名单（始终生效的底线）
+### 硬性黑名单（可访问主机后端的安全底线）
 
-某些命令极具破坏性——不可逆的文件系统清除、fork 炸弹、直接写入块设备——无论以下任何情况，Hermes 都**拒绝**执行：
+在可访问主机的后端上，某些命令极具破坏性——不可逆的文件系统清除、fork 炸弹、直接写入块设备——无论以下任何情况，Hermes 都**拒绝**执行：
 
 - `--yolo` / `/yolo` 已开启
 - `approvals.mode: off`
 - Cron 任务以无头 `approve` 模式运行
 - 用户明确点击"始终允许"
 
-黑名单是 `--yolo` 之下的底线。它在审批层看到命令**之前**就会触发，且没有任何覆盖标志。当前涵盖的模式（非详尽列表；与 `tools/approval.py::UNRECOVERABLE_BLOCKLIST` 保持同步）：
+对于可访问主机的后端，黑名单是 `--yolo` 之下的底线。它在审批层看到命令**之前**就会触发，且没有任何覆盖标志。当前涵盖的模式（非详尽列表；与 `tools/approval.py::UNRECOVERABLE_BLOCKLIST` 保持同步）：
 
 | 模式 | 为何列为硬性规则 |
 |---|---|
@@ -150,7 +153,7 @@ approvals:
 | `gateway run` 配合 `&`/`disown`/`nohup`/`setsid` | 防止在服务管理器外启动 gateway |
 
 :::info
-**容器绕过**：在 `docker`、`singularity`、`modal` 或 `daytona` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
+**容器绕过**：隔离容器后端（例如未绑定挂载主机路径的 Docker，以及隔离的 Singularity、Modal 或 Daytona 运行环境）会跳过危险命令检查，因为容器本身就是安全边界。绑定挂载主机路径的 Docker 会继续执行命令防护栈。
 :::
 
 ### 审批流程（CLI）

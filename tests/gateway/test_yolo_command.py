@@ -119,7 +119,7 @@ async def test_yolo_status_uses_the_source_profiles_approval_mode(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_yolo_toggle_response_uses_the_source_profiles_approval_mode(tmp_path, monkeypatch):
+async def test_yolo_toggle_response_reports_the_session_source_not_effective_status(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
     from tools import approval
 
@@ -144,7 +144,8 @@ async def test_yolo_toggle_response_uses_the_source_profiles_approval_mode(tmp_p
     result = await runner._handle_yolo_command(event)
 
     assert is_session_yolo_enabled(session_key) is False
-    assert "ON" in str(result)
+    assert "OFF" in str(result)
+    assert "for this session" in str(result)
     assert get_hermes_home() == default_home
 
 

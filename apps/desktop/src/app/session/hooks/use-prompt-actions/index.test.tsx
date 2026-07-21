@@ -444,7 +444,7 @@ describe('usePromptActions /yolo status', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('config.set', expect.anything())
     expect($yoloActive.get()).toBe(true)
     expect($notifications.get()[0]?.message).toBe(
-      'YOLO mode is ON. Hardline blocks and approvals.deny rules still apply.'
+      'YOLO mode is ON. Dangerous-command approval prompts are bypassed.'
     )
   })
 
@@ -453,6 +453,7 @@ describe('usePromptActions /yolo status', () => {
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-a' }
     const onUpdateState = vi.fn()
     let resolveStatus!: (value: { value: string }) => void
+
     const requestGateway = vi.fn(
       () =>
         new Promise(resolve => {
@@ -490,6 +491,7 @@ describe('usePromptActions /yolo status', () => {
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-a' }
     const onUpdateState = vi.fn()
     let resolveStatus!: (value: { value: string }) => void
+
     const requestGateway = vi.fn(
       () =>
         new Promise(resolve => {
@@ -524,6 +526,7 @@ describe('usePromptActions /yolo status', () => {
   it('uses cached effective status when an older backend lacks the status RPC', async () => {
     setYoloActive(true)
     const onUpdateState = vi.fn()
+
     const requestGateway = vi.fn(async () => {
       throw new Error('unknown config key: yolo')
     })
@@ -544,13 +547,15 @@ describe('usePromptActions /yolo status', () => {
       .flatMap(call => call[2].messages ?? [])
       .flatMap(message => message.parts ?? [])
       .map(part => part.text)
-    expect(rendered).toContain('YOLO mode is ON. Hardline blocks and approvals.deny rules still apply.')
+
+    expect(rendered).toContain('YOLO mode is ON. Dangerous-command approval prompts are bypassed.')
     expect($notifications.get()).toEqual([])
   })
 
   it('keeps draft-local YOLO state stable if a session starts while status is pending', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     let resolveStatus!: (value: { value: string }) => void
+
     const requestGateway = vi.fn(
       () =>
         new Promise(resolve => {

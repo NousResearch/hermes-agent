@@ -175,7 +175,7 @@ describe('createSlashHandler', () => {
     expect(gateway.rpc).not.toHaveBeenCalled()
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        'YOLO mode is ON - hardline blocks and approvals.deny rules still apply'
+        'YOLO mode is ON - dangerous-command approval prompts are bypassed'
       )
     })
   })
@@ -191,7 +191,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/yolo')).toBe(true)
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        'YOLO mode is ON - hardline blocks and approvals.deny rules still apply'
+        'YOLO mode is ON - dangerous-command approval prompts are bypassed'
       )
     })
     expect(gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'yolo', session_id: 'sid-abc' })

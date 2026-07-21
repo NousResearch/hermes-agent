@@ -406,8 +406,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     help_channels:         "\n\n**Lewendige stemkanale (Discord)**\n• Sluit eers by 'n stemkanaal aan, dan `/voice channel` — ek sluit aan, luister en praat my antwoorde\n• `/voice leave` — ontkoppel van die stemkanaal"
 
   yolo:
+    disabled:                   "⚠️ YOLO-modus **AF** vir hierdie sessie."
+    enabled:                    "⚡ YOLO-modus **AAN** vir hierdie sessie."
     status_off:                 "⚠️ YOLO-modus is **AF**."
-    status_on:                  "⚡ YOLO-modus is **AAN**. Hardline-blokke en approvals.deny-reëls geld steeds."
+    status_on:                  "⚡ YOLO-modus is **AAN**. Goedkeuringsaanwysings vir gevaarlike opdragte word oorgeslaan."
     usage:                      "Gebruik: /yolo [status]"
 
   shared:

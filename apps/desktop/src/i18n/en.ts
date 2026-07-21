@@ -2581,7 +2581,7 @@ export const en: Translations = {
     yoloArmed: 'YOLO armed for this chat',
     yoloOff: 'YOLO off',
     yoloStatus: active =>
-      active ? 'YOLO mode is ON. Hardline blocks and approvals.deny rules still apply.' : 'YOLO mode is OFF.',
+      active ? 'YOLO mode is ON. Dangerous-command approval prompts are bypassed.' : 'YOLO mode is OFF.',
     yoloStatusFailed: 'Could not read YOLO status',
     yoloStatusRequiresNewerBackend: 'Exact YOLO status requires a newer Hermes backend',
     yoloSystem: active => `YOLO ${active ? 'on' : 'off'} for this session`,

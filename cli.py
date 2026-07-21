@@ -9742,20 +9742,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("  Usage: /yolo [status]")
             return
 
-        if not action:
-            if is_session_yolo_enabled(session_key):
-                disable_session_yolo(session_key)
+        if action == "status":
+            if is_approval_bypass_active(session_key):
+                _cprint(
+                    f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                    " - dangerous-command approval prompts are bypassed."
+                )
             else:
-                enable_session_yolo(session_key)
+                _cprint(
+                    f"  YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}."
+                )
+            return
 
-        if is_approval_bypass_active(session_key):
+        if is_session_yolo_enabled(session_key):
+            disable_session_yolo(session_key)
             _cprint(
-                f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
-                " - hardline blocks and approvals.deny rules still apply."
+                f"  YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                " for this session."
             )
         else:
+            enable_session_yolo(session_key)
             _cprint(
-                f"  YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}."
+                f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                " for this session."
             )
 
     def _on_reasoning(self, reasoning_text: str):

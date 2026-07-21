@@ -109,8 +109,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   {
     name: '/yolo',
     description: 'Toggle YOLO mode or show its current status',
-    surface: action('yolo'),
-    args: true
+    surface: action('yolo')
   },
   {
     name: '/handoff',

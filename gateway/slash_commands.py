@@ -3187,8 +3187,8 @@ class GatewaySlashCommandsMixin:
             /yolo           -> toggle dangerous command approval bypass on/off for this session only
             /yolo status    -> show the effective YOLO mode state
 
-        The toggle is session-scoped. Status also reflects global approval
-        settings while preserving hardline blocks and ``approvals.deny`` rules.
+        The toggle is session-scoped. Status reflects process, session, and
+        global approval-bypass sources without mutating any of them.
         """
         from tools.approval import (
             disable_session_yolo,
@@ -3219,13 +3219,10 @@ class GatewaySlashCommandsMixin:
 
         if is_session_yolo_enabled(session_key):
             disable_session_yolo(session_key)
-        else:
-            enable_session_yolo(session_key)
-        return EphemeralReply(
-            t("gateway.yolo.status_on")
-            if effective_yolo_active()
-            else t("gateway.yolo.status_off")
-        )
+            return EphemeralReply(t("gateway.yolo.disabled"))
+
+        enable_session_yolo(session_key)
+        return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

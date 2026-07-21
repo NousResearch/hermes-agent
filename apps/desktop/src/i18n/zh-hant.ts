@@ -2420,7 +2420,7 @@ export const zhHant = defineLocale({
     warningLine: message => `警告：${message}`,
     yoloArmed: '此聊天已啟用 YOLO',
     yoloOff: 'YOLO 已關閉',
-    yoloStatus: active => (active ? 'YOLO 模式已開啟。硬性封鎖和 approvals.deny 規則仍會生效。' : 'YOLO 模式已關閉。'),
+    yoloStatus: active => (active ? 'YOLO 模式已開啟。危險命令的核准提示會被略過。' : 'YOLO 模式已關閉。'),
     yoloStatusFailed: '無法讀取 YOLO 狀態',
     yoloStatusRequiresNewerBackend: '精確的 YOLO 狀態需要較新版本的 Hermes 後端',
     yoloSystem: active => `此工作階段 YOLO ${active ? '已開啟' : '已關閉'}`,

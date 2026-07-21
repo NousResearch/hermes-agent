@@ -1,0 +1,98 @@
+name: Review labels
+
+# Require explicit maintainer review when CI-sensitive files or the MCP
+# catalog change. Previously this was split across two jobs in two
+# workflows: ``ci-review`` in lint.yml (gated on ``ci_review``) and
+# ``mcp-catalog-review`` in supply-chain-audit.yml (gated on
+# ``mcp_catalog``). Both checked for their own label.
+#
+# Now consolidated: a single ``ci-reviewed`` label covers both. The
+# comment sections tell the reviewer exactly what to verify per area,
+# so one label is enough — the human reads the comment, not the label
+# name.
+#
+# Outputs:
+#   ci_reviewed    — "true" / "false" / "" (empty when neither lane ran)
+#   review_status  — JSON array of status objects consumed by the review
+#                    comment assembler. See scripts/ci/emit_review_status.py.
+
+on:
+  workflow_call:
+    inputs:
+      ci_review:
+        description: Whether CI-sensitive files (eslint config, workflows, actions) changed.
+        type: boolean
+        default: false
+      mcp_catalog:
+        description: Whether the MCP catalog / installer changed.
+        type: boolean
+        default: false
+      supply_chain:
+        description: Whether the critical supply-chain scan found a risk requiring review.
+        type: boolean
+        default: false
+    outputs:
+      ci_reviewed:
+        description: Whether the ci-reviewed label is present. Empty when neither input was true.
+        value: ${{ jobs.check.outputs.ci_reviewed }}
+      review_status:
+        description: JSON array of status objects for the review comment assembler.
+        value: ${{ jobs.check.outputs.review_status }}
+
+permissions:
+  contents: read
+  pull-requests: read # read PR labels
+
+jobs:
+  check:
+    name: Review label gate
+    if: inputs.ci_review || inputs.mcp_catalog || inputs.supply_chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      ci_reviewed: ${{ steps.label-check.outputs.ci_reviewed }}
+      review_status: ${{ steps.build-status.outputs.review_status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check ci-reviewed label
+        id: label-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name' || true)
+
+          if echo "$LABELS" | grep -Fxq 'ci-reviewed'; then
+            echo "ci-reviewed label present."
+            echo "ci_reviewed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ci-reviewed label missing."
+            echo "ci_reviewed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build review_status JSON
+        id: build-status
+        env:
+          CI_REVIEW: ${{ inputs.ci_review }}
+          MCP_CATALOG: ${{ inputs.mcp_catalog }}
+          SUPPLY_CHAIN: ${{ inputs.supply_chain }}
+          LABEL_PRESENT: ${{ steps.label-check.outputs.ci_reviewed }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$CI_REVIEW" = "true" ]; then args+=(--ci-review); fi
+          if [ "$MCP_CATALOG" = "true" ]; then args+=(--mcp-catalog); fi
+          if [ "$SUPPLY_CHAIN" = "true" ]; then args+=(--supply-chain); fi
+          if [ "$LABEL_PRESENT" = "true" ]; then args+=(--label-present); fi
+
+          python3 scripts/ci/emit_review_status.py "${args[@]}" --output "$GITHUB_OUTPUT"
+
+      - name: Fail on missing label
+        if: steps.label-check.outputs.ci_reviewed != 'true'
+        run: |
+          echo "::error::CI-sensitive changes require the ci-reviewed label. Add the label and re-run this check."
+          exit 1

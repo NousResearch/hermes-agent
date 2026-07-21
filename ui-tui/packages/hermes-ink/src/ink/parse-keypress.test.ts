@@ -97,40 +97,102 @@ describe('mouse wheel modifier decoding', () => {
   })
 })
 
-describe('fragmented SGR mouse recovery', () => {
-  it('re-synthesizes bracket-only SGR mouse tails as mouse events', () => {
-    const [[mouse]] = parseMultipleKeypresses(INITIAL_STATE, '[<35;159;11M')
+describe('flush-boundary SGR mouse reassembly', () => {
+  it('reassembles a report split by a mid-sequence watchdog flush into one mouse event', () => {
+    // chunk 1: heavy render stalls the loop, only the prefix is read
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
+    expect(keys).toEqual([])
 
-    expect(mouse).toMatchObject({ kind: 'mouse', button: 35, col: 159, row: 11, action: 'press' })
+    // App's 50ms watchdog flushes (input=null) — must NOT emit the partial
+    ;[keys, state] = parseMultipleKeypresses(state, null)
+    expect(keys).toEqual([])
+
+    // continuation arrives; the whole report reassembles, nothing leaks
+    ;[keys, state] = parseMultipleKeypresses(state, '46M')
+    expect(keys).toEqual([expect.objectContaining({ kind: 'mouse', button: 0, col: 35, row: 46, action: 'press' })])
   })
 
-  it('re-synthesizes angle-only SGR mouse tails as mouse events', () => {
-    const [[mouse]] = parseMultipleKeypresses(INITIAL_STATE, '<35;159;11M')
+  it('drops a truncated mouse prefix after a second flush instead of leaking it', () => {
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
 
-    expect(mouse).toMatchObject({ kind: 'mouse', button: 35, col: 159, row: 11, action: 'press' })
+    ;[keys, state] = parseMultipleKeypresses(state, null) // first flush keeps it
+    ;[keys, state] = parseMultipleKeypresses(state, null) // second flush drops it
+
+    expect(keys).toEqual([])
+    expect(state.incomplete).toBe('')
   })
 
-  it('re-synthesizes degraded SGR mouse bursts without leaking prompt text', () => {
-    const [events] = parseMultipleKeypresses(INITIAL_STATE, '5;142;11M<35;159;11M35;124;26M35;119;26Mtyped')
+  it('re-synthesizes an orphaned X10 wheel tail (legacy mouse) into a scroll key', () => {
+    // X10 wheel-up = ESC[M + (0x40+32) + col + row. If the ESC was flushed as a
+    // lone Escape and the `[M…` payload arrives as text, resynthesize it.
+    const tail = '[M' + String.fromCharCode(0x60) + '!!'
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, tail)
 
-    expect(events.slice(0, 4)).toEqual([
-      expect.objectContaining({ kind: 'mouse', button: 5, col: 142, row: 11 }),
-      expect.objectContaining({ kind: 'mouse', button: 35, col: 159, row: 11 }),
-      expect.objectContaining({ kind: 'mouse', button: 35, col: 124, row: 26 }),
-      expect.objectContaining({ kind: 'mouse', button: 35, col: 119, row: 26 })
-    ])
-    expect(events[4]).toMatchObject({ kind: 'key', sequence: 'typed' })
+    expect(key).toMatchObject({ name: 'wheelup' })
+  })
+})
+
+describe('cursor position report parsing', () => {
+  it('parses DECXCPR cursor position report (CSI ? row;col R)', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[?22;1R')
+
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 22, col: 1 }
+    })
   })
 
-  it('keeps isolated semicolon text that only resembles a prefixless mouse report', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, 'see 1;2;3M for details')
+  it('parses standard DSR cursor position report (CSI row;col R) when row > 1', () => {
+    // Terminals that don't support DECXCPR may respond to CSI ? 6 n with
+    // the plain DSR form (no ?). These must be recognized as responses,
+    // not inserted as literal text.
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[22;1R')
 
-    expect(key).toMatchObject({ kind: 'key', sequence: 'see 1;2;3M for details' })
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 22, col: 1 }
+    })
   })
 
-  it('does not match prefixless fragments inside longer digit runs', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '1234;56;78M9;10;11M')
+  it('parses standard DSR report with multi-digit row and col', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[10;80R')
 
-    expect(key).toMatchObject({ kind: 'key', sequence: '1234;56;78M9;10;11M' })
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 10, col: 80 }
+    })
+  })
+
+  it('does NOT treat CSI 1;2 R as a cursor position report (Shift+F3 ambiguity)', () => {
+    // CSI 1;2 R is Shift+F3 in xterm. Without the ? marker, row 1 is
+    // ambiguous with F3 modifiers — must fall through to parseKeypress,
+    // not be silently dropped as a terminal response.
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[1;2R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
+  it('does NOT treat CSI 1;5 R as a cursor position report (Ctrl+F3 ambiguity)', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[1;5R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
+  it('does NOT treat CSI 0;col R as a cursor position report (invalid row-zero DSR)', () => {
+    // Terminal coordinates are 1-indexed, so a plain DSR report with row 0 is
+    // invalid. Without the ? marker it must remain unclassified rather than be
+    // reported as a cursor position (guard is row <= 1, not row === 1).
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[0;5R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
+  it('treats DECXCPR at row 1 as a cursor position report (? disambiguates from F3)', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[?1;2R')
+
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 1, col: 2 }
+    })
   })
 })

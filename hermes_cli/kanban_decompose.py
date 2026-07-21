@@ -20,7 +20,7 @@ Design notes
 
 * The system prompt sees the *configured* profile roster — names plus
   descriptions plus the default fallback. Profiles without a
-  description are still listed (with a note) so the orchestrator can
+  description are still listed (with a note) so the decomposer can
   match on name as a fallback, but the user has an obvious incentive
   to describe them.
 
@@ -178,7 +178,7 @@ def _load_config() -> dict:
 
 
 def _resolve_orchestrator_profile(cfg: dict) -> str:
-    """Resolve which profile owns decomposition.
+    """Resolve which profile owns the root/orchestration task after fan-out.
 
     Falls back to the active default profile when ``kanban.orchestrator_profile``
     is unset, so a task is never stranded for lack of an orchestrator.
@@ -281,7 +281,7 @@ def decompose_task(
     configured, API error, malformed response, decomposer returned
     fanout=true with empty task list) — those surface via ``ok=False``.
     """
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
@@ -298,22 +298,10 @@ def decompose_task(
     roster, valid_names = _build_roster()
 
     try:
-        from agent.auxiliary_client import (  # type: ignore
-            get_auxiliary_extra_body,
-            get_text_auxiliary_client,
-        )
+        from agent.auxiliary_client import call_llm  # type: ignore
     except Exception as exc:
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
-
-    try:
-        client, model = get_text_auxiliary_client("kanban_decomposer")
-    except Exception as exc:
-        logger.debug("decompose: get_text_auxiliary_client failed: %s", exc)
-        return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
-
-    if client is None or not model:
-        return DecomposeOutcome(task_id, False, "no auxiliary client configured")
 
     user_msg = _USER_TEMPLATE.format(
         task_id=task.id,
@@ -324,8 +312,12 @@ def decompose_task(
     )
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
+        # Route through call_llm so auxiliary.kanban_decomposer.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the previous direct client.chat.completions.create()
+        # path dropped auxiliary.<task>.extra_body entirely (#35566).
+        resp = call_llm(
+            task="kanban_decomposer",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -333,7 +325,6 @@ def decompose_task(
             temperature=0.3,
             max_tokens=4000,
             timeout=timeout or 180,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info(
@@ -370,7 +361,7 @@ def decompose_task(
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
             )
-        with kb.connect() as conn:
+        with kb.connect_closing() as conn:
             ok = kb.specify_triage_task(
                 conn,
                 task_id,
@@ -439,7 +430,7 @@ def decompose_task(
         })
 
     try:
-        with kb.connect() as conn:
+        with kb.connect_closing() as conn:
             child_ids = kb.decompose_triage_task(
                 conn,
                 task_id,
@@ -467,7 +458,7 @@ def decompose_task(
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Return task ids currently in the triage column."""
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         rows = kb.list_tasks(
             conn,
             status="triage",

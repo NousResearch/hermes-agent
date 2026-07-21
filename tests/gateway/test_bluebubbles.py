@@ -1,4 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
+import asyncio
+import json
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -25,6 +28,8 @@ class TestBlueBubblesConfigLoading:
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
         monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
         monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_PORT", "9999")
+        monkeypatch.setenv("BLUEBUBBLES_REQUIRE_MENTION", "true")
+        monkeypatch.setenv("BLUEBUBBLES_MENTION_PATTERNS", r'["(?i)^amos\\b"]')
         from gateway.config import GatewayConfig, _apply_env_overrides
 
         config = GatewayConfig()
@@ -35,6 +40,8 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
+        assert bc.extra["require_mention"] is True
+        assert bc.extra["mention_patterns"] == ["(?i)^amos\\b"]
 
     def test_home_channel_set_from_env(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -129,6 +136,131 @@ class TestBlueBubblesHelpers:
     def test_server_url_adds_scheme(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
+
+    def test_default_mention_patterns_match_hermes_variants(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, require_mention=True)
+
+        assert adapter.require_mention is True
+        assert adapter._message_matches_mention_patterns("Hermes, summarize this")
+        assert adapter._message_matches_mention_patterns("@Hermes agent help")
+        assert not adapter._message_matches_mention_patterns("casual family chatter")
+        assert not adapter._message_matches_mention_patterns("antihermes should not match")
+
+    def test_custom_mention_patterns_override_defaults(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            mention_patterns=[r"(?<![\w@])@?amos\b[,:\-]?"],
+        )
+
+        assert adapter._message_matches_mention_patterns("Amos what is next?")
+        assert not adapter._message_matches_mention_patterns("Hermes what is next?")
+
+    def test_clean_mention_text_strips_leading_wake_word(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, require_mention=True)
+
+        assert adapter._clean_mention_text("Hermes, summarize this") == "summarize this"
+        assert adapter._clean_mention_text("Hermes agent: summarize this") == "summarize this"
+        assert adapter._clean_mention_text("please ask Hermes about this") == "please ask Hermes about this"
+
+
+class _FakeBlueBubblesRequest:
+    def __init__(self, payload, password="secret"):
+        self.query = {"password": password}
+        self.headers = {}
+        self._body = json.dumps(payload).encode("utf-8")
+
+    async def read(self):
+        return self._body
+
+
+class TestBlueBubblesMentionGating:
+    @pytest.mark.asyncio
+    async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "casual family chatter",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_group_message_with_default_mention_is_dispatched_cleaned(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-2",
+                "text": "Hermes, summarize this",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert [event.text for event in handled] == ["summarize this"]
+
+    @pytest.mark.asyncio
+    async def test_dm_message_does_not_require_mention(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-3",
+                "text": "hello from a dm",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert [event.text for event in handled] == ["hello from a dm"]
 
 
 class TestBlueBubblesWebhookParsing:
@@ -294,6 +426,110 @@ class TestBlueBubblesGuidResolution:
         )
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_exact_chat_identifier_match_returns_dm_guid(self, monkeypatch):
+        """A 1:1 DM whose chatIdentifier equals the target resolves to its guid."""
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;-;user@example.com",
+                        "chatIdentifier": "user@example.com",
+                        "participants": [{"address": "user@example.com"}],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter._resolve_chat_guid("user@example.com")
+        assert result == "iMessage;-;user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_participant_only_match_does_not_resolve_to_group(self, monkeypatch):
+        """Regression for #24157: contact appearing as a participant in a group
+        chat must NOT be selected when no DM with that exact chatIdentifier exists.
+
+        Otherwise an outbound DM reply leaks into the group thread.
+        """
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [
+                            {"address": "user@example.com"},
+                            {"address": "+15555550100"},
+                        ],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter._resolve_chat_guid("user@example.com")
+        assert result is None, (
+            "participant-only match must not resolve to a group GUID — DM "
+            "replies would leak into the group thread"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dm_chosen_over_group_when_both_contain_contact(self, monkeypatch):
+        """Even when a group chat is returned BEFORE a DM in the query result,
+        the resolver must lock onto the DM by chatIdentifier and not the
+        group via participant fallback.
+        """
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [{"address": "user@example.com"}],
+                    },
+                    {
+                        "guid": "iMessage;-;user@example.com",
+                        "chatIdentifier": "user@example.com",
+                        "participants": [{"address": "user@example.com"}],
+                    },
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter._resolve_chat_guid("user@example.com")
+        assert result == "iMessage;-;user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_unresolved_target_is_not_cached(self, monkeypatch):
+        """When no exact match is found, the resolver must NOT cache anything.
+
+        Otherwise a later attempt — after the DM has been created — would
+        keep returning the stale ``None`` from cache. Also guards against a
+        latent variant of #24157 where a group GUID could be cached under a
+        bare address key and persist across calls.
+        """
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [{"address": "user@example.com"}],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        await adapter._resolve_chat_guid("user@example.com")
+        assert "user@example.com" not in adapter._guid_cache
+
 
 class TestBlueBubblesAttachmentDownload:
     """Verify _download_attachment routes to the correct cache helper."""
@@ -302,7 +538,6 @@ class TestBlueBubblesAttachmentDownload:
         """Image MIME routes to cache_image_from_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
-        import httpx
 
         # Mock the HTTP client response
         class MockResponse:
@@ -451,6 +686,14 @@ class TestBlueBubblesWebhookUrl:
         """Passwords with special characters must be URL-encoded."""
         adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
         assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
+
+    def test_register_url_for_log_masks_password(self, monkeypatch):
+        """Log-safe webhook URLs must never expose the webhook password."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        safe_url = adapter._webhook_register_url_for_log
+        assert safe_url.endswith("?password=***")
+        assert "W9fTC" not in safe_url
+        assert "%26" not in safe_url
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""

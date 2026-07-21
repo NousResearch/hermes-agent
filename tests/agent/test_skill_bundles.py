@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -36,7 +35,7 @@ def _make_bundle_yaml(
     for s in skills:
         lines.append(f"  - {s}")
     if instruction:
-        lines.append(f"instruction: |")
+        lines.append("instruction: |")
         for ln in instruction.splitlines():
             lines.append(f"  {ln}")
     path = bundles_dir / f"{slug}.yaml"
@@ -213,6 +212,53 @@ class TestBuildBundleInvocationMessage:
         assert loaded == ["skill-a"]
         assert missing == ["skill-ghost"]
         assert "skill-ghost" in msg  # called out in header
+
+    def test_skips_platform_disabled_skills(self, bundles_env, monkeypatch):
+        """A skill disabled for the invoking platform must not be injected
+        via a bundle (mirrors the stacked-skill gate, #58888)."""
+        bundles_dir, skills_dir = bundles_env
+        _make_skill(skills_dir, "skill-a", body="Skill A content.")
+        _make_skill(skills_dir, "skill-b", body="SECRET DISABLED CONTENT.")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a", "skill-b"])
+        scan_bundles()
+
+        def _fake_disabled(platform=None):
+            return {"skill-b"} if platform == "telegram" else set()
+
+        import agent.skill_utils as su_module
+        monkeypatch.setattr(
+            su_module, "get_disabled_skill_names", _fake_disabled
+        )
+
+        result = build_bundle_invocation_message("/combo", platform="telegram")
+        assert result is not None
+        msg, loaded, missing = result
+        assert loaded == ["skill-a"]
+        assert "SECRET DISABLED CONTENT." not in msg
+        assert "skill-b" in msg  # called out in the disabled-skipped header line
+        assert "disabled" in msg.lower()
+
+        # Positive control: without the platform the skill loads normally.
+        result2 = build_bundle_invocation_message("/combo")
+        assert result2 is not None
+        msg2, loaded2, _ = result2
+        assert set(loaded2) == {"skill-a", "skill-b"}
+        assert "SECRET DISABLED CONTENT." in msg2
+
+    def test_all_skills_disabled_returns_none(self, bundles_env, monkeypatch):
+        bundles_dir, skills_dir = bundles_env
+        _make_skill(skills_dir, "skill-a")
+        _make_bundle_yaml(bundles_dir, "solo", ["skill-a"])
+        scan_bundles()
+
+        import agent.skill_utils as su_module
+        monkeypatch.setattr(
+            su_module,
+            "get_disabled_skill_names",
+            lambda platform=None: {"skill-a"},
+        )
+
+        assert build_bundle_invocation_message("/solo", platform="discord") is None
 
     def test_unknown_bundle_returns_none(self, bundles_env):
         scan_bundles()

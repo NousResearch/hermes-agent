@@ -6,11 +6,6 @@ the JSON Schema ecosystem accepts:
 1. Properties without ``type`` — Moonshot requires ``type`` on every node.
 2. ``type`` at the parent of ``anyOf`` — Moonshot requires it only inside
    ``anyOf`` children.
-3. ``$ref`` with sibling keywords — Moonshot expands the ref first and then
-   rejects ``description``/``type`` siblings on the same node.
-   (Ported from anomalyco/opencode#24730.)
-4. Tuple-style ``items`` arrays — Moonshot requires a single item schema,
-   not positional ones. (Ported from anomalyco/opencode#24730.)
 
 These tests cover the repairs applied by ``agent/moonshot_schema.py``.
 """
@@ -34,6 +29,10 @@ class TestMoonshotModelDetection:
         [
             "kimi-k2.6",
             "kimi-k2-thinking",
+            "k3",
+            "K3",
+            "moonshotai/k3",
+            "k3.1-preview",
             "moonshotai/Kimi-K2.6",
             "moonshotai/kimi-k2.6",
             "nous/moonshotai/kimi-k2.6",
@@ -185,171 +184,14 @@ class TestAnyOfParentType:
         assert db_type["enum"] == ["mysql", "postgresql"]  # "" stripped by enum cleanup
 
 
-class TestRefSiblingStripping:
-    """Rule 4: ``$ref`` nodes may not carry sibling keywords on Moonshot.
-
-    Ported from anomalyco/opencode#24730.  The real-world failure was MCP tools
-    whose generated schemas put a ``description`` on a ``$ref`` property so the
-    model would see the field's human-readable hint.  The reference stays — the
-    referenced definition still owns the description (on the target node itself)
-    and still serves the model's context.
-    """
-
-    def test_description_sibling_stripped_from_ref(self):
-        params = {
-            "type": "object",
-            "properties": {
-                "variantOptions": {
-                    "$ref": "#/$defs/VariantOptions",
-                    "description": "Required. The variant options for generation.",
-                },
-            },
-            "$defs": {
-                "VariantOptions": {
-                    "type": "object",
-                    "properties": {},
-                    "description": "Configuration options.",
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        # Sibling stripped.
-        assert out["properties"]["variantOptions"] == {"$ref": "#/$defs/VariantOptions"}
-        # The target definition's own description is preserved — we only strip
-        # siblings ON the $ref node, not on the thing it points at.
-        assert out["$defs"]["VariantOptions"]["description"] == "Configuration options."
-
-    def test_multiple_siblings_all_stripped(self):
-        params = {
-            "type": "object",
-            "properties": {
-                "p": {
-                    "$ref": "#/$defs/T",
-                    "type": "object",
-                    "description": "x",
-                    "default": {},
-                    "title": "P",
-                },
-            },
-            "$defs": {"T": {"type": "object"}},
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["p"] == {"$ref": "#/$defs/T"}
-
-    def test_ref_without_siblings_unchanged(self):
-        params = {
-            "type": "object",
-            "properties": {"p": {"$ref": "#/$defs/T"}},
-            "$defs": {"T": {"type": "object"}},
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["p"] == {"$ref": "#/$defs/T"}
-
-    def test_ref_inside_anyof_children(self):
-        params = {
-            "type": "object",
-            "properties": {
-                "v": {
-                    "anyOf": [
-                        {"$ref": "#/$defs/A", "description": "variant A"},
-                        {"type": "null"},
-                    ],
-                },
-            },
-            "$defs": {"A": {"type": "object"}},
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        # Main's existing Rule 2 collapses anyOf-with-null down to the
-        # single non-null branch (Moonshot rejects null branches in anyOf
-        # outright).  That branch was originally `{"$ref": ..., "description": ...}`;
-        # Rule 4 then strips the sibling, leaving exactly `{"$ref": "..."}`.
-        # The test name still applies — Rule 4 ran on the $ref branch — it
-        # just happens after the anyOf collapse on this input.
-        assert out["properties"]["v"] == {"$ref": "#/$defs/A"}
-
-
-class TestTupleItems:
-    """Rule 5: tuple-style ``items`` arrays collapse to a single schema.
-
-    Ported from anomalyco/opencode#24730.  Moonshot's schema engine requires
-    ``items`` to be ONE schema object applied to every array element; tuple-
-    style positional item schemas are rejected.  We collapse to the first
-    element's schema (which is the "closest" interpretation of positional →
-    single) and drop the rest.
-    """
-
-    def test_tuple_items_collapsed_to_first(self):
-        params = {
-            "type": "object",
-            "properties": {
-                "renderedSize": {
-                    "type": "array",
-                    "items": [{"type": "number"}, {"type": "number"}],
-                    "minItems": 2,
-                    "maxItems": 2,
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["renderedSize"]["items"] == {"type": "number"}
-        # Sibling constraints are preserved — only the tuple shape is repaired.
-        assert out["properties"]["renderedSize"]["minItems"] == 2
-
-    def test_empty_tuple_items_becomes_empty_schema(self):
-        # Empty tuple collapses to ``{}``; the generic repair then fills a
-        # synthetic ``type`` because Moonshot requires ``type`` on every
-        # schema node.  Either ``{}`` or ``{"type": "string"}`` is a valid
-        # final shape for Moonshot — both accept any string element — but we
-        # always go through ``_fill_missing_type`` so the result is fully
-        # well-formed without needing the consumer to patch it later.
-        params = {
-            "type": "object",
-            "properties": {
-                "things": {"type": "array", "items": []},
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        items = out["properties"]["things"]["items"]
-        # Must be a dict and must carry a ``type`` (the whole point of Rule 1).
-        assert isinstance(items, dict)
-        assert items.get("type")
-
-    def test_tuple_items_first_element_is_repaired(self):
-        # The first element itself has a missing type — it should be filled.
-        params = {
-            "type": "object",
-            "properties": {
-                "pair": {
-                    "type": "array",
-                    "items": [{"description": "first"}, {"description": "second"}],
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        # Repaired to a single schema with a synthetic type.
-        assert out["properties"]["pair"]["items"] == {
-            "description": "first",
-            "type": "string",
-        }
-
-    def test_single_schema_items_unchanged(self):
-        params = {
-            "type": "object",
-            "properties": {
-                "tags": {"type": "array", "items": {"type": "string"}},
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["tags"]["items"] == {"type": "string"}
-
-
 class TestTopLevelGuarantees:
     """The returned top-level schema is always a well-formed object."""
 
     def test_non_dict_input_returns_empty_object(self):
-        assert sanitize_moonshot_tool_parameters(None) == {"type": "object", "properties": {}}
-        assert sanitize_moonshot_tool_parameters("garbage") == {"type": "object", "properties": {}}
-        assert sanitize_moonshot_tool_parameters([]) == {"type": "object", "properties": {}}
+        empty = {"type": "object", "properties": {}, "required": []}
+        assert sanitize_moonshot_tool_parameters(None) == empty
+        assert sanitize_moonshot_tool_parameters("garbage") == empty
+        assert sanitize_moonshot_tool_parameters([]) == empty
 
     def test_non_object_top_level_coerced(self):
         params = {"type": "string"}
@@ -369,6 +211,66 @@ class TestTopLevelGuarantees:
         sanitize_moonshot_tool_parameters(params)
         assert params["type"] == snapshot["type"]
         assert "type" not in params["properties"]["q"]
+
+
+class TestRequiredArray:
+    """Rule 4: every object schema must carry a ``required`` array (#66835)."""
+
+    def test_empty_object_gets_empty_required(self):
+        out = sanitize_moonshot_tool_parameters({"type": "object", "properties": {}})
+        assert out["required"] == []
+
+    def test_object_with_only_optional_props_gets_empty_required(self):
+        params = {
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == []
+
+    def test_existing_required_preserved(self):
+        params = {
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == ["q"]
+
+    def test_dangling_required_pruned(self):
+        params = {
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": ["q", "ghost"],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == ["q"]
+
+    def test_non_list_required_replaced(self):
+        params = {
+            "type": "object",
+            "properties": {},
+            "required": "q",  # invalid: string, not array
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == []
+
+    def test_nested_object_property_gets_required(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "filter": {"type": "object", "properties": {}},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["filter"]["required"] == []
+        assert out["required"] == []
+
+    def test_coerced_top_level_gets_required(self):
+        # A non-object top level is forced to object and must gain required.
+        out = sanitize_moonshot_tool_parameters({"type": "string"})
+        assert out["type"] == "object"
+        assert out["required"] == []
 
 
 class TestToolListSanitizer:
@@ -398,8 +300,10 @@ class TestToolListSanitizer:
         ]
         out = sanitize_moonshot_tools(tools)
         assert out[0]["function"]["parameters"]["properties"]["q"]["type"] == "string"
-        # Second tool already clean — should be structurally equivalent
-        assert out[1]["function"]["parameters"] == {"type": "object", "properties": {}}
+        # Second tool: empty object gains the required-array Moonshot demands
+        assert out[1]["function"]["parameters"] == {
+            "type": "object", "properties": {}, "required": []
+        }
 
     def test_empty_list_is_passthrough(self):
         assert sanitize_moonshot_tools([]) == []
@@ -560,3 +464,52 @@ class TestEnumNullStripping:
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"], \
             "null/empty enum values must be stripped after anyOf collapse"
+
+
+class TestUnionTypeList:
+    """Moonshot sanitizer accepts JSON Schema union type arrays."""
+
+    def test_union_type_list_normalizes_to_first_concrete_type(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": ["number", "string"],
+                    "description": "Max results",
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        assert out["properties"]["limit"]["type"] == "number"
+
+    def test_union_type_list_skips_null_type(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "name": {"type": ["null", "string"]},
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        assert out["properties"]["name"]["type"] == "string"
+
+    def test_union_type_list_with_enum_does_not_crash_or_mutate_input(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": ["string", "null"],
+                    "enum": ["asc", "desc", None, ""],
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        sort = out["properties"]["sort"]
+        assert sort["type"] == "string"
+        assert sort["enum"] == ["asc", "desc"]
+        assert params["properties"]["sort"]["type"] == ["string", "null"]

@@ -97,7 +97,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = call_llm(
                 task="compression",
@@ -112,8 +112,13 @@ class TestCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        # other kwargs preserved
-        assert retry_kwargs["max_tokens"] == 500
+        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
+        # (#34530) — auxiliary calls let the model max out its own output — so
+        # it must be absent in BOTH the first and retry kwargs. Use a kwarg that
+        # actually survives (model) to prove the retry preserves the rest.
+        assert "max_tokens" not in first_kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["model"] == first_kwargs["model"]
 
     def test_non_temperature_400_does_not_retry_as_temperature(self):
         """Unrelated 400s (e.g. bad tool role) must not silently drop temp."""
@@ -130,7 +135,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
@@ -160,7 +165,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
@@ -192,7 +197,7 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = await async_call_llm(
                 task="session_search",
@@ -207,7 +212,11 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
         assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
-        assert retry_kwargs["max_tokens"] == 500
+        # max_tokens is intentionally omitted on OpenAI-compatible endpoints
+        # (#34530); assert it's absent and that model survives the retry.
+        assert "max_tokens" not in first_kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["model"] == first_kwargs["model"]
 
     @pytest.mark.asyncio
     async def test_async_non_temperature_400_does_not_retry(self):
@@ -223,7 +232,7 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):

@@ -11,7 +11,7 @@ Active selection
 ----------------
 The active provider is chosen by configuration with this precedence:
 
-1. ``web.search_backend`` / ``web.extract_backend`` / ``web.crawl_backend``
+1. ``web.search_backend`` / ``web.extract_backend``
    (per-capability override).
 2. ``web.backend`` (shared fallback).
 3. If exactly one capability-eligible provider is registered AND available,
@@ -24,10 +24,10 @@ The active provider is chosen by configuration with this precedence:
 5. Otherwise ``None`` — the tool surfaces a helpful error pointing at
    ``hermes tools``.
 
-The capability filter (``supports_search`` / ``supports_extract`` /
-``supports_crawl``) is applied at every step so a search-only provider
-(``brave-free``) configured as ``web.extract_backend`` correctly falls
-through to an extract-capable backend.
+The capability filter (``supports_search`` / ``supports_extract``) is
+applied at every step so a search-only provider (``brave-free``)
+configured as ``web.extract_backend`` correctly falls through to an
+extract-capable backend.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ _LEGACY_PREFERENCE = (
 
 
 def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearchProvider]:
-    """Resolve the active provider for a capability ("search" | "extract" | "crawl").
+    """Resolve the active provider for a capability ("search" | "extract").
 
     Resolution rules (in order):
 
@@ -168,8 +168,6 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             return bool(p.supports_search())
         if capability == "extract":
             return bool(p.supports_extract())
-        if capability == "crawl":
-            return bool(p.supports_crawl())
         return False
 
     def _is_available_safe(p: WebSearchProvider) -> bool:
@@ -221,6 +219,65 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     return None
 
 
+def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:
+    """Return the plugin key of a *disabled* bundled web plugin that would
+    have provided the configured backend, or None.
+
+    When a user sets ``web.extract_backend: firecrawl`` (or the search
+    equivalent) but also lists ``web-firecrawl`` in ``plugins.disabled``,
+    the provider never registers and the dispatcher would otherwise emit a
+    misleading "No web extract provider configured. Set web.extract_backend
+    to ..." error — even though the backend IS configured correctly. The
+    real fix is to re-enable the plugin. This helper detects that case so
+    the dispatcher can point the user at the actual cause (issue #40190
+    follow-up: pi314's disabled-plugin symptom).
+
+    Pass ``capability`` ("search" | "extract") to resolve the configured
+    name straight from ``config.yaml`` (``web.<capability>_backend`` →
+    ``web.backend``). This is more reliable than the resolved backend the
+    dispatcher fell back to, since a disabled provider fails the
+    ``_is_backend_available`` gate and the dispatcher silently drops to
+    the shared default. An explicit ``configured`` name still wins when
+    given.
+
+    Matching is by convention: bundled web plugins live under the
+    ``web/<vendor>`` key with the provider ``name`` differing only in
+    hyphen/underscore (``brave-free`` provider ⇄ ``web/brave_free`` key,
+    ``firecrawl`` ⇄ ``web/firecrawl``). We normalize both sides before
+    comparing so every bundled provider is covered without hardcoding a
+    per-vendor table.
+    """
+    def _norm(s: str) -> str:
+        return s.strip().lower().replace("-", "_")
+
+    if not configured and capability in ("search", "extract"):
+        configured = (
+            _read_config_key("web", f"{capability}_backend")
+            or _read_config_key("web", "backend")
+        )
+    if not configured:
+        return None
+
+    want = _norm(configured)
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        pm = get_plugin_manager()
+        for key, loaded in pm._plugins.items():
+            if not isinstance(key, str) or not key.startswith("web/"):
+                continue
+            if loaded.enabled:
+                continue
+            if loaded.error != "disabled via config":
+                continue
+            vendor = key.split("/", 1)[1]
+            if _norm(vendor) == want:
+                return key
+    except Exception as exc:  # noqa: BLE001 — diagnostics are best-effort
+        logger.debug("disabled-web-plugin lookup failed: %s", exc)
+    return None
+
+
 def get_active_search_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web search provider.
 
@@ -239,21 +296,6 @@ def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """
     explicit = _read_config_key("web", "extract_backend") or _read_config_key("web", "backend")
     return _resolve(explicit, capability="extract")
-
-
-def get_active_crawl_provider() -> Optional[WebSearchProvider]:
-    """Resolve the currently-active web crawl provider.
-
-    Reads ``web.crawl_backend`` (preferred) or ``web.backend`` (shared
-    fallback) from config.yaml; falls back per the module docstring.
-
-    Crawl is a niche capability — among built-in providers only Tavily and
-    Firecrawl implement it. Callers should expect ``None`` and fall back to
-    a different strategy (e.g. summarize-via-LLM) when neither is
-    configured.
-    """
-    explicit = _read_config_key("web", "crawl_backend") or _read_config_key("web", "backend")
-    return _resolve(explicit, capability="crawl")
 
 
 def _reset_for_tests() -> None:

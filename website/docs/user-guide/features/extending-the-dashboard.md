@@ -16,8 +16,12 @@ All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patc
 
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 
+:::note Not the desktop app
+This page covers the **web dashboard** (`hermes dashboard`) plugin system — `window.__HERMES_PLUGIN_SDK__`, a `manifest.json`, and a pre-built JS bundle. The **native desktop app** (`hermes desktop`) has its own, unrelated SDK — `@hermes/plugin-sdk`, a single ESM file, no build step — documented at [Desktop Plugin SDK](/developer-guide/desktop-plugin-sdk). Only the backend `plugin_api.py` namespace (`/api/plugins/<name>`) is shared between them.
+:::
+
 :::note How the pieces compose
-Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom HUDs — the bundled `strike-freedom-cockpit` demo does exactly that. See [Combined theme + plugin demo](#combined-theme--plugin-demo).
+Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom HUDs — the example `strike-freedom-cockpit` demo (lives in the `hermes-example-plugins` companion repo — see [Combined theme + plugin demo](#combined-theme--plugin-demo) for install steps) does exactly that.
 :::
 
 ---
@@ -130,6 +134,22 @@ typography:
   lineHeight: "1.5"
   letterSpacing: "0.04em"
 ```
+
+##### Changing the font from the UI (no YAML)
+
+The theme picker in the dashboard header has a **Font** section below the
+theme list. Pick any font there and it overrides the body font of whatever
+theme is active — the choice is independent of the theme and persists across
+theme switches (stored in `config.yaml` under `dashboard.font`). Choose
+**Theme default** to clear the override and fall back to the active theme's
+own `fontSans`.
+
+The picker offers a curated catalog (system stacks plus a set of Google-Fonts
+families across sans / serif / mono). It deliberately does **not** accept a
+free-text font URL — the font's stylesheet is injected as a `<link>`, so the
+catalog keeps the injected origins fixed. For a fully custom face, set
+`fontSans` + `fontUrl` in a theme YAML as shown above. The theme's `fontMono`
+(code blocks, terminal) is always left untouched by the UI override.
 
 #### Layout
 

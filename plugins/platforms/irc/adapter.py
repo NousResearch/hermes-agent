@@ -49,8 +49,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
 )
-from gateway.session import SessionSource
-from gateway.config import PlatformConfig, Platform
+from gateway.config import Platform
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +107,10 @@ class IRCAdapter(BasePlatformAdapter):
 
         # Connection settings (env vars override config.yaml)
         self.server = os.getenv("IRC_SERVER") or extra.get("server", "")
-        self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
+        try:
+            self.port = int(os.getenv("IRC_PORT") or extra.get("port", 6697))
+        except (ValueError, TypeError):
+            self.port = 6697
         self.nickname = os.getenv("IRC_NICKNAME") or extra.get("nickname", "hermes-bot")
         self.channel = os.getenv("IRC_CHANNEL") or extra.get("channel", "")
         self.use_tls = (
@@ -150,7 +152,7 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IRC server, register, and join the channel."""
         if not self.server or not self.channel:
             logger.error("IRC: server and channel must be configured")

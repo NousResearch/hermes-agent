@@ -10,10 +10,8 @@ Verifies that:
 """
 
 import os
-import uuid
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -168,6 +166,25 @@ class TestBranchCommandCLI:
 
         assert cli_instance._resumed is True
 
+    def test_branch_rotates_hermes_session_id_env_and_context(self, cli_instance, session_db):
+        """Branching must update process-local session-id readers too."""
+        from cli import HermesCLI
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+        old_session_id = cli_instance.session_id
+        os.environ["HERMES_SESSION_ID"] = old_session_id
+        _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+        try:
+            HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+            assert cli_instance.session_id != old_session_id
+            assert os.environ["HERMES_SESSION_ID"] == cli_instance.session_id
+            assert get_session_env("HERMES_SESSION_ID") == cli_instance.session_id
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
+
     def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
         """The /branch command must notify memory providers of the rotation.
 
@@ -223,3 +240,21 @@ class TestBranchCommandDef:
         from hermes_cli.commands import COMMAND_REGISTRY
         branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
         assert branch.category == "Session"
+
+
+class TestBranchFlushesBeforeEndSession:
+    """Regression for #47202: /branch must flush un-persisted messages to
+    the session DB before ending the old session, just like /new and
+    compress_context() already do."""
+
+    def test_branch_flushes_when_agent_present(self, cli_instance, session_db):
+        from cli import HermesCLI
+
+        agent = MagicMock()
+        cli_instance.agent = agent
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        agent._flush_messages_to_session_db.assert_called_once_with(
+            cli_instance.conversation_history
+        )

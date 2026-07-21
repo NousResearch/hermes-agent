@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from pathlib import Path
@@ -12,6 +13,14 @@ import os
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
+    # GPT-5.6 series (Sol/Terra/Luna + -pro high-effort modes) — GA 2026-07-09
+    # (previewed 2026-06-26).
+    "gpt-5.6-sol",
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna",
+    "gpt-5.6-luna-pro",
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
@@ -29,21 +38,35 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # curated fallback so Pro users still see Spark in `/model` when live
     # discovery is unavailable (offline first run, transient API failure).
     "gpt-5.3-codex-spark",
-    "gpt-5.2-codex",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
+    # NOTE: gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini were
+    # previously listed here but the chatgpt.com Codex backend returns
+    # HTTP 400 "The '<model>' model is not supported when using Codex with
+    # a ChatGPT account." for all three on every ChatGPT Pro account we've
+    # tested (verified live 2026-05-27). Keeping them in the fallback list
+    # leaked dead slugs into /model when live discovery was unavailable
+    # (transient API failure, first-run before refresh) and surfaced HTTP 400
+    # crashes on selection. The Codex CLI public catalog still references
+    # these slugs, which is why they survived previously — but those entries
+    # describe the public OpenAI API, not the OAuth-backed Codex backend
+    # Hermes uses. Removed here. If OpenAI re-enables them on Codex backend,
+    # live discovery will pick them up automatically via _fetch_models_from_api.
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+    ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-sol-pro", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-terra-pro", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
+    ("gpt-5.6-luna-pro", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex", "gpt-5.2-codex")),
-    ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2-codex")),
-    ("gpt-5.3-codex", ("gpt-5.2-codex",)),
+    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
+    ("gpt-5.4", ("gpt-5.3-codex",)),
     # Surface Spark whenever any compatible Codex template is present so
     # accounts hitting the live endpoint with an older lineup still see
     # Spark in the picker. Backend gates real availability by ChatGPT Pro
     # entitlement; Hermes does not.
-    ("gpt-5.3-codex-spark", ("gpt-5.3-codex", "gpt-5.2-codex")),
+    ("gpt-5.3-codex-spark", ("gpt-5.3-codex",)),
 ]
 
 
@@ -71,13 +94,47 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
+def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
+    """Best-effort extraction of ``chatgpt_account_id`` from the OAuth JWT.
+
+    The Codex backend requires the ``ChatGPT-Account-Id`` header for the
+    per-account catalog. Without it, ``GET /backend-api/codex/models``
+    returns ``{"models":[]}`` (HTTP 200) — which masquerades as "no
+    models available" and silently degrades the picker to the curated
+    fallback list. The request-side path in ``auxiliary_client.py``
+    already extracts the same claim; this mirrors that logic here so the
+    probe sees the same catalog the request path will actually use.
+
+    Returns ``None`` on any parse error — the probe then degrades
+    gracefully to the unauthenticated fallback list instead of crashing.
+    """
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        acct_id = (
+            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+            if isinstance(claims, dict)
+            else None
+        )
+        return acct_id if isinstance(acct_id, str) and acct_id else None
+    except Exception:
+        return None
+
+
 def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
+        headers = {"Authorization": f"Bearer {access_token}"}
+        acct_id = _extract_chatgpt_account_id(access_token)
+        if acct_id:
+            headers["ChatGPT-Account-Id"] = acct_id
         resp = httpx.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers=headers,
             timeout=10,
         )
         if resp.status_code != 200:

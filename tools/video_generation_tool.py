@@ -18,13 +18,11 @@ Generation.
 
 Unified surface
 ---------------
-One tool covers the common cases — text-to-video, image-to-video, video
-edit, video extend — with a compact schema:
+One tool covers the common cases - text-to-video, image-to-video, and
+reference-to-video - with a compact schema:
 
-    prompt                   text instruction (required for generate/edit)
-    operation                "generate" | "edit" | "extend"
-    image_url                drives image-to-video when operation=generate
-    video_url                source video for edit/extend
+    prompt                   text instruction (required)
+    image_url                drives image-to-video
     reference_image_urls     list, up to provider-declared cap
     duration                 seconds (provider clamps)
     aspect_ratio             "16:9" | "9:16" | "1:1" | ...
@@ -38,6 +36,9 @@ Providers ignore parameters they do not support. The tool layer does
 **lightweight** validation (type/required-prompt) and lets each provider
 do its own clamping inside :meth:`VideoGenProvider.generate` — that keeps
 the tool surface stable as new providers ship with different capabilities.
+
+Video edit and video extend are intentionally not exposed here; providers with
+those workflows should expose separate tools.
 """
 
 from __future__ import annotations
@@ -80,21 +81,20 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
             "image_url": {
                 "type": "string",
                 "description": (
-                    "Optional public URL of a still image. When provided, "
+                    "Optional public HTTPS URL of a still image. When provided, "
                     "the active backend routes to its image-to-video "
                     "endpoint (animate the image); when omitted, it routes "
-                    "to text-to-video. Pass either a URL the user supplied "
-                    "or a path/URL from the conversation."
+                    "to text-to-video. For xAI chaining, use the `image` or "
+                    "`public_url` HTTPS URL from a prior Imagine result."
                 ),
             },
             "reference_image_urls": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional list of reference image URLs (style or "
-                    "character refs). Only supported by some backends; "
-                    "the active backend's description below indicates whether "
-                    "this is honored and what the max is."
+                    "Optional list of public HTTPS reference image URLs "
+                    "(style or character refs). For xAI chaining, use "
+                    "`image` or `public_url` from prior Imagine results."
                 ),
             },
             "duration": {
@@ -324,6 +324,11 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # endpoint but our surface always needs a prompt.
     if not prompt:
         return tool_error("prompt is required for video generation")
+    if "operation" in args or "video_url" in args:
+        return tool_error(
+            "video_generate only supports text-to-video, image-to-video, and "
+            "reference-to-video; use a provider-specific tool for video edit/extend"
+        )
 
     # Resolve the active provider.
     configured = _read_configured_video_provider()
@@ -336,6 +341,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     kwargs: Dict[str, Any] = {
         "model": model,
+        "_model_override_explicit": bool(model_override),
         "image_url": image_url,
         "reference_image_urls": reference_image_urls,
         "duration": duration,
@@ -397,13 +403,13 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 # Dynamic schema — reflect the active backend's actual capabilities
 # ---------------------------------------------------------------------------
 #
-# Why dynamic: the user's configured backend determines which operations
-# (generate/edit/extend), modalities (text / image / refs), aspect ratios,
-# resolutions, durations, and audio/negative-prompt flags are real. A model
-# that calls video_generate without knowing the active backend wastes a
-# turn on something like "fal-ai/veo3.1/image-to-video requires image_url".
-# Surfacing the per-model surface in the description means the model
-# usually gets the call right on the first try.
+# Why dynamic: the user's configured backend determines which modalities
+# (text / image / refs), aspect ratios, resolutions, durations, and
+# audio/negative-prompt flags are real. A model that calls video_generate
+# without knowing the active backend wastes a turn on something like
+# "fal-ai/veo3.1/image-to-video requires image_url". Surfacing the per-model
+# surface in the description means the model usually gets the call right on
+# the first try.
 #
 # Memoization: model_tools.get_tool_definitions() keys its cache on
 # config.yaml mtime, so when the user changes provider/model via
@@ -411,16 +417,19 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
 
 _GENERIC_DESCRIPTION = (
-    "Generate a video from a text prompt (text-to-video) or animate a "
-    "still image (image-to-video) using the user's configured video "
-    "generation backend. Pass `image_url` to animate that image; omit it "
-    "to generate from text alone. The backend auto-routes to the right "
-    "endpoint. The backend and model family are user-configured via "
+    "Generate a video from a text prompt (text-to-video), animate a "
+    "still image (image-to-video), or guide generation with reference images. "
+    "Pass `image_url` to animate an image or `reference_image_urls` for "
+    "reference-to-video. Video edit/extend workflows are not part of this "
+    "unified surface; use a dedicated provider-specific tool when one is "
+    "available. The backend and model family are user-configured via "
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
-    "the call blocks until the video is ready. Returns either an HTTP "
-    "URL or an absolute file path in the `video` field; display it with "
-    "markdown ![description](url-or-path) and the gateway will deliver it."
+    "the call blocks until the video is ready. Returns the result in the "
+    "`video` field — either an HTTP URL or an absolute file path. To show "
+    "it to the user, reference that path/URL in your response using the "
+    "file-delivery convention for the current platform (your platform "
+    "guidance describes how files are delivered here)."
 )
 
 
@@ -463,29 +472,19 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     """
     parts: List[str] = [_GENERIC_DESCRIPTION]
 
-    configured = _read_configured_video_provider()
     configured_model = _read_configured_video_model()
 
-    if not configured:
-        parts.append(
-            "\nNo video backend is configured. Calls will return an error "
-            "until the user picks one via `hermes tools` → Video Generation."
-        )
-        return {"description": "\n".join(parts)}
-
-    try:
-        from agent.video_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_provider(configured)
-    except Exception:
-        provider = None
+    # Reflect the *resolved* active provider (same resolution the handler uses
+    # in _resolve_active_provider): an explicit ``video_gen.provider``, or —
+    # when unset — the single available registered backend. Keeping the
+    # description in sync with execution stops the agent from being told
+    # "no backend configured" while a call would actually succeed.
+    provider = _resolve_active_provider()
 
     if provider is None:
         parts.append(
-            f"\nActive backend: {configured} (plugin not yet loaded — the "
-            f"tool will retry discovery on first call)."
+            "\nNo video backend is available. Calls will return an error "
+            "until the user picks one via `hermes tools` → Video Generation."
         )
         return {"description": "\n".join(parts)}
 
@@ -539,6 +538,21 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     max_refs = caps.get("max_reference_images") or 0
     if max_refs:
         parts.append(f"- reference_image_urls: up to {max_refs} images")
+    if provider.name == "xai":
+        parts.append(
+            "- chaining: for edit/extend pass the public HTTPS MP4 in `video` "
+            "or `public_url` from the prior Imagine result (files-cdn). For "
+            "image-to-video / reference-to-video pass public image URLs the "
+            "same way"
+        )
+        try:
+            from tools.xai_http import xai_storage_notice_text
+
+            notice = xai_storage_notice_text("video_gen")
+        except Exception:
+            notice = ""
+        if notice:
+            parts.append(f"- storage: {notice}")
 
     return {"description": "\n".join(parts)}
 

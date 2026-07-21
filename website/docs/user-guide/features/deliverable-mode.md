@@ -22,9 +22,10 @@ file natively.
 Three pieces fit together:
 
 1. **The agent has tools that produce files.** `execute_code` for charts via
-   matplotlib, the `latex-pdf-report` skill for PDFs, the `powerpoint` skill
-   for decks, `image_generate` for images, `text_to_speech` for audio, and so
-   on.
+   matplotlib, the `docx` skill for Word documents, the `xlsx` skill for
+   spreadsheets, the `pdf` and `latex-pdf-report` skills for PDFs, the
+   `powerpoint` skill for decks, `image_generate` for images,
+   `text_to_speech` for audio, and so on.
 
 2. **The gateway scans agent responses for file paths.** Any absolute path
    (`/tmp/...`) or home-relative path (`~/...`) ending in a supported
@@ -63,8 +64,10 @@ personality entry that biases toward artifact-style replies on
 messaging platforms.
 
 **Project-level:** add the bias to `AGENTS.md` / `CLAUDE.md` /
-`.cursorrules` in a project the agent works from, or to your global
-custom instructions in `~/.hermes/config.yaml` under `agent.custom_instructions`.
+`.cursorrules` in a project the agent works from, to your global
+persona in `~/.hermes/SOUL.md`, or as a named preset under
+`agent.personalities` in `~/.hermes/config.yaml` (switchable per session
+via `/personality`).
 
 The mechanic the agent has to use is simple: render the file to an
 absolute path (e.g. `/tmp/q3-revenue.png`) and mention that path as

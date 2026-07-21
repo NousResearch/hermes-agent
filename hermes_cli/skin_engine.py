@@ -69,6 +69,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ⚕"              # Shown on exit
       response_label: " ⚕ Hermes "       # Response box header label
+      status_prefix: "⚕ "                # Status bar prefix before model name
       prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
 
@@ -191,6 +192,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
+            "status_prefix": "⚕ ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
@@ -243,6 +245,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Ares Agent! Type your message or /help for commands.",
             "goodbye": "Farewell, warrior! ⚔",
             "response_label": " ⚔ Ares ",
+            "status_prefix": "⚔ ",
             "prompt_symbol": "⚔",
             "help_header": "(⚔) Available Commands",
         },
@@ -302,6 +305,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
+            "status_prefix": "⚕ ",
             "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
@@ -341,6 +345,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
+            "status_prefix": "⚕ ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
@@ -378,6 +383,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
+            "status_prefix": "⚕ ",
             "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
@@ -415,6 +421,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! \u2695",
             "response_label": " \u2695 Hermes ",
+            "status_prefix": "\u2695 ",
             "prompt_symbol": "\u276f",
             "help_header": "(^_^)? Available Commands",
         },
@@ -468,6 +475,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Poseidon Agent! Type your message or /help for commands.",
             "goodbye": "Fair winds! Ψ",
             "response_label": " Ψ Poseidon ",
+            "status_prefix": "Ψ ",
             "prompt_symbol": "Ψ",
             "help_header": "(Ψ) Available Commands",
         },
@@ -540,6 +548,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Sisyphus Agent! Type your message or /help for commands.",
             "goodbye": "The boulder waits. ◉",
             "response_label": " ◉ Sisyphus ",
+            "status_prefix": "◉ ",
             "prompt_symbol": "◉",
             "help_header": "(◉) Available Commands",
         },
@@ -618,6 +627,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Charizard Agent! Type your message or /help for commands.",
             "goodbye": "Flame out! ✦",
             "response_label": " ✦ Charizard ",
+            "status_prefix": "✦ ",
             "prompt_symbol": "✦",
             "help_header": "(✦) Available Commands",
         },
@@ -823,6 +833,28 @@ def get_active_prompt_symbol(fallback: str = "❯") -> str:
 
     return f"{cleaned or fallback.strip()} "
 
+
+
+def get_active_status_prefix(fallback: str = "⚕ ") -> str:
+    """Return the status bar prefix with a guaranteed trailing space.
+
+    Skins store ``status_prefix`` with a trailing space by convention
+    (e.g. ``⚕ ``, ``✦ ``, ``⚔ ``).  This helper guarantees the trailing
+    space is always present so callers—such as
+    :meth:`_build_status_bar_text`, :meth:`_get_status_bar_fragments`,
+    and :meth:`_get_tui_prompt_fragments`—can compose the prefix into
+    rendered text or fragments without hand-rolling whitespace.
+
+    For the agent-running prompt icon (which already adds its own
+    spacing), strip the result: ``get_active_status_prefix().rstrip()``.
+    """
+    try:
+        raw = get_active_skin().get_branding("status_prefix", fallback)
+    except Exception:
+        raw = fallback
+    if not raw or not raw.strip():
+        return fallback
+    return f"{raw.rstrip()} "
 
 
 def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:

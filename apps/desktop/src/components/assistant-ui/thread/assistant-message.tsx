@@ -63,6 +63,20 @@ export const AssistantMessage: FC<{
   // StreamStallIndicator leaf — not the footer/preview/root subtree.
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isRunning = messageStatus === 'running'
+
+  // The stall/compaction indicator reflects SESSION-global state, so mounting
+  // one per running bubble renders one identical row per bubble. A reconnect or
+  // a queued prompt can leave earlier assistant bubbles marked running
+  // (#68634), so the indicator is gated on being the tail message — exactly one
+  // indicator, always at the live end of the thread. Deliberately NOT folded
+  // into `isRunning`: that also drives the enter animation and data-streaming,
+  // which stay per-message. Mirrors the latest-user lookup in user-message.tsx.
+  const isTailMessage = useAuiState(s => {
+    const messages = s.thread.messages
+
+    return messages.length === 0 || (messages[messages.length - 1] as { id?: string }).id === s.message.id
+  })
+
   const isPlaceholder = useAuiState(s => s.message.status?.type === 'running' && s.message.content.length === 0)
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
 
@@ -103,7 +117,7 @@ export const AssistantMessage: FC<{
       >
         {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {isRunning && <StreamStallIndicator />}
+        {isRunning && isTailMessage && <StreamStallIndicator />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (

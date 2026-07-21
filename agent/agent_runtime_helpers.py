@@ -1003,6 +1003,7 @@ def recover_with_credential_pool(
                 or "gousagelimit" in context_reason
                 or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
+                or "session usage limit" in context_message
             )
         if not has_retried_429 and not usage_limit_reached:
             return False, True

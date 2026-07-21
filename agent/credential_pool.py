@@ -345,6 +345,13 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
     if min_only_match:
         return int(min_only_match.group(1)) * 60
+    # Ollama Cloud "session usage limit" — resets every 5 hours, but the
+    # reset window started before we hit the limit, so the actual remaining
+    # time is unknown. Use a short TTL: if the primary is still limited, the
+    # 429 fires again and we rotate back to the fallback — one wasted request.
+    # If the limit has cleared, we reclaim the primary immediately.
+    if "session usage limit" in message.lower():
+        return 30 * 60
     return None
 
 

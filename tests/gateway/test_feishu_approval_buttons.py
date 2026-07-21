@@ -414,6 +414,23 @@ class TestResolveApproval:
 class TestNonApprovalCardAction:
     """Non-approval card actions should still route as synthetic commands."""
 
+    @pytest.mark.parametrize(
+        ("chat_type", "event_chat_type", "expected"),
+        [
+            ("dm", "", "dm"),
+            ("dm", "group", "group"),
+            ("group", "group", "group"),
+            ("forum", "group", "forum"),
+        ],
+    )
+    def test_resolves_chat_type_from_chat_info(
+        self, chat_type, event_chat_type, expected
+    ):
+        assert FeishuAdapter._resolve_source_chat_type(
+            chat_info={"type": chat_type},
+            event_chat_type=event_chat_type,
+        ) == expected
+
     @pytest.mark.asyncio
     async def test_routes_as_synthetic_command(self):
         adapter = _make_adapter()
@@ -428,7 +445,12 @@ class TestNonApprovalCardAction:
                 adapter, "_resolve_sender_profile", new_callable=AsyncMock,
                 return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
             ),
-            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(
+                adapter,
+                "get_chat_info",
+                new_callable=AsyncMock,
+                return_value={"name": "Direct Chat", "type": "dm"},
+            ),
             patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
         ):
             await adapter._handle_card_action_event(data)
@@ -436,6 +458,7 @@ class TestNonApprovalCardAction:
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
+        assert event.source.chat_type == "dm"
 
 
 # ===========================================================================

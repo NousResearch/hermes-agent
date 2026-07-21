@@ -1,6 +1,7 @@
 """Tests for the Command Installation check in hermes doctor."""
 
 import sys
+import sysconfig
 import types
 from argparse import Namespace
 from pathlib import Path
@@ -167,6 +168,8 @@ class TestDoctorCommandInstallation:
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(sys, "prefix", str(tmp_path / "system-python"))
+        monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "system-python"))
 
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: ([], []),
@@ -188,6 +191,84 @@ class TestDoctorCommandInstallation:
         out = _run_doctor(fix=False)
         assert "Command Installation" in out
         assert "Venv entry point not found" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    @pytest.mark.parametrize("fix", [False, True])
+    def test_wheel_virtualenv_entry_point_needs_no_global_symlink(
+        self, monkeypatch, tmp_path, fix
+    ):
+        """A wheel venv is healthy without a global command symlink."""
+        _setup_doctor_env(monkeypatch, tmp_path)
+        venv = tmp_path / "wheel-venv"
+        scripts = venv / "bin"
+        scripts.mkdir(parents=True)
+        hermes_bin = scripts / "hermes"
+        hermes_bin.write_text("#!/usr/bin/env python\n# wheel entry point\n")
+        hermes_bin.chmod(0o755)
+
+        site_packages = venv / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", site_packages)
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base-python"))
+        real_get_path = sysconfig.get_path
+        monkeypatch.setattr(
+            sysconfig,
+            "get_path",
+            lambda name, *args, **kwargs: (
+                str(scripts)
+                if name == "scripts"
+                else real_get_path(name, *args, **kwargs)
+            ),
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out = _run_doctor(fix=fix)
+
+        assert "Venv entry point exists" in out
+        assert str(hermes_bin) in out
+        assert "Venv entry point not found" not in out
+        assert "Active environment entry point needs no global symlink" in out
+        assert "~/.local/bin/hermes not found" not in out
+        assert "Missing ~/.local/bin/hermes symlink" not in out
+        command_link = tmp_path / ".local" / "bin" / "hermes"
+        assert not command_link.exists()
+        assert not command_link.is_symlink()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_wheel_virtualenv_missing_entry_point_avoids_editable_fix(
+        self, monkeypatch, tmp_path
+    ):
+        """Wheel installs must not be repaired as source checkouts."""
+        _setup_doctor_env(monkeypatch, tmp_path)
+        venv = tmp_path / "wheel-venv"
+        scripts = venv / "bin"
+        scripts.mkdir(parents=True)
+        site_packages = venv / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", site_packages)
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base-python"))
+        monkeypatch.setattr(sys, "executable", str(scripts / "python"))
+        real_get_path = sysconfig.get_path
+        monkeypatch.setattr(
+            sysconfig,
+            "get_path",
+            lambda name, *args, **kwargs: (
+                str(scripts)
+                if name == "scripts"
+                else real_get_path(name, *args, **kwargs)
+            ),
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out = _run_doctor(fix=True)
+
+        assert "Venv entry point not found" in out
+        assert "pip install -e" not in out
+        assert "-m pip install --force-reinstall hermes-agent" in out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_dot_venv_dir_is_found(self, monkeypatch, tmp_path):

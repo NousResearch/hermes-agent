@@ -6,6 +6,7 @@ Diagnoses issues with Hermes Agent setup.
 
 import os
 import sys
+import sysconfig
 import subprocess
 import shutil
 from pathlib import Path
@@ -1492,11 +1493,34 @@ def run_doctor(args):
         _section("Command Installation")
         # Determine the venv entry point location
         _venv_bin = None
+        _uses_environment_entry_point = False
         for _venv_name in ("venv", ".venv"):
             _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
             if _candidate.exists():
                 _venv_bin = _candidate
                 break
+
+        # A wheel-installed virtualenv keeps the console script under the
+        # environment's scripts directory while PROJECT_ROOT points inside
+        # site-packages.  The source-checkout candidates above cannot describe
+        # that layout, so consult Python's platform-aware install scheme before
+        # reporting a missing entry point (#49529).
+        _active_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+        _environment_scripts_dir = None
+        if _active_venv:
+            try:
+                _scripts_path = sysconfig.get_path("scripts")
+                if _scripts_path:
+                    _environment_scripts_dir = Path(_scripts_path)
+            except (KeyError, TypeError, ValueError):
+                pass
+        if _venv_bin is None and _environment_scripts_dir is not None:
+            _candidate = _environment_scripts_dir / "hermes"
+            if _candidate.exists():
+                _venv_bin = _candidate
+                _uses_environment_entry_point = True
+
+        _source_checkout = (PROJECT_ROOT / "pyproject.toml").is_file()
 
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
@@ -1510,18 +1534,38 @@ def run_doctor(args):
         _cmd_link = _cmd_link_dir / "hermes"
 
         if _venv_bin is None:
-            check_warn(
-                "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
-            )
-            manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
-            )
+            if _active_venv and not _source_checkout:
+                _expected_dir = _environment_scripts_dir or Path(sys.prefix) / "bin"
+                _reinstall_cmd = (
+                    f"{sys.executable} -m pip install --force-reinstall hermes-agent"
+                )
+                check_warn(
+                    "Venv entry point not found",
+                    f"(hermes not in {_expected_dir} — reinstall with {_reinstall_cmd})",
+                )
+                manual_issues.append(f"Reinstall entry point: {_reinstall_cmd}")
+            else:
+                check_warn(
+                    "Venv entry point not found",
+                    "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+                )
+                manual_issues.append(
+                    f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+                )
         else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+            try:
+                _venv_bin_display = _venv_bin.relative_to(PROJECT_ROOT)
+            except ValueError:
+                _venv_bin_display = _venv_bin
+            check_ok(f"Venv entry point exists ({_venv_bin_display})")
 
-            # Check the symlink at the command link location
-            if _cmd_link.is_symlink():
+            # A wheel's console script is already installed in the active
+            # environment.  Requiring a second global link would turn a
+            # healthy isolated venv into a false failure and make --fix leak
+            # that environment into the user's global command path.
+            if _uses_environment_entry_point and not _source_checkout:
+                check_ok("Active environment entry point needs no global symlink")
+            elif _cmd_link.is_symlink():
                 _target = _cmd_link.resolve()
                 _expected = _venv_bin.resolve()
                 if _target == _expected:

@@ -2649,6 +2649,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+# Keys the gateway splats onto message dicts purely for local
+# transcript/session-store bookkeeping (``gateway/run.py``). They are not part
+# of the OpenAI-compatible chat schema and ride along on session resume/history
+# reload, so strict providers (e.g. GLM-5.2) reject them with HTTP 400 "Extra
+# inputs are not permitted, field: 'messages[N].timestamp'" (#68077). ``message_id``
+# has no meaning in the API schema and this codebase's tool dedup is keyed on
+# ``tool_call_id``, not ``message_id``, so dropping both here is safe.
+_GATEWAY_ONLY_MESSAGE_KEYS = frozenset({"timestamp", "message_id"})
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2844,6 +2854,27 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # --- Strip gateway-only bookkeeping keys (timestamp/message_id) ---
+    # These are attached to message dicts for local transcript/session-store
+    # bookkeeping and are not valid OpenAI-compatible schema fields; strict
+    # providers 400 on them (#68077). Rebuild new dicts rather than editing in
+    # place so persisted session/transcript objects (and prompt-cache
+    # byte-stability) stay intact.
+    stripped = 0
+    cleaned: List[Dict[str, Any]] = []
+    for msg in messages:
+        if isinstance(msg, dict) and _GATEWAY_ONLY_MESSAGE_KEYS.intersection(msg):
+            msg = {k: v for k, v in msg.items() if k not in _GATEWAY_ONLY_MESSAGE_KEYS}
+            stripped += 1
+        cleaned.append(msg)
+    if stripped:
+        messages = cleaned
+        _ra().logger.debug(
+            "Pre-call sanitizer: stripped gateway-only keys from %d message(s)",
+            stripped,
+        )
+
     return messages
 
 

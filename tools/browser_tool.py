@@ -3259,7 +3259,54 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         return result
 
     effective_task_id = _last_session_key(task_id or "default")
+    dy = _SCROLL_PIXELS if direction == "down" else -_SCROLL_PIXELS
 
+    # --- Smart JS scroll (primary path) ------------------------------------
+    # Uses a JS IIFE that handles both normal pages (window.scrollBy) and
+    # SPAs that lock body { overflow: hidden } and scroll a child container
+    # (e.g. LinkedIn's <main id="workspace">).  Tried first because it's
+    # more reliable than the native agent-browser scroll command which only
+    # calls window.scrollBy and silently does nothing on such SPAs.
+    smart_js = (
+        "(function(dy){"
+        "var before=window.scrollY;"
+        "window.scrollBy(0,dy);"
+        "if(window.scrollY!==before){return{scrolled:true,by:window.scrollY-before,container:'window'};}"
+        "var el=document.elementFromPoint(window.innerWidth/2,window.innerHeight/2);"
+        "while(el&&el!==document.body&&el!==document.documentElement){"
+        "var st=getComputedStyle(el),ov=st.overflow+' '+st.overflowY;"
+        "if((ov.indexOf('scroll')!==-1||ov.indexOf('auto')!==-1)&&el.scrollHeight>el.clientHeight){"
+        "var b2=el.scrollTop;"
+        "el.scrollTop+=dy;"
+        "if(el.scrollTop!==b2){return{scrolled:true,by:el.scrollTop-b2,container:el.tagName+(el.id?'#'+el.id:'')};}"
+        "}"
+        "el=el.parentElement;"
+        "}"
+        "var se=document.scrollingElement;"
+        "if(se&&se.scrollHeight>se.clientHeight){"
+        "var b3=se.scrollTop;"
+        "se.scrollTop+=dy;"
+        "if(se.scrollTop!==b3){return{scrolled:true,by:se.scrollTop-b3,container:'scrollingElement'};}"
+        "}"
+        "return{scrolled:false,by:0,container:'none'};"
+        "})(" + str(dy) + ")"
+    )
+    try:
+        js_raw = _browser_eval(smart_js, task_id)
+        js_data = json.loads(js_raw)
+        js_result = js_data.get("result", {})
+        if isinstance(js_result, dict) and js_result.get("scrolled"):
+            response: Dict[str, Any] = {"success": True, "scrolled": direction}
+            if js_result.get("container") not in (None, "window"):
+                response["method"] = "container_fallback"
+                response["container"] = js_result["container"]
+            return json.dumps(response, ensure_ascii=False)
+    except Exception as exc:
+        logger.debug("browser_scroll: JS smart-scroll path failed (%s), falling back to native", exc)
+
+    # --- Native agent-browser fallback ------------------------------------
+    # Runs when JS threw an exception OR when JS reported scrolled=False
+    # (nothing moved — page already at boundary or non-scrollable container).
     result = _run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
     if not result.get("success"):
         response = {

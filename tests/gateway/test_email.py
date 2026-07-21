@@ -123,6 +123,26 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_simplelogin_reverse_alias_with_unsubscribe_is_not_automated(self):
+        from plugins.platforms.email.adapter import _is_automated_sender
+
+        self.assertFalse(
+            _is_automated_sender(
+                "sender_at_example_com_random@simplelogin.co",
+                {"List-Unsubscribe": "<mailto:unsubscribe@simplelogin.co>"},
+            )
+        )
+
+    def test_regular_list_unsubscribe_is_automated(self):
+        from plugins.platforms.email.adapter import _is_automated_sender
+
+        self.assertTrue(
+            _is_automated_sender(
+                "newsletter@example.com",
+                {"List-Unsubscribe": "<mailto:unsubscribe@example.com>"},
+            )
+        )
+
     def test_strip_html_basic(self):
         from plugins.platforms.email.adapter import _strip_html
         html = "<p>Hello <b>world</b></p>"
@@ -648,6 +668,36 @@ class TestDispatchMessage(unittest.TestCase):
             asyncio.run(adapter._dispatch_message(msg_data))
             adapter._message_handler.assert_not_called()
             self.assertNotIn("admin@test.com", adapter._thread_context)
+
+    def test_unauthenticated_simplelogin_alias_rejected_when_allowlisted(self):
+        """The List-Unsubscribe compatibility exception must not bypass the
+        authenticated-sender gate for an allowlisted SimpleLogin alias."""
+        import asyncio
+        sender = "sender_at_example_com_random@simplelogin.co"
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": sender,
+            "EMAIL_ALLOW_ALL_USERS": "",
+            "GATEWAY_ALLOW_ALL_USERS": "",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+            msg_data = {
+                "uid": b"203",
+                "sender_addr": sender,
+                "sender_name": "Sender",
+                "subject": "Forwarded message",
+                "message_id": "<forwarded@example.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "authentication failed (dmarc=fail)",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            adapter._message_handler.assert_not_called()
+            self.assertNotIn(sender, adapter._thread_context)
 
     def test_unauthenticated_denied_without_allowlist_optin(self):
         """No allowlist, no allow-all → adapter fails closed regardless of From auth."""
@@ -1713,6 +1763,37 @@ class TestSenderAuthentication(unittest.TestCase):
             ["mx.google.com; dkim=pass header.d=example.com"],
         )
         self.assertTrue(ok, reason)
+
+    def test_fastmail_split_results_authenticate(self):
+        """Fastmail emits method-free and verdict headers separately under one
+        receiving host in its messagingengine.com namespace."""
+        ok, reason = self._verify(
+            "admin@simplelogin.co",
+            [
+                "phl-mx-05.messagingengine.com; x-ptr=pass smtp.helo=mail.simplelogin.co",
+                "phl-mx-05.messagingengine.com; bimi=none",
+                (
+                    "phl-mx-05.messagingengine.com; "
+                    "dkim=pass header.d=simplelogin.co; "
+                    "dmarc=pass header.from=simplelogin.co; "
+                    "spf=pass smtp.mailfrom=admin@simplelogin.co"
+                ),
+            ],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_method_free_top_header_does_not_trust_lower_same_authserv_pass(self):
+        """A method-free top result from an arbitrary server must not extend
+        trust to a forged lower result claiming the same authserv-id."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "mx.ourserver.com; bimi=none",
+                "mx.ourserver.com; dmarc=pass header.from=example.com",
+            ],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
 
     def test_spf_pass_misaligned_rejected(self):
         # SPF passes for the envelope domain, but it doesn't match From: domain.

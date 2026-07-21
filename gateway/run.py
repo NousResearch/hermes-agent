@@ -15128,6 +15128,90 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         future.add_done_callback(_log_rename_failure)
 
+    @staticmethod
+    def _is_matrix_dynamic_room_name_lane(source: SessionSource) -> bool:
+        """Return True for Matrix DMs eligible for opt-in dynamic room names."""
+        return bool(
+            source.platform == Platform.MATRIX
+            and source.chat_type == "dm"
+            and source.chat_id
+        )
+
+    async def _rename_matrix_room_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort Matrix room rename from a generated session title."""
+        if not self._is_matrix_dynamic_room_name_lane(source):
+            return
+        try:
+            current_entry = await self.async_session_store.get_or_create_session(source)
+        except Exception:
+            logger.debug(
+                "Could not validate current Matrix session before room rename",
+                exc_info=True,
+            )
+            return
+        if str(getattr(current_entry, "session_id", "")) != str(session_id):
+            return
+        adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        set_semantic_room_name = getattr(adapter, "set_semantic_room_name", None)
+        if not callable(set_semantic_room_name):
+            return
+        try:
+            result = set_semantic_room_name(str(source.chat_id), title)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug(
+                "Failed to rename Matrix room for generated session title",
+                exc_info=True,
+            )
+
+    def _schedule_matrix_semantic_room_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule Matrix room rename from the auto-title background thread."""
+        if not title or not self._is_matrix_dynamic_room_name_lane(source):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = safe_schedule_threadsafe(
+            self._rename_matrix_room_for_session_title(
+                copied_source,
+                session_id,
+                title,
+            ),
+            loop,
+            logger=logger,
+            log_message="Matrix semantic room rename failed to schedule",
+        )
+        if future is None:
+            return
+
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Matrix semantic room rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
     async def _rename_telegram_topic_for_session_title(
         self,
         source: SessionSource,
@@ -21192,6 +21276,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     elif self._is_discord_auto_thread_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_semantic_thread_rename(
+                            source,
+                            effective_session_id,
+                            title,
+                        )
+                    elif self._is_matrix_dynamic_room_name_lane(source):
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_matrix_semantic_room_rename(
                             source,
                             effective_session_id,
                             title,

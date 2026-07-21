@@ -3834,6 +3834,14 @@
   function WorkerLogSection(props) {
     const { t } = useI18n();
     const [state, setState] = useState({ loading: false, data: null, err: null });
+    const logRef = useRef(null);
+
+    const scrollToBottom = useCallback(function () {
+      if (logRef.current) {
+        logRef.current.scrollTop = logRef.current.scrollHeight;
+      }
+    }, []);
+
     const load = useCallback(function () {
       setState({ loading: true, data: null, err: null });
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=100000`, props.boardSlug))
@@ -3844,6 +3852,13 @@
     // Auto-load when the section mounts; the user opened the drawer so the
     // cost is one small HTTP round-trip.
     useEffect(function () { load(); }, [load]);
+
+    // Scroll to bottom whenever log data is freshly loaded (on open and on refresh).
+    useEffect(function () {
+      if (state.data && state.data.exists) {
+        scrollToBottom();
+      }
+    }, [state.data, scrollToBottom]);
 
     const data = state.data;
     let body;
@@ -3857,7 +3872,7 @@
         tx(t, "noWorkerLog",
           "— no worker log yet (task hasn't spawned or log was rotated away) —"));
     } else {
-      body = h("pre", { className: "hermes-kanban-pre hermes-kanban-log" },
+      body = h("pre", { ref: logRef, className: "hermes-kanban-pre hermes-kanban-log" },
         data.content || "(empty)");
     }
 

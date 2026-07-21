@@ -679,8 +679,39 @@ class TestPromptBuilderConstants:
 class TestEnvironmentHints:
 
 
+    def test_build_environment_hints_includes_local_hostname(self, monkeypatch):
+        """Local backend emits a Hostname line from platform.node()."""
+        import agent.prompt_builder as _pb
+        import platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(platform, "node", lambda: "testhost")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hostname: testhost" in result
 
+    def test_build_environment_hints_hostname_strips_fqdn(self, monkeypatch):
+        """The hostname hint should emit the short name, not the FQDN."""
+        import agent.prompt_builder as _pb
+        import platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(platform, "node", lambda: "myhost.example.com")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hostname: myhost" in result
+        assert "myhost.example.com" not in result
 
+    def test_build_environment_hints_hostname_empty_when_node_returns_empty(self, monkeypatch):
+        """An empty platform.node() should not emit a Hostname line."""
+        import agent.prompt_builder as _pb
+        import platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(platform, "node", lambda: "")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hostname:" not in result
 
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
         """Docker/remote backends must hide host info — the agent can only touch the backend."""
@@ -696,6 +727,7 @@ class TestEnvironmentHints:
         result = _pb.build_environment_hints()
         # Host suppression: none of the local-backend lines should appear.
         assert "Host: Windows" not in result
+        assert "Hostname:" not in result
         assert "User home directory:" not in result
         assert "PowerShell" not in result
         # Backend info must appear instead.

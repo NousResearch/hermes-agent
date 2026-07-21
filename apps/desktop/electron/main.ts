@@ -2754,6 +2754,16 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
+  // Reuse the applyUpdates() in-flight guard: if an update handoff is already
+  // running (or in the 2.5s quit-dwell window before app.quit() fires),
+  // spawning another hermes-setup.exe here would race the first one for the
+  // venv shim and reproduce the self-locking loop this function exists to
+  // heal. Bail out and let the in-flight update finish.
+  if (updateInFlight) {
+    rememberLog(`[recovery] deferred: another update is already in flight`)
+    return false
+  }
+
   const updater = resolveUpdaterBinary()
 
   if (!updater) {

@@ -196,12 +196,29 @@ class TestOllamaCloudMergedDiscovery:
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
-        # Live models first, then models.dev additions (deduped)
+        # Preferred Ollama Cloud families are pinned first, then live/models.dev
+        # ordering is preserved for the rest.
         assert result[0] == "qwen3.5:397b"  # from live API
         assert result[1] == "glm-5"          # from live API (also in models.dev)
         assert "kimi-k2.5" in result         # from models.dev only
         assert "nemotron-3-super" in result  # from models.dev only
         assert result.count("glm-5") == 1    # no duplicates
+
+    def test_prioritizes_owner_quick_access_models(self, tmp_path, monkeypatch):
+        """Qwen 3.5 and Gemma 4 stay at the top when present."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["glm-5", "gemma4:31b", "qwen3.5:397b", "kimi-k2.6"],
+        ), patch("agent.models_dev.fetch_models_dev", return_value={}):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result[:2] == ["qwen3.5:397b", "gemma4:31b"]
+        assert result[2:] == ["glm-5", "kimi-k2.6"]
 
     def test_falls_back_to_models_dev_without_api_key(self, tmp_path, monkeypatch):
         """Without API key, only models.dev results are returned."""

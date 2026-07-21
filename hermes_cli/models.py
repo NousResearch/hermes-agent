@@ -4069,6 +4069,10 @@ def fetch_api_models(
 
 
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
+_OLLAMA_CLOUD_PREFERRED_PREFIXES = (
+    "qwen3.5",
+    "gemma4",
+)
 
 
 def _strip_ollama_cloud_suffix(model_id: str) -> str:
@@ -4082,6 +4086,36 @@ def _strip_ollama_cloud_suffix(model_id: str) -> str:
         if model_id.endswith(suffix):
             return model_id[: -len(suffix)]
     return model_id
+
+
+def _prioritize_ollama_cloud_models(models: list[str]) -> list[str]:
+    """Keep owner-preferred Ollama Cloud families at the top when present.
+
+    The catalog itself remains live/dynamic; this only reorders IDs already
+    returned by Ollama Cloud/models.dev so every available model remains shown.
+    """
+    preferred: list[str] = []
+    remainder: list[str] = []
+    seen: set[str] = set()
+
+    for prefix in _OLLAMA_CLOUD_PREFERRED_PREFIXES:
+        prefix_l = prefix.lower()
+        for model_id in models:
+            mid = str(model_id or "").strip()
+            if not mid or mid in seen:
+                continue
+            if mid.lower().startswith(prefix_l):
+                seen.add(mid)
+                preferred.append(mid)
+
+    for model_id in models:
+        mid = str(model_id or "").strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        remainder.append(mid)
+
+    return preferred + remainder
 
 
 def _ollama_cloud_cache_path() -> Path:
@@ -4184,6 +4218,7 @@ def fetch_ollama_cloud_models(
                 seen.add(normalized)
                 merged.append(normalized)
         if merged:
+            merged = _prioritize_ollama_cloud_models(merged)
             _save_ollama_cloud_cache(merged)
             return merged
 

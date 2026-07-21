@@ -75,6 +75,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
+    CommandDef("prompts", "Browse previous prompts and load one for editing", "Session",
+               cli_only=True, args_hint="[number]"),
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),

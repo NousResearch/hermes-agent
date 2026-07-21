@@ -28,7 +28,7 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias, TypedDict, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -979,6 +979,27 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
     );
 END;
 """
+
+# Typed message row shapes for /prompts surfaces.
+# Keeps public SessionDB method signatures tied to explicit row shapes.
+MessageContent: TypeAlias = str | bytes | int | float | bool | None | list[object] | dict[str, object]
+
+
+class RecentUserMessage(TypedDict):
+    """Row returned by SessionDB.list_recent_user_messages()."""
+    id: int
+    timestamp: str | None
+    preview: str
+
+
+class UserMessage(TypedDict):
+    """Row returned by SessionDB.get_user_message()."""
+    id: int
+    session_id: str
+    role: str
+    content: MessageContent
+    timestamp: str | None
+    active: bool
 
 
 class SessionDB:
@@ -4153,7 +4174,7 @@ class SessionDB:
         self,
         session_id: str,
         role: str,
-        content: str = None,
+        content: MessageContent = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -5277,13 +5298,13 @@ class SessionDB:
         session_id: str,
         limit: int = 20,
         include_inactive: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RecentUserMessage]:
         """Return the *limit* most-recent user messages, newest first.
 
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
         ``preview`` is the first 80 characters of the message content
-        (with line breaks collapsed to spaces). Used by the /rewind
-        slash command picker.
+        (with line breaks collapsed to spaces). Used by the /undo and
+        /prompts slash commands.
 
         By default only active messages are returned.
         """
@@ -5298,7 +5319,7 @@ class SessionDB:
             )
             rows = cursor.fetchall()
 
-        result: List[Dict[str, Any]] = []
+        result: List[RecentUserMessage] = []
         for row in rows:
             decoded = self._decode_content(row["content"])
             if isinstance(decoded, list):
@@ -5325,6 +5346,41 @@ class SessionDB:
                 }
             )
         return result
+
+    def get_user_message(
+        self,
+        session_id: str,
+        message_id: int,
+        *,
+        active_only: bool = True,
+    ) -> Optional[UserMessage]:
+        """Return a single active user message by id, or ``None`` if not found.
+
+        Enforces session scoping (refuses rows from other sessions), role
+        filtering (user only), and active status. Used by /prompts selection
+        in both classic CLI and TUI to load the full text of a numbered prompt.
+        """
+        active_clause = " AND active = 1" if active_only else ""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, session_id, role, content, timestamp, active FROM messages "
+                "WHERE session_id = ? AND id = ? AND role = 'user'"
+                f"{active_clause}",
+                (session_id, int(message_id)),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "role": row["role"],
+            "content": self._decode_content(row["content"]),
+            "timestamp": row["timestamp"],
+            "active": bool(row["active"]),
+        }
 
     # =========================================================================
     # Search

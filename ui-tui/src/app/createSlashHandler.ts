@@ -35,6 +35,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
+    const commandTitle = parsed.name[0]!.toUpperCase() + parsed.name.slice(1)
+
+    const renderCommandOutput = (text: string): void => {
+      const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+      long ? page(text, commandTitle) : sys(text)
+    }
+
     const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, sid, stale, ui }
 
     const found = findSlashCommand(parsed.name)
@@ -81,7 +88,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         return sys('error: invalid response: command.dispatch')
       }
 
-      if (d.type === 'exec' || d.type === 'plugin') {
+      if (d.type === 'exec') {
+        return renderCommandOutput(d.output || '(no output)')
+      }
+
+      if (d.type === 'plugin') {
         return sys(d.output || '(no output)')
       }
 
@@ -129,9 +140,8 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
         const body = r?.output || `/${parsed.name}: no output`
         const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
-        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+        renderCommandOutput(text)
       })
       .catch(() => {
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })

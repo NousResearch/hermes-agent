@@ -364,12 +364,13 @@ function AutoReloadRow({
                   Threshold
                   <Input
                     aria-label="Auto-refill threshold"
-                    className="mt-1 h-8"
+                    className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
                     max={maxBound}
                     min={minBound}
                     onChange={onField(setThreshold)}
+                    size="sm"
                     step="0.01"
                     tabIndex={editing ? undefined : -1}
                     type="number"
@@ -380,12 +381,13 @@ function AutoReloadRow({
                   Reload to
                   <Input
                     aria-label="Auto-refill reload-to amount"
-                    className="mt-1 h-8"
+                    className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
                     max={maxBound}
                     min={minBound}
                     onChange={onField(setReloadTo)}
+                    size="sm"
                     step="0.01"
                     tabIndex={editing ? undefined : -1}
                     type="number"
@@ -499,7 +501,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
           ))}
           <Input
             aria-label="Custom credit amount"
-            className="h-8 w-24"
+            className="w-24 py-[3px]"
             disabled={controlsDisabled}
             inputMode="decimal"
             max={billing.max_usd ?? undefined}
@@ -510,6 +512,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
               setAmount(event.target.value)
             }}
             placeholder={billing.min_usd ? formatMoney(billing.min_usd) : '$'}
+            size="sm"
             step="0.01"
             type="number"
             value={amount}

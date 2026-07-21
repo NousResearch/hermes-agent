@@ -30,3 +30,38 @@ $completionSoundVariantId.subscribe(id => persistString(STORAGE_KEY, String(id))
 export function setCompletionSoundVariantId(variantId: number) {
   $completionSoundVariantId.set(resolveCompletionSoundVariantId(variantId))
 }
+
+// ── Volume ───────────────────────────────────────────────────────────────────
+
+const VOLUME_STORAGE_KEY = 'hermes.desktop.completionSoundVolume'
+
+/** Default matches the current hardcoded master gain of 0.48 for back-compat. */
+export const DEFAULT_COMPLETION_SOUND_VOLUME = 0.48
+
+/** Clamp to [0, 3] so invalid persisted values never produce silence or clipping. */
+const VOLUME_MIN = 0
+const VOLUME_MAX = 3
+
+export function resolveCompletionSoundVolume(raw: number): number {
+  return raw >= VOLUME_MIN && raw <= VOLUME_MAX ? raw : DEFAULT_COMPLETION_SOUND_VOLUME
+}
+
+function loadVolume(): number {
+  const stored = storedString(VOLUME_STORAGE_KEY)
+
+  if (stored === null) {
+    return DEFAULT_COMPLETION_SOUND_VOLUME
+  }
+
+  const parsed = Number.parseFloat(stored)
+
+  return Number.isFinite(parsed) ? resolveCompletionSoundVolume(parsed) : DEFAULT_COMPLETION_SOUND_VOLUME
+}
+
+export const $completionSoundVolume = atom(loadVolume())
+
+$completionSoundVolume.subscribe(v => persistString(VOLUME_STORAGE_KEY, String(v)))
+
+export function setCompletionSoundVolume(volume: number) {
+  $completionSoundVolume.set(resolveCompletionSoundVolume(volume))
+}

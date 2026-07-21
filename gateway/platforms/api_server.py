@@ -2014,6 +2014,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        jobs_admin = bool(_CRON_AVAILABLE)
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -2049,7 +2051,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat_streaming": True,
                 "session_fork": True,
                 "admin_config_rw": False,
-                "jobs_admin": False,
+                "jobs_admin": jobs_admin,
                 "memory_write_api": False,
                 "skills_api": True,
                 "audio_api": False,
@@ -2080,6 +2082,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                **(
+                    {
+                        "jobs": {"method": "GET", "path": "/api/jobs"},
+                        "job_create": {"method": "POST", "path": "/api/jobs"},
+                        "job": {"method": "GET", "path": "/api/jobs/{job_id}"},
+                        "job_update": {"method": "PATCH", "path": "/api/jobs/{job_id}"},
+                        "job_delete": {"method": "DELETE", "path": "/api/jobs/{job_id}"},
+                        "job_pause": {"method": "POST", "path": "/api/jobs/{job_id}/pause"},
+                        "job_resume": {"method": "POST", "path": "/api/jobs/{job_id}/resume"},
+                        "job_run": {"method": "POST", "path": "/api/jobs/{job_id}/run"},
+                    }
+                    if jobs_admin
+                    else {}
+                ),
             },
         })
 

@@ -1048,6 +1048,36 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 
     @pytest.mark.asyncio
+    async def test_capabilities_advertises_jobs_admin_when_cron_available(self, adapter):
+        with patch("gateway.platforms.api_server._CRON_AVAILABLE", True):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/capabilities")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["features"]["jobs_admin"] is True
+        assert data["endpoints"]["jobs"] == {"method": "GET", "path": "/api/jobs"}
+        assert data["endpoints"]["job_create"] == {"method": "POST", "path": "/api/jobs"}
+        assert data["endpoints"]["job_run"] == {
+            "method": "POST",
+            "path": "/api/jobs/{job_id}/run",
+        }
+
+    @pytest.mark.asyncio
+    async def test_capabilities_omits_jobs_admin_when_cron_unavailable(self, adapter):
+        with patch("gateway.platforms.api_server._CRON_AVAILABLE", False):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/capabilities")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["features"]["jobs_admin"] is False
+        assert "jobs" not in data["endpoints"]
+        assert "job_create" not in data["endpoints"]
+
+    @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

@@ -75,7 +75,7 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
-    @pytest.mark.parametrize("effort, wire_effort", [("max", "max"), ("ultra", "max")])
+    @pytest.mark.parametrize("effort, wire_effort", [("max", "xhigh"), ("ultra", "xhigh")])
     def test_extended_reasoning_efforts_use_api_wire_value(self, transport, effort, wire_effort):
         kw = transport.build_kwargs(
             model="gpt-5.6-sol",
@@ -84,6 +84,16 @@ class TestCodexBuildKwargs:
             reasoning_config={"enabled": True, "effort": effort},
         )
         assert kw.get("reasoning", {}).get("effort") == wire_effort
+
+    def test_max_effort_clamped_for_non_56_codex_models(self, transport):
+        """Config effort=max must not reach Codex wire as max (HTTP 400)."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kw.get("reasoning", {}).get("effort") == "xhigh"
 
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

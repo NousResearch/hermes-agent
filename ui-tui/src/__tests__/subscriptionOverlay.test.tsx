@@ -414,7 +414,6 @@ describe('SubscriptionOverlay — picker', () => {
     expect(out).not.toContain('Plus · $20/mo') // current tier is not selectable
     expect(out).not.toContain('$0/mo') // free tier excluded — use Cancel instead
   })
-
 })
 
 describe('SubscriptionOverlay — confirm', () => {

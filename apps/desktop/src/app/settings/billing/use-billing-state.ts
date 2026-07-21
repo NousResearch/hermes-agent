@@ -41,6 +41,8 @@ export interface BillingRowActionView {
 export interface BillingChipView {
   disabled: boolean
   label: string
+  /** When set, clicking the chip opens this URL externally (portal handoff). */
+  url?: string
 }
 
 export interface BillingAccountRowView {
@@ -272,6 +274,39 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   }
 }
 
+/**
+ * The tier catalog as chips — the upsell lives where the user already is
+ * (mirrors the TUI's inline Free-plan rows). Only for accounts that can act
+ * (can_change_plan); the current plan is marked and inert, every other plan
+ * opens the portal, where the change/start actually happens.
+ */
+function subscriptionTierChips(
+  subscription: null | SubscriptionStateResponse,
+  manageUrl: string
+): BillingChipView[] | undefined {
+  // Teams have no personal subscription to sell into.
+  if (!subscription?.can_change_plan || subscription.context === 'team') {
+    return undefined
+  }
+
+  const tiers = (subscription.tiers ?? [])
+    .filter(tier => tier.is_enabled && tier.tier_order > 0)
+    .sort((a, b) => a.tier_order - b.tier_order)
+
+  if (tiers.length === 0) {
+    return undefined
+  }
+
+  return tiers.map(tier => {
+    // Monthly credits are dollars; NAS sends a bare decimal string.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+    const suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
+    const label = `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`
+
+    return tier.is_current ? { disabled: true, label: `✓ ${label}` } : { disabled: false, label, url: manageUrl }
+  })
+}
+
 function subscriptionRow(
   billing: BillingStateResponse,
   subscription: null | SubscriptionStateResponse,
@@ -283,13 +318,18 @@ function subscriptionRow(
   const value = current?.tier_name ?? fallbackPlan
   const renewal = formatBillingDate(current?.cycle_ends_at ?? billing.usage?.renews_at)
   const unavailable = subscriptionResult && !subscriptionResult.ok
+  const chips = subscriptionTierChips(subscription, manageUrl)
 
   return {
     action: { label: 'Adjust plan ↗', url: manageUrl },
     caption: unavailable
       ? 'Subscription details are unavailable; opening the portal is still available.'
       : `Renews ${renewal}`,
-    description: 'Review your plan and change it from the billing portal.',
+    chips,
+    description:
+      !current && chips
+        ? 'Paid models need a subscription — pick a plan to start it on the portal.'
+        : 'Review your plan and change it from the billing portal.',
     id: 'subscription',
     secondaryPill: 'opens portal',
     title: 'Subscription',

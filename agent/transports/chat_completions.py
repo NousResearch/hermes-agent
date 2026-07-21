@@ -309,6 +309,7 @@ class ChatCompletionsTransport(ProviderTransport):
             is_kimi: bool
             is_tokenhub: bool
             is_lmstudio: bool
+            is_deepseek: bool
             is_custom_provider: bool
             ollama_num_ctx: int | None
             # Provider routing
@@ -405,6 +406,25 @@ class ChatCompletionsTransport(ProviderTransport):
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
+        # DeepSeek V4: top-level reasoning_effort + extra_body.thinking
+        # DeepSeek maps low/medium/high → high, xhigh → max
+        is_deepseek = params.get("is_deepseek", False)
+        if is_deepseek:
+            _deepseek_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _deepseek_thinking_off:
+                _deepseek_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in {"low", "medium", "high"}:
+                        _deepseek_effort = "high"
+                    elif _e == "xhigh":
+                        _deepseek_effort = "max"
+                api_kwargs["reasoning_effort"] = _deepseek_effort
+
         # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
         if is_tokenhub:
             _tokenhub_thinking_off = bool(
@@ -468,6 +488,16 @@ class ChatCompletionsTransport(ProviderTransport):
                     _kimi_thinking_enabled = False
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
+            }
+
+        # DeepSeek extra_body.thinking
+        if is_deepseek:
+            _deepseek_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _deepseek_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _deepseek_thinking_enabled else "disabled",
             }
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,

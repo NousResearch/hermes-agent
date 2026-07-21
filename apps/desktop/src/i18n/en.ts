@@ -517,6 +517,8 @@ export const en: Translations = {
       builtinOnly: 'Built-in only',
       notSet: 'Not set',
       commaSeparated: 'comma-separated values',
+      searchPlaceholder: 'Search…',
+      noResults: 'No results found',
       loading: 'Loading Hermes configuration...',
       emptyTitle: 'Nothing to configure',
       emptyDesc: 'This section has no adjustable settings.',

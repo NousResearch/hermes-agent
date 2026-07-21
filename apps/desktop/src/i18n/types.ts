@@ -428,6 +428,8 @@ export interface Translations {
       builtinOnly: string
       notSet: string
       commaSeparated: string
+      searchPlaceholder: string
+      noResults: string
       loading: string
       emptyTitle: string
       emptyDesc: string

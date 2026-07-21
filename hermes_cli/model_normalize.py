@@ -130,10 +130,12 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 })
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
-    "deepseek-reasoner",   # R1-family reasoning model
-    "deepseek-v4-pro",     # V4 Pro — first-class model ID
-    "deepseek-v4-flash",   # V4 Flash — first-class model ID
+    "deepseek-chat",             # V3 on DeepSeek direct and most aggregators
+    "deepseek-reasoner",         # R1-family reasoning model
+    "deepseek-v4-pro",           # V4 Pro — first-class model ID
+    "deepseek-v4-pro[1m]",       # V4 Pro — 1M context window variant
+    "deepseek-v4-flash",         # V4 Flash — first-class model ID
+    "deepseek-v4-flash[1m]",     # V4 Flash — 1M context window variant
 })
 
 # First-class V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,

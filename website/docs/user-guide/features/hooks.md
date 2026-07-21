@@ -58,6 +58,13 @@ hooks:
     - old-experiment
 ```
 
+:::caution Existing hooks require an explicit migration
+After upgrading to a version with this policy, existing gateway hooks remain
+disabled until you add each trusted manifest name or directory name to
+`hooks.enabled` and restart the gateway. Hermes intentionally does not
+auto-enable Python code based only on its presence in the hooks directory.
+:::
+
 #### handler.py
 
 ```python

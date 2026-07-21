@@ -1,5 +1,8 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import os
+from pathlib import Path
+
 from unittest.mock import patch
 
 import pytest
@@ -41,6 +44,45 @@ def _patch_hook_policy(enabled=None, disabled=None):
 
 
 class TestDiscoverAndLoad:
+    def test_real_config_controls_handler_imports(self):
+        """Exercise the config file to loader boundary without policy mocks."""
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        hooks_dir = hermes_home / "hooks"
+        (hermes_home / "config.yaml").write_text(
+            "hooks:\n"
+            "  enabled:\n"
+            "    - safe-hook\n"
+            "    - blocked-*\n"
+            "  disabled:\n"
+            "    - blocked-hook\n",
+            encoding="utf-8",
+        )
+        _create_hook(
+            hooks_dir,
+            "safe-hook",
+            '["agent:start"]',
+            "def handle(event_type, context):\n    pass\n",
+        )
+        _create_hook(
+            hooks_dir,
+            "not-enabled-hook",
+            '["agent:start"]',
+            "raise AssertionError('handler imported without opt-in')\n",
+        )
+        _create_hook(
+            hooks_dir,
+            "blocked-hook",
+            '["agent:start"]',
+            "raise AssertionError('disabled handler imported')\n",
+        )
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", hooks_dir), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert [hook["name"] for hook in reg.loaded_hooks] == ["safe-hook"]
+        assert len(reg._handlers["agent:start"]) == 1
+
     def test_loads_valid_hook(self, tmp_path):
         _create_hook(tmp_path, "my-hook", '["agent:start"]',
                       "def handle(event_type, context):\n    pass\n")

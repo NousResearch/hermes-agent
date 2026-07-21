@@ -3842,12 +3842,48 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
-                    role = item.get("role", "user")
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": role, "content": content})
+                    # Responses API structured items: convert to OpenAI
+                    # chat-completions message format so the agent loop
+                    # can process them correctly.
+                    _item_type = item.get("type", "")
+                    if _item_type == "function_call_output":
+                        # Tool result → OpenAI "tool" role message
+                        _call_id = item.get("call_id", "")
+                        _output = item.get("output", "")
+                        # output may be a list of content parts or a plain string
+                        if isinstance(_output, list):
+                            _texts = [
+                                p.get("text", "") for p in _output
+                                if isinstance(p, dict) and p.get("type") == "input_text"
+                            ]
+                            _output = "\n".join(_texts) if _texts else str(_output)
+                        input_messages.append({
+                            "role": "tool",
+                            "tool_call_id": _call_id,
+                            "content": str(_output),
+                        })
+                    elif _item_type == "function_call":
+                        # Tool invocation → OpenAI assistant tool_calls message
+                        input_messages.append({
+                            "role": "assistant",
+                            "tool_calls": [{
+                                "id": item.get("call_id", item.get("id", "")),
+                                "type": "function",
+                                "function": {
+                                    "name": item.get("name", ""),
+                                    "arguments": item.get("arguments", "{}"),
+                                },
+                            }],
+                            "content": None,
+                        })
+                    else:
+                        # Standard message (type "message" or items without a type)
+                        role = item.get("role", "user")
+                        try:
+                            content = _normalize_multimodal_content(item.get("content", ""))
+                        except ValueError as exc:
+                            return _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                        input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
 

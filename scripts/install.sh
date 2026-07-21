@@ -902,9 +902,19 @@ install_node() {
 
     log_info "Extracting to ~/.hermes/node/..."
     if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        if ! tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"; then
+            log_warn "Extraction of .tar.xz failed; xz may not be installed"
+            rm -rf "$tmp_dir"
+            HAS_NODE=false
+            return 0
+        fi
     else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        if ! tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"; then
+            log_warn "Extraction of .tar.gz failed"
+            rm -rf "$tmp_dir"
+            HAS_NODE=false
+            return 0
+        fi
     fi
 
     local extracted_dir

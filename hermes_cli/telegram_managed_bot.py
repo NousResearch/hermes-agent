@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import select
 import sys
 import time
 import urllib.parse
@@ -79,12 +80,107 @@ def _parse_owner_user_id(value: object) -> int | None:
     return None
 
 
+def _detect_terminal_theme() -> str:
+    """Detect the terminal's background color theme (light or dark).
+
+    Uses OSC 11 escape sequence query to request the background color from
+    the terminal emulator (works in most modern terminals like iTerm2,
+    GNOME Terminal, xterm, etc.). Falls back to the ``COLORFGBG`` env var
+    (set by rxvt, Konsole, and some other terminals).
+
+    Returns:
+        ``'light'`` if the terminal appears to have a light background,
+        ``'dark'`` if it appears to have a dark background,
+        ``'unknown'`` if detection is not possible.
+    """
+    # --- OSC 11 query: request terminal background color ---
+    # Hardened probe with termios lifecycle, SSH exemption, and TCSAFLUSH cleanup.
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        if not any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
+            try:
+                import termios
+                import tty
+
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+            except Exception:
+                old = None
+            try:
+                if old is not None:
+                    try:
+                        tty.setcbreak(fd)
+                    except Exception:
+                        pass
+                try:
+                    sys.stdout.write("\x1b]11;?\x1b\\")
+                    sys.stdout.flush()
+                except Exception:
+                    return "unknown"
+                import select
+
+                deadline = time.monotonic() + 0.1
+                buf = b""
+                while time.monotonic() < deadline:
+                    r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
+                    if not r:
+                        continue
+                    try:
+                        chunk = os.read(fd, 64)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                    if b"\x1b\\" in buf or b"\x07" in buf:
+                        break
+                m = re.search(rb"rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", buf)
+                if m:
+
+                    def norm(h: bytes) -> int:
+                        v = int(h, 16)
+                        bits = len(h) * 4
+                        return (v * 255) // ((1 << bits) - 1) if bits else 0
+
+                    r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
+                    brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                    return "light" if brightness > 0.5 else "dark"
+            finally:
+                if old is not None:
+                    try:
+                        termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+                    except Exception:
+                        pass
+
+    # --- Fallback: COLORFGBG env var ---
+    cfgbg = (os.environ.get("COLORFGBG") or "").strip()
+    if cfgbg:
+        last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
+        if last.isdigit():
+            bg = int(last)
+            if bg in {7, 15}:
+                return "light"
+            if 0 <= bg < 16:
+                return "dark"
+
+    return "unknown"
+
+
 def render_qr_terminal(url: str) -> str:
-    """Render a URL as a QR code string suitable for terminal output."""
+    """Render a URL as a QR code string suitable for terminal output.
+
+    Automatically detects the terminal's background color theme (light/dark)
+    via OSC 11 query and selects the appropriate inversion for best contrast.
+    Falls back to light-terminal rendering when the theme cannot be detected.
+    """
     try:
         import io
 
         import qrcode  # type: ignore[import-untyped]
+
+        theme = _detect_terminal_theme()
+        # invert=True: dark blocks on light background (light terminals)
+        # invert=False: light blocks on dark background (dark terminals)
+        invert = theme != "dark"
 
         qr = qrcode.QRCode(
             version=None,
@@ -96,7 +192,7 @@ def render_qr_terminal(url: str) -> str:
         qr.make(fit=True)
 
         buf = io.StringIO()
-        qr.print_ascii(out=buf, invert=True)
+        qr.print_ascii(out=buf, invert=invert)
         return buf.getvalue()
     except ImportError:
         return ""

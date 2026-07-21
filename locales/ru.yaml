@@ -302,6 +302,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     agent_running:         "**Агент активен:** {state}"
     state_yes:             "Да ⚡"
     state_no:              "Нет"
+    state_pending:         "Starting up "
+    state_running_detail:  "Yes  ({detail})"
     queued:                "**Очередь продолжений:** {count}"
     platforms:             "**Подключённые платформы:** {platforms}"
 

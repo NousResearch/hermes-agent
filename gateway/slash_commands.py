@@ -523,7 +523,8 @@ class GatewaySlashCommandsMixin:
         # model/context display, but it still occupies the session slot.
         session_key = session_entry.session_key
         agent = self._running_agents.get(session_key)
-        is_running = agent is not None and agent is not _AGENT_PENDING_SENTINEL
+        is_pending = agent is _AGENT_PENDING_SENTINEL
+        is_running = agent is not None and not is_pending
 
         # Count pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
@@ -655,9 +656,31 @@ class GatewaySlashCommandsMixin:
             lines.append(model_line)
         if context_line:
             lines.append(context_line)
+
+        # Build agent-running state with optional progress detail.
+        # Pending sentinel is a separate state from live-agent running.
+        if is_pending:
+            agent_state = t("gateway.status.state_pending")
+        elif is_running and hasattr(agent, "get_activity_summary"):
+            try:
+                _sa = agent.get_activity_summary()
+                _iter = f"{_sa.get('api_call_count', '?')}/{_sa.get('max_iterations', '?')}"
+                _idle = f"{_sa.get('seconds_since_activity', 0):.0f}s"
+                _desc = _sa.get("last_activity_desc", "")
+                detail_parts = [f"iter {_iter}", f"idle {_idle}"]
+                if _desc:
+                    detail_parts.append(_desc)
+                agent_state = t("gateway.status.state_running_detail", detail=", ".join(detail_parts))
+            except Exception:
+                agent_state = t("gateway.status.state_yes")
+        elif is_running:
+            agent_state = t("gateway.status.state_yes")
+        else:
+            agent_state = t("gateway.status.state_no")
+
         lines.extend([
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
+            t("gateway.status.agent_running", state=agent_state),
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))

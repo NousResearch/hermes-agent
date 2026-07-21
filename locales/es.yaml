@@ -299,6 +299,8 @@ gateway:
     agent_running:         "**Agente activo:** {state}"
     state_yes:             "Sí ⚡"
     state_no:              "No"
+    state_pending:         "Starting up "
+    state_running_detail:  "Yes  ({detail})"
     queued:                "**Seguimientos en cola:** {count}"
     platforms:             "**Plataformas conectadas:** {platforms}"
 

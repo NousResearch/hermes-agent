@@ -302,6 +302,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     agent_running:         "**에이전트 실행 중:** {state}"
     state_yes:             "예 ⚡"
     state_no:              "아니오"
+    state_pending:         "Starting up "
+    state_running_detail:  "Yes  ({detail})"
     queued:                "**대기 중인 후속 작업:** {count}"
     platforms:             "**연결된 플랫폼:** {platforms}"
 

@@ -821,3 +821,112 @@ async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
     assert fired == []
     assert session_key in adapter._post_delivery_callbacks
     assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
+# ---------------------------------------------------------------------------
+# Running agent detail in /status
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_status_shows_iteration_progress_when_agent_running():
+    """/status includes iteration count and idle time when agent is active."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = None
+
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {
+        "api_call_count": 3,
+        "max_iterations": 50,
+        "seconds_since_activity": 2.5,
+        "last_activity_desc": "calling web_search",
+    }
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "iter 3/50" in result
+    assert "idle 2s" in result or "idle 3s" in result
+    assert "web_search" in result
+
+
+@pytest.mark.asyncio
+async def test_status_shows_startup_when_agent_pending():
+    """/status shows 'Starting up' when agent is the pending sentinel."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = None
+    runner._running_agents[build_session_key(_make_source())] = _AGENT_PENDING_SENTINEL
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    # Should show the pending state, not "Yes" or "No"
+    assert "Agent Running:** Starting up" in result
+
+
+@pytest.mark.asyncio
+async def test_status_no_detail_when_no_activity_summary():
+    """/status gracefully omits detail when agent lacks get_activity_summary."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = None
+
+    running_agent = MagicMock(spec=[])  # no get_activity_summary
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Agent Running:** Yes" in result
+    assert "iter" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_sentinel_not_treated_as_running():
+    """Pending sentinel must not be treated as a live running agent."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = None
+    runner._running_agents[build_session_key(_make_source())] = _AGENT_PENDING_SENTINEL
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    # Must NOT show "Yes" — sentinel is pending, not running
+    assert "Yes" not in result
+    assert "Starting up" in result

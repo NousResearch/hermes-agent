@@ -302,6 +302,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     agent_running:         "**代理執行中：** {state}"
     state_yes:             "是 ⚡"
     state_no:              "否"
+    state_pending:         "Starting up "
+    state_running_detail:  "Yes  ({detail})"
     queued:                "**排隊中的後續：** {count}"
     platforms:             "**已連線平台：** {platforms}"
 

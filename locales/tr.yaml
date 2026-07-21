@@ -302,6 +302,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     agent_running:         "**Aracı çalışıyor:** {state}"
     state_yes:             "Evet ⚡"
     state_no:              "Hayır"
+    state_pending:         "Starting up "
+    state_running_detail:  "Yes  ({detail})"
     queued:                "**Sıradaki devam:** {count}"
     platforms:             "**Bağlı platformlar:** {platforms}"
 

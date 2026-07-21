@@ -302,6 +302,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     agent_running:         "**Agent läuft:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nein"
+    state_pending:         "Starting up "
+    state_running_detail:  "Yes  ({detail})"
     queued:                "**Wartende Folgenachrichten:** {count}"
     platforms:             "**Verbundene Plattformen:** {platforms}"
 

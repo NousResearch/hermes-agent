@@ -314,6 +314,8 @@ gateway:
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"
     state_no:              "No"
+    state_pending:         "Starting up ⏳"
+    state_running_detail:  "Yes ⚡ ({detail})"
     queued:                "**Queued follow-ups:** {count}"
     platforms:             "**Connected Platforms:** {platforms}"
 

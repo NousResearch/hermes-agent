@@ -166,6 +166,38 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+# Inline base64 image data URLs (emitted by _resolve_media_to_data_urls as
+# ``![image](data:image/...;base64,...)``) can reach ~7 MB, well past
+# MAX_NORMALIZED_TEXT_LENGTH. A blunt slice would cut one mid-base64 and drop
+# any text after it, silently losing assistant prose on the history round-trip.
+# Elide the payload before the length cap so the surrounding text survives.
+_INLINE_IMAGE_DATA_URL_RE = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+
+
+def _elide_inline_image_data_urls(text: str) -> str:
+    if "data:image/" not in text:
+        return text
+
+    def _repl(match: "re.Match[str]") -> str:
+        return f"data:image/...;base64,<{len(match.group(0))} chars elided>"
+
+    return _INLINE_IMAGE_DATA_URL_RE.sub(_repl, text)
+
+
+def _cap_normalized_text(text: str) -> str:
+    """Elide oversized inline image data URLs, then enforce the normalized-text cap.
+
+    A single inline base64 image can exceed MAX_NORMALIZED_TEXT_LENGTH on its own,
+    so a blunt slice would cut it mid-payload and drop any assistant text after it.
+    Text within the cap is returned unchanged; only when it is over the cap do we
+    elide the image payloads first, so the surrounding text survives.
+    """
+    if len(text) <= MAX_NORMALIZED_TEXT_LENGTH:
+        return text
+    text = _elide_inline_image_data_urls(text)
+    return text[:MAX_NORMALIZED_TEXT_LENGTH] if len(text) > MAX_NORMALIZED_TEXT_LENGTH else text
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -187,7 +219,7 @@ def _normalize_chat_content(
     if content is None:
         return ""
     if isinstance(content, str):
-        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
+        return _cap_normalized_text(content)
 
     if isinstance(content, list):
         parts: List[str] = []
@@ -196,7 +228,7 @@ def _normalize_chat_content(
         for item in items:
             if isinstance(item, str):
                 if item:
-                    part = item[:MAX_NORMALIZED_TEXT_LENGTH]
+                    part = _cap_normalized_text(item)
                     parts.append(part)
                     total_len += len(part)
             elif isinstance(item, dict):
@@ -205,7 +237,7 @@ def _normalize_chat_content(
                     text = item.get("text", "")
                     if text:
                         try:
-                            part = str(text)[:MAX_NORMALIZED_TEXT_LENGTH]
+                            part = _cap_normalized_text(str(text))
                             parts.append(part)
                             total_len += len(part)
                         except Exception:
@@ -220,12 +252,12 @@ def _normalize_chat_content(
             if total_len >= MAX_NORMALIZED_TEXT_LENGTH:
                 break
         result = "\n".join(parts)
-        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
+        return _cap_normalized_text(result)
 
     # Fallback for unexpected types (int, float, bool, etc.)
     try:
         result = str(content)
-        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
+        return _cap_normalized_text(result)
     except Exception:
         return ""
 
@@ -260,7 +292,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
     if content is None:
         return ""
     if isinstance(content, str):
-        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
+        return _cap_normalized_text(content)
     if not isinstance(content, list):
         # Mirror the legacy text-normalizer's fallback so callers that
         # pre-existed image support still get a string back.
@@ -273,7 +305,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
     for part in items:
         if isinstance(part, str):
             if part:
-                trimmed = part[:MAX_NORMALIZED_TEXT_LENGTH]
+                trimmed = _cap_normalized_text(part)
                 normalized_parts.append({"type": "text", "text": trimmed})
                 text_accum_len += len(trimmed)
             continue
@@ -294,7 +326,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
             if not isinstance(text, str):
                 text = str(text)
             if text:
-                trimmed = text[:MAX_NORMALIZED_TEXT_LENGTH]
+                trimmed = _cap_normalized_text(text)
                 normalized_parts.append({"type": "text", "text": trimmed})
                 text_accum_len += len(trimmed)
             continue

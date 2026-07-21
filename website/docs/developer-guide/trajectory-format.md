@@ -215,17 +215,10 @@ preventing Arrow schema mismatch errors during dataset loading.
 
 ## Controlling Trajectory Saving
 
-In the CLI, trajectory saving is controlled by:
-
-```yaml
-# config.yaml
-agent:
-  save_trajectories: true  # default: false
-```
-
-Or via the `--save-trajectories` flag. When the agent initializes with
-`save_trajectories=True`, the `_save_trajectory()` method is called at the end
-of each conversation turn.
+Programmatic integrations can pass `save_trajectories=True` when constructing
+the agent. The standalone `run_agent.py` script also accepts
+`--save_trajectories`. When the agent initializes with `save_trajectories=True`,
+the `_save_trajectory()` method is called at the end of each conversation turn.
 
 The batch runner always saves trajectories (that's its primary purpose).
 

@@ -154,6 +154,24 @@ class TestResolveBedrocRegion:
 class TestConvertToolsToConverse:
     """Test OpenAI → Bedrock Converse tool definition conversion."""
 
+    def test_aliases_long_tool_names_for_bedrock_limit(self):
+        from agent.bedrock_adapter import convert_tools_to_converse
+        long_name = "mcp_extremely_long_server_name_with_many_segments_search_repositories"
+        assert len(long_name) > 64
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": long_name,
+                "description": "Search repositories",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        result = convert_tools_to_converse(tools)
+        spec = result[0]["toolSpec"]
+        assert spec["name"] != long_name
+        assert len(spec["name"]) <= 64
+        assert spec["description"] == "Search repositories"
+
     def test_converts_single_tool(self):
         from agent.bedrock_adapter import convert_tools_to_converse
         tools = [{
@@ -258,6 +276,30 @@ class TestConvertMessagesToConverse:
         assert tool_use_blocks[0]["toolUse"]["name"] == "read_file"
         assert tool_use_blocks[0]["toolUse"]["toolUseId"] == "call_123"
         assert tool_use_blocks[0]["toolUse"]["input"] == {"path": "/tmp/test.txt"}
+
+    def test_assistant_tool_calls_use_bedrock_aliases_for_long_names(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        long_name = "mcp_extremely_long_server_name_with_many_segments_search_repositories"
+        assert len(long_name) > 64
+        messages = [
+            {"role": "user", "content": "Search"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_long",
+                    "type": "function",
+                    "function": {"name": long_name, "arguments": "{}"},
+                }],
+            },
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        assistant_content = msgs[1]["content"]
+        tool_use_blocks = [b for b in assistant_content if "toolUse" in b]
+        assert len(tool_use_blocks) == 1
+        wire_name = tool_use_blocks[0]["toolUse"]["name"]
+        assert wire_name != long_name
+        assert len(wire_name) <= 64
 
     def test_tool_result_becomes_user_message(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -418,6 +460,32 @@ class TestNormalizeConverseResponse:
         assert tool_calls[0].function.name == "read_file"
         assert json.loads(tool_calls[0].function.arguments) == {"path": "/tmp/test.txt"}
 
+    def test_tool_use_response_restores_long_bedrock_aliases(self):
+        from agent.bedrock_adapter import convert_tools_to_converse, normalize_converse_response
+        long_name = "mcp_extremely_long_server_name_with_many_segments_search_repositories"
+        tools = [{"type": "function", "function": {
+            "name": long_name,
+            "description": "Search repositories",
+            "parameters": {},
+        }}]
+        wire_name = convert_tools_to_converse(tools)[0]["toolSpec"]["name"]
+        assert wire_name != long_name
+        response = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"toolUse": {"toolUseId": "call_long", "name": wire_name, "input": {}}},
+                    ],
+                },
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 0, "outputTokens": 0},
+        }
+        result = normalize_converse_response(response)
+        tool_calls = result.choices[0].message.tool_calls
+        assert tool_calls[0].function.name == long_name
+
     def test_multiple_tool_calls(self):
         from agent.bedrock_adapter import normalize_converse_response
         response = {
@@ -525,6 +593,32 @@ class TestNormalizeConverseStreamEvents:
         assert tc[0].id == "call_1"
         assert tc[0].function.name == "read_file"
         assert json.loads(tc[0].function.arguments) == {"path": "/tmp/f"}
+
+    def test_tool_use_stream_restores_long_bedrock_aliases(self):
+        from agent.bedrock_adapter import convert_tools_to_converse, normalize_converse_stream_events
+        long_name = "mcp_extremely_long_server_name_with_many_segments_search_repositories"
+        tools = [{"type": "function", "function": {
+            "name": long_name,
+            "description": "Search repositories",
+            "parameters": {},
+        }}]
+        wire_name = convert_tools_to_converse(tools)[0]["toolSpec"]["name"]
+        assert wire_name != long_name
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {
+                "toolUse": {"toolUseId": "call_long", "name": wire_name},
+            }}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {
+                "toolUse": {"input": "{}"},
+            }}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 0, "outputTokens": 0}}},
+        ]}
+        result = normalize_converse_stream_events(events)
+        tool_calls = result.choices[0].message.tool_calls
+        assert tool_calls[0].function.name == long_name
 
     def test_mixed_text_and_tool_stream(self):
         from agent.bedrock_adapter import normalize_converse_stream_events

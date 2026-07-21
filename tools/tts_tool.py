@@ -921,7 +921,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
-             "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
+             "-ac", "1", "-b:a", "48k", "-vbr", "on", "-application", "voip", "-compression_level", "10", ogg_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
@@ -1923,7 +1923,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
                 cmd = [
                     ffmpeg, "-i", wav_path,
                     "-acodec", "libopus", "-ac", "1",
-                    "-b:a", "64k", "-vbr", "off",
+                    "-b:a", "48k", "-vbr", "on", "-application", "voip", "-compression_level", "10",
                     "-y", "-loglevel", "error",
                     output_path,
                 ]

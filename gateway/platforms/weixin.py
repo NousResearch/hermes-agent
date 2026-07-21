@@ -1587,10 +1587,10 @@ class WeixinAdapter(BasePlatformAdapter):
                 media_paths.append(path)
                 media_types.append(mime)
         elif item_type == ITEM_VOICE:
-            voice_path = await self._download_voice(item)
+            voice_path, voice_mime = await self._download_voice(item)
             if voice_path:
                 media_paths.append(voice_path)
-                media_types.append("audio/silk")
+                media_types.append(voice_mime)
 
     async def _download_image(self, item: Dict[str, Any]) -> Optional[str]:
         media = _media_reference(item, "image_item")
@@ -1645,11 +1645,19 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.warning("[%s] file download failed: %s", self.name, exc)
             return None, mime
 
-    async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
+    async def _download_voice(self, item: Dict[str, Any]) -> tuple[Optional[str], str]:
+        """Download an inbound voice message and decode SILK → WAV when possible.
+
+        Returns ``(path, mime)``. ``path`` is None on download failure;
+        ``mime`` is the format of the cached file (``audio/wav`` when
+        decoded, ``audio/silk`` when we had to keep the raw payload).
+        """
         voice_item = item.get("voice_item") or {}
         media = voice_item.get("media") or {}
+        # If the server already transcribed it, skip the download — the
+        # caller picks up ``voice_item.text`` elsewhere.
         if voice_item.get("text"):
-            return None
+            return None, "audio/silk"
         try:
             data = await _download_and_decrypt_media(
                 self._poll_session,
@@ -1659,10 +1667,38 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=60.0,
             )
-            return cache_audio_from_bytes(data, ".silk")
         except Exception as exc:
             logger.warning("[%s] voice download failed: %s", self.name, exc)
-            return None
+            return None, "audio/silk"
+
+        # Cache the raw SILK payload first so we always have something on
+        # disk even if decoding fails.
+        silk_path = cache_audio_from_bytes(data, ".silk")
+
+        # Try to decode SILK → WAV so downstream STT (faster-whisper /
+        # OpenAI Whisper API / Groq / Mistral) can actually transcribe it.
+        # ffmpeg does NOT decode SILK; pilk does (wraps Tencent's SILK SDK).
+        try:
+            from gateway.platforms._silk import ensure_wav
+            wav_path = await ensure_wav(
+                silk_path, sniff_bytes=data[:16], log_tag=self.name,
+            )
+        except Exception as exc:
+            logger.debug("[%s] silk→wav decode raised: %s", self.name, exc)
+            wav_path = None
+
+        if wav_path:
+            # Clean up the raw silk now that we have a usable wav.
+            try:
+                os.unlink(silk_path)
+            except OSError:
+                pass
+            return wav_path, "audio/wav"
+
+        # Decode failed — return the raw silk. STT will fail to transcribe
+        # it, but at least the file is preserved for manual inspection /
+        # alternate handling.
+        return silk_path, "audio/silk"
 
     async def _maybe_fetch_typing_ticket(self, user_id: str, context_token: Optional[str]) -> None:
         if not self._poll_session or not self._token:

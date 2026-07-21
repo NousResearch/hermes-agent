@@ -1967,11 +1967,14 @@ class QQAdapter(BasePlatformAdapter):
         """Convert audio bytes to a temp .wav file using pilk (SILK) or ffmpeg.
 
         QQ voice messages are typically SILK format which ffmpeg cannot decode.
-        Strategy: always try pilk first, fall back to ffmpeg if pilk fails.
+        Strategy delegated to ``gateway.platforms._silk.ensure_wav``: try
+        pilk first when the payload looks like SILK, fall back to ffmpeg.
+        Last-resort raw-PCM fallback retained for QQ-specific edge cases.
 
         Returns the wav file path, or None on failure.
         """
         import tempfile
+        from gateway.platforms._silk import ensure_wav
 
         ext = (
             Path(filename).suffix.lower()
@@ -1992,14 +1995,16 @@ class QQAdapter(BasePlatformAdapter):
 
         wav_path = src_path.rsplit(".", 1)[0] + ".wav"
 
-        # Try pilk first (handles SILK and many other formats)
-        result = await self._convert_silk_to_wav(src_path, wav_path)
+        # pilk-first, ffmpeg-fallback
+        result = await ensure_wav(
+            src_path,
+            wav_path=wav_path,
+            sniff_bytes=audio_data[:16],
+            log_tag=self._log_tag,
+        )
 
-        # If pilk failed, try ffmpeg
-        if not result:
-            result = await self._convert_ffmpeg_to_wav(src_path, wav_path)
-
-        # If ffmpeg also failed, try writing raw PCM as WAV (last resort)
+        # If both decoders failed, try writing raw PCM as WAV (last resort,
+        # QQ-specific — some odd payloads turn out to be raw PCM frames).
         if not result:
             result = await self._convert_raw_to_wav(audio_data, wav_path)
 
@@ -2039,56 +2044,14 @@ class QQAdapter(BasePlatformAdapter):
     async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using the pilk library.
 
-        Tries the file as-is first, then as .silk if the extension differs.
-        pilk can handle SILK files with various headers (or no header).
+        Thin wrapper around :func:`gateway.platforms._silk.silk_to_wav`
+        kept for backward compatibility and direct call sites elsewhere
+        in this adapter.
         """
-        try:
-            import pilk
-        except ImportError:
-            logger.warning(
-                "[%s] pilk not installed — cannot decode SILK audio. Run: pip install pilk",
-                self._log_tag,
-            )
-            return None
-
-        # Try converting the file as-is
-        try:
-            pilk.silk_to_wav(src_path, wav_path, rate=16000)
-            if Path(wav_path).exists() and Path(wav_path).stat().st_size > 44:
-                logger.debug(
-                    "[%s] pilk converted %s to wav (%d bytes)",
-                    self._log_tag,
-                    Path(src_path).name,
-                    Path(wav_path).stat().st_size,
-                )
-                return wav_path
-        except Exception as exc:
-            logger.debug("[%s] pilk direct conversion failed: %s", self._log_tag, exc)
-
-        # Try renaming to .silk and converting (pilk checks the extension)
-        silk_path = src_path.rsplit(".", 1)[0] + ".silk"
-        try:
-            import shutil
-
-            shutil.copy2(src_path, silk_path)
-            pilk.silk_to_wav(silk_path, wav_path, rate=16000)
-            if Path(wav_path).exists() and Path(wav_path).stat().st_size > 44:
-                logger.debug(
-                    "[%s] pilk converted %s (as .silk) to wav (%d bytes)",
-                    self._log_tag,
-                    Path(src_path).name,
-                    Path(wav_path).stat().st_size,
-                )
-                return wav_path
-        except Exception as exc:
-            logger.debug("[%s] pilk .silk conversion failed: %s", self._log_tag, exc)
-        finally:
-            try:
-                os.unlink(silk_path)
-            except OSError:
-                pass
-
-        return None
+        from gateway.platforms._silk import silk_to_wav
+        return await asyncio.to_thread(
+            silk_to_wav, src_path, wav_path, rate=16000, log_tag=self._log_tag,
+        )
 
     async def _convert_raw_to_wav(self, audio_data: bytes, wav_path: str) -> Optional[str]:
         """Last resort: try writing audio data as raw PCM 16-bit mono 16kHz WAV.
@@ -2110,49 +2073,16 @@ class QQAdapter(BasePlatformAdapter):
             return None
 
     async def _convert_ffmpeg_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
-        """Convert audio file to WAV using ffmpeg."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-y",
-                "-i",
-                src_path,
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                wav_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=30)
-            if proc.returncode != 0:
-                stderr = await proc.stderr.read() if proc.stderr else b""
-                logger.warning(
-                    "[%s] ffmpeg failed for %s: %s",
-                    self._log_tag,
-                    Path(src_path).name,
-                    stderr[:200].decode(errors="replace"),
-                )
-                return None
-        except (asyncio.TimeoutError, FileNotFoundError) as exc:
-            logger.warning("[%s] ffmpeg conversion error: %s", self._log_tag, exc)
-            return None
+        """Convert audio file to WAV using ffmpeg.
 
-        if not Path(wav_path).exists() or Path(wav_path).stat().st_size <= 44:
-            logger.warning(
-                "[%s] ffmpeg produced no/small output for %s",
-                self._log_tag,
-                Path(src_path).name,
-            )
-            return None
-        logger.debug(
-            "[%s] ffmpeg converted %s to wav (%d bytes)",
-            self._log_tag,
-            Path(src_path).name,
-            Path(wav_path).stat().st_size,
+        Thin wrapper around :func:`gateway.platforms._silk.ffmpeg_to_wav`
+        kept for backward compatibility and direct call sites elsewhere
+        in this adapter.
+        """
+        from gateway.platforms._silk import ffmpeg_to_wav
+        return await ffmpeg_to_wav(
+            src_path, wav_path, rate=16000, timeout=30.0, log_tag=self._log_tag,
         )
-        return wav_path
 
     def _resolve_stt_config(self) -> Optional[Dict[str, str]]:
         """Resolve STT backend configuration from config/environment.

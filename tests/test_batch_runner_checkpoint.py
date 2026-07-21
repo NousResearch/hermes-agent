@@ -248,3 +248,59 @@ class TestFinalCheckpointNoDuplicates:
             buggy.extend(br.get("completed_prompts", []))
         # Every index appears twice
         assert len(buggy) == 2 * len(set(buggy))
+
+
+class TestResumeBatchNumbering:
+    """Resume must not reuse the original run's batch_{n}.jsonl numbers.
+
+    Workers write each batch to ``batch_{n}.jsonl`` in append mode and the
+    incremental checkpoint stores ``batch_stats[str(n)]`` keyed by the same
+    number.  Before this fix, ``run()`` re-batched the remaining prompts on
+    resume and re-numbered them from 0 — so resumed batches appended unrelated
+    prompts onto the original files and overwrote their per-batch statistics.
+    """
+
+    def _runner(self, output_dir):
+        r = BatchRunner.__new__(BatchRunner)
+        r.output_dir = Path(output_dir)
+        r._batch_num_offset = 0
+        return r
+
+    def test_next_batch_number_empty_dir(self, tmp_path):
+        r = self._runner(tmp_path)
+        # No batch files yet → start numbering from 0.
+        assert r._next_batch_number() == 0
+
+    def test_next_batch_number_after_existing_batches(self, tmp_path):
+        for n in (0, 1, 2):
+            (tmp_path / f"batch_{n}.jsonl").write_text("{}\n", encoding="utf-8")
+        r = self._runner(tmp_path)
+        assert r._next_batch_number() == 3
+
+    def test_next_batch_number_ignores_non_numeric_and_gaps(self, tmp_path):
+        # Highest numeric index wins even with gaps; junk files are ignored.
+        (tmp_path / "batch_0.jsonl").write_text("{}\n", encoding="utf-8")
+        (tmp_path / "batch_5.jsonl").write_text("{}\n", encoding="utf-8")
+        (tmp_path / "batch_combined.jsonl").write_text("{}\n", encoding="utf-8")
+        r = self._runner(tmp_path)
+        assert r._next_batch_number() == 6
+
+    def test_resumed_batch_numbers_do_not_collide_with_existing(self, tmp_path):
+        # Simulate an original run that produced batch_0/1/2.jsonl.
+        existing = {0, 1, 2}
+        for n in existing:
+            (tmp_path / f"batch_{n}.jsonl").write_text("{}\n", encoding="utf-8")
+
+        r = self._runner(tmp_path)
+        # run() sets this from _next_batch_number() on resume.
+        r._batch_num_offset = r._next_batch_number()
+        r.batches = [["b0"], ["b1"]]  # two resumed batches
+
+        dispatched = [
+            batch_idx + r._batch_num_offset
+            for batch_idx, _ in enumerate(r.batches)
+        ]
+
+        assert dispatched == [3, 4]
+        # No resumed batch number reuses an original batch file.
+        assert not (set(dispatched) & existing)

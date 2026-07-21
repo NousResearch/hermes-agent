@@ -610,7 +610,13 @@ class BatchRunner:
         # Setup output directory
         self.output_dir = Path("data") / run_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Offset applied to batch numbers when dispatching. Stays 0 for a fresh
+        # run; a --resume that re-batches the remaining prompts bumps this past
+        # the existing batch_*.jsonl files so resumed work lands in new files
+        # instead of appending onto unrelated original batches.
+        self._batch_num_offset = 0
+
         # Checkpoint file
         self.checkpoint_file = self.output_dir / "checkpoint.json"
         
@@ -682,9 +688,26 @@ class BatchRunner:
         for i in range(0, len(self.dataset), self.batch_size):
             batch = [(idx, entry) for idx, entry in enumerate(self.dataset[i:i + self.batch_size], start=i)]
             batches.append(batch)
-        
+
         return batches
-    
+
+    def _next_batch_number(self) -> int:
+        """Return the lowest batch number not already used by a batch_*.jsonl file.
+
+        Workers write each batch to ``batch_{n}.jsonl`` in append mode, so a
+        --resume that re-numbers its batches from 0 would append onto — and mix
+        unrelated prompts into — the original run's files (and overwrite their
+        ``batch_stats`` entries, which are keyed by the same number). Numbering
+        resumed batches from here keeps both the output files and the per-batch
+        statistics coherent across resumes.
+        """
+        max_idx = -1
+        for batch_file in self.output_dir.glob("batch_*.jsonl"):
+            parts = batch_file.stem.split("_")
+            if len(parts) >= 2 and parts[1].isdigit():
+                max_idx = max(max_idx, int(parts[1]))
+        return max_idx + 1
+
     def _load_checkpoint(self) -> Dict[str, Any]:
         """
         Load checkpoint data if it exists.
@@ -838,8 +861,13 @@ class BatchRunner:
             for i in range(0, len(filtered_entries), self.batch_size):
                 batch = filtered_entries[i:i + self.batch_size]
                 batches_to_process.append(batch)
-            
+
             self.batches = batches_to_process
+
+            # Number these resumed batches past the existing batch_*.jsonl files
+            # so they don't append onto unrelated original batches or clobber
+            # the original run's per-batch statistics.
+            self._batch_num_offset = self._next_batch_number()
             
             # Print prominent resume summary
             print("\n" + "=" * 70)
@@ -919,13 +947,13 @@ class BatchRunner:
             # Create tasks for each batch
             tasks = [
                 (
-                    batch_num,
+                    batch_idx + self._batch_num_offset,
                     batch_data,
                     str(self.output_dir),  # Convert Path to string for pickling
                     completed_prompts_set,
                     config
                 )
-                for batch_num, batch_data in enumerate(self.batches)
+                for batch_idx, batch_data in enumerate(self.batches)
             ]
             
             print(f"✅ Created {len(tasks)} batch tasks")

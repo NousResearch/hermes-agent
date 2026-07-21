@@ -206,7 +206,8 @@ class TestRecoveryDoesNotLeakMediaFragments:
         # but force the path to be filtered out (unsafe/nonexistent) so we hit
         # the empty-text + no-attachment recovery branch deterministically.
         monkeypatch.setattr(
-            type(adapter), "filter_media_delivery_paths", staticmethod(lambda m: [])
+            type(adapter), "filter_media_delivery_paths",
+            staticmethod(lambda m, undeliverable=None: [])
         )
 
         event = _make_event(Platform.DISCORD)

@@ -54,6 +54,9 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
     ):
         super().__init__(cwd=cwd, timeout=timeout)
 
+        # Modal sandboxes run as root; exposed via the remote_home property
+        # for delivery-path checks.
+        self._remote_home = "/root"
         self._guard_unsupported_credential_passthrough()
 
         gateway = resolve_managed_tool_gateway("modal")

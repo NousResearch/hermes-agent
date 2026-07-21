@@ -1152,57 +1152,63 @@ def _media_delivery_strict_mode() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+# The active Hermes profile and shared Hermes root both contain control
+# files and credentials. Only cache subdirectories under them are
+# explicitly allowlisted above (matched BEFORE this denylist in
+# validate_media_delivery_path, so generated media still delivers).
+#
+# These are the per-file credential / secret stores that live at the
+# HERMES_HOME root. The set mirrors the canonical read guard in
+# agent/file_safety.py (get_read_block_error / build_write_denied_*) so the
+# delivery (read/exfil) side can't trail the write side: a credential the
+# agent is forbidden to write or read must also never be auto-attached to a
+# chat reply. Enumerated explicitly per-file rather than denying the whole
+# tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hermes
+# stay deliverable (see #32090, #34425).
+#
+# Module-level (not local to _media_delivery_denied_paths) so the remote-path
+# check in gateway/media_fetch.py applies the same set to backend filesystems.
+_ROOT_CREDENTIAL_FILES = (
+    ".env",
+    "auth.json",
+    "auth.lock",
+    "credentials",
+    "config.yaml",
+    # Anthropic PKCE / OAuth refresh credential store.
+    ".anthropic_oauth.json",
+    # Google Workspace skill: auto-refreshing OAuth token (mtime bumps
+    # every turn, which defeated the strict-mode recency window) plus the
+    # pending-exchange session/verifier file.
+    "google_token.json",
+    "google_oauth_pending.json",
+    os.path.join("auth", "google_oauth.json"),
+    # Webhook subscription HMAC secrets.
+    "webhook_subscriptions.json",
+    # Bitwarden Secrets Manager plaintext disk cache.
+    os.path.join("cache", "bws_cache.json"),
+)
+
+# Directory trees whose every child is credential material.
+#
+# mcp-tokens/ holds live MCP OAuth access tokens (<server>.json) and
+# dynamically-registered client credentials (<server>.client.json); see
+# tools/mcp_oauth.py. Same credential class as auth.json/credentials/.
+# The write side already denies it (file_tools _check_sensitive_path);
+# this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
+# tag can't deliver a live bearer token as a native attachment.
+# (session/kanban SQLite stores are handled by #41071 — kept out here.)
+_ROOT_CREDENTIAL_DIRS = (
+    "pairing",
+    "mcp-tokens",
+)
+
+
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     denied = [Path(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES]
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The active Hermes profile and shared Hermes root both contain control
-    # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above (matched BEFORE this denylist in
-    # validate_media_delivery_path, so generated media still delivers).
-    #
-    # These are the per-file credential / secret stores that live at the
-    # HERMES_HOME root. The set mirrors the canonical read guard in
-    # agent/file_safety.py (get_read_block_error / build_write_denied_*) so the
-    # delivery (read/exfil) side can't trail the write side: a credential the
-    # agent is forbidden to write or read must also never be auto-attached to a
-    # chat reply. Enumerated explicitly per-file rather than denying the whole
-    # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.hermes
-    # stay deliverable (see #32090, #34425).
-    _ROOT_CREDENTIAL_FILES = (
-        ".env",
-        "auth.json",
-        "auth.lock",
-        "credentials",
-        "config.yaml",
-        # Anthropic PKCE / OAuth refresh credential store.
-        ".anthropic_oauth.json",
-        # Google Workspace skill: auto-refreshing OAuth token (mtime bumps
-        # every turn, which defeated the strict-mode recency window) plus the
-        # pending-exchange session/verifier file.
-        "google_token.json",
-        "google_oauth_pending.json",
-        os.path.join("auth", "google_oauth.json"),
-        # Webhook subscription HMAC secrets.
-        "webhook_subscriptions.json",
-        # Bitwarden Secrets Manager plaintext disk cache.
-        os.path.join("cache", "bws_cache.json"),
-    )
-    # Directory trees whose every child is credential material.
-    #
-    # mcp-tokens/ holds live MCP OAuth access tokens (<server>.json) and
-    # dynamically-registered client credentials (<server>.client.json); see
-    # tools/mcp_oauth.py. Same credential class as auth.json/credentials/.
-    # The write side already denies it (file_tools _check_sensitive_path);
-    # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
-    # tag can't deliver a live bearer token as a native attachment.
-    # (session/kanban SQLite stores are handled by #41071 — kept out here.)
-    _ROOT_CREDENTIAL_DIRS = (
-        "pairing",
-        "mcp-tokens",
-    )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:
             denied.append(hermes_root / rel)
@@ -1359,6 +1365,33 @@ _LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 def _log_safe_path(path: str) -> str:
     """Return a single-line, length-bounded path for log output."""
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
+
+
+def _maybe_fetch_remote_media(path: str) -> Tuple[Optional[str], str]:
+    """Try to fetch a locally-unresolvable MEDIA path from the active remote
+    terminal backend. Returns ``(local_path, "")`` on success or
+    ``(None, reason)`` — never raises (delivery must not crash on a fetch bug).
+    """
+    try:
+        from gateway.media_fetch import fetch_remote_media
+
+        local_path, reason = fetch_remote_media(path)
+        return local_path, reason or ""
+    except Exception as exc:
+        logger.warning("Remote media fetch errored: %s", exc, exc_info=True)
+        return None, "remote fetch errored"
+
+
+def undeliverable_media_notice(names: List[str]) -> str:
+    """Short user-facing notice for MEDIA paths that could not be delivered.
+
+    Mirrors the ``send_document`` fallback tone; shows only basenames (never
+    host paths — see send_voice for the rationale).
+    """
+    unique = list(dict.fromkeys(n for n in names if n))
+    if not unique:
+        return "⚠️ Couldn't deliver a file attachment."
+    return f"⚠️ Couldn't deliver: {', '.join(unique)}."
 
 
 SUPPORTED_DOCUMENT_TYPES = {
@@ -3615,16 +3648,39 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(
+        media_files,
+        undeliverable: Optional[List[str]] = None,
+    ) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        A path that fails local resolution is retried against the active
+        remote terminal backend (ssh, modal, daytona, ... — see
+        ``gateway/media_fetch.py``): the file is fetched into the document
+        cache and delivered from there, so ``MEDIA:`` just works for
+        artifacts created inside a sandbox (#466).
+
+        When *undeliverable* is passed, the basename of every path that
+        could not be delivered (either way) is appended to it so callers
+        can surface a "couldn't deliver" notice instead of silence.
+        """
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
             safe_path = validate_media_delivery_path(raw)
-            if safe_path:
-                safe_media.append((safe_path, bool(is_voice)))
-            else:
-                logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
+            if not safe_path:
+                safe_path, fetch_reason = _maybe_fetch_remote_media(raw)
+                if not safe_path:
+                    logger.warning(
+                        "Skipping unsafe MEDIA directive path: %s (%s)",
+                        _log_safe_path(raw), fetch_reason,
+                    )
+                    if undeliverable is not None:
+                        undeliverable.append(
+                            os.path.basename(raw.rstrip("/\\")) or raw
+                        )
+                    continue
+            safe_media.append((safe_path, bool(is_voice)))
         return safe_media
 
     @staticmethod
@@ -5080,7 +5136,15 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                _undeliverable_media: List[str] = []
+                media_files = self.filter_media_delivery_paths(
+                    media_files, _undeliverable_media
+                )
+                if _undeliverable_media:
+                    # Surface the failure instead of silently dropping the
+                    # attachment (#466); the tag itself is already stripped.
+                    _notice = undeliverable_media_notice(_undeliverable_media)
+                    response = f"{response}\n\n{_notice}" if response.strip() else _notice
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)

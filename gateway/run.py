@@ -14608,7 +14608,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            undeliverable_media: list = []
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                media_files, undeliverable_media
+            )
             # Chain the cleaned text through each extractor (extract_media →
             # extract_images → extract_local_files) so MEDIA: tags and image URLs
             # are removed before the bare-path auto-detect runs. Previously the
@@ -14700,6 +14703,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+
+            if undeliverable_media:
+                # The streamed text already went out (with the MEDIA tag
+                # stripped), so surface the failure as its own short message
+                # instead of silence (#466).
+                from gateway.platforms.base import undeliverable_media_notice
+                try:
+                    await adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=undeliverable_media_notice(undeliverable_media),
+                        metadata=_thread_meta,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[%s] Undeliverable-media notice failed: %s", adapter.name, e
+                    )
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -14851,8 +14870,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Extract media files from the response
             if response:
                 media_files, response = adapter.extract_media(response)
-                from gateway.platforms.base import BasePlatformAdapter
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                from gateway.platforms.base import (
+                    BasePlatformAdapter,
+                    undeliverable_media_notice,
+                )
+                undeliverable_media: list = []
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files, undeliverable_media
+                )
+                if undeliverable_media:
+                    _notice = undeliverable_media_notice(undeliverable_media)
+                    response = f"{response}\n\n{_notice}" if response.strip() else _notice
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")

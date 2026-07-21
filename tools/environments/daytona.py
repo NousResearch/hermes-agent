@@ -14,6 +14,7 @@ from pathlib import Path
 
 from tools.environments.base import (
     BaseEnvironment,
+    FileFetchError,
     _ThreadedProcessHandle,
 )
 from tools.environments.file_sync import (
@@ -198,6 +199,18 @@ class DaytonaEnvironment(BaseEnvironment):
     def _daytona_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via SDK exec."""
         self._sandbox.process.exec(quoted_rm_command(remote_paths))
+
+    def fetch_file(self, remote_path: str, local_dest: str) -> None:
+        """Download a single sandbox file via the Daytona SDK."""
+        try:
+            self._sandbox.fs.download_file(remote_path, local_dest)
+        except Exception as exc:
+            Path(local_dest).unlink(missing_ok=True)
+            raise FileFetchError(
+                f"Daytona download of {remote_path!r} failed: {exc}"
+            ) from exc
+        if not os.path.isfile(local_dest):
+            raise FileFetchError(f"{remote_path!r} is not a regular file")
 
     # ------------------------------------------------------------------
     # Sandbox lifecycle

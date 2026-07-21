@@ -182,6 +182,9 @@ class ModalEnvironment(BaseEnvironment):
     ):
         super().__init__(cwd=cwd, timeout=timeout)
 
+        # Modal sandboxes always run as root (see _modal_bulk_download);
+        # exposed via the remote_home property for delivery-path checks.
+        self._remote_home = "/root"
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._sandbox = None

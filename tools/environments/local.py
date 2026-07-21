@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.base import BaseEnvironment, FileFetchError, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -1271,7 +1271,24 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
+        self._remote_home = os.path.expanduser("~")
         self.init_session()
+
+    def fetch_file_size(self, remote_path: str) -> int | None:
+        """Direct filesystem view — stat instead of an exec round-trip."""
+        try:
+            if not os.path.isfile(remote_path):
+                return None
+            return os.stat(remote_path).st_size
+        except OSError:
+            return None
+
+    def fetch_file(self, remote_path: str, local_dest: str) -> None:
+        """The file already lives on the host — plain copy."""
+        if not os.path.isfile(remote_path):
+            raise FileFetchError(f"{remote_path!r} is not a regular file")
+        if os.path.abspath(remote_path) != os.path.abspath(local_dest):
+            shutil.copy2(remote_path, local_dest)
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.

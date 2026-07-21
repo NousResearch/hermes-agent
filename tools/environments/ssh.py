@@ -9,7 +9,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.base import (
+    _FETCH_TIMEOUT_SECONDS,
+    BaseEnvironment,
+    FileFetchError,
+    _popen_bash,
+)
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,
@@ -317,6 +322,34 @@ class SSHEnvironment(BaseEnvironment):
             )
         if result.returncode != 0:
             raise RuntimeError(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}")
+
+    def fetch_file(self, remote_path: str, local_dest: str) -> None:
+        """Stream a single remote file over the ControlMaster connection.
+
+        Same transport as _ssh_bulk_download (binary-safe stdout pipe), but
+        ``cat`` instead of ``tar`` so the destination is the bare file. The
+        remote path is shell-quoted — it may originate from model output.
+        """
+        cmd = self._build_ssh_command()
+        cmd.append(f"cat {shlex.quote(remote_path)}")
+        try:
+            with open(local_dest, "wb") as f:
+                result = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=f,
+                    stderr=subprocess.PIPE,
+                    timeout=_FETCH_TIMEOUT_SECONDS,
+                )
+        except subprocess.TimeoutExpired:
+            Path(local_dest).unlink(missing_ok=True)
+            raise FileFetchError(f"SSH fetch of {remote_path!r} timed out")
+        if result.returncode != 0:
+            Path(local_dest).unlink(missing_ok=True)
+            raise FileFetchError(
+                f"SSH fetch of {remote_path!r} failed: "
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files in one SSH call."""

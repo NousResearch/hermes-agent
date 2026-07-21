@@ -20,6 +20,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
+    _resolve_endpoint_context_length,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -1182,6 +1183,92 @@ class TestGetModelContextLength:
             assert ctx3 == DEFAULT_FALLBACK_CONTEXT, (
                 f"Expected {DEFAULT_FALLBACK_CONTEXT}, got {ctx3}"
             )
+
+
+# =========================================================================
+# Endpoint /models catalog matching — must not bind to the wrong sibling
+# =========================================================================
+
+class TestResolveEndpointContextLength:
+    """Regression tests for ``_resolve_endpoint_context_length`` matching.
+
+    The matcher used to do a bidirectional substring scan and return the
+    first hit while iterating an unordered dict, so a short configured name
+    could bind to an unrelated sibling that merely shared a substring (and
+    callers persist that wrong value to disk).
+    """
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_ambiguous_substring_siblings_return_none(self, mock_fetch):
+        """A name that is a substring of several catalog entries with
+        DIFFERENT context lengths is ambiguous — refuse to guess instead of
+        returning whichever happens to iterate first."""
+        mock_fetch.return_value = {
+            "org/qwen3-coder": {"context_length": 262144},
+            "org/qwen3-max": {"context_length": 1000000},
+        }
+
+        result = _resolve_endpoint_context_length(
+            "qwen3", base_url="https://api.example.com/v1", api_key="k"
+        )
+
+        assert result is None, (
+            "Ambiguous substring siblings with conflicting windows must not "
+            f"resolve to an arbitrary value; got {result}"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_match_order_is_deterministic(self, mock_fetch):
+        """Result must not depend on dict insertion order — both orderings of
+        the same conflicting catalog yield the same (None) answer."""
+        forward = {
+            "org/qwen3-coder": {"context_length": 262144},
+            "org/qwen3-max": {"context_length": 1000000},
+        }
+        reverse = {
+            "org/qwen3-max": {"context_length": 1000000},
+            "org/qwen3-coder": {"context_length": 262144},
+        }
+        url = "https://api.example.com/v1"
+
+        mock_fetch.return_value = forward
+        a = _resolve_endpoint_context_length("qwen3", base_url=url)
+        mock_fetch.return_value = reverse
+        b = _resolve_endpoint_context_length("qwen3", base_url=url)
+
+        assert a == b is None
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_exact_basename_match_wins_over_substring_sibling(self, mock_fetch):
+        """An exact basename match (publisher/slug) must beat any substring
+        sibling, even when a longer sibling sorts first."""
+        mock_fetch.return_value = {
+            "org/qwen3-coder": {"context_length": 262144},
+            "org/qwen3": {"context_length": 131072},
+        }
+
+        result = _resolve_endpoint_context_length(
+            "qwen3", base_url="https://api.example.com/v1"
+        )
+
+        assert result == 131072, (
+            f"Exact basename match should win; got {result}"
+        )
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_single_substring_match_still_resolves(self, mock_fetch):
+        """The legitimate quantization-suffix case still works: a lone
+        substring match (no conflicting sibling) resolves normally."""
+        mock_fetch.return_value = {
+            "org/llama-3.3-70b-instruct-fp8": {"context_length": 131072},
+            "org/qwen-2.5-72b": {"context_length": 32768},
+        }
+
+        result = _resolve_endpoint_context_length(
+            "llama-3.3-70b-instruct", base_url="https://api.example.com/v1"
+        )
+
+        assert result == 131072
 
 
 # =========================================================================

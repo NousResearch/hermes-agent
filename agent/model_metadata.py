@@ -1112,6 +1112,64 @@ def fetch_endpoint_model_metadata(
     return {}
 
 
+def _match_endpoint_metadata_entry(
+    model: str, endpoint_metadata: Dict[str, Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Best-effort match of *model* against an endpoint ``/models`` catalog.
+
+    The catalog often lists models under a publisher prefix or a
+    quantization suffix (e.g. ``org/llama-3.3-70b-instruct-fp8``) while the
+    user configures a shorter name (``llama-3.3-70b-instruct``), so some
+    fuzzy matching is genuinely needed.
+
+    The previous logic — a bidirectional substring scan that returned the
+    FIRST hit while iterating an unordered dict — would silently bind the
+    requested model to an unrelated sibling that merely shared a substring.
+    Requesting ``qwen3`` against a catalog serving both ``qwen3-coder`` and
+    ``qwen3-max`` matched whichever happened to iterate first, and callers
+    persist that value to ``context_length_cache.yaml`` — freezing a wrong
+    context window across runs (over-report → requests exceed the real
+    limit; under-report → premature compaction discards history).
+
+    Resolution order (deterministic, never guesses between conflicting
+    siblings):
+      1. Exact basename match — the id after the last ``/`` equals *model*.
+         Unambiguous, so always preferred.
+      2. Substring fallback — accepted only when it is unambiguous: if
+         several siblings match with *different* context lengths, return
+         None so the caller falls through to provider-aware / hardcoded
+         resolution instead of caching an arbitrary value.
+    """
+    items = sorted(endpoint_metadata.items())
+    model_base = model.rsplit("/", 1)[-1]
+
+    # 1. Exact basename match wins outright.
+    for key, entry in items:
+        if key.rsplit("/", 1)[-1] == model_base:
+            return entry
+
+    # 2. Substring fallback — only when it doesn't conflict.
+    candidates = [
+        entry for key, entry in items if model in key or key in model
+    ]
+    if not candidates:
+        return None
+    distinct_lengths = {
+        entry.get("context_length")
+        for entry in candidates
+        if isinstance(entry.get("context_length"), int)
+    }
+    if len(distinct_lengths) > 1:
+        logger.info(
+            "Endpoint /models catalog has %d substring matches for %r with "
+            "conflicting context lengths %s — refusing to guess; falling "
+            "through to provider-aware/hardcoded resolution.",
+            len(candidates), model, sorted(distinct_lengths),
+        )
+        return None
+    return candidates[0]
+
+
 def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
@@ -1124,10 +1182,7 @@ def _resolve_endpoint_context_length(
         if len(endpoint_metadata) == 1:
             matched = next(iter(endpoint_metadata.values()))
         else:
-            for key, entry in endpoint_metadata.items():
-                if model in key or key in model:
-                    matched = entry
-                    break
+            matched = _match_endpoint_metadata_entry(model, endpoint_metadata)
     if matched:
         context_length = matched.get("context_length")
         if isinstance(context_length, int):

@@ -578,6 +578,32 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     return "azure.com" in normalized
 
 
+_MINIMAX_M3_CANONICAL_SLUGS = frozenset({
+    "minimax-m3",
+    "minimax/minimax-m3",
+})
+
+
+def _is_minimax_m3(model: str | None) -> bool:
+    """Return True for canonical MiniMax-M3 model slugs only.
+
+    MiniMax-M3 follows a distinct Anthropic-compatible thinking contract
+    (adaptive/disabled, no ``budget_tokens`` / ``output_config``) on MiniMax's
+    own Anthropic-compatible endpoints. Match the canonical slugs exactly so
+    future third-party slugs that merely contain the substring — e.g.
+    ``some-vendor/minimax-m3-preview`` — fall through to the existing manual
+    thinking branch.
+    """
+    if not isinstance(model, str):
+        return False
+    normalized = model.strip().lower()
+    if not normalized:
+        return False
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized in _MINIMAX_M3_CANONICAL_SLUGS
+
+
 def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for MiniMax's Anthropic-compatible endpoints.
 
@@ -2284,13 +2310,15 @@ def _manage_thinking_signatures(
     stripping, message merging) invalidates the signature, causing HTTP 400
     "Invalid signature in thinking block".
 
-    Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
-    Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
-    and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
-    endpoints speak the Anthropic protocol upstream but require unsigned
-    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
-    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
-    hermes-agent#16748 (DeepSeek).
+    Signatures are Anthropic-proprietary.  Third-party endpoints (Azure AI
+    Foundry, AWS Bedrock, self-hosted proxies) cannot validate them and will
+    reject them outright. MiniMax-M3's Anthropic-compatible endpoints are a
+    documented exception: they require their complete thinking/text/tool_use
+    content blocks to be returned verbatim in later tool-call turns. Kimi's
+    /coding and DeepSeek's /anthropic endpoints also require unsigned thinking
+    blocks (synthesised from ``reasoning_content``) to round-trip on replayed
+    assistant tool-call messages. See MiniMax's Anthropic API compatibility
+    documentation, hermes-agent#13848 (Kimi), and hermes-agent#16748 (DeepSeek).
 
     Mutates ``result`` in place.
     """
@@ -2307,7 +2335,24 @@ def _manage_thinking_signatures(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _is_kimi_family_endpoint(base_url, model):
+        is_minimax_m3 = _is_minimax_anthropic_endpoint(base_url) and _is_minimax_m3(model)
+        if is_minimax_m3:
+            # MiniMax-M3 requires complete content blocks (thinking, text, and
+            # tool_use) to round-trip unchanged across function-call turns.
+            # Its thinking blocks are not Anthropic signatures, so do not send
+            # this documented provider through the generic third-party strip.
+            #
+            # If orphan cleanup already removed a tool_use from this turn, the
+            # original content is no longer complete and must not be replayed
+            # as MiniMax thinking. Drop only the now-invalid thinking blocks;
+            # preserved text/tool_use still form a valid recovery turn.
+            if m.get("_thinking_signature_invalidated"):
+                m["content"] = [
+                    b
+                    for b in m["content"]
+                    if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
+                ] or [{"type": "text", "text": "(thinking elided)"}]
+        elif _is_kimi_family_endpoint(base_url, model):
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
             pass
@@ -2659,9 +2704,10 @@ def build_anthropic_kwargs(
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.
-    # Older models use manual thinking with budget_tokens.
-    # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
-    # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
+    # Older models use manual thinking with budget_tokens. MiniMax-M3 on its
+    # Anthropic-compatible endpoints uses a distinct adaptive contract with no
+    # output_config or budget_tokens; it returns separate thinking/text blocks.
+    # Haiku does NOT support extended thinking — skip entirely.
     #
     # Kimi / Moonshot models also use adaptive thinking: their
     # Anthropic-compatible endpoints (api.moonshot.cn/anthropic,
@@ -2676,7 +2722,16 @@ def build_anthropic_kwargs(
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        is_minimax_m3 = _is_minimax_anthropic_endpoint(base_url) and _is_minimax_m3(model)
+        if is_minimax_m3:
+            # MiniMax documents only adaptive/disabled for M3. Do not send
+            # Anthropic's enabled + budget_tokens form: it is not MiniMax's
+            # structured-thinking contract.
+            if reasoning_config.get("enabled") is False:
+                kwargs["thinking"] = {"type": "disabled"}
+            else:
+                kwargs["thinking"] = {"type": "adaptive"}
+        elif reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

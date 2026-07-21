@@ -4004,7 +4004,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
     """
 
     @staticmethod
-    def _build_adapter(model="claude-fable-5"):
+    def _build_adapter(model="claude-fable-5", base_url=None):
         from agent.auxiliary_client import _AnthropicCompletionsAdapter
 
         captured = {}
@@ -4018,7 +4018,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
                     usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
                 )
 
-        real_client = SimpleNamespace(messages=_Messages())
+        real_client = SimpleNamespace(messages=_Messages(), base_url=base_url)
         return _AnthropicCompletionsAdapter(real_client, model), captured
 
     def test_reasoning_config_reaches_native_anthropic_wire_kwargs(self):
@@ -4033,6 +4033,95 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert captured["output_config"] == {"effort": "medium"}
         assert "extra_body" not in captured
+
+    def test_minimax_m3_cn_auxiliary_call_uses_adaptive_thinking(self):
+        adapter, captured = self._build_adapter(
+            model="MiniMax-M3",
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+
+        adapter.create(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "high"},
+        )
+
+        assert captured["thinking"] == {"type": "adaptive"}
+        assert "output_config" not in captured
+        assert "temperature" not in captured
+        assert "extra_body" not in captured
+
+    def test_minimax_m3_cn_auxiliary_accepts_httpx_url_with_trailing_slash(self):
+        from httpx import URL
+
+        adapter, captured = self._build_adapter(
+            model="MiniMax-M3",
+            base_url=URL("https://api.minimaxi.com/anthropic/"),
+        )
+
+        adapter.create(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "high"},
+        )
+
+        assert captured["thinking"] == {"type": "adaptive"}
+        assert "output_config" not in captured
+        assert "temperature" not in captured
+
+    def test_minimax_m3_cn_auxiliary_without_base_url_falls_back(self):
+        """AnthropicAuxiliaryClient without base_url must NOT apply M3 adaptive.
+
+        Guards the silent-regression class where the auxiliary adapter's base_url
+        is ``None`` (or the underlying client lacks the attribute).  In that case
+        the M3 contract must not be applied — it would otherwise mis-shape the
+        payload on a non-MiniMax Anthropic-compatible endpoint.
+        """
+        adapter, captured = self._build_adapter(
+            model="MiniMax-M3",
+            base_url=None,
+        )
+
+        adapter.create(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "high"},
+        )
+
+        assert captured["thinking"]["type"] == "enabled"
+        assert "budget_tokens" in captured["thinking"]
+
+    def test_minimax_m2_cn_auxiliary_uses_manual_thinking(self):
+        """M2.x on the MiniMax endpoint must keep manual thinking."""
+        adapter, captured = self._build_adapter(
+            model="MiniMax-M2.7",
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+
+        adapter.create(
+            model="MiniMax-M2.7",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "high"},
+        )
+
+        assert captured["thinking"]["type"] == "enabled"
+        assert "budget_tokens" in captured["thinking"]
+
+    def test_minimax_m3_on_non_minimax_anthropic_endpoint_uses_manual(self):
+        """M3 on a non-MiniMax Anthropic-compatible endpoint keeps manual."""
+        adapter, captured = self._build_adapter(
+            model="MiniMax-M3",
+            base_url="https://example.test/anthropic",
+        )
+
+        adapter.create(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "high"},
+        )
+
+        assert captured["thinking"]["type"] == "enabled"
+        assert "budget_tokens" in captured["thinking"]
 
     def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
         anthropic_kwargs = _build_call_kwargs(

@@ -93,12 +93,11 @@ class TestMinimaxM3StaleCacheGuard:
 
 
 class TestMinimaxThinkingSupport:
-    """Verify that MiniMax gets manual thinking (not adaptive).
+    """Verify MiniMax's model-specific Anthropic thinking contracts.
 
-    MiniMax's Anthropic-compat endpoint officially supports the thinking
-    parameter (https://platform.minimax.io/docs/api-reference/text-anthropic-api).
-    It should get manual thinking (type=enabled + budget_tokens), NOT adaptive
-    thinking (which is Claude 4.6-only).
+    MiniMax-M3 uses adaptive/disabled thinking on MiniMax's Anthropic-compatible
+    endpoints. M2.x keeps the legacy manual ``enabled + budget_tokens`` shape.
+    Source: https://platform.minimaxi.com/docs/api-reference/text-anthropic-api
     """
 
     def test_minimax_m27_gets_manual_thinking(self):
@@ -127,6 +126,390 @@ class TestMinimaxThinkingSupport:
         )
         assert "thinking" in kwargs
         assert kwargs["thinking"]["type"] == "enabled"
+
+    def test_minimax_m3_cn_anthropic_uses_adaptive_thinking(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "output_config" not in kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_minimax_m3_cn_anthropic_can_explicitly_disable_thinking(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+
+        assert kwargs["thinking"] == {"type": "disabled"}
+        assert "output_config" not in kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_minimax_m3_like_slug_does_not_trigger_adaptive_thinking(self):
+        """Exact-match the canonical M3 slugs; do not over-match substring slugs."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3-preview",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert "budget_tokens" in kwargs["thinking"]
+
+    def test_minimax_m3_raw_response_round_trips_all_blocks_in_order(self):
+        """Exercise raw SDK response -> normalization -> storage -> replay."""
+        from types import SimpleNamespace
+
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.chat_completion_helpers import build_assistant_message
+        from agent.transports import get_transport
+
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="thinking",
+                    thinking="Inspect the file before answering.",
+                    signature="minimax-sig-1",
+                ),
+                SimpleNamespace(type="text", text="I will inspect it."),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="toolu_1",
+                    name="read_file",
+                    input={"path": "a.py"},
+                ),
+            ],
+            stop_reason="tool_use",
+            usage=None,
+        )
+
+        class StubAgent:
+            verbose_logging = False
+            reasoning_callback = None
+            stream_delta_callback = None
+            _stream_callback = None
+
+            def _extract_reasoning(self, message):
+                return getattr(message, "reasoning", None)
+
+            def _strip_think_blocks(self, text):
+                return text
+
+            def _needs_thinking_reasoning_pad(self):
+                return False
+
+            def _split_responses_tool_id(self, raw_id):
+                return None, None
+
+            def _derive_responses_function_call_id(self, call_id, response_item_id):
+                return response_item_id or call_id
+
+            def _deterministic_call_id(self, name, arguments, index):
+                return f"generated_{index}"
+
+        normalized = get_transport("anthropic_messages").normalize_response(response)
+        stored = build_assistant_message(
+            StubAgent(), normalized, normalized.finish_reason
+        )
+
+        assert [block["type"] for block in stored["anthropic_content_blocks"]] == [
+            "thinking",
+            "text",
+            "tool_use",
+        ]
+
+        _, messages = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "Inspect a.py."},
+                stored,
+                {"role": "tool", "tool_call_id": "toolu_1", "content": "ok"},
+            ],
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assistant = next(message for message in messages if message["role"] == "assistant")
+        assert [block["type"] for block in assistant["content"]] == [
+            "thinking",
+            "text",
+            "tool_use",
+        ]
+        assert assistant["content"][0]["signature"] == "minimax-sig-1"
+        assert assistant["content"][1]["text"] == "I will inspect it."
+        assert assistant["content"][2]["id"] == "toolu_1"
+
+    def test_minimax_m3_accepts_prior_provider_reasoning_on_fallback(self):
+        """Document the current provider-agnostic history replay contract."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="MiniMax-M3",
+            messages=[
+                {"role": "user", "content": "Look up a value."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "Prior-provider reasoning summary.",
+                    "tool_calls": [
+                        {
+                            "id": "call_prior",
+                            "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_prior", "content": "value=42"},
+                {"role": "user", "content": "What value was returned?"},
+            ],
+            tools=tools,
+            max_tokens=1024,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+
+        assistant = next(
+            message for message in kwargs["messages"] if message["role"] == "assistant"
+        )
+        assert [block["type"] for block in assistant["content"]] == [
+            "thinking",
+            "tool_use",
+        ]
+        assert assistant["content"][1]["id"] == "call_prior"
+
+    def test_minimax_m3_cn_replays_thinking_block_after_tool_call(self):
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        _, messages = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "Use the tool."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_details": [
+                        {"type": "thinking", "thinking": "I should use the tool."}
+                    ],
+                    "tool_calls": [
+                        {
+                            "id": "toolu_1",
+                            "type": "function",
+                            "function": {"name": "read_file", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "toolu_1", "content": "result"},
+            ],
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assistant = next(message for message in messages if message["role"] == "assistant")
+        assert [block["type"] for block in assistant["content"]] == ["thinking", "tool_use"]
+        assert assistant["content"][0]["thinking"] == "I should use the tool."
+        assert messages[-1]["content"][0]["type"] == "tool_result"
+
+    def test_minimax_m3_drops_thinking_when_orphan_cleanup_mutates_tool_turn(self):
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        _, messages = convert_messages_to_anthropic(
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Call A and B."},
+                        {"type": "text", "text": "Will call A and B."},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_kept",
+                            "name": "tool_a",
+                            "input": {},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_orphan",
+                            "name": "tool_b",
+                            "input": {},
+                        },
+                    ],
+                    "reasoning_details": [
+                        {"type": "thinking", "thinking": "Call A and B."}
+                    ],
+                    "tool_calls": [
+                        {
+                            "id": "toolu_kept",
+                            "type": "function",
+                            "function": {"name": "tool_a", "arguments": "{}"},
+                        },
+                        {
+                            "id": "toolu_orphan",
+                            "type": "function",
+                            "function": {"name": "tool_b", "arguments": "{}"},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "toolu_kept", "content": "result"},
+            ],
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assistant = next(message for message in messages if message["role"] == "assistant")
+        assert not any(block.get("type") == "thinking" for block in assistant["content"])
+        kept_tool_uses = [
+            block["id"] for block in assistant["content"] if block.get("type") == "tool_use"
+        ]
+        # Pre-existing dual-source behavior appends tool_use blocks from both
+        # `content` and `tool_calls`; allow duplicates but require the kept id
+        # to be present and the orphan id to be absent.
+        assert "toolu_kept" in kept_tool_uses
+        assert "toolu_orphan" not in kept_tool_uses
+        # Surviving text block must be preserved alongside the kept tool_use.
+        text_blocks = [
+            block for block in assistant["content"] if block.get("type") == "text"
+        ]
+        assert text_blocks and text_blocks[0]["text"] == "Will call A and B."
+        assert "Call A and B." not in str(assistant["content"])
+        assert "_thinking_signature_invalidated" not in assistant
+
+    def test_minimax_m3_drops_thinking_when_all_tools_are_orphaned(self):
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        _, messages = convert_messages_to_anthropic(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_details": [
+                        {"type": "thinking", "thinking": "Call the tool."}
+                    ],
+                    "tool_calls": [
+                        {
+                            "id": "toolu_orphan",
+                            "type": "function",
+                            "function": {"name": "tool_a", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "user", "content": "never mind"},
+            ],
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assistant = next(message for message in messages if message["role"] == "assistant")
+        assert assistant["content"] == [{"type": "text", "text": "(thinking elided)"}]
+        assert "Call the tool." not in str(assistant["content"])
+        assert "_thinking_signature_invalidated" not in assistant
+
+    def test_minimax_m3_replays_redacted_thinking_block(self):
+        """MiniMax-M3 must also preserve redacted_thinking across turns."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        _, messages = convert_messages_to_anthropic(
+            [
+                {"role": "user", "content": "Use the tool."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_details": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": "redacted-payload-1",
+                        }
+                    ],
+                    "tool_calls": [
+                        {
+                            "id": "toolu_1",
+                            "type": "function",
+                            "function": {"name": "read_file", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "toolu_1", "content": "result"},
+            ],
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assistant = next(message for message in messages if message["role"] == "assistant")
+        assert [block["type"] for block in assistant["content"]] == [
+            "redacted_thinking",
+            "tool_use",
+        ]
+        assert assistant["content"][0]["data"] == "redacted-payload-1"
+        assert "_thinking_signature_invalidated" not in assistant
+
+    def test_minimax_m3_orphan_flag_propagates_across_assistant_merge(self):
+        """An orphan flag on the second assistant must survive the merge."""
+        from agent.anthropic_adapter import (
+            _manage_thinking_signatures,
+            _merge_consecutive_roles,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Plan."},
+                    {"type": "text", "text": "First answer."},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Continuing..."}],
+                # Simulate the flag already set by orphan-tool stripping.
+                "_thinking_signature_invalidated": True,
+            },
+        ]
+
+        merged = _merge_consecutive_roles(msgs)
+        assert len(merged) == 1
+        assert merged[0]["_thinking_signature_invalidated"] is True
+
+        _manage_thinking_signatures(
+            merged,
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assistant = merged[0]
+        assert "_thinking_signature_invalidated" not in assistant
+        assert not any(
+            block.get("type") == "thinking" for block in assistant["content"]
+        )
+        assert [
+            block["text"] for block in assistant["content"] if block.get("type") == "text"
+        ] == ["First answer.", "Continuing..."]
 
     def test_thinking_still_works_for_claude(self):
         from agent.anthropic_adapter import build_anthropic_kwargs

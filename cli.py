@@ -4198,6 +4198,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # Battery read-out in the status bar (toggled via /battery, off by
+        # default). Persisted to display.battery so it survives restarts.
+        self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4556,6 +4559,73 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return "class:status-bar-good"
 
     @staticmethod
+    def _battery_status_style(category: str) -> str:
+        """Map a battery colour category to a status-bar style class."""
+        return {
+            "good": "class:status-bar-good",
+            "warn": "class:status-bar-warn",
+            "bad": "class:status-bar-bad",
+            "critical": "class:status-bar-critical",
+        }.get(category, "class:status-bar-dim")
+
+    def _handle_battery_command(self, cmd_original: str) -> None:
+        """Toggle the status-bar battery read-out.
+
+        ``/battery`` toggles, ``/battery on|off`` sets explicitly, and
+        ``/battery status`` reports the current setting plus a live reading.
+        The choice is persisted to ``display.battery`` so it survives restarts.
+        """
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        try:
+            from agent.battery import format_battery, read_battery
+            reading = read_battery(use_cache=False)
+        except Exception:
+            reading = None
+
+        if arg in ("status", "show"):
+            state = "on" if self._battery_visible else "off"
+            if reading is not None and reading.available:
+                self._console_print(
+                    f"  Battery indicator {state} — currently {format_battery(reading)}"
+                )
+            elif reading is not None:
+                self._console_print(
+                    f"  Battery indicator {state} — no battery detected on this machine"
+                )
+            else:
+                self._console_print(f"  Battery indicator {state}")
+            return
+
+        if arg in ("on", "true", "yes"):
+            target = True
+        elif arg in ("off", "false", "no"):
+            target = False
+        elif arg in ("", "toggle"):
+            target = not self._battery_visible
+        else:
+            self._console_print("  Usage: /battery [on|off|status]")
+            return
+
+        self._battery_visible = target
+        save_config_value("display.battery", target)
+
+        if target:
+            if reading is not None and not reading.available:
+                self._console_print(
+                    "  Battery indicator on — no battery detected, so nothing will show here"
+                )
+            elif reading is not None and reading.available:
+                self._console_print(
+                    f"  Battery indicator on — {format_battery(reading)}"
+                )
+            else:
+                self._console_print("  Battery indicator on")
+        else:
+            self._console_print("  Battery indicator off")
+
+    @staticmethod
     def _compression_count_style(count: int) -> str:
         """Return a style class reflecting context compression pressure."""
         if count >= 10:
@@ -4672,7 +4742,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "battery_label": "",
+            "battery_category": "dim",
         }
+
+        # Battery read-out (first status-bar element when enabled). Reads are
+        # memoised for a few seconds inside agent.battery, so polling it on
+        # every status-bar repaint is cheap.
+        if getattr(self, "_battery_visible", False):
+            try:
+                from agent.battery import (
+                    battery_category,
+                    format_battery,
+                    read_battery,
+                )
+
+                _batt = read_battery()
+                snapshot["battery_label"] = format_battery(_batt)
+                snapshot["battery_category"] = battery_category(_batt)
+            except Exception:
+                pass
 
         # Count live /background tasks. The dict entry is removed in the
         # task thread's finally block, so len() reflects truly-running tasks.
@@ -5153,15 +5242,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            battery_label = snapshot.get("battery_label") or ""
+            battery_prefix = f"{battery_label} │ " if battery_label else ""
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{battery_prefix}⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if battery_label:
+                    parts.insert(0, battery_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5188,6 +5281,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if battery_label:
+                parts.insert(0, battery_label)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5225,6 +5320,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            battery_label = snapshot.get("battery_label") or ""
+            battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
 
             if width < 52:
                 frags = [
@@ -5324,6 +5421,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
+
+            # Battery is the first status-bar element when enabled: prepend it
+            # ahead of the leading ⚕ marker in whichever width tier ran above.
+            if battery_label:
+                frags[0:0] = [
+                    ("class:status-bar", " "),
+                    (battery_style, battery_label),
+                    ("class:status-bar-dim", " │"),
+                ]
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -8978,6 +9084,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self._console_print(f"  Status bar {state}")
+        elif canonical == "battery":
+            self._handle_battery_command(cmd_original)
         elif canonical == "timestamps":
             self._handle_timestamps_command(cmd_original)
         elif canonical == "verbose":

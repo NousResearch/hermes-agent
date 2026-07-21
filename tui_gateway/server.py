@@ -11319,6 +11319,31 @@ def _(rid, params: dict) -> dict:
 # ── Methods: config ──────────────────────────────────────────────────
 
 
+@method("system.battery")
+def _(rid, params: dict) -> dict:
+    """Return the host battery status for the status-bar read-out.
+
+    Always resolves with a payload; ``available: false`` means there is no
+    battery (desktop/server/VM) or the read failed. The TUI only polls this
+    while the battery indicator is enabled.
+    """
+    try:
+        from agent.battery import battery_category, read_battery
+
+        batt = read_battery()
+        return _ok(
+            rid,
+            {
+                "available": batt.available,
+                "percent": batt.percent,
+                "plugged": batt.plugged,
+                "category": battery_category(batt),
+            },
+        )
+    except Exception:
+        return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
+
+
 @method("config.set")
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
@@ -11786,6 +11811,22 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4002, f"unknown compact value: {value}")
         _write_config_key("display.tui_compact", nv_b)
+        return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
+    if key == "battery":
+        raw = str(value or "").strip().lower()
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        cur_b = bool(d0.get("battery", False))
+        if raw in {"", "toggle"}:
+            nv_b = not cur_b
+        elif raw in {"on", "true", "yes"}:
+            nv_b = True
+        elif raw in {"off", "false", "no"}:
+            nv_b = False
+        else:
+            return _err(rid, 4002, f"unknown battery value: {value}")
+        _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
     if key == "statusbar":

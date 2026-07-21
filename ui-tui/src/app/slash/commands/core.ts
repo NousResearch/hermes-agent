@@ -580,6 +580,23 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'toggle a color-coded battery indicator in the status bar [on|off]',
+    name: 'battery',
+    run: (arg, ctx) => {
+      const next = flagFromArg(arg, ctx.ui.battery)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /battery [on|off|toggle]')
+      }
+
+      patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`battery indicator ${next ? 'on' : 'off'}`))
+    }
+  },
+
+  {
     aliases: ['q'],
     help: 'inspect or enqueue a message',
     name: 'queue',

@@ -1927,6 +1927,9 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Show a color-coded battery read-out as the first status-bar element in
+        # the CLI/TUI (off by default). No-op on machines without a battery.
+        "battery": False,
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

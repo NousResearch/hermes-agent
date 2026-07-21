@@ -116,6 +116,8 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 
 **Markdown stripping in final responses.** The CLI strips the most verbose markdown fences and `**bold**` / `*italic*` wrappers from *final* agent replies so they render as readable terminal prose rather than raw source. Code blocks and lists are preserved. This does not affect gateway platforms or tool results — they keep their markdown for native rendering.
 
+**Markdown table borders.** With `display.final_response_markdown: render` the CLI delegates table layout to Rich's Markdown renderer, which historically drew tables without vertical column dividers. Hermes now renders them with visible borders by default (`display.markdown_table_box_style: heavy_head`). Any [Rich box style](https://rich.readthedocs.io/en/latest/appendix/box.html) name is accepted — common choices are `heavy_head` (default: heavy header rule + light cell borders), `square` (uniform light box), `heavy` (uniform heavy box), `ascii` (no Unicode glyphs, safe on legacy terminals), or `simple` (legacy: header underline only, no column dividers). Unknown values fall back to the default.
+
 ## Slash Commands
 
 Type `/` to see the autocomplete dropdown. Hermes supports a large set of CLI slash commands, dynamic skill commands, and user-defined quick commands.

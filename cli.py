@@ -2558,9 +2558,103 @@ def _terminal_width_for_streaming() -> int:
     return max(20, cols - len(_STREAM_PAD) - 2)
 
 
+_DEFAULT_MARKDOWN_TABLE_BOX = "heavy_head"
+
+# Rich's ``box`` module exposes ~19 named ``Box`` constants.  We accept any
+# of them as a value for ``display.markdown_table_box_style`` — sanitised
+# below by case-insensitive name lookup against this allowlist.  Centralised
+# so the config validator and the renderer agree on what's legal (#28714).
+_RICH_MARKDOWN_TABLE_BOX_NAMES = frozenset({
+    "ascii", "ascii2", "ascii_double_head",
+    "double", "double_edge",
+    "heavy", "heavy_edge", "heavy_head",
+    "horizontals", "markdown",
+    "minimal", "minimal_double_head", "minimal_heavy_head",
+    "rounded",
+    "simple", "simple_head", "simple_heavy",
+    "square", "square_double_head",
+})
+
+
+def _resolve_markdown_table_box():
+    """Resolve ``display.markdown_table_box_style`` to a ``rich.box.Box``.
+
+    Read at render time — *not* cached on the Markdown subclass — so a
+    live config reload (`/reload-config` and test monkeypatches) picks up
+    the new value without rebuilding the class.  Unknown / non-string
+    values fall back to the documented default (#28714).
+    """
+    from rich import box
+
+    raw = CLI_CONFIG.get("display", {}).get(
+        "markdown_table_box_style", _DEFAULT_MARKDOWN_TABLE_BOX,
+    )
+    name = str(raw or _DEFAULT_MARKDOWN_TABLE_BOX).strip().lower()
+    if name in _RICH_MARKDOWN_TABLE_BOX_NAMES:
+        resolved = getattr(box, name.upper(), None)
+        if resolved is not None:
+            return resolved
+    return box.HEAVY_HEAD
+
+
+_HERMES_BORDERED_MARKDOWN_CLS = None
+
+
+def _get_hermes_bordered_markdown_cls():
+    """Lazy-build (and cache) a ``rich.markdown.Markdown`` subclass that
+    renders tables with visible column borders (#28714).
+
+    Upstream Rich 14.x hardcodes ``box=box.SIMPLE`` inside
+    ``TableElement.__rich_console__`` — which omits vertical dividers
+    entirely and makes multi-column tables effectively unreadable
+    (`final_response_markdown: render` users had to manually edit the
+    vendored Rich source to recover sane output).
+
+    The fix mirrors Rich's own ``TableElement`` body line-for-line so
+    we stay forward-compatible across Rich versions; the only delta is
+    the ``box=`` argument, which is now operator-configurable.
+    """
+    global _HERMES_BORDERED_MARKDOWN_CLS
+    if _HERMES_BORDERED_MARKDOWN_CLS is not None:
+        return _HERMES_BORDERED_MARKDOWN_CLS
+
+    from rich.markdown import Markdown, TableElement
+    from rich.table import Table
+
+    class _HermesBorderedTableElement(TableElement):
+        """Rich ``TableElement`` with the box style read from config."""
+
+        def __rich_console__(self, console, options):
+            table = Table(
+                box=_resolve_markdown_table_box(),
+                pad_edge=False,
+                style="markdown.table.border",
+                show_edge=True,
+                collapse_padding=True,
+            )
+            if self.header is not None and self.header.row is not None:
+                for column in self.header.row.cells:
+                    heading = column.content.copy()
+                    heading.stylize("markdown.table.header")
+                    table.add_column(heading)
+            if self.body is not None:
+                for row in self.body.rows:
+                    row_content = [element.content for element in row.cells]
+                    table.add_row(*row_content)
+            yield table
+
+    class _HermesBorderedMarkdown(Markdown):
+        """Drop-in ``Markdown`` subclass.  Identical to upstream except
+        for the ``"table_open"`` element binding."""
+
+        elements = {**Markdown.elements, "table_open": _HermesBorderedTableElement}
+
+    _HERMES_BORDERED_MARKDOWN_CLS = _HermesBorderedMarkdown
+    return _HERMES_BORDERED_MARKDOWN_CLS
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
-    from rich.markdown import Markdown
 
     # Estimate the cells available to the rendered table.  The Panel
     # used by the background-task / final-response path has 4 cells of
@@ -2593,7 +2687,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
     plain = realign_markdown_tables(plain, panel_width)
-    return Markdown(plain)
+    return _get_hermes_bordered_markdown_cls()(plain)
 
 
 _OUTPUT_HISTORY_ENABLED = True

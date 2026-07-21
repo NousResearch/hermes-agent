@@ -1896,6 +1896,15 @@ DEFAULT_CONFIG = {
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
+        # Box style for tables rendered when final_response_markdown is
+        # "render".  Rich ships ~19 box constants — see rich.box — but
+        # the useful subset for terminals is: heavy_head (default,
+        # vertical borders + heavy header rule), square (light box),
+        # heavy (loud box), simple (legacy: no vertical borders), or
+        # ascii (for terminals without box-drawing glyphs).  Fixes
+        # #28714 where the upstream rich.markdown default omits vertical
+        # column dividers and tables become hard to read.
+        "markdown_table_box_style": "heavy_head",
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
         # behaves badly with replayed scrollback.

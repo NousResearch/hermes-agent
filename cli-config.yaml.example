@@ -1252,6 +1252,26 @@ display:
   # Show [HH:MM] timestamps on user input and assistant response labels.
   # timestamps: false
 
+  # How the CLI presents the *final* assistant reply.
+  #   render: Run the text through Rich's Markdown renderer (headings,
+  #           tables, code blocks).  Best paired with `streaming: false`
+  #           since Rich expects the full document.
+  #   strip:  Strip the loudest markdown markers (default — prose-y).
+  #   raw:    Print the raw bytes (good for debugging).
+  # final_response_markdown: strip
+
+  # Box style for tables drawn by `final_response_markdown: render`.
+  # Upstream Rich defaults to a borderless table that's hard to read on
+  # multi-column data (#28714).  Any rich.box constant name is
+  # accepted; the useful subset on terminals is:
+  #   heavy_head: Heavy header rule + light cell borders (default).
+  #   square:     Uniform light-line box (┌─┬─┐ │ │ │ ├─┼─┤ └─┴─┘).
+  #   heavy:      Uniform heavy box (loud but very readable).
+  #   ascii:      ASCII-only (+ - |) for legacy terminals.
+  #   simple:     Legacy borderless — only a header underline.
+  # Unknown / blank values fall back to heavy_head.
+  # markdown_table_box_style: heavy_head
+
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
   # ───────────────────────────────────────────────────────────────────────────

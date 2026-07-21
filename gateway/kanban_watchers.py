@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import sqlite3
@@ -200,8 +201,22 @@ class GatewayKanbanWatchersMixin:
                     deliveries: list[dict] = []
                     active_platforms = {
                         getattr(platform, "value", str(platform)).lower()
-                        for platform in self.adapters.keys()
+                        for platform in getattr(self, "adapters", {}).keys()
                     }
+                    # Multiplexed role gateways keep secondary-profile adapters
+                    # under ``_profile_adapters`` while subscriptions are stamped
+                    # with ``notifier_profile`` (for example ``profile-pmo``).
+                    # The delivery path below correctly resolves those adapters
+                    # with ``_authorization_adapter()``, so the pre-claim
+                    # platform gate must consider them too. Otherwise PMO-owned
+                    # subscriptions stay at cursor 0 forever: the notifier sees
+                    # only the default adapter map, decides ``discord`` is not
+                    # active, and never claims/delivers blocked/completed events.
+                    for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
+                        active_platforms.update(
+                            getattr(platform, "value", str(platform)).lower()
+                            for platform in profile_adapters.keys()
+                        )
                     if not active_platforms:
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries
@@ -343,6 +358,10 @@ class GatewayKanbanWatchersMixin:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
+                        rich_approval: dict[str, Any] | None = None
+                        metadata: dict[str, Any] = {}
+                        if sub.get("thread_id"):
+                            metadata["thread_id"] = sub["thread_id"]
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
@@ -367,9 +386,33 @@ class GatewayKanbanWatchersMixin:
                             )
                         elif kind == "blocked":
                             reason = ""
+                            block_kind = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
+                            if ev.payload and ev.payload.get("kind"):
+                                block_kind = ev.payload.get("kind")
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                            if block_kind == "needs_input":
+                                msg += "\n🔔 **Human approval required**"
+                                reason_text = ""
+                                if ev.payload and ev.payload.get("reason"):
+                                    reason_text = str(ev.payload["reason"])
+                                rich_approval = {
+                                    "chat_id": sub["chat_id"],
+                                    "task_id": sub["task_id"],
+                                    "board": board_slug or _kb.DEFAULT_BOARD,
+                                    "title": title,
+                                    "summary": reason_text or "Human approval required.",
+                                    "progress": (
+                                        f"Task `{sub['task_id']}` is blocked and waiting for a human decision."
+                                    ),
+                                    "next_steps": (
+                                        "Approve to append `HUMAN_DECISION: APPROVED` and unblock the task; "
+                                        "reject to append `HUMAN_DECISION: REJECTED` and keep it blocked."
+                                    ),
+                                    "session_key": getattr(task, "session_id", None) or "",
+                                    "metadata": metadata,
+                                }
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
@@ -405,17 +448,26 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
-                        metadata: dict[str, Any] = {}
-                        if sub.get("thread_id"):
-                            metadata["thread_id"] = sub["thread_id"]
                         sub_key = (
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
+                            send_kanban_approval = getattr(adapter, "send_kanban_approval", None)
+                            if rich_approval and callable(send_kanban_approval) and inspect.iscoroutinefunction(send_kanban_approval):
+                                result = await send_kanban_approval(**rich_approval)
+                                if not getattr(result, "success", False):
+                                    logger.warning(
+                                        "kanban notifier: rich approval send failed for %s, falling back to text: %s",
+                                        sub["task_id"], getattr(result, "error", "unknown error"),
+                                    )
+                                    await adapter.send(
+                                        sub["chat_id"], msg, metadata=metadata,
+                                    )
+                            else:
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -1172,6 +1224,28 @@ class GatewayKanbanWatchersMixin:
                         if attempted >= auto_decompose_per_tick:
                             break
                         attempted += 1
+                        # Skip auto-decompose for worker-created tasks (created_by=profile-pmo).
+                        # Inspection failures should not block the normal decomposer path.
+                        try:
+                            conn = _kb.connect(board=slug)
+                            try:
+                                task = _kb.get_task(conn, tid)
+                            except Exception:
+                                task = None
+                            finally:
+                                conn.close()
+                            if getattr(task, "created_by", None) == "profile-pmo":
+                                logger.info(
+                                    "kanban auto-decompose: skipping %s because created_by=profile-pmo",
+                                    tid,
+                                )
+                                continue
+                        except Exception:
+                            logger.debug(
+                                "kanban auto-decompose: created_by inspection failed for %s",
+                                tid,
+                                exc_info=True,
+                            )
                         try:
                             outcome = _decomp.decompose_task(
                                 tid, author="auto-decomposer",

@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import struct
 import subprocess
 import tempfile
@@ -5150,8 +5151,21 @@ class DiscordAdapter(BasePlatformAdapter):
 
             config_overrides = _resolve_config_gates()
 
+            # Only PMO profile should have /kanban slash command
+            kanban_allowed = self.config.extra.get("kanban_slash_command", False)
+
+            # Force re-sync: remove stale /kanban command if not allowed for this profile
+            if not kanban_allowed:
+                try:
+                    tree.remove_command("kanban")
+                except Exception:
+                    pass
+
             for cmd_def in COMMAND_REGISTRY:
                 if not _is_gateway_available(cmd_def, config_overrides):
+                    continue
+                # Skip kanban command for non-PMO profiles
+                if cmd_def.name == "kanban" and not kanban_allowed:
                     continue
                 # Discord command names: lowercase, hyphens OK, max 32 chars.
                 discord_name = cmd_def.name.lower()[:32]
@@ -6593,6 +6607,82 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_kanban_approval(
+        self,
+        chat_id: str,
+        task_id: str,
+        board: str,
+        title: str,
+        summary: str,
+        progress: str,
+        next_steps: str,
+        session_key: str,
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a Kanban approval gate message with Approve/Reject buttons.
+
+        This is used when a Kanban task is blocked with `kind=needs_input`
+        (human approval gate). The buttons allow an authorized human to approve
+        or reject the task. Approve records `HUMAN_DECISION: APPROVED` and
+        unblocks the task; reject records `HUMAN_DECISION: REJECTED` and keeps
+        it blocked for remediation/follow-up.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # Build the approval message with full context
+            content = (
+                f"🔔 **Kanban Approval Gate Required**\n\n"
+                f"**Task:** {task_id}\n"
+                f"**Title:** {title}\n\n"
+                f"**Progress:**\n{progress}\n\n"
+                f"**Next Steps (if approved):**\n{next_steps}\n\n"
+                f"**Summary:** {summary}"
+            )
+
+            embed = discord.Embed(
+                title="🔔 Kanban Approval Gate Required",
+                description=f"**Task:** `{task_id}`  \n**Title:** {title}",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="📋 Progress So Far", value=progress[:1024] or "—", inline=False)
+            embed.add_field(name="➡️ Next Steps (if approved)", value=next_steps[:1024] or "—", inline=False)
+            embed.add_field(name="📝 Summary", value=summary[:1024] or "—", inline=False)
+            embed.set_footer(text=f"Task ID: {task_id} | Board: {board}")
+
+            # Mirror in plain content for clients where embeds don't render
+            content = (
+                f"🔔 **Kanban Approval Gate Required**\n\n"
+                f"**Task:** {task_id}\n"
+                f"**Title:** {title}\n\n"
+                f"**Progress:**\n{progress}\n\n"
+                f"**Next Steps (if approved):**\n{next_steps}\n\n"
+                f"**Summary:** {summary}"
+            )
+
+            view = KanbanApprovalView(
+                task_id=task_id,
+                board=board,
+                channel_id=target_id,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+
+            msg = await channel.send(content=content, embed=embed, view=view)
+            view._message = msg
+            return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
     async def send_clarify(
         self,
         chat_id: str,
@@ -7773,7 +7863,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView, KanbanApprovalView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -7928,6 +8018,146 @@ def _define_discord_view_classes() -> None:
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass  # message deleted or too old to edit
+
+    class KanbanApprovalView(discord.ui.View):
+        """Two-button view for Kanban human approval gates.
+
+        Used when a Kanban task is blocked with `kind=needs_input` (human approval gate).
+        Buttons map to the gateway's two choices:
+
+          * "✅ Approve"   → complete the task with HUMAN_DECISION: APPROVED
+          * "❌ Reject"    → complete the task with HUMAN_DECISION: REJECTED
+
+        Clicking calls the internal handler to complete the task via kanban_complete.
+        Only users in the adapter's allowlist can click. Times out after 10 minutes.
+        """
+
+        def __init__(
+            self,
+            task_id: str,
+            board: str,
+            channel_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=600)  # 10 minutes
+            self.task_id = task_id
+            self.board = board
+            self.channel_id = channel_id
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids
+            )
+
+        async def _resolve(
+            self,
+            interaction: discord.Interaction,
+            decision: str,
+            color: discord.Color,
+            label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This approval gate has already been resolved~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to approve/reject this task~", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+
+            # Update the embed with the decision
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except Exception as exc:
+                # Discord interactions expire quickly and duplicate clicks can
+                # produce 10062/Unknown interaction. The Kanban decision is the
+                # important durable side effect, so do not let a stale UI ack
+                # prevent comment/unblock. Valid fresh clicks still update the
+                # original message normally.
+                logger.debug("Kanban approval gate UI update failed: %s", exc)
+
+            # Record the human decision in comments. APPROVED additionally
+            # unblocks the task so the assigned worker can continue; REJECTED
+            # deliberately keeps the task blocked so the agent cannot proceed
+            # down a rejected path without a human follow-up/change request.
+            try:
+                from hermes_cli.kanban import run_slash
+
+                decision_text = "HUMAN_DECISION: APPROVED" if decision == "approve" else "HUMAN_DECISION: REJECTED"
+                actor = str(getattr(interaction.user, "display_name", "") or getattr(interaction.user, "id", "user"))
+                comment = f"{decision_text} by {actor}"
+                commands = [
+                    f"--board {shlex.quote(self.board)} comment {self.task_id} {shlex.quote(comment)} --author {shlex.quote(actor)}",
+                ]
+                if decision == "approve":
+                    commands.append(
+                        f"--board {shlex.quote(self.board)} unblock --reason {shlex.quote(comment)} {self.task_id}"
+                    )
+                for command in commands:
+                    result = await asyncio.to_thread(run_slash, command)
+                    if result and ("usage error" in result.lower() or "invalid choice" in result.lower()):
+                        raise RuntimeError(result[:500])
+                    logger.debug(
+                        "Kanban approval gate command for task %s by %s: %s",
+                        self.task_id,
+                        actor,
+                        result[:200] if result else "OK",
+                    )
+                logger.info(
+                    "Kanban approval gate %s for task %s by %s",
+                    decision.upper(),
+                    self.task_id,
+                    actor,
+                )
+            except Exception as exc:
+                logger.error("Failed to resolve Kanban approval gate task: %s", exc)
+
+        @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.green)
+        async def approve(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(interaction, "approve", discord.Color.green(), "✅ Approved")
+
+        @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red)
+        async def reject(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(interaction, "reject", discord.Color.red(), "❌ Rejected")
+
+        async def on_timeout(self):
+            """Handle view timeout -- disable buttons and mark as expired."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            # Visually update the Discord message so buttons appear disabled.
+            msg = getattr(self, '_message', None)
+            if msg:
+                try:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.greyple()
+                        embed.set_footer(text="⏱ Approval gate expired — no action taken")
+                    await msg.edit(embed=embed, view=self)
+                except Exception:
+                    pass  # message deleted or too old to edit
+
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.

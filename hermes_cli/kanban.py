@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -32,6 +33,21 @@ from hermes_cli.profiles import get_active_profile_name
 # ---------------------------------------------------------------------------
 # Small formatting helpers
 # ---------------------------------------------------------------------------
+
+
+# Task ids are minted as t_<hex> (see kanban_db). Unblock accepts multiple
+# positional ids for bulk mode; reason-looking free text must use --reason
+# so a note is not treated as a task id (#68613).
+_TASK_ID_RE = re.compile(r"^t_[a-f0-9]{6,}$", re.IGNORECASE)
+
+
+def _looks_like_task_id(value: str) -> bool:
+    return bool(value and _TASK_ID_RE.fullmatch(value.strip()))
+
+
+def _reject_non_task_ids(ids: list[str]) -> list[str]:
+    """Return invalid ids; empty list means all look like task ids."""
+    return [tid for tid in ids if not _looks_like_task_id(tid)]
 
 _STATUS_ICONS = {
     "todo":     "◻",
@@ -603,7 +619,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
-    p_unblock.add_argument("task_ids", nargs="+")
+    p_unblock.add_argument(
+        "task_ids",
+        nargs="+",
+        help="One or more task ids (t_<hex>). Free-text notes must use --reason, not positionals.",
+    )
 
     p_promote = sub.add_parser(
         "promote",
@@ -2145,6 +2165,22 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
+        return 1
+    # Fail fast before any mutation when a positional looks like a reason/note
+    # rather than a task id (common agent/user mix-up with block's shape).
+    invalid = _reject_non_task_ids(ids)
+    if invalid:
+        for bad in invalid:
+            print(
+                f"invalid task id {bad!r} — expected t_<hex> "
+                f"(did you mean: hermes kanban unblock --reason {bad!r} <task_id>?)",
+                file=sys.stderr,
+            )
+        print(
+            "No tasks were unblocked. Pass only task ids positionally; "
+            "put free-text notes in --reason.",
+            file=sys.stderr,
+        )
         return 1
     reason = getattr(args, "reason", None)
     if reason is not None:

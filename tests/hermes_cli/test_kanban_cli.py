@@ -159,6 +159,56 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+
+def test_unblock_rejects_reason_looking_positional_before_mutation(kanban_home, capsys):
+    """#68613: reason text before a real id must not partially unblock."""
+    import re
+
+    out = kc.run_slash("create 'x' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
+
+    ns = argparse.Namespace(
+        task_ids=["skill external_dirs fixed; retry review", tid],
+        reason=None,
+    )
+    code = kc._cmd_unblock(ns)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "invalid task id" in captured.err
+    assert "--reason" in captured.err
+    assert "No tasks were unblocked" in captured.err
+    # Real task must still be blocked
+    show = kc.run_slash(f"show {tid}")
+    assert "blocked" in show.lower()
+
+
+def test_unblock_with_reason_flag_and_valid_id(kanban_home):
+    import re
+
+    out = kc.run_slash("create 'x' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need decision'")
+    ns = argparse.Namespace(task_ids=[tid], reason="skill external_dirs fixed")
+    assert kc._cmd_unblock(ns) == 0
+    show = kc.run_slash(f"show {tid}")
+    # Unblock moves blocked -> ready/todo (history may still mention blocked)
+    assert "status:" in show.lower()
+    status_line = next(line for line in show.splitlines() if line.strip().lower().startswith("status"))
+    assert "blocked" not in status_line.lower()
+    assert "ready" in status_line.lower() or "todo" in status_line.lower()
+
+
+def test_looks_like_task_id():
+    assert kc._looks_like_task_id("t_cc0254fd")
+    assert kc._looks_like_task_id("t_deadbeefcafe")
+    assert not kc._looks_like_task_id("skill external_dirs fixed")
+    assert not kc._looks_like_task_id("t_short")
+    assert not kc._looks_like_task_id("")
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

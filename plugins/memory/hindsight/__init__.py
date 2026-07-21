@@ -1221,13 +1221,24 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._session_turns:
             return
 
-        turns_to_flush = list(self._session_turns)
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+
+        # On append-capable APIs only send the unretained watermark delta —
+        # otherwise we'd re-ship turns that the periodic retain already sent.
+        # On legacy/overwrite APIs we must send everything because each
+        # retain replaces the document.
+        if update_mode == "append":
+            turns_to_flush = self._session_turns[self._last_retained_turn_count:]
+            if not turns_to_flush:
+                return
+        else:
+            turns_to_flush = list(self._session_turns)
+
         self._session_turns.clear()
         self._turn_counter = 0
         self._last_retained_turn_count = 0
 
         content = "[" + ",".join(turns_to_flush) + "]"
-        document_id, update_mode = self._resolve_retain_target(self._document_id)
 
         lineage_tags: list[str] = []
         if self._session_id:

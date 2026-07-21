@@ -382,3 +382,59 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+
+# =========================================================================
+# read_file line counting for files without a trailing newline
+# =========================================================================
+
+
+class _RealShellEnv:
+    """Minimal env that runs commands through bash for end-to-end read_file tests."""
+
+    def __init__(self, cwd):
+        self.cwd = cwd
+
+    def execute(self, command, cwd=None, **kwargs):
+        import subprocess
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            cwd=cwd or self.cwd,
+            capture_output=True,
+            text=True,
+        )
+        return {"output": proc.stdout, "returncode": proc.returncode}
+
+
+class TestReadFileTrailingNewlineCount:
+    """``read_file`` must count a final line that lacks a trailing newline."""
+
+    def _ops(self, tmp_path):
+        return ShellFileOperations(_RealShellEnv(str(tmp_path)))
+
+    def test_total_lines_counts_final_unterminated_line(self, tmp_path):
+        # 3 real lines, no trailing newline.
+        (tmp_path / "a.txt").write_text("l1\nl2\nl3")
+        result = self._ops(tmp_path).read_file("a.txt", offset=1, limit=500)
+        assert result.error is None
+        assert result.total_lines == 3
+
+    def test_final_line_at_page_boundary_is_not_lost(self, tmp_path):
+        # 3 real lines, no trailing newline, page size 2: line 3 lands just
+        # past the first page. wc -l reported 2, so truncated was False and
+        # the continuation hint was suppressed — line 3 was never read.
+        (tmp_path / "c.txt").write_text("x1\nx2\nx3")
+        result = self._ops(tmp_path).read_file("c.txt", offset=1, limit=2)
+        assert result.error is None
+        assert result.total_lines == 3
+        assert result.truncated is True
+        assert result.hint and "offset=3" in result.hint
+        # And the final line is reachable on the next page.
+        page2 = self._ops(tmp_path).read_file("c.txt", offset=3, limit=2)
+        assert "x3" in page2.content
+
+    def test_trailing_newline_file_count_unchanged(self, tmp_path):
+        # Control: a file that ends in a newline still counts correctly.
+        (tmp_path / "b.txt").write_text("l1\nl2\nl3\n")
+        result = self._ops(tmp_path).read_file("b.txt", offset=1, limit=500)
+        assert result.total_lines == 3

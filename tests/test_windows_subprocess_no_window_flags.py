@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+import pytest
 from types import SimpleNamespace
 
 
@@ -38,34 +39,160 @@ def _spawns(captured, *needles):
 def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
     from tui_gateway import git_probe
 
-    captured = []
+    spawns = []
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="main\n")
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            if _is_probe(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("main\n", "")
+
+        def kill(self):  # pragma: no cover - never reached on the fast path
+            raise AssertionError("kill() must not run when git returns in time")
 
     monkeypatch.setattr(git_probe, "IS_WINDOWS", True)
     monkeypatch.setattr(git_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(git_probe.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _FakePopen)
 
     assert git_probe.run_git("C:/repo", "branch", "--show-current") == "main"
 
-    git_calls = _spawns(captured, "branch", "--show-current")
-    assert git_calls == [
-        (
-            ["git", "-C", "C:/repo", "branch", "--show-current"],
-            {
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": git_probe._GIT_TIMEOUT,
-                "check": False,
-                "stdin": subprocess.DEVNULL,
-                "creationflags": _CREATE_NO_WINDOW,
-            },
-        )
-    ]
+    git_calls = _spawns(spawns, "branch", "--show-current")
+    assert len(git_calls) == 1, git_calls
+    cmd, kwargs = git_calls[0]
+    assert cmd == ["git", "-C", "C:/repo", "branch", "--show-current"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
+def _is_probe(cmd) -> bool:
+    """True only for the ``git -C <cwd> branch --show-current`` spawn under test.
+
+    Patching ``git_probe.subprocess.Popen`` is process-wide (it is the
+    shared ``subprocess`` module), so the import-time update-check daemon
+    thread started by an earlier test can route its own ``git ... origin``
+    call through these mocks. Gating every record/side-effect on this predicate
+    keeps a stray daemon spawn from polluting the assertions.
+    """
+    return bool(cmd) and cmd[:2] == ["git", "-C"] and "branch" in cmd
+
+
+def test_tui_gateway_git_probe_timeout_returns_empty(monkeypatch):
+    """A hung git is killed, bounded cleanup runs, and run_git returns ""."""
+    from tui_gateway import git_probe
+
+    events = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_probe(cmd)
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            events.append(f"comm:{timeout}")
+            if timeout == git_probe._GIT_TIMEOUT:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")  # bounded post-kill drain succeeds
+
+        def kill(self):
+            if self._probe:
+                events.append("kill")
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _HangingPopen)
+
+    assert git_probe.run_git("C:/repo", "branch", "--show-current") == ""
+    assert events == [f"comm:{git_probe._GIT_TIMEOUT}", "kill", "comm:1"]
+
+
+@pytest.mark.parametrize(
+    "cleanup_exc",
+    [
+        subprocess.TimeoutExpired(cmd="git", timeout=1),
+        OSError("pipe closed"),
+        ValueError("I/O operation on closed file"),
+    ],
+)
+def test_tui_gateway_git_probe_timeout_cleanup_failure_is_swallowed(monkeypatch, cleanup_exc):
+    """If the bounded cleanup itself raises, run_git swallows it and returns ""."""
+    from tui_gateway import git_probe
+
+    class _StuckPopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_probe(cmd)
+            self.returncode = None
+            self._calls = 0
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            self._calls += 1
+            if self._calls == 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            raise cleanup_exc
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _StuckPopen)
+
+    assert git_probe.run_git("C:/repo", "branch", "--show-current") == ""
+
+
+def test_tui_gateway_git_probe_nonzero_returncode_returns_empty(monkeypatch):
+    """git finishes within budget but exits non-zero -> ""."""
+    from tui_gateway import git_probe
+
+    class _FailPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = 1 if _is_probe(cmd) else 0
+
+        def communicate(self, timeout=None):
+            return ("garbage-should-not-leak\n", "fatal: not a repo")
+
+        def kill(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _FailPopen)
+
+    assert git_probe.run_git("C:/repo", "branch", "--show-current") == ""
+
+
+def test_tui_gateway_git_probe_no_hide_flags_off_windows(monkeypatch):
+    """Off Windows, creationflags must NOT be passed."""
+    from tui_gateway import git_probe
+
+    spawns = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            if _is_probe(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("main\n", "")
+
+        def kill(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _FakePopen)
+
+    assert git_probe.run_git("C:/repo", "branch", "--show-current") == "main"
+    assert len(spawns) == 1, spawns
+    assert "creationflags" not in spawns[0][1]
 
 
 def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):

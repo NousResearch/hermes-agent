@@ -49,20 +49,36 @@ def run_git(cwd: str, *args: str) -> str:
         return ""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["git", "-C", cwd, *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_GIT_TIMEOUT,
-            check=False,
-            stdin=subprocess.DEVNULL,
             **_popen_kwargs,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return ""
+    try:
+        stdout, _ = proc.communicate(timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        # Bounded post-kill cleanup: on Windows, a process spawned CONCURRENTLY
+        # by another thread can inherit duplicates of this pipe's handles, so
+        # the pipe never reaches EOF even though git is already dead.
+        # subprocess.run()'s cleanup then joins the reader threads forever.
+        # A bounded second communicate() abandons the pipes after a grace
+        # period; the orphaned reader threads are daemonic and cost nothing.
+        try:
+            proc.communicate(timeout=1)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        return ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return stdout.strip() if proc.returncode == 0 else ""
 
 
 def branch(cwd: str) -> str:

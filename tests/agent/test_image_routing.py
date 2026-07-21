@@ -539,11 +539,49 @@ class TestExtractImageRefs:
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
         # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
         assert paths == [str(img)]
         assert urls == []
+
+    def test_finds_windows_drive_letter_paths(self):
+        first = "C:\\Users\\Hiro\\shot.png"
+        second = "D:/captures/current.JPG"
+
+        with patch("agent.image_routing.os.path.isfile", return_value=True):
+            paths, urls = extract_image_refs(f"Compare {first} against {second}.")
+
+        assert paths == [first, second]
+        assert urls == []
+
+    def test_windows_drive_letter_paths_are_case_insensitive(self):
+        path = "c:/captures/current.PNG"
+
+        with patch("agent.image_routing.os.path.isfile", return_value=True):
+            paths, urls = extract_image_refs(f"Check {path}")
+
+        assert paths == [path]
+        assert urls == []
+
+    def test_ignores_relative_windows_drive_paths(self):
+        with patch("agent.image_routing.os.path.isfile", return_value=True):
+            paths, urls = extract_image_refs(
+                "Do not attach C:relative.png or C:folder\\nested.png"
+            )
+
+        assert paths == []
+        assert urls == []
+
+    def test_does_not_match_windows_path_inside_url(self):
+        body = "Only the URL: https://example.com/files/C:/captures/current.png"
+
+        with patch("agent.image_routing.os.path.isfile", return_value=True):
+            paths, urls = extract_image_refs(body)
+
+        assert paths == []
+        assert urls == ["https://example.com/files/C:/captures/current.png"]
 
     def test_skips_nonexistent_paths(self, tmp_path: Path):
         # Path-shaped but no file on disk → skipped.

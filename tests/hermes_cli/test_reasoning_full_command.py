@@ -41,7 +41,7 @@ def _seed_config(tmp_path, monkeypatch):
     # cli captures _hermes_home at import; force it to the temp home.
     import cli
 
-    monkeypatch.setattr(cli, "_hermes_home", hh, raising=False)
+    monkeypatch.setattr("cli_config._hermes_home", hh)
     return hh
 
 

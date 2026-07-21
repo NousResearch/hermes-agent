@@ -123,6 +123,12 @@ hermes skills uninstall <skill-name>
 | [**mcp-oauth-remote-gateway**](/docs/user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway) | Manual OAuth for remote MCP servers on headless gateways. |
 | [**mcporter**](/docs/user-guide/skills/optional/mcp/mcp-mcporter) | Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation. |
 
+## media
+
+| Skill | Description |
+|-------|-------------|
+| [**youtube-unified-api**](/user-guide/skills/optional/media/media-youtube-unified-api) | Call YouTube APIs through MyBrandMetrics Discovery. |
+
 ## migration
 
 | Skill | Description |
@@ -177,6 +183,8 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**canvas**](/docs/user-guide/skills/optional/productivity/productivity-canvas) | Canvas LMS integration — fetch enrolled courses and assignments using API token authentication. |
+| [**clawbus**](/docs/user-guide/skills/optional/productivity/productivity-clawbus) | Search and install skills from the Clawbus library. |
+| [**google-workspace-cli**](/docs/user-guide/skills/optional/productivity/productivity-google-workspace-cli) | Use Google Workspace CLI without Google Cloud setup. |
 | [**here.now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publish static sites to &#123;slug&#125;.here.now and store private files in cloud Drives for agent-to-agent handoff. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcard system. Create cards from facts or text, chat with flashcards using free-text answers graded by the agent, generate quizzes from YouTube transcripts, review due cards with adaptive scheduling, and export/impor... |
 | [**shop**](/docs/user-guide/skills/optional/productivity/productivity-shop) | Shop catalog search, checkout, order tracking, returns. |
@@ -210,6 +218,13 @@ hermes skills uninstall <skill-name>
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
 | [**unbroker**](/docs/user-guide/skills/optional/security/security-unbroker) | Autonomously remove your info from data-broker sites. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web application penetration testing — reconnaissance, vulnerability analysis, proof-based exploitation, and professional reporting. Adapts Shannon's "No Exploit, No Report" methodology with hard guardrails for scope, authoriza... |
+
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**instagram-publisher**](/user-guide/skills/optional/social-media/social-media-instagram-publisher) | Publish Instagram media through MyBrandMetrics. |
+| [**tiktok-publisher**](/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
 
 ## software-development
 

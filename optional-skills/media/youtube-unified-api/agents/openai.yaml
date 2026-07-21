@@ -1,0 +1,4 @@
+interface:
+  display_name: "YouTube Unified API"
+  short_description: "Call YouTube APIs via MyBrandMetrics"
+  default_prompt: "Use $youtube-unified-api to choose the right YouTube endpoint and build a MyBrandMetrics X-API-Key curl request."

@@ -1,0 +1,5324 @@
+{
+  "sources": {
+    "youtube": "https://youtube.googleapis.com/$discovery/rest?version=v3",
+    "youtubeAnalytics": "https://youtubeanalytics.googleapis.com/$discovery/rest?version=v2",
+    "youtubeReporting": "https://youtubereporting.googleapis.com/$discovery/rest?version=v1"
+  },
+  "services": {
+    "youtube": {
+      "title": "YouTube Data API v3",
+      "mybrandmetrics_base_url": "https://api.mybrandmetrics.com",
+      "reference": "references/services/youtube-data-v3.md",
+      "method_count": 83,
+      "schema_count": 199
+    },
+    "youtubeAnalytics": {
+      "title": "YouTube Analytics API v2",
+      "mybrandmetrics_base_url": "https://api.mybrandmetrics.com",
+      "reference": "references/services/youtube-analytics-v2.md",
+      "method_count": 8,
+      "schema_count": 12
+    },
+    "youtubeReporting": {
+      "title": "YouTube Reporting API v1",
+      "mybrandmetrics_base_url": "https://api.mybrandmetrics.com",
+      "reference": "references/services/youtube-reporting-v1.md",
+      "method_count": 8,
+      "schema_count": 18
+    }
+  },
+  "method_count": 99,
+  "methods": [
+    {
+      "service": "youtube",
+      "id": "youtube.abuseReports.insert",
+      "resource": "abuseReports",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/abuseReports",
+      "mybrandmetrics_path": "/discovery/youtube/abuseReports",
+      "flat_path": "youtube/v3/abuseReports",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "AbuseReport",
+      "response_schema": "AbuseReport",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/abuseReports\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.activities.list",
+      "resource": "activities",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/activities",
+      "mybrandmetrics_path": "/discovery/youtube/activities",
+      "flat_path": "youtube/v3/activities",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "home": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "publishedAfter": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "publishedBefore": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "regionCode": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ActivityListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/activities\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.captions.delete",
+      "resource": "captions",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/captions",
+      "mybrandmetrics_path": "/discovery/youtube/captions",
+      "flat_path": "youtube/v3/captions",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOf": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.captions.download",
+      "resource": "captions",
+      "name": "download",
+      "http_method": "GET",
+      "path": "youtube/v3/captions/{id}",
+      "mybrandmetrics_path": "/discovery/youtube/captions/${ID}",
+      "flat_path": "youtube/v3/captions/{id}",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "tlang": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "tfmt": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOf": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": true,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions/${ID}\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.captions.insert",
+      "resource": "captions",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/captions",
+      "mybrandmetrics_path": "/discovery/youtube/captions",
+      "flat_path": "youtube/v3/captions",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "sync": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOf": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Caption",
+      "response_schema": "Caption",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/captions",
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"part=snippet\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.captions.list",
+      "resource": "captions",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/captions",
+      "mybrandmetrics_path": "/discovery/youtube/captions",
+      "flat_path": "youtube/v3/captions",
+      "required_parameters": [
+        "videoId",
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "videoId": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOf": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "CaptionListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\" \\\n  --url-query \"videoId=${VIDEO_ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.captions.update",
+      "resource": "captions",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/captions",
+      "mybrandmetrics_path": "/discovery/youtube/captions",
+      "flat_path": "youtube/v3/captions",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "sync": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOf": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Caption",
+      "response_schema": "Caption",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/captions",
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/captions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"part=snippet\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channelBanners.insert",
+      "resource": "channelBanners",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/channelBanners/insert",
+      "mybrandmetrics_path": "/discovery/youtube/channelBanners/insert",
+      "flat_path": "youtube/v3/channelBanners/insert",
+      "required_parameters": [],
+      "parameters": {
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "ChannelBannerResource",
+      "response_schema": "ChannelBannerResource",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.upload"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/channelBanners/insert",
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channelBanners/insert\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\"",
+      "upload_curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channelBanners/insert\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channelSections.delete",
+      "resource": "channelSections",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/channelSections",
+      "mybrandmetrics_path": "/discovery/youtube/channelSections",
+      "flat_path": "youtube/v3/channelSections",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channelSections\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channelSections.insert",
+      "resource": "channelSections",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/channelSections",
+      "mybrandmetrics_path": "/discovery/youtube/channelSections",
+      "flat_path": "youtube/v3/channelSections",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "ChannelSection",
+      "response_schema": "ChannelSection",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channelSections\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channelSections.list",
+      "resource": "channelSections",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/channelSections",
+      "mybrandmetrics_path": "/discovery/youtube/channelSections",
+      "flat_path": "youtube/v3/channelSections",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ChannelSectionListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channelSections\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channelSections.update",
+      "resource": "channelSections",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/channelSections",
+      "mybrandmetrics_path": "/discovery/youtube/channelSections",
+      "flat_path": "youtube/v3/channelSections",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "ChannelSection",
+      "response_schema": "ChannelSection",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channelSections\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channels.list",
+      "resource": "channels",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/channels",
+      "mybrandmetrics_path": "/discovery/youtube/channels",
+      "flat_path": "youtube/v3/channels",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "mySubscribers": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "categoryId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "managedByMe": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "forUsername": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "forHandle": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ChannelListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/youtubepartner-channel-audit"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channels\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.channels.update",
+      "resource": "channels",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/channels",
+      "mybrandmetrics_path": "/discovery/youtube/channels",
+      "flat_path": "youtube/v3/channels",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Channel",
+      "response_schema": "Channel",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/channels\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.commentThreads.insert",
+      "resource": "commentThreads",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/commentThreads",
+      "mybrandmetrics_path": "/discovery/youtube/commentThreads",
+      "flat_path": "youtube/v3/commentThreads",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "CommentThread",
+      "response_schema": "CommentThread",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/commentThreads\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.commentThreads.list",
+      "resource": "commentThreads",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/commentThreads",
+      "mybrandmetrics_path": "/discovery/youtube/commentThreads",
+      "flat_path": "youtube/v3/commentThreads",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "videoId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "postId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "allThreadsRelatedToChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "moderationStatus": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "published",
+            "heldForReview",
+            "likelySpam",
+            "rejected"
+          ]
+        },
+        "searchTerms": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "textFormat": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "textFormatUnspecified",
+            "html",
+            "plainText"
+          ]
+        },
+        "order": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "orderUnspecified",
+            "time",
+            "relevance"
+          ]
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "CommentThreadListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/commentThreads\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.comments.delete",
+      "resource": "comments",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/comments",
+      "mybrandmetrics_path": "/discovery/youtube/comments",
+      "flat_path": "youtube/v3/comments",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/comments\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.comments.insert",
+      "resource": "comments",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/comments",
+      "mybrandmetrics_path": "/discovery/youtube/comments",
+      "flat_path": "youtube/v3/comments",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "Comment",
+      "response_schema": "Comment",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/comments\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.comments.list",
+      "resource": "comments",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/comments",
+      "mybrandmetrics_path": "/discovery/youtube/comments",
+      "flat_path": "youtube/v3/comments",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "parentId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "textFormat": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "textFormatUnspecified",
+            "html",
+            "plainText"
+          ]
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "CommentListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/comments\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.comments.markAsSpam",
+      "resource": "comments",
+      "name": "markAsSpam",
+      "http_method": "POST",
+      "path": "youtube/v3/comments/markAsSpam",
+      "mybrandmetrics_path": "/discovery/youtube/comments/markAsSpam",
+      "flat_path": "youtube/v3/comments/markAsSpam",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/comments/markAsSpam\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.comments.setModerationStatus",
+      "resource": "comments",
+      "name": "setModerationStatus",
+      "http_method": "POST",
+      "path": "youtube/v3/comments/setModerationStatus",
+      "mybrandmetrics_path": "/discovery/youtube/comments/setModerationStatus",
+      "flat_path": "youtube/v3/comments/setModerationStatus",
+      "required_parameters": [
+        "id",
+        "moderationStatus"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "moderationStatus": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "published",
+            "heldForReview",
+            "likelySpam",
+            "rejected"
+          ]
+        },
+        "banAuthor": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/comments/setModerationStatus\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\" \\\n  --url-query \"moderationStatus=published\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.comments.update",
+      "resource": "comments",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/comments",
+      "mybrandmetrics_path": "/discovery/youtube/comments",
+      "flat_path": "youtube/v3/comments",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "Comment",
+      "response_schema": "Comment",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/comments\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.i18nLanguages.list",
+      "resource": "i18nLanguages",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/i18nLanguages",
+      "mybrandmetrics_path": "/discovery/youtube/i18nLanguages",
+      "flat_path": "youtube/v3/i18nLanguages",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "I18nLanguageListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/i18nLanguages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.i18nRegions.list",
+      "resource": "i18nRegions",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/i18nRegions",
+      "mybrandmetrics_path": "/discovery/youtube/i18nRegions",
+      "flat_path": "youtube/v3/i18nRegions",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "I18nRegionListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/i18nRegions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.bind",
+      "resource": "liveBroadcasts",
+      "name": "bind",
+      "http_method": "POST",
+      "path": "youtube/v3/liveBroadcasts/bind",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts/bind",
+      "flat_path": "youtube/v3/liveBroadcasts/bind",
+      "required_parameters": [
+        "id",
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "streamId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveBroadcast",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts/bind\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.delete",
+      "resource": "liveBroadcasts",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/liveBroadcasts",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts",
+      "flat_path": "youtube/v3/liveBroadcasts",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.insert",
+      "resource": "liveBroadcasts",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/liveBroadcasts",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts",
+      "flat_path": "youtube/v3/liveBroadcasts",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveBroadcast",
+      "response_schema": "LiveBroadcast",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.insertCuepoint",
+      "resource": "liveBroadcasts",
+      "name": "insertCuepoint",
+      "http_method": "POST",
+      "path": "youtube/v3/liveBroadcasts/cuepoint",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts/cuepoint",
+      "flat_path": "youtube/v3/liveBroadcasts/cuepoint",
+      "required_parameters": [],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Cuepoint",
+      "response_schema": "Cuepoint",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts/cuepoint\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.list",
+      "resource": "liveBroadcasts",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/liveBroadcasts",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts",
+      "flat_path": "youtube/v3/liveBroadcasts",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "broadcastStatus": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "broadcastStatusFilterUnspecified",
+            "all",
+            "active",
+            "upcoming",
+            "completed"
+          ]
+        },
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "broadcastType": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "broadcastTypeFilterUnspecified",
+            "all",
+            "event",
+            "persistent"
+          ]
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveBroadcastListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.transition",
+      "resource": "liveBroadcasts",
+      "name": "transition",
+      "http_method": "POST",
+      "path": "youtube/v3/liveBroadcasts/transition",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts/transition",
+      "flat_path": "youtube/v3/liveBroadcasts/transition",
+      "required_parameters": [
+        "id",
+        "broadcastStatus",
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "broadcastStatus": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "statusUnspecified",
+            "testing",
+            "live",
+            "complete"
+          ]
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveBroadcast",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts/transition\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"broadcastStatus=statusUnspecified\" \\\n  --url-query \"id=${ID}\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveBroadcasts.update",
+      "resource": "liveBroadcasts",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/liveBroadcasts",
+      "mybrandmetrics_path": "/discovery/youtube/liveBroadcasts",
+      "flat_path": "youtube/v3/liveBroadcasts",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveBroadcast",
+      "response_schema": "LiveBroadcast",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveBroadcasts\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatBans.delete",
+      "resource": "liveChatBans",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/liveChat/bans",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/bans",
+      "flat_path": "youtube/v3/liveChat/bans",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/bans\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatBans.insert",
+      "resource": "liveChatBans",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/liveChat/bans",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/bans",
+      "flat_path": "youtube/v3/liveChat/bans",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveChatBan",
+      "response_schema": "LiveChatBan",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/bans\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatMessages.delete",
+      "resource": "liveChatMessages",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/liveChat/messages",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/messages",
+      "flat_path": "youtube/v3/liveChat/messages",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/messages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatMessages.insert",
+      "resource": "liveChatMessages",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/liveChat/messages",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/messages",
+      "flat_path": "youtube/v3/liveChat/messages",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveChatMessage",
+      "response_schema": "LiveChatMessage",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/messages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatMessages.list",
+      "resource": "liveChatMessages",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/liveChat/messages",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/messages",
+      "flat_path": "youtube/v3/liveChat/messages",
+      "required_parameters": [
+        "liveChatId",
+        "part"
+      ],
+      "parameters": {
+        "liveChatId": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "profileImageSize": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveChatMessageListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/messages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"liveChatId=${LIVE_CHAT_ID}\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatMessages.transition",
+      "resource": "liveChatMessages",
+      "name": "transition",
+      "http_method": "POST",
+      "path": "youtube/v3/liveChat/messages/transition",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/messages/transition",
+      "flat_path": "youtube/v3/liveChat/messages/transition",
+      "required_parameters": [],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "status": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "statusUnspecified",
+            "closed"
+          ]
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveChatMessage",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/messages/transition\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatModerators.delete",
+      "resource": "liveChatModerators",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/liveChat/moderators",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/moderators",
+      "flat_path": "youtube/v3/liveChat/moderators",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/moderators\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatModerators.insert",
+      "resource": "liveChatModerators",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/liveChat/moderators",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/moderators",
+      "flat_path": "youtube/v3/liveChat/moderators",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveChatModerator",
+      "response_schema": "LiveChatModerator",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/moderators\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveChatModerators.list",
+      "resource": "liveChatModerators",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/liveChat/moderators",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/moderators",
+      "flat_path": "youtube/v3/liveChat/moderators",
+      "required_parameters": [
+        "liveChatId",
+        "part"
+      ],
+      "parameters": {
+        "liveChatId": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveChatModeratorListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/moderators\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"liveChatId=${LIVE_CHAT_ID}\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveStreams.delete",
+      "resource": "liveStreams",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/liveStreams",
+      "mybrandmetrics_path": "/discovery/youtube/liveStreams",
+      "flat_path": "youtube/v3/liveStreams",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveStreams\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveStreams.insert",
+      "resource": "liveStreams",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/liveStreams",
+      "mybrandmetrics_path": "/discovery/youtube/liveStreams",
+      "flat_path": "youtube/v3/liveStreams",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveStream",
+      "response_schema": "LiveStream",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveStreams\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveStreams.list",
+      "resource": "liveStreams",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/liveStreams",
+      "mybrandmetrics_path": "/discovery/youtube/liveStreams",
+      "flat_path": "youtube/v3/liveStreams",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveStreamListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveStreams\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.liveStreams.update",
+      "resource": "liveStreams",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/liveStreams",
+      "mybrandmetrics_path": "/discovery/youtube/liveStreams",
+      "flat_path": "youtube/v3/liveStreams",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "LiveStream",
+      "response_schema": "LiveStream",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveStreams\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.members.list",
+      "resource": "members",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/members",
+      "mybrandmetrics_path": "/discovery/youtube/members",
+      "flat_path": "youtube/v3/members",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "mode": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "listMembersModeUnknown",
+            "updates",
+            "all_current"
+          ]
+        },
+        "hasAccessToLevel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "filterByMemberChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "MemberListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.channel-memberships.creator"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/members\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.membershipsLevels.list",
+      "resource": "membershipsLevels",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/membershipsLevels",
+      "mybrandmetrics_path": "/discovery/youtube/membershipsLevels",
+      "flat_path": "youtube/v3/membershipsLevels",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "MembershipsLevelListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.channel-memberships.creator"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/membershipsLevels\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistImages.delete",
+      "resource": "playlistImages",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/playlistImages",
+      "mybrandmetrics_path": "/discovery/youtube/playlistImages",
+      "flat_path": "youtube/v3/playlistImages",
+      "required_parameters": [],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistImages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistImages.insert",
+      "resource": "playlistImages",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/playlistImages",
+      "mybrandmetrics_path": "/discovery/youtube/playlistImages",
+      "flat_path": "youtube/v3/playlistImages",
+      "required_parameters": [],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "PlaylistImage",
+      "response_schema": "PlaylistImage",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/playlistImages",
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistImages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistImages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"part=snippet\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistImages.list",
+      "resource": "playlistImages",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/playlistImages",
+      "mybrandmetrics_path": "/discovery/youtube/playlistImages",
+      "flat_path": "youtube/v3/playlistImages",
+      "required_parameters": [],
+      "parameters": {
+        "parent": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "PlaylistImageListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistImages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistImages.update",
+      "resource": "playlistImages",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/playlistImages",
+      "mybrandmetrics_path": "/discovery/youtube/playlistImages",
+      "flat_path": "youtube/v3/playlistImages",
+      "required_parameters": [],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "PlaylistImage",
+      "response_schema": "PlaylistImage",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/playlistImages",
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistImages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistImages\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"part=snippet\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistItems.delete",
+      "resource": "playlistItems",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/playlistItems",
+      "mybrandmetrics_path": "/discovery/youtube/playlistItems",
+      "flat_path": "youtube/v3/playlistItems",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistItems.insert",
+      "resource": "playlistItems",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/playlistItems",
+      "mybrandmetrics_path": "/discovery/youtube/playlistItems",
+      "flat_path": "youtube/v3/playlistItems",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "PlaylistItem",
+      "response_schema": "PlaylistItem",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistItems.list",
+      "resource": "playlistItems",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/playlistItems",
+      "mybrandmetrics_path": "/discovery/youtube/playlistItems",
+      "flat_path": "youtube/v3/playlistItems",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "playlistId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "videoId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "PlaylistItemListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlistItems.update",
+      "resource": "playlistItems",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/playlistItems",
+      "mybrandmetrics_path": "/discovery/youtube/playlistItems",
+      "flat_path": "youtube/v3/playlistItems",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "PlaylistItem",
+      "response_schema": "PlaylistItem",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlistItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlists.delete",
+      "resource": "playlists",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/playlists",
+      "mybrandmetrics_path": "/discovery/youtube/playlists",
+      "flat_path": "youtube/v3/playlists",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlists\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlists.insert",
+      "resource": "playlists",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/playlists",
+      "mybrandmetrics_path": "/discovery/youtube/playlists",
+      "flat_path": "youtube/v3/playlists",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Playlist",
+      "response_schema": "Playlist",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlists\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlists.list",
+      "resource": "playlists",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/playlists",
+      "mybrandmetrics_path": "/discovery/youtube/playlists",
+      "flat_path": "youtube/v3/playlists",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "PlaylistListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlists\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.playlists.update",
+      "resource": "playlists",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/playlists",
+      "mybrandmetrics_path": "/discovery/youtube/playlists",
+      "flat_path": "youtube/v3/playlists",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Playlist",
+      "response_schema": "Playlist",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/playlists\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.search.list",
+      "resource": "search",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/search",
+      "mybrandmetrics_path": "/discovery/youtube/search",
+      "flat_path": "youtube/v3/search",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "q": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "type": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "order": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "searchSortUnspecified",
+            "date",
+            "rating",
+            "viewCount",
+            "relevance",
+            "title",
+            "videoCount"
+          ]
+        },
+        "relevanceLanguage": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "videoDimension": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "any",
+            "2d",
+            "3d"
+          ]
+        },
+        "videoDefinition": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "any",
+            "standard",
+            "high"
+          ]
+        },
+        "videoLicense": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "any",
+            "youtube",
+            "creativeCommon"
+          ]
+        },
+        "videoDuration": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "videoDurationUnspecified",
+            "any",
+            "short",
+            "medium",
+            "long"
+          ]
+        },
+        "videoCaption": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "videoCaptionUnspecified",
+            "any",
+            "closedCaption",
+            "none"
+          ]
+        },
+        "videoEmbeddable": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "videoEmbeddableUnspecified",
+            "any",
+            "true"
+          ]
+        },
+        "videoSyndicated": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "videoSyndicatedUnspecified",
+            "any",
+            "true"
+          ]
+        },
+        "videoCategoryId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "videoType": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "videoTypeUnspecified",
+            "any",
+            "movie",
+            "episode"
+          ]
+        },
+        "eventType": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "none",
+            "upcoming",
+            "live",
+            "completed"
+          ]
+        },
+        "location": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "locationRadius": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "publishedAfter": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "publishedBefore": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "topicId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "videoPaidProductPlacement": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "videoPaidProductPlacementUnspecified",
+            "any",
+            "true"
+          ]
+        },
+        "forContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "regionCode": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "channelType": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "channelTypeUnspecified",
+            "any",
+            "show"
+          ]
+        },
+        "safeSearch": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "safeSearchSettingUnspecified",
+            "none",
+            "moderate",
+            "strict"
+          ]
+        },
+        "forMine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "forDeveloper": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "SearchListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/search\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.subscriptions.delete",
+      "resource": "subscriptions",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/subscriptions",
+      "mybrandmetrics_path": "/discovery/youtube/subscriptions",
+      "flat_path": "youtube/v3/subscriptions",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/subscriptions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.subscriptions.insert",
+      "resource": "subscriptions",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/subscriptions",
+      "mybrandmetrics_path": "/discovery/youtube/subscriptions",
+      "flat_path": "youtube/v3/subscriptions",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "Subscription",
+      "response_schema": "Subscription",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/subscriptions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.subscriptions.list",
+      "resource": "subscriptions",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/subscriptions",
+      "mybrandmetrics_path": "/discovery/youtube/subscriptions",
+      "flat_path": "youtube/v3/subscriptions",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "channelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "forChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "order": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "subscriptionOrderUnspecified",
+            "relevance",
+            "unread",
+            "alphabetical"
+          ]
+        },
+        "mySubscribers": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "myRecentSubscribers": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "SubscriptionListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/subscriptions\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.superChatEvents.list",
+      "resource": "superChatEvents",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/superChatEvents",
+      "mybrandmetrics_path": "/discovery/youtube/superChatEvents",
+      "flat_path": "youtube/v3/superChatEvents",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "SuperChatEventListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/superChatEvents\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.tests.insert",
+      "resource": "tests",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/tests",
+      "mybrandmetrics_path": "/discovery/youtube/tests",
+      "flat_path": "youtube/v3/tests",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "externalChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "TestItem",
+      "response_schema": "TestItem",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/tests\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.thirdPartyLinks.delete",
+      "resource": "thirdPartyLinks",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/thirdPartyLinks",
+      "mybrandmetrics_path": "/discovery/youtube/thirdPartyLinks",
+      "flat_path": "youtube/v3/thirdPartyLinks",
+      "required_parameters": [
+        "linkingToken",
+        "type"
+      ],
+      "parameters": {
+        "linkingToken": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "type": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "linkUnspecified",
+            "channelToStoreLink"
+          ]
+        },
+        "externalChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/thirdPartyLinks\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"linkingToken=${LINKING_TOKEN}\" \\\n  --url-query \"type=linkUnspecified\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.thirdPartyLinks.insert",
+      "resource": "thirdPartyLinks",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/thirdPartyLinks",
+      "mybrandmetrics_path": "/discovery/youtube/thirdPartyLinks",
+      "flat_path": "youtube/v3/thirdPartyLinks",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "externalChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "ThirdPartyLink",
+      "response_schema": "ThirdPartyLink",
+      "oauth_scopes": [],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/thirdPartyLinks\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.thirdPartyLinks.list",
+      "resource": "thirdPartyLinks",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/thirdPartyLinks",
+      "mybrandmetrics_path": "/discovery/youtube/thirdPartyLinks",
+      "flat_path": "youtube/v3/thirdPartyLinks",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "linkingToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "type": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "linkUnspecified",
+            "channelToStoreLink"
+          ]
+        },
+        "externalChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ThirdPartyLinkListResponse",
+      "oauth_scopes": [],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/thirdPartyLinks\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.thirdPartyLinks.update",
+      "resource": "thirdPartyLinks",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/thirdPartyLinks",
+      "mybrandmetrics_path": "/discovery/youtube/thirdPartyLinks",
+      "flat_path": "youtube/v3/thirdPartyLinks",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "externalChannelId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "ThirdPartyLink",
+      "response_schema": "ThirdPartyLink",
+      "oauth_scopes": [],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/thirdPartyLinks\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.thumbnails.set",
+      "resource": "thumbnails",
+      "name": "set",
+      "http_method": "POST",
+      "path": "youtube/v3/thumbnails/set",
+      "mybrandmetrics_path": "/discovery/youtube/thumbnails/set",
+      "flat_path": "youtube/v3/thumbnails/set",
+      "required_parameters": [
+        "videoId"
+      ],
+      "parameters": {
+        "videoId": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ThumbnailSetResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/thumbnails/set",
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/thumbnails/set\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"videoId=${VIDEO_ID}\"",
+      "upload_curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/thumbnails/set\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"videoId=${VIDEO_ID}\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videoAbuseReportReasons.list",
+      "resource": "videoAbuseReportReasons",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/videoAbuseReportReasons",
+      "mybrandmetrics_path": "/discovery/youtube/videoAbuseReportReasons",
+      "flat_path": "youtube/v3/videoAbuseReportReasons",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "VideoAbuseReportReasonListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videoAbuseReportReasons\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videoCategories.list",
+      "resource": "videoCategories",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/videoCategories",
+      "mybrandmetrics_path": "/discovery/youtube/videoCategories",
+      "flat_path": "youtube/v3/videoCategories",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "regionCode": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "VideoCategoryListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videoCategories\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videoTrainability.get",
+      "resource": "videoTrainability",
+      "name": "get",
+      "http_method": "GET",
+      "path": "youtube/v3/videoTrainability",
+      "mybrandmetrics_path": "/discovery/youtube/videoTrainability",
+      "flat_path": "youtube/v3/videoTrainability",
+      "required_parameters": [],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "VideoTrainability",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videoTrainability\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.delete",
+      "resource": "videos",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "youtube/v3/videos",
+      "mybrandmetrics_path": "/discovery/youtube/videos",
+      "flat_path": "youtube/v3/videos",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.getRating",
+      "resource": "videos",
+      "name": "getRating",
+      "http_method": "GET",
+      "path": "youtube/v3/videos/getRating",
+      "mybrandmetrics_path": "/discovery/youtube/videos/getRating",
+      "flat_path": "youtube/v3/videos/getRating",
+      "required_parameters": [
+        "id"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "VideoGetRatingResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos/getRating\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.insert",
+      "resource": "videos",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "youtube/v3/videos",
+      "mybrandmetrics_path": "/discovery/youtube/videos",
+      "flat_path": "youtube/v3/videos",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "autoLevels": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "stabilize": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "notifySubscribers": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwnerChannel": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Video",
+      "response_schema": "Video",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/videos",
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"part=snippet\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.list",
+      "resource": "videos",
+      "name": "list",
+      "http_method": "GET",
+      "path": "youtube/v3/videos",
+      "mybrandmetrics_path": "/discovery/youtube/videos",
+      "flat_path": "youtube/v3/videos",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "myRating": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "none",
+            "like",
+            "dislike"
+          ]
+        },
+        "chart": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "chartUnspecified",
+            "mostPopular"
+          ]
+        },
+        "videoCategoryId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "regionCode": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxWidth": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "maxHeight": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "locale": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "VideoListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.rate",
+      "resource": "videos",
+      "name": "rate",
+      "http_method": "POST",
+      "path": "youtube/v3/videos/rate",
+      "mybrandmetrics_path": "/discovery/youtube/videos/rate",
+      "flat_path": "youtube/v3/videos/rate",
+      "required_parameters": [
+        "id",
+        "rating"
+      ],
+      "parameters": {
+        "id": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "rating": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": [
+            "none",
+            "like",
+            "dislike"
+          ]
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos/rate\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"id=${ID}\" \\\n  --url-query \"rating=none\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.reportAbuse",
+      "resource": "videos",
+      "name": "reportAbuse",
+      "http_method": "POST",
+      "path": "youtube/v3/videos/reportAbuse",
+      "mybrandmetrics_path": "/discovery/youtube/videos/reportAbuse",
+      "flat_path": "youtube/v3/videos/reportAbuse",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "VideoAbuseReport",
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos/reportAbuse\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.videos.update",
+      "resource": "videos",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "youtube/v3/videos",
+      "mybrandmetrics_path": "/discovery/youtube/videos",
+      "flat_path": "youtube/v3/videos",
+      "required_parameters": [
+        "part"
+      ],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Video",
+      "response_schema": "Video",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/videos\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.watermarks.set",
+      "resource": "watermarks",
+      "name": "set",
+      "http_method": "POST",
+      "path": "youtube/v3/watermarks/set",
+      "mybrandmetrics_path": "/discovery/youtube/watermarks/set",
+      "flat_path": "youtube/v3/watermarks/set",
+      "required_parameters": [
+        "channelId"
+      ],
+      "parameters": {
+        "channelId": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "InvideoBranding",
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": true,
+      "mybrandmetrics_upload_path": "/discovery/youtube/watermarks/set",
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/watermarks/set\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"channelId=${CHANNEL_ID}\"",
+      "upload_curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/watermarks/set\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  -H \"Content-Type: ${MIME_TYPE:-application/octet-stream}\" \\\n  --data-binary \"@${MEDIA_FILE}\" \\\n  --url-query \"channelId=${CHANNEL_ID}\""
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.watermarks.unset",
+      "resource": "watermarks",
+      "name": "unset",
+      "http_method": "POST",
+      "path": "youtube/v3/watermarks/unset",
+      "mybrandmetrics_path": "/discovery/youtube/watermarks/unset",
+      "flat_path": "youtube/v3/watermarks/unset",
+      "required_parameters": [
+        "channelId"
+      ],
+      "parameters": {
+        "channelId": {
+          "location": "query",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": null,
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtubepartner"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/watermarks/unset\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"channelId=${CHANNEL_ID}\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.youtube.v3.liveChat.messages.stream",
+      "resource": "youtube.v3.liveChat.messages",
+      "name": "stream",
+      "http_method": "GET",
+      "path": "youtube/v3/liveChat/messages/stream",
+      "mybrandmetrics_path": "/discovery/youtube/liveChat/messages/stream",
+      "flat_path": "youtube/v3/liveChat/messages/stream",
+      "required_parameters": [],
+      "parameters": {
+        "liveChatId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "hl": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "profileImageSize": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "LiveChatMessageListResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/liveChat/messages/stream\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtube",
+      "id": "youtube.youtube.v3.updateCommentThreads",
+      "resource": "youtube.v3",
+      "name": "updateCommentThreads",
+      "http_method": "PUT",
+      "path": "youtube/v3/commentThreads",
+      "mybrandmetrics_path": "/discovery/youtube/commentThreads",
+      "flat_path": "youtube/v3/commentThreads",
+      "required_parameters": [],
+      "parameters": {
+        "part": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": true,
+          "enum": null
+        }
+      },
+      "request_schema": "CommentThread",
+      "response_schema": "CommentThread",
+      "oauth_scopes": [],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtube/commentThreads\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\" \\\n  --url-query \"part=snippet\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groupItems.delete",
+      "resource": "groupItems",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "v2/groupItems",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groupItems",
+      "flat_path": "v2/groupItems",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "EmptyResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groupItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groupItems.insert",
+      "resource": "groupItems",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "v2/groupItems",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groupItems",
+      "flat_path": "v2/groupItems",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "GroupItem",
+      "response_schema": "GroupItem",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groupItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groupItems.list",
+      "resource": "groupItems",
+      "name": "list",
+      "http_method": "GET",
+      "path": "v2/groupItems",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groupItems",
+      "flat_path": "v2/groupItems",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "groupId": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ListGroupItemsResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groupItems\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groups.delete",
+      "resource": "groups",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "v2/groups",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groups",
+      "flat_path": "v2/groups",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "EmptyResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groups\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groups.insert",
+      "resource": "groups",
+      "name": "insert",
+      "http_method": "POST",
+      "path": "v2/groups",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groups",
+      "flat_path": "v2/groups",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Group",
+      "response_schema": "Group",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groups\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groups.list",
+      "resource": "groups",
+      "name": "list",
+      "http_method": "GET",
+      "path": "v2/groups",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groups",
+      "flat_path": "v2/groups",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "id": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "mine": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ListGroupsResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groups\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.groups.update",
+      "resource": "groups",
+      "name": "update",
+      "http_method": "PUT",
+      "path": "v2/groups",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/groups",
+      "flat_path": "v2/groups",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Group",
+      "response_schema": "Group",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X PUT \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/groups\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeAnalytics",
+      "id": "youtubeAnalytics.reports.query",
+      "resource": "reports",
+      "name": "query",
+      "http_method": "GET",
+      "path": "v2/reports",
+      "mybrandmetrics_path": "/discovery/youtubeAnalytics/reports",
+      "flat_path": "v2/reports",
+      "required_parameters": [],
+      "parameters": {
+        "ids": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "startDate": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "endDate": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "metrics": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "dimensions": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "currency": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "filters": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "includeHistoricalChannelData": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        },
+        "maxResults": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "sort": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "startIndex": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "QueryResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/youtube",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtubepartner",
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeAnalytics/reports\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --url-query \"ids=channel==MINE\" \\\n  --url-query \"startDate=2026-01-01\" \\\n  --url-query \"endDate=2026-01-31\" \\\n  --url-query \"metrics=views,estimatedMinutesWatched\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.jobs.create",
+      "resource": "jobs",
+      "name": "create",
+      "http_method": "POST",
+      "path": "v1/jobs",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/jobs",
+      "flat_path": "v1/jobs",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": "Job",
+      "response_schema": "Job",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X POST \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/jobs\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\" \\\n  --json \"@body.json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.jobs.delete",
+      "resource": "jobs",
+      "name": "delete",
+      "http_method": "DELETE",
+      "path": "v1/jobs/{jobId}",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/jobs/${JOB_ID}",
+      "flat_path": "v1/jobs/{jobId}",
+      "required_parameters": [
+        "jobId"
+      ],
+      "parameters": {
+        "jobId": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "Empty",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X DELETE \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/jobs/${JOB_ID}\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.jobs.get",
+      "resource": "jobs",
+      "name": "get",
+      "http_method": "GET",
+      "path": "v1/jobs/{jobId}",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/jobs/${JOB_ID}",
+      "flat_path": "v1/jobs/{jobId}",
+      "required_parameters": [
+        "jobId"
+      ],
+      "parameters": {
+        "jobId": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "Job",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/jobs/${JOB_ID}\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.jobs.list",
+      "resource": "jobs",
+      "name": "list",
+      "http_method": "GET",
+      "path": "v1/jobs",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/jobs",
+      "flat_path": "v1/jobs",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "pageSize": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "includeSystemManaged": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ListJobsResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/jobs\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.jobs.reports.get",
+      "resource": "jobs.reports",
+      "name": "get",
+      "http_method": "GET",
+      "path": "v1/jobs/{jobId}/reports/{reportId}",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/jobs/${JOB_ID}/reports/${REPORT_ID}",
+      "flat_path": "v1/jobs/{jobId}/reports/{reportId}",
+      "required_parameters": [
+        "jobId",
+        "reportId"
+      ],
+      "parameters": {
+        "jobId": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "reportId": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "Report",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/jobs/${JOB_ID}/reports/${REPORT_ID}\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.jobs.reports.list",
+      "resource": "jobs.reports",
+      "name": "list",
+      "http_method": "GET",
+      "path": "v1/jobs/{jobId}/reports",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/jobs/${JOB_ID}/reports",
+      "flat_path": "v1/jobs/{jobId}/reports",
+      "required_parameters": [
+        "jobId"
+      ],
+      "parameters": {
+        "jobId": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "pageSize": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "createdAfter": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "startTimeAtOrAfter": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "startTimeBefore": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ListReportsResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/jobs/${JOB_ID}/reports\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.media.download",
+      "resource": "media",
+      "name": "download",
+      "http_method": "GET",
+      "path": "v1/media/{+resourceName}",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/media/${RESOURCE_NAME}",
+      "flat_path": "v1/media/{mediaId}",
+      "required_parameters": [
+        "resourceName"
+      ],
+      "parameters": {
+        "resourceName": {
+          "location": "path",
+          "required": true,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "GdataMedia",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": true,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/media/${RESOURCE_NAME}\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    },
+    {
+      "service": "youtubeReporting",
+      "id": "youtubereporting.reportTypes.list",
+      "resource": "reportTypes",
+      "name": "list",
+      "http_method": "GET",
+      "path": "v1/reportTypes",
+      "mybrandmetrics_path": "/discovery/youtubeReporting/reportTypes",
+      "flat_path": "v1/reportTypes",
+      "required_parameters": [],
+      "parameters": {
+        "onBehalfOfContentOwner": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "pageSize": {
+          "location": "query",
+          "required": false,
+          "type": "integer",
+          "repeated": false,
+          "enum": null
+        },
+        "pageToken": {
+          "location": "query",
+          "required": false,
+          "type": "string",
+          "repeated": false,
+          "enum": null
+        },
+        "includeSystemManaged": {
+          "location": "query",
+          "required": false,
+          "type": "boolean",
+          "repeated": false,
+          "enum": null
+        }
+      },
+      "request_schema": null,
+      "response_schema": "ListReportTypesResponse",
+      "oauth_scopes": [
+        "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly"
+      ],
+      "has_media_upload": false,
+      "mybrandmetrics_upload_path": null,
+      "supports_media_download": false,
+      "curl": "curl -sS -X GET \"${MYBRANDMETRICS_API_BASE_URL:-https://api.mybrandmetrics.com}/discovery/youtubeReporting/reportTypes\" \\\n  -H \"X-API-Key: $MYBRANDMETRICS_API_KEY\" \\\n  -H \"Accept: application/json\"",
+      "upload_curl": null
+    }
+  ]
+}

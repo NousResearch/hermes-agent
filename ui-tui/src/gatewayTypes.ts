@@ -45,7 +45,7 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {

@@ -62,7 +62,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_task", "cost_router",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -245,7 +245,7 @@ TOOLSETS = {
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "tools": ["delegate_task", "cost_router"],
         "includes": []
     },
 

@@ -3239,6 +3239,111 @@ def test_run_prompt_submit_cancelled_handoff_restores_accepted_state(monkeypatch
     assert session.get("inflight_turn") is None
 
 
+def test_tui_kanban_commit_failure_waits_for_cancel_cleanup(monkeypatch, tmp_path):
+    import sqlite3
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="failed commit cleanup", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.block_task(conn, task_id, reason="force commit failure")
+    finally:
+        conn.close()
+
+    class _ControlledHandoff:
+        def __init__(self):
+            self.get_entered = threading.Event()
+            self.release_get = threading.Event()
+            self.value = None
+
+        def get(self):
+            self.get_entered.set()
+            assert self.release_get.wait(5)
+            return self.value
+
+        def put(self, value):
+            self.value = value
+
+    handoff = _ControlledHandoff()
+    provider_entered = threading.Event()
+
+    class _Agent:
+        session_id = "live-key"
+
+        def clear_interrupt(self):
+            pass
+
+        def run_conversation(self, _prompt, **_kwargs):
+            provider_entered.set()
+            return {"final_response": "", "messages": []}
+
+    session = _session(
+        agent=_Agent(), session_key="live-key", attached_images=["pending.png"]
+    )
+    server._sessions["live"] = session
+    monkeypatch.setattr(server.queue, "SimpleQueue", lambda: handoff)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    real_boundary = kb._execute_boundary_with_retry
+
+    def _fail_commit(active_conn, sql):
+        if sql == "COMMIT":
+            assert handoff.get_entered.wait(5)
+            raise sqlite3.OperationalError("forced COMMIT failure")
+        return real_boundary(active_conn, sql)
+
+    monkeypatch.setattr(kb, "_execute_boundary_with_retry", _fail_commit)
+    result = []
+    errors = []
+    poll_done = threading.Event()
+
+    def _poll():
+        try:
+            result.append(server._poll_tui_kanban_subscriptions("live", session))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            poll_done.set()
+
+    poller = threading.Thread(target=_poll, name="kanban-commit-cleanup-race")
+    try:
+        poller.start()
+        assert handoff.get_entered.wait(5)
+        assert not poll_done.wait(0.2)
+        with session["history_lock"]:
+            assert session["running"] is True
+            assert isinstance(session.get("inflight_turn"), dict)
+            assert session["attached_images"] == []
+
+        handoff.release_get.set()
+        poller.join(5)
+        assert not poller.is_alive()
+        assert errors == []
+        assert result == [False]
+        assert not provider_entered.is_set()
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session["attached_images"] == ["pending.png"]
+
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 0
+        finally:
+            conn.close()
+    finally:
+        handoff.release_get.set()
+        poller.join(5)
+        run_thread = session.get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(5)
+        server._sessions.pop("live", None)
+
+
 def test_run_prompt_submit_start_failure_restores_accepted_state(monkeypatch):
     class _BrokenThread:
         def __init__(self, **_kwargs):

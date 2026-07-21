@@ -9759,6 +9759,7 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                 reservation_lost = False
                 events = []
                 prompt_start = None
+                prompt_thread = None
                 try:
                     # ponytail: board-wide writer lock spans only prompt acceptance;
                     # use durable in-flight ranges if dispatch latency becomes material.
@@ -9791,7 +9792,7 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                                     f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
                                 )
                         prompt_start = queue.SimpleQueue()
-                        _run_prompt_submit(
+                        prompt_thread = _run_prompt_submit(
                             f"__kanban__{int(time.time() * 1000)}",
                             sid,
                             session,
@@ -9801,10 +9802,12 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                 except Exception as exc:
                     if prompt_start is not None:
                         prompt_start.put(False)
+                    if prompt_thread is not None:
+                        prompt_thread.join()
                     if reservation_lost:
                         return False
                     logger.warning("TUI Kanban notification dispatch failed: %s", exc)
-                    if reserved:
+                    if reserved and prompt_thread is None:
                         with session["history_lock"]:
                             session["running"] = False
                     return False
@@ -10096,7 +10099,7 @@ def _run_prompt_submit(
     text: Any,
     *,
     start_handoff: queue.SimpleQueue | None = None,
-) -> None:
+) -> threading.Thread:
     with session["history_lock"]:
         accepted_turn = session.get("running") and isinstance(
             session.get("inflight_turn"), dict
@@ -10694,6 +10697,7 @@ def _run_prompt_submit(
             session["running"] = False
             _clear_inflight_turn(session)
         raise
+    return run_thread
 
 
 @method("clipboard.paste")

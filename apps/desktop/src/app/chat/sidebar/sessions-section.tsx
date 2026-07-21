@@ -168,12 +168,15 @@ function EnteredProjectSection({
 }: EnteredProjectSectionProps) {
   const [focusedRepoId, setFocusedRepoId] = useState<null | string>(null)
 
+  const activeFocusedRepoId =
+    focusedRepoId && projectContent.repos.some(repo => repo.id === focusedRepoId) ? focusedRepoId : null
+
   return (
     <>
-      {!focusedRepoId && projectBackRow}
+      {!activeFocusedRepoId && projectBackRow}
       {hasProjectContent ? (
         <EnteredProjectContent
-          focusedRepoId={focusedRepoId}
+          focusedRepoId={activeFocusedRepoId}
           liveSessions={liveSessions}
           onExitRepo={() => setFocusedRepoId(null)}
           onFocusRepo={setFocusedRepoId}

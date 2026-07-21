@@ -1,12 +1,20 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import type * as ProjectStoreModule from '@/store/projects'
 
 import { SidebarSessionsSection } from '../sessions-section'
 
 import { EnteredProjectContent } from './entered-content'
 import type { SidebarProjectTree, SidebarSessionGroup, SidebarWorkspaceTree } from './workspace-groups'
+
+const projectStoreMocks = vi.hoisted(() => ({ switchBranchInRepo: vi.fn() }))
+
+vi.mock('@/store/projects', async importOriginal => ({
+  ...(await importOriginal<typeof ProjectStoreModule>()),
+  switchBranchInRepo: projectStoreMocks.switchBranchInRepo
+}))
 
 let nextSession = 0
 
@@ -30,8 +38,13 @@ function session(title: string, startedAt: number, cwd: string): SessionInfo {
   }
 }
 
-function lane(id: string, label: string, sessions: SessionInfo[]): SidebarSessionGroup {
-  return { id, label, path: id, sessions }
+function lane(
+  id: string,
+  label: string,
+  sessions: SessionInfo[],
+  options: Partial<Pick<SidebarSessionGroup, 'isHome' | 'isMain' | 'path'>> = {}
+): SidebarSessionGroup {
+  return { id, label, path: id, sessions, ...options }
 }
 
 function repo(id: string, label: string, groups: SidebarSessionGroup[]): SidebarWorkspaceTree {
@@ -60,19 +73,29 @@ function chatRows(sessions: SessionInfo[]) {
 
 function fixture() {
   const cards = repo('/workspace/clawdified/cards', 'Business cards', [
-    lane('/workspace/clawdified/cards::main', 'main', [
-      session('Cards chat 1', 10, '/workspace/clawdified/cards'),
-      session('Cards chat 2', 20, '/workspace/clawdified/cards'),
-      session('Cards chat 3', 30, '/workspace/clawdified/cards'),
-      session('Cards chat 4', 40, '/workspace/clawdified/cards'),
-      session('Cards chat 7', 70, '/workspace/clawdified/cards'),
-      session('Cards chat 8', 80, '/workspace/clawdified/cards'),
-      session('Cards chat 9', 90, '/workspace/clawdified/cards')
-    ]),
-    lane('/workspace/clawdified/cards::concept', 'concept', [
-      session('Cards chat 5', 50, '/workspace/clawdified/cards'),
-      session('Cards chat 6', 60, '/workspace/clawdified/cards')
-    ])
+    lane(
+      '/workspace/clawdified/cards::main',
+      'main',
+      [
+        session('Cards chat 1', 10, '/workspace/clawdified/cards'),
+        session('Cards chat 2', 20, '/workspace/clawdified/cards'),
+        session('Cards chat 3', 30, '/workspace/clawdified/cards'),
+        session('Cards chat 4', 40, '/workspace/clawdified/cards'),
+        session('Cards chat 7', 70, '/workspace/clawdified/cards'),
+        session('Cards chat 8', 80, '/workspace/clawdified/cards'),
+        session('Cards chat 9', 90, '/workspace/clawdified/cards')
+      ],
+      { isHome: true, isMain: true, path: '/workspace/clawdified/cards' }
+    ),
+    lane(
+      '/workspace/clawdified/cards::concept',
+      'concept',
+      [
+        session('Cards chat 5', 50, '/workspace/clawdified/cards'),
+        session('Cards chat 6', 60, '/workspace/clawdified/cards')
+      ],
+      { path: '/workspace/clawdified/cards/.worktrees/concept' }
+    )
   ])
 
   const website = repo('/workspace/clawdified/website', 'Website', [
@@ -87,6 +110,11 @@ afterEach(() => {
   window.localStorage.clear()
 })
 
+beforeEach(() => {
+  projectStoreMocks.switchBranchInRepo.mockReset()
+  projectStoreMocks.switchBranchInRepo.mockResolvedValue(undefined)
+})
+
 describe('EnteredProjectContent folder drill-down', () => {
   it('shows only folder rows until the user chooses one in a multi-folder project', () => {
     const { project } = fixture()
@@ -96,12 +124,12 @@ describe('EnteredProjectContent folder drill-down', () => {
       <EnteredProjectContent focusedRepoId={null} onFocusRepo={onFocusRepo} project={project} renderRows={chatRows} />
     )
 
-    expect(screen.getByRole('button', { name: 'Open Business cards' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Open Website' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Business cards' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Website' })).toBeTruthy()
     expect(screen.queryByText('Cards chat 1')).toBeNull()
     expect(screen.queryByText('Website chat')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open Business cards' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Business cards' }))
     expect(onFocusRepo).toHaveBeenCalledWith('/workspace/clawdified/cards')
   })
 
@@ -141,8 +169,86 @@ describe('EnteredProjectContent folder drill-down', () => {
       expect(screen.getByText(`Cards chat ${index}`)).toBeTruthy()
     }
 
-    expect(screen.queryByRole('button', { name: 'Open Business cards' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Business cards' })).toBeNull()
     expect(screen.queryByLabelText(/Show .* more/)).toBeNull()
+  })
+
+  it('deduplicates chats across lanes and globally sorts them by recency', () => {
+    const repoPath = '/workspace/clawdified/sorted'
+    const older = session('Older chat', 10, repoPath)
+    const duplicate = session('Duplicate chat', 20, repoPath)
+    const newest = session('Newest chat', 30, `${repoPath}/.worktrees/concept`)
+
+    const sortedRepo = repo(repoPath, 'Sorted chats', [
+      lane(`${repoPath}::main`, 'main', [older, duplicate], { isHome: true, isMain: true, path: repoPath }),
+      lane(`${repoPath}::concept`, 'concept', [duplicate, newest], { path: `${repoPath}/.worktrees/concept` })
+    ])
+
+    render(<EnteredProjectContent project={project([sortedRepo])} renderRows={chatRows} />)
+
+    expect(screen.getAllByText(/^(Newest|Duplicate|Older) chat$/).map(row => row.textContent)).toEqual([
+      'Newest chat',
+      'Duplicate chat',
+      'Older chat'
+    ])
+    expect(screen.getAllByText('Duplicate chat')).toHaveLength(1)
+  })
+
+  it('preserves linked-worktree targeting and controls inside a focused folder', async () => {
+    const { project } = fixture()
+    const onNewSession = vi.fn()
+
+    render(
+      <EnteredProjectContent
+        focusedRepoId="/workspace/clawdified/cards"
+        onNewSession={onNewSession}
+        project={project}
+        renderRows={chatRows}
+      />
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session in Business cards' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
+
+    const worktreeTarget = await screen.findByRole('menuitem', { name: 'New session in concept' })
+
+    const worktreeActions = screen.getByRole('menuitem', { name: 'concept' })
+
+    fireEvent.pointerMove(worktreeActions, { pointerType: 'mouse' })
+    expect(await screen.findByRole('menuitem', { name: 'Remove worktree…' })).toBeTruthy()
+    fireEvent.click(worktreeTarget)
+
+    await waitFor(() => expect(onNewSession).toHaveBeenCalledWith('/workspace/clawdified/cards/.worktrees/concept'))
+    expect(screen.queryByLabelText(/Show .* more/)).toBeNull()
+  })
+
+  it('switches the primary lane branch before creating a session there', async () => {
+    const { project } = fixture()
+    const onNewSession = vi.fn()
+
+    render(
+      <EnteredProjectContent
+        focusedRepoId="/workspace/clawdified/cards"
+        onNewSession={onNewSession}
+        project={project}
+        renderRows={chatRows}
+      />
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'New session in Business cards' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New session in main' }))
+
+    await waitFor(() => {
+      expect(projectStoreMocks.switchBranchInRepo).toHaveBeenCalledWith('/workspace/clawdified/cards', 'main')
+      expect(onNewSession).toHaveBeenCalledWith('/workspace/clawdified/cards')
+    })
   })
 })
 
@@ -170,13 +276,47 @@ describe('SidebarSessionsSection folder focus lifecycle', () => {
 
     const view = render(section(projectContent))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open Business cards' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Business cards' }))
     expect(screen.getByText('Cards chat 1')).toBeTruthy()
 
     view.rerender(section())
     view.rerender(section(projectContent))
 
-    expect(screen.getByRole('button', { name: 'Open Business cards' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Business cards' })).toBeTruthy()
     expect(screen.queryByText('Cards chat 1')).toBeNull()
+  })
+
+  it('restores the project back row if the focused folder disappears from the live project tree', () => {
+    const { project: projectContent, website } = fixture()
+    const projectBackRow = <div>Back to projects</div>
+
+    const section = (content: SidebarProjectTree) => (
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>No sessions</div>}
+        label="Sessions"
+        onArchiveSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onResumeSession={vi.fn()}
+        onToggle={vi.fn()}
+        onTogglePin={vi.fn()}
+        open
+        pinned={false}
+        projectBackRow={projectBackRow}
+        projectContent={content}
+        sessions={[]}
+        workingSessionIdSet={new Set()}
+      />
+    )
+
+    const view = render(section(projectContent))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Business cards' }))
+    expect(screen.queryByText('Back to projects')).toBeNull()
+
+    view.rerender(section(project([website])))
+
+    expect(screen.getByText('Back to projects')).toBeTruthy()
+    expect(screen.getByText('Website chat')).toBeTruthy()
   })
 })

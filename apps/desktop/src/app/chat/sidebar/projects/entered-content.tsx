@@ -12,12 +12,22 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $dismissedWorktreeIds, dismissWorktree } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { removeWorktreePath } from '@/store/projects'
+import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
@@ -31,7 +41,7 @@ import {
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
 } from './workspace-groups'
-import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
+import { WorkspaceAddButton, WorkspaceHeader, WorkspaceMenuItems } from './workspace-header'
 
 // Multi-folder projects first render one row per repo. A focused repo — or the
 // only repo — then renders one complete, deduplicated session list across its
@@ -72,7 +82,7 @@ export function EnteredProjectContent({
         {project.repos.map(repo => (
           <div className="group/workspace flex min-h-7 items-center gap-1 px-2 text-[0.6875rem]" key={repo.id}>
             <button
-              aria-label={`Open ${repo.label}`}
+              aria-label={repo.label}
               className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left font-semibold text-(--ui-text-secondary) hover:text-foreground"
               onClick={() => onFocusRepo?.(repo.id)}
               type="button"
@@ -107,27 +117,24 @@ export function EnteredProjectContent({
           <span className="truncate">{project.label}</span>
         </button>
       )}
-      <div className="flex min-h-7 items-center gap-1 px-2 text-[0.6875rem] font-semibold text-(--ui-text-secondary)">
-        <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder-opened" size="0.75rem" />
-        <span className="min-w-0 flex-1 truncate" title={focusedRepo.path ?? undefined}>
-          {focusedRepo.label}
-        </span>
-        <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">
-          {focusedRepo.sessionCount}
-        </span>
-        {onNewSession && (
-          <WorkspaceAddButton
-            label={t.sidebar.newSessionIn(focusedRepo.label)}
-            onClick={() => onNewSession(focusedRepo.path)}
-          />
-        )}
-      </div>
       <RepoFlatSection
         discoveredWorktrees={focusedRepo.path ? repoWorktrees?.[focusedRepo.path] : undefined}
         flattenSessions
         liveSessions={liveSessions}
         onNewSession={onNewSession}
         removedSessionIds={removedSessionIds}
+        renderHeader={actions => (
+          <div className="group/workspace flex min-h-7 items-center gap-1 px-2 text-[0.6875rem] font-semibold text-(--ui-text-secondary)">
+            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder-opened" size="0.75rem" />
+            <span className="min-w-0 flex-1 truncate" title={focusedRepo.path ?? undefined}>
+              {focusedRepo.label}
+            </span>
+            <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">
+              {focusedRepo.sessionCount}
+            </span>
+            {actions}
+          </div>
+        )}
         renderRows={renderRows}
         repo={focusedRepo}
         showHeader={false}
@@ -143,6 +150,7 @@ function RepoFlatSection({
   onNewSession,
   discoveredWorktrees,
   flattenSessions = false,
+  renderHeader,
   liveSessions,
   removedSessionIds
 }: {
@@ -152,6 +160,7 @@ function RepoFlatSection({
   onNewSession?: (path: null | string) => void
   discoveredWorktrees?: HermesGitWorktree[]
   flattenSessions?: boolean
+  renderHeader?: (actions: React.ReactNode) => React.ReactNode
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
@@ -320,9 +329,20 @@ function RepoFlatSection({
     </>
   )
 
+  const header = renderHeader?.(
+    <RepoActionsMenu
+      groups={ordered}
+      onNewSession={onNewSession}
+      onRemove={setRemoveTarget}
+      repoLabel={repo.label}
+      repoPath={repo.path}
+    />
+  )
+
   if (!showHeader) {
     return (
       <>
+        {header}
         {body}
         {removeDialog}
       </>
@@ -331,6 +351,7 @@ function RepoFlatSection({
 
   return (
     <SidebarRowStack>
+      {header}
       <WorkspaceHeader
         action={
           onNewSession && (
@@ -348,5 +369,86 @@ function RepoFlatSection({
       {open && <SidebarRowStack className="pl-2.5">{body}</SidebarRowStack>}
       {removeDialog}
     </SidebarRowStack>
+  )
+}
+
+function RepoActionsMenu({
+  groups,
+  repoLabel,
+  repoPath,
+  onNewSession,
+  onRemove
+}: {
+  groups: SidebarSessionGroup[]
+  repoLabel: string
+  repoPath: null | string
+  onNewSession?: (path: null | string) => void
+  onRemove: (group: SidebarSessionGroup) => void
+}) {
+  const { t } = useI18n()
+  const targets = groups.filter(group => !group.isKanban)
+  const worktrees = groups.filter(group => !group.isMain && !group.isKanban)
+
+  const startSession = async (group?: SidebarSessionGroup) => {
+    if (!onNewSession) {
+      return
+    }
+
+    if (group?.isMain && group.path && group.label) {
+      try {
+        await switchBranchInRepo(group.path, group.label)
+      } catch (err) {
+        notifyError(err, t.statusStack.coding.switchFailed(group.label))
+
+        return
+      }
+    }
+
+    onNewSession(group?.path ?? repoPath)
+  }
+
+  if (targets.length <= 1 && worktrees.length === 0) {
+    return onNewSession ? (
+      <WorkspaceAddButton label={t.sidebar.newSessionIn(repoLabel)} onClick={() => void startSession(targets[0])} />
+    ) : null
+  }
+
+  if (!onNewSession && worktrees.length === 0) {
+    return null
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={onNewSession ? t.sidebar.newSessionIn(repoLabel) : t.sidebar.projects.menu}
+          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
+          type="button"
+        >
+          <Codicon name={onNewSession ? 'add' : 'kebab-vertical'} size="0.75rem" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52" sideOffset={6}>
+        {onNewSession &&
+          targets.map(group => (
+            <DropdownMenuItem key={`new:${group.id}`} onSelect={() => void startSession(group)}>
+              <Codicon name={group.isHome ? 'home' : 'git-branch'} size="0.875rem" />
+              <span>{t.sidebar.newSessionIn(group.label)}</span>
+            </DropdownMenuItem>
+          ))}
+        {onNewSession && worktrees.length > 0 && <DropdownMenuSeparator />}
+        {worktrees.map(group => (
+          <DropdownMenuSub key={`actions:${group.id}`}>
+            <DropdownMenuSubTrigger>
+              <Codicon name="git-branch" size="0.875rem" />
+              <span>{group.label}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <WorkspaceMenuItems onRemove={() => onRemove(group)} path={group.path} />
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

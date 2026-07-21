@@ -29,7 +29,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from toolsets import TOOLSETS
 
@@ -1079,6 +1079,7 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    override_reasoning: Optional[Dict[str, Any]] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1295,27 +1296,31 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-route override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
-    try:
-        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
-        # False (``reasoning_effort: false``) to "" and inherit the parent
-        # instead of disabling thinking for children.
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
+    child_reasoning = cast(
+        Dict[str, Any],
+        override_reasoning if override_reasoning is not None else parent_reasoning,
+    )
+    if override_reasoning is None:
+        try:
+            # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+            # False (``reasoning_effort: false``) to "" and inherit the parent
+            # instead of disabling thinking for children.
+            delegation_effort = delegation_cfg.get("reasoning_effort")
+            if delegation_effort or delegation_effort is False:
+                from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+                parsed = parse_reasoning_effort(delegation_effort)
+                if parsed is not None:
+                    child_reasoning = parsed
+                else:
+                    logger.warning(
+                        "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                        delegation_effort,
+                    )
+        except Exception as exc:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -2429,6 +2434,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    route: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2436,8 +2442,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context and role)
-      - Batch:  provide tasks array [{goal, context, role}, ...]
+      - Single: provide goal (+ optional context, role, and route)
+      - Batch:  provide tasks array [{goal, context, role, route}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2503,15 +2509,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2532,7 +2529,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [{"goal": goal, "context": context, "role": top_role, "route": route}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2547,6 +2544,8 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    top_route = str(route or "").strip()
 
     overall_start = time.monotonic()
     results = []
@@ -2586,6 +2585,13 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            effective_route = str(t.get("route") or top_route).strip()
+            try:
+                route_cfg = _resolve_delegation_route(cfg, effective_route)
+                creds = _resolve_delegation_credentials(route_cfg, parent_agent)
+                route_reasoning = _parse_route_reasoning(route_cfg, effective_route)
+            except ValueError as exc:
+                return tool_error(str(exc))
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2603,6 +2609,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_request_overrides=creds.get("request_overrides"),
                 override_max_tokens=creds.get("max_output_tokens"),
+                override_reasoning=route_reasoning,
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
@@ -2999,6 +3006,11 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _dispatch_model = (
+            getattr(children[0][2], "model", None)
+            if len(children) == 1
+            else "mixed"
+        )
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -3006,7 +3018,7 @@ def delegate_task(
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
             role=top_role,
-            model=creds["model"],
+            model=_dispatch_model,
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             parent_session_id=_parent_session_id,
@@ -3286,6 +3298,40 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _resolve_delegation_route(cfg: dict, route: str) -> dict:
+    """Resolve an operator-defined route without letting it alter global limits."""
+    if not route:
+        return cfg
+    routes = cfg.get("routes") or {}
+    if not isinstance(routes, dict):
+        raise ValueError("delegation.routes must be a mapping of route names to settings.")
+    route_cfg = routes.get(route)
+    if not isinstance(route_cfg, dict):
+        available = ", ".join(sorted(str(name) for name in routes)) or "(none)"
+        raise ValueError(
+            f"Unknown delegation route '{route}'. Available routes: {available}."
+        )
+    merged = dict(cfg)
+    merged.update(route_cfg)
+    return merged
+
+
+def _parse_route_reasoning(cfg: dict, route: str) -> Optional[Dict[str, Any]]:
+    """Parse an explicit route effort; empty values retain inherited behavior."""
+    if "reasoning_effort" not in cfg:
+        return None
+    raw = cfg.get("reasoning_effort")
+    if not (raw or raw is False):
+        return None
+    from hermes_constants import parse_reasoning_effort
+
+    parsed = parse_reasoning_effort(raw)
+    if parsed is None:
+        label = f" for route '{route}'" if route else ""
+        raise ValueError(f"Unknown delegation.reasoning_effort{label}: {raw!r}.")
+    return parsed
+
+
 def _load_config() -> dict:
     """Load delegation config from the active Hermes config.
 
@@ -3563,6 +3609,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "route": {
+                            "type": "string",
+                            "description": "Per-task operator-defined delegation route override.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3575,6 +3625,13 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "route": {
+                "type": "string",
+                "description": (
+                    "Optional operator-defined route. A route selects a preconfigured "
+                    "provider, model, and reasoning level; arbitrary model selection is not allowed."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3647,6 +3704,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        route=args.get("route"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

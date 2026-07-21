@@ -34,6 +34,8 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_delegation_route,
+    _parse_route_reasoning,
     _inherit_parent_base_url,
 )
 
@@ -71,6 +73,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertIn("route", props)
+        self.assertIn("route", props["tasks"]["items"]["properties"])
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
@@ -154,6 +158,34 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+
+class TestDelegationRoutes(unittest.TestCase):
+    def test_route_overrides_model_provider_and_reasoning_only(self):
+        cfg = {
+            "model": "default-model",
+            "provider": "default-provider",
+            "max_iterations": 50,
+            "routes": {
+                "architect": {
+                    "model": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "reasoning_effort": "high",
+                }
+            },
+        }
+        resolved = _resolve_delegation_route(cfg, "architect")
+        self.assertEqual(resolved["model"], "gpt-5.6-sol")
+        self.assertEqual(resolved["provider"], "openai-codex")
+        self.assertEqual(resolved["max_iterations"], 50)
+        self.assertEqual(
+            _parse_route_reasoning(resolved, "architect"),
+            {"enabled": True, "effort": "high"},
+        )
+
+    def test_unknown_route_reports_available_allowlist(self):
+        with self.assertRaisesRegex(ValueError, "architect"):
+            _resolve_delegation_route({"routes": {"architect": {}}}, "typo")
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -1462,6 +1494,47 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_named_route_reaches_child_with_its_reasoning_level(self, mock_cfg, mock_creds):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "routes": {
+                "architect": {
+                    "model": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "reasoning_effort": "high",
+                }
+            },
+        }
+        mock_creds.return_value = {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "route-key",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = child
+            delegate_task(goal="Review the architecture", route="architect", parent_agent=parent)
+
+        mock_creds.assert_called_once()
+        resolved_cfg, resolved_parent = mock_creds.call_args.args
+        self.assertIs(resolved_parent, parent)
+        self.assertEqual(resolved_cfg["model"], "gpt-5.6-sol")
+        self.assertEqual(resolved_cfg["provider"], "openai-codex")
+        self.assertEqual(resolved_cfg["reasoning_effort"], "high")
+        self.assertEqual(resolved_cfg["max_iterations"], 45)
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-5.6-sol")
+        self.assertEqual(kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

@@ -2369,6 +2369,10 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
+        # Named allowlisted route settings for delegate_task(route=...). A route
+        # can override connection/model/reasoning keys; safety and concurrency
+        # policy remain in the enclosing delegation block.
+        "routes": {},
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap

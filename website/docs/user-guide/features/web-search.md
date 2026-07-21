@@ -27,6 +27,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **Anthropic (native)** | `ANTHROPIC_API_KEY` | ✔ | ✔ | Paid API usage |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
@@ -38,6 +39,13 @@ A fresh install with **no web credentials at all** gets working `web_search` and
 :::
 
 **Choosing free vs paid explicitly:** in `hermes tools`, Exa, Parallel, and Keenable each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins that vendor's anonymous endpoint (even if you later add a key); picking Paid pins the keyed path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise the keyless ring).
+
+When Anthropic is selected, Hermes maps its existing `web_search` and
+`web_extract` capabilities to Anthropic's server-side `web_search` and
+`web_fetch` tools. The tools run inside the Messages API request, use the same
+Anthropic credential as the model, and return source citations in Claude's
+response. Compatible third-party Anthropic endpoints are not assumed to host
+these tools; on those endpoints Hermes keeps the normal client-side web tools.
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
@@ -108,6 +116,22 @@ Run `hermes tools`, navigate to **Web Search & Extract**, and pick a provider. T
 ```bash
 hermes tools
 ```
+
+### Anthropic (native)
+
+Choose **Anthropic Web Search & Fetch** in `hermes tools`, or configure it
+directly:
+
+```yaml
+web:
+  backend: anthropic
+```
+
+No additional credential is required when `ANTHROPIC_API_KEY` was already
+configured for the model. Search uses `web_search_20250305`; fetch uses
+`web_fetch_20250910` with citations enabled. Both are capped at five uses per
+model request. Anthropic web search has a per-search charge in addition to
+normal token usage.
 
 ---
 

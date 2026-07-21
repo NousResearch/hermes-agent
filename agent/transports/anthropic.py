@@ -7,6 +7,8 @@ from agent.transports.types import NormalizedResponse, ToolCall
 
 _MCP_PREFIX = "mcp__"
 _THINKING_TYPES = ("thinking", "redacted_thinking")
+# Blocks of an Anthropic-executed server tool (native web search / fetch).
+_SERVER_TOOL_BLOCK_TYPES = ("server_tool_use", "web_search_tool_result", "web_fetch_tool_result")
 
 
 def _unprefix_oauth_tool_name(name: str) -> str:
@@ -35,7 +37,7 @@ class AnthropicTransport(ProviderTransport):
 
     _STOP_REASON_MAP = {
         "end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length", "stop_sequence": "stop",
-        "refusal": "content_filter", "model_context_window_exceeded": "length",
+        "refusal": "content_filter", "model_context_window_exceeded": "length", "pause_turn": "pause_turn",
     }
 
     @property
@@ -68,6 +70,7 @@ class AnthropicTransport(ProviderTransport):
         from agent.anthropic_message_convert import _sanitize_replay_block, _to_plain_data
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         text_parts, reasoning_parts, reasoning_details, tool_calls = [], [], [], []
+        citation_sources, seen_citation_urls = [], set()
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
         # interleaves with tool_use the parallel lists lose that order and replay -> HTTP 400.
         ordered_blocks = []
@@ -79,6 +82,19 @@ class AnthropicTransport(ProviderTransport):
                 ordered_blocks.append(clean_block)
             if block.type == "text":
                 text_parts.append(block.text)
+                # Citations arrive as structured metadata, not inline Markdown: ordered_blocks keeps them for
+                # replay, and a compact source list is rendered into the neutral text channel below so
+                # CLI/gateway users do not lose the URLs.
+                for citation in getattr(block, "citations", None) or []:
+                    citation_dict = _to_plain_data(citation)
+                    if not isinstance(citation_dict, dict):
+                        continue
+                    url = citation_dict.get("url")
+                    if not isinstance(url, str) or not url or url in seen_citation_urls:
+                        continue
+                    seen_citation_urls.add(url)
+                    title = citation_dict.get("title") or citation_dict.get("cited_text") or url
+                    citation_sources.append((" ".join(str(title).split()), url))
             elif block.type in _THINKING_TYPES:
                 if block.type == "thinking":
                     reasoning_parts.append(block.thinking)
@@ -91,12 +107,19 @@ class AnthropicTransport(ProviderTransport):
                     name = _unprefix_oauth_tool_name(name)
                 tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
-        # Ordered channel only for the shape the parallel lists reconstruct wrongly.
+        # Ordered channel only for the shapes the parallel lists cannot reconstruct: signed thinking
+        # interleaved with tool_use, and server-tool blocks, which no parallel list carries at all.
         signed = any(b.get("type") in _THINKING_TYPES and (b.get("signature") or b.get("data")) for b in ordered_blocks)
-        if signed and any(b.get("type") == "tool_use" for b in ordered_blocks):
+        if (signed and any(b.get("type") == "tool_use" for b in ordered_blocks)) or any(
+            b.get("type") in _SERVER_TOOL_BLOCK_TYPES for b in ordered_blocks
+        ):
             provider_data["anthropic_content_blocks"] = ordered_blocks
+        content = "\n".join(text_parts) if text_parts else None
+        if citation_sources:
+            sources = "Sources:\n" + "\n".join(f"- {title}: {url}" for title, url in citation_sources)
+            content = f"{content}\n\n{sources}" if content else sources
         return NormalizedResponse(
-            content="\n".join(text_parts) if text_parts else None, tool_calls=tool_calls or None,
+            content=content, tool_calls=tool_calls or None,
             finish_reason=self.response_finish_reason(response),
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None, usage=None,
             provider_data=provider_data or None,

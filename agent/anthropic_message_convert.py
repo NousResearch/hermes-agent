@@ -143,9 +143,13 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
+def convert_tools_to_anthropic(tools: List[Dict], base_url: str | None = None) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format. Duplicate names are dropped with a
-    warning (Anthropic hard-400s on them); ``cache_control`` on the OpenAI tool dict is forwarded."""
+    warning (Anthropic hard-400s on them); ``cache_control`` on the OpenAI tool dict is forwarded.
+    A function schema may carry an ``_anthropic_server_tool`` marker: on Anthropic's native endpoint
+    it replaces the client-side function definition with a copy of that server-tool spec;
+    compatible third-party endpoints keep the ordinary function definition because support for
+    Anthropic-hosted tools cannot be assumed there."""
     result = []
     seen_names: set = set()
     for t in tools or []:
@@ -158,6 +162,10 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             continue
         if name:
             seen_names.add(name)
+        server_spec = fn.get("_anthropic_server_tool")
+        if isinstance(server_spec, dict) and server_spec.get("type") and not _is_third_party_anthropic_endpoint(base_url):
+            result.append(copy.deepcopy(server_spec))
+            continue
         anthropic_tool: Dict[str, Any] = {
             "name": name, "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(fn.get("parameters") or {}),
@@ -301,9 +309,23 @@ def _replay_image(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"type": "image", "source": src} if isinstance(src, dict) else None
 
 
+def _replay_server_tool_use(b: Dict[str, Any]) -> Dict[str, Any]:
+    out = {
+        "type": "server_tool_use", "id": b.get("id", ""), "name": b.get("name", ""),
+        "input": copy.deepcopy(b.get("input", {})),
+    }
+    return _carry_cache_control(out, b, copy=True)
+
+
+def _replay_server_tool_result(b: Dict[str, Any]) -> Dict[str, Any]:
+    out = {"type": b["type"], "tool_use_id": b.get("tool_use_id", ""), "content": copy.deepcopy(b.get("content"))}
+    return _carry_cache_control(out, b, copy=True)
+
+
 _REPLAY_SANITIZERS = {
     "text": _replay_text, "thinking": _replay_thinking, "redacted_thinking": _replay_redacted_thinking,
-    "tool_use": _replay_tool_use, "image": _replay_image,
+    "tool_use": _replay_tool_use, "image": _replay_image, "server_tool_use": _replay_server_tool_use,
+    "web_search_tool_result": _replay_server_tool_result, "web_fetch_tool_result": _replay_server_tool_result,
 }
 
 

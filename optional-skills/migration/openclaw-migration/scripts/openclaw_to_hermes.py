@@ -2507,9 +2507,15 @@ class Migrator:
 
             # For non-well-known providers, create custom_providers entry
             if prov_name.lower() not in WELL_KNOWN and prov_cfg.get("baseUrl"):
-                # Check if already exists
-                existing_names = {p.get("name", "").lower() for p in custom_providers}
-                if prov_name.lower() in existing_names and not self.overwrite:
+                # Find every existing entry matching this name (case-insensitive).
+                # The list-of-indices form covers the case where a user already
+                # hit the pre-#18097 bug and has 2+ duplicate entries on disk —
+                # the upsert below collapses them down to one.
+                existing_indices = [
+                    i for i, p in enumerate(custom_providers)
+                    if p.get("name", "").lower() == prov_name.lower()
+                ]
+                if existing_indices and not self.overwrite:
                     self.record("full-providers", f"models.providers.{prov_name}",
                                 "config.yaml custom_providers", "conflict",
                                 f"Provider '{prov_name}' already exists")
@@ -2531,7 +2537,15 @@ class Migrator:
                     "api_key": "",  # referenced from .env
                     "api_mode": api_mode_map.get(api_type, "chat_completions"),
                 }
-                custom_providers.append(entry)
+                # Upsert: replace at the first existing position, drop any
+                # later duplicates (left behind by old buggy --overwrite runs),
+                # and append when no entry exists.
+                if existing_indices:
+                    custom_providers[existing_indices[0]] = entry
+                    for i in reversed(existing_indices[1:]):
+                        del custom_providers[i]
+                else:
+                    custom_providers.append(entry)
                 added += 1
                 self.record("full-providers", f"models.providers.{prov_name}",
                             f"config.yaml custom_providers[{prov_name}]", "migrated")

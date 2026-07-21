@@ -1107,3 +1107,223 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ── full-providers: --overwrite must upsert by name (#18097) ──────────────────
+
+
+def test_full_providers_overwrite_upserts_existing_entry(tmp_path: Path):
+    """Re-running with --overwrite against an existing custom_providers entry
+    must replace it in place, not append a duplicate. Reported in #18097.
+    """
+    import yaml
+
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    # Pre-existing config.yaml with one custom provider entry.
+    (target / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "claude-max",
+                        "base_url": "https://stale.example.com/v1",
+                        "api_key": "",
+                        "api_mode": "chat_completions",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Source openclaw.json describes the same provider with an updated base_url.
+    (source / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "claude-max": {
+                            "apiKey": "sk-cm-fresh",
+                            "baseUrl": "https://fresh.example.com/v1",
+                            "apiType": "anthropic-messages",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=True,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options={"full-providers"},
+    )
+    migrator.migrate()
+
+    cfg = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
+    providers = cfg.get("custom_providers", [])
+    matches = [p for p in providers if p.get("name") == "claude-max"]
+    assert len(matches) == 1, f"expected exactly one claude-max entry, got {len(matches)}: {providers}"
+    # The replacement must carry the new base_url and api_mode.
+    assert matches[0]["base_url"] == "https://fresh.example.com/v1"
+    assert matches[0]["api_mode"] == "anthropic_messages"
+
+
+def test_full_providers_overwrite_collapses_preexisting_duplicates(tmp_path: Path):
+    """A user who already hit #18097 has TWO claude-max entries from prior
+    buggy runs. Re-running with the fixed --overwrite must collapse the list
+    so exactly one entry survives, not just stop adding a third.
+    """
+    import yaml
+
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    # Pre-existing config.yaml with TWO duplicate entries left behind by the
+    # old buggy --overwrite path. The reporter's repro is exactly this state.
+    (target / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "claude-max",
+                        "base_url": "https://stale.example.com/v1",
+                        "api_key": "",
+                        "api_mode": "chat_completions",
+                    },
+                    {
+                        "name": "other-provider",
+                        "base_url": "https://other.example.com/v1",
+                        "api_key": "",
+                        "api_mode": "chat_completions",
+                    },
+                    {
+                        "name": "claude-max",
+                        "base_url": "https://stale.example.com/v1",
+                        "api_key": "",
+                        "api_mode": "chat_completions",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "claude-max": {
+                            "apiKey": "sk-cm-fresh",
+                            "baseUrl": "https://fresh.example.com/v1",
+                            "apiType": "anthropic-messages",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=True,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options={"full-providers"},
+    )
+    migrator.migrate()
+
+    cfg = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
+    providers = cfg.get("custom_providers", [])
+    matches = [p for p in providers if p.get("name") == "claude-max"]
+    assert len(matches) == 1, f"expected exactly one claude-max entry, got {len(matches)}: {providers}"
+    assert matches[0]["base_url"] == "https://fresh.example.com/v1"
+    # Unrelated providers must be preserved.
+    others = [p for p in providers if p.get("name") == "other-provider"]
+    assert len(others) == 1
+    assert others[0]["base_url"] == "https://other.example.com/v1"
+
+
+def test_full_providers_no_overwrite_records_conflict_for_existing_entry(tmp_path: Path):
+    """Without --overwrite, an existing custom_providers entry stays untouched
+    and the migrator records a conflict — not a silent duplicate (#18097).
+    """
+    import yaml
+
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    (target / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "claude-max",
+                        "base_url": "https://existing.example.com/v1",
+                        "api_key": "",
+                        "api_mode": "chat_completions",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "claude-max": {
+                            "apiKey": "sk-cm-fresh",
+                            "baseUrl": "https://fresh.example.com/v1",
+                            "apiType": "anthropic-messages",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options={"full-providers"},
+    )
+    report = migrator.migrate()
+
+    cfg = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
+    providers = cfg.get("custom_providers", [])
+    matches = [p for p in providers if p.get("name") == "claude-max"]
+    assert len(matches) == 1
+    # Existing entry preserved, not overwritten.
+    assert matches[0]["base_url"] == "https://existing.example.com/v1"
+    # Migrator recorded the conflict.
+    fp_items = [i for i in report["items"] if i["kind"] == "full-providers"]
+    assert any(i.get("status") == "conflict" for i in fp_items)

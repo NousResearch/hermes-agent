@@ -233,7 +233,10 @@ def _count_occurrences(text: str, pattern: str) -> int:
         if pos == -1:
             break
         count += 1
-        start = pos + 1
+        # Advance past the whole match so occurrences are counted
+        # non-overlapping (as documented). ``max(1, ...)`` keeps an empty
+        # pattern from looping forever.
+        start = pos + max(1, len(pattern))
     return count
 
 

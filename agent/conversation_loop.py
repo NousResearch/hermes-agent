@@ -4426,7 +4426,13 @@ def run_conversation(
             # Notify progress callback of model's thinking (used by subagent
             # delegation to relay the child's reasoning to the parent display).
             if (assistant_message.content and agent.tool_progress_callback):
-                _think_text = assistant_message.content.strip()
+                # Defence-in-depth: assistant_message.content may be a list of
+                # multimodal blocks rather than a str. Normalise so .strip()/
+                # re.sub() below don't crash with
+                # "expected string or bytes-like object, got 'list'".
+                # See t_6756489f.
+                from agent.agent_runtime_helpers import _flatten_content_to_text
+                _think_text = _flatten_content_to_text(assistant_message.content).strip()
                 # Strip reasoning XML tags that shouldn't leak to parent display
                 _think_text = re.sub(
                     r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
@@ -4446,8 +4452,14 @@ def run_conversation(
                         pass
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
-            # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
-            if has_incomplete_scratchpad(assistant_message.content or ""):
+            # This means the model ran out of output tokens mid-reasoning — retry up to 2 times.
+            # Defence-in-depth: assistant_message.content may be a list of multimodal
+            # blocks. Passing a list to has_incomplete_scratchpad silently returns
+            # False (the substring ``in`` check on a list), which would skip the
+            # retry loop. Flatten to text first so the retry path triggers
+            # correctly on list content too. See t_6756489f.
+            from agent.agent_runtime_helpers import _flatten_content_to_text
+            if has_incomplete_scratchpad(_flatten_content_to_text(assistant_message.content)):
                 agent._incomplete_scratchpad_retries += 1
                 
                 agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")

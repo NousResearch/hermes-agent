@@ -1124,8 +1124,14 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # Fallback: extract inline <think> blocks from content when no structured
     # reasoning fields are present (some models/providers embed thinking
     # directly in the content rather than returning separate API fields).
+    # Defence-in-depth: assistant_message.content may be a list of multimodal
+    # blocks. Pass it straight to re.findall and you crash with
+    # "expected string or bytes-like object, got 'list'" — the canonical
+    # mode of the 89-error QA worker loop (t_6756489f). Normalise to text
+    # via the same helper that strip_think_blocks uses at entry.
+    from agent.agent_runtime_helpers import _flatten_content_to_text
     if not reasoning_text:
-        content = assistant_message.content or ""
+        content = _flatten_content_to_text(assistant_message.content)
         think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())

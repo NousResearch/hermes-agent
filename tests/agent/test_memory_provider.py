@@ -1115,6 +1115,107 @@ class TestFlattenMessageContent:
 
 
 # ---------------------------------------------------------------------------
+# _flatten_content_to_text + strip_think_blocks -- multimodal list regression
+# (t_f862f877 -- 89-error QA worker loop fix)
+# ---------------------------------------------------------------------------
+
+
+class TestStripThinkBlocksMultimodal:
+    """Regression: strip_think_blocks must not crash on list content.
+
+    The original failure: re.sub("\\"<think.*?</think>", "", content_list)
+    raised TypeError("expected string or bytes-like object, got "'list'") and
+    killed the QA worker after 89 retries. The fix adds
+    _flatten_content_to_text at the entry of strip_think_blocks
+    so multimodal assistant_message.content (list of {type,
+    text|image_url} dicts) is normalised to text first.
+    """
+
+    def _strip(self, content):
+        from agent.agent_runtime_helpers import strip_think_blocks
+        return strip_think_blocks(None, content)
+
+    def test_string_passthrough(self):
+        assert self._strip("hello world") == "hello world"
+
+    def test_empty_string(self):
+        assert self._strip("") == ""
+
+    def test_none_returns_empty(self):
+        assert self._strip(None) == ""
+
+    def test_list_of_text_blocks(self):
+        blocks = [{"type": "text", "text": "<think>secret</think> visible"}]
+        # No TypeError on re.sub pass; visible text survives.
+        result = self._strip(blocks)
+        assert "visible" in result
+        # Tag pair was stripped (i.e. think ... /think is gone).
+        assert "<think>secret</think>" not in result
+
+    def test_list_with_images_does_not_crash(self):
+        blocks = [
+            {"type": "text", "text": "<think>x</think>after"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        # No exception, visible text survives.
+        result = self._strip(blocks)
+        assert isinstance(result, str)
+        assert "after" in result
+        assert "data:" not in result
+        assert "[1 image]" in result
+
+    def test_dict_content(self):
+        result = self._strip({"type": "text", "text": "<think>x</think>ok"})
+        assert "ok" in result or "after" in result
+    
+    def test_unterminated_think_block_survives(self):
+        """The other mode of crash: unterminated open tag."""
+        blocks = [
+            {"type": "text", "text": "<thinkreasoning never closed"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        # Must not raise; result is a str.
+        result = self._strip(blocks)
+        assert isinstance(result, str)
+
+    def test_canonical_qa_crash_repro(self):
+        """The exact crash from the QA worker log."""
+        blocks = [
+            {"type": "text", "text": "<think>reasoning only secret</think> visible answer"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        result = self._strip(blocks)
+        assert isinstance(result, str)
+        assert "visible answer" in result
+        assert "reasoning only secret" not in result
+        assert "[1 image]" in result
+
+
+class TestFlattenContentToTextHelper:
+    """Direct tests of the _flatten_content_to_text helper itself."""
+
+    def test_string_passthrough(self):
+        from agent.agent_runtime_helpers import _flatten_content_to_text
+        assert _flatten_content_to_text('hello') == 'hello'
+
+    def test_empty_inputs(self):
+        from agent.agent_runtime_helpers import _flatten_content_to_text
+        assert _flatten_content_to_text('') == ''
+        assert _flatten_content_to_text(None) == ''
+        assert _flatten_content_to_text([]) == ''
+
+    def test_list_text_blocks(self):
+        from agent.agent_runtime_helpers import _flatten_content_to_text
+        content = [{'type': 'text', 'text': 'hello'}]
+        assert _flatten_content_to_text(content) == 'hello'
+
+    def test_scalar_coercion(self):
+        from agent.agent_runtime_helpers import _flatten_content_to_text
+        # Anything that's not str/list coerces via str() fallback.
+        assert _flatten_content_to_text(42) == '42'
+
+
+# ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
 # ---------------------------------------------------------------------------
 

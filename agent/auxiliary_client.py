@@ -7386,7 +7386,13 @@ def extract_content_or_reasoning(response) -> str:
     import re
 
     msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    # Defence-in-depth: msg.content may be a list of multimodal blocks
+    # (OpenAI/Anthropic SDKs). .strip() and re.sub below require str;
+    # passing a list raises AttributeError / TypeError — the canonical
+    # mode of the 89-error QA worker loop (t_6756489f). Normalise to
+    # text via the same helper strip_think_blocks uses at entry.
+    from agent.agent_runtime_helpers import _flatten_content_to_text
+    content = _flatten_content_to_text(msg.content).strip()
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)

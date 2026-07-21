@@ -639,6 +639,35 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
+def _flatten_content_to_text(content: Any) -> str:
+    """Defensive normaliser for assistant content passed to regex/string ops.
+
+    Mirrors ``memory_manager.sanitize_context``'s flatten: ``str`` passes
+    through, ``list`` is flattened via ``_summarize_user_message_for_log``,
+    anything else coerces via ``str()`` (best-effort). Returns ``""`` for
+    falsy/empty inputs.
+
+    Used by ``strip_think_blocks`` and other regex consumers that assume
+    ``str`` input. Without this guard, multimodal
+    ``assistant_message.content`` (list of ``{type, text|image_url}``
+    blocks) crashes ``re.sub`` with
+    ``expected string or bytes-like object, got 'list'`` — the canonical
+    mode of the 89-error QA worker loop reported in t_6756489f.
+    """
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        return _summarize_user_message_for_log(content, sep="\n")
+    except Exception:
+        try:
+            return str(content)
+        except Exception:
+            return ""
+
+
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
@@ -669,7 +698,19 @@ def strip_think_blocks(agent, content: str) -> str:
     boundary-gated (only strips when the tag sits at start-of-line or
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
+
+    Accepts ``str`` OR multimodal list content (list of
+    ``{type, text|image_url}`` dicts) — list content is flattened at
+    entry via ``_flatten_content_to_text``. Without that guard,
+    multimodal ``assistant_message.content`` from the OpenAI/Anthropic
+    SDKs crashes ``re.sub`` with
+    ``expected string or bytes-like object, got 'list'`` (t_6756489f).
     """
+    if not content:
+        return ""
+    # Defence-in-depth: normalise multimodal list content to text before
+    # the regex passes. See _flatten_content_to_text docstring for why.
+    content = _flatten_content_to_text(content)
     if not content:
         return ""
     # 1. Closed tag pairs — case-insensitive for all variants so

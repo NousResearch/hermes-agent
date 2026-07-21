@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "candidate_commits": [
+    "0d2639e4572138c02237b2736f3ee16a791bcf36"
+  ],
+  "manual_port_commits": [],
+  "candidate_patches": [],
+  "policy_tests": [
+    "worktree-quarantine"
+  ],
+  "allowed_target_paths": [
+    ".github/merge-coverage.json"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "schema": "asset-catalog",
+  "items": [
+    { "id": "img-001", "type": "image", "width": 640, "height": 480 },
+    { "id": "img-002", "type": "image", "width": 1024, "height": 768 }
+  ]
+}

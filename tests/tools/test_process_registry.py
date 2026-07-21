@@ -1727,7 +1727,60 @@ def test_drain_notifications_owns_event_callback_fails_closed():
 
 
 # ---------------------------------------------------------------------------
-# _terminate_host_pid — cross-platform process-tree termination
+# notify_on_complete — only enqueue on exit_code == 0
+# ---------------------------------------------------------------------------
+
+
+def test_move_to_finished_skips_notification_on_nonzero_exit():
+    """Non-zero exit codes should NOT enqueue a completion notification."""
+    from tools.process_registry import ProcessRegistry
+
+    registry = ProcessRegistry()
+    session = _make_session(sid="proc_fail", exited=True, exit_code=1)
+    session.notify_on_complete = True
+    registry._running[session.id] = session
+
+    with patch.object(registry, "_write_checkpoint"):
+        registry._move_to_finished(session)
+
+    # The completion queue must be empty — no notification for failed process
+    assert registry.completion_queue.empty()
+    # Session should still be in _finished for manual inspection
+    assert session.id in registry._finished
+
+
+def test_move_to_finished_enqueues_notification_on_success():
+    """exit_code == 0 with notify_on_complete should enqueue notification."""
+    from tools.process_registry import ProcessRegistry
+
+    registry = ProcessRegistry()
+    session = _make_session(sid="proc_ok", exited=True, exit_code=0)
+    session.notify_on_complete = True
+    registry._running[session.id] = session
+
+    with patch.object(registry, "_write_checkpoint"):
+        registry._move_to_finished(session)
+
+    assert not registry.completion_queue.empty()
+    evt = registry.completion_queue.get_nowait()
+    assert evt["session_id"] == "proc_ok"
+    assert evt["exit_code"] == 0
+
+
+def test_move_to_finished_skips_notification_on_signal_exit():
+    """Signal-terminated processes (negative exit codes) should NOT notify."""
+    from tools.process_registry import ProcessRegistry
+
+    registry = ProcessRegistry()
+    session = _make_session(sid="proc_sigterm", exited=True, exit_code=-15)
+    session.notify_on_complete = True
+    registry._running[session.id] = session
+
+    with patch.object(registry, "_write_checkpoint"):
+        registry._move_to_finished(session)
+
+    assert registry.completion_queue.empty()
+    assert session.id in registry._finished
 # ---------------------------------------------------------------------------
 
 

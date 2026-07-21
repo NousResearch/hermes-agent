@@ -1086,7 +1086,13 @@ class ProcessRegistry:
         # Only enqueue completion notification on the FIRST move.  Without
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
-        if was_running and session.notify_on_complete:
+        #
+        # Only notify on success (exit_code == 0).  Non-zero exits
+        # (errors, SIGTERM, SIGKILL) are silently discarded so that
+        # retries and failed attempts don't flood the conversation.
+        # The process remains in _finished and can be inspected via
+        # process(action='poll') or process(action='log').
+        if was_running and session.notify_on_complete and session.exit_code == 0:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({

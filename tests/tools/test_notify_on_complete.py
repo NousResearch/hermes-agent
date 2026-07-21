@@ -104,7 +104,7 @@ class TestCompletionQueue:
         assert "build succeeded" in completion["output"]
 
     def test_move_to_finished_nonzero_exit(self, registry):
-        """Nonzero exit codes are captured correctly."""
+        """Nonzero exit codes do NOT enqueue a notification (only success notifies)."""
         s = _make_session(
             notify_on_complete=True,
             output="FAILED",
@@ -116,29 +116,32 @@ class TestCompletionQueue:
         with patch.object(registry, "_write_checkpoint"):
             registry._move_to_finished(s)
 
-        completion = registry.completion_queue.get_nowait()
-        assert completion["exit_code"] == 1
-        assert "FAILED" in completion["output"]
+        # Non-zero exit: no notification enqueued
+        assert registry.completion_queue.empty()
+        # Session still moved to _finished for manual inspection
+        assert s.id in registry._finished
 
     def test_move_to_finished_idempotent_no_duplicate(self, registry):
-        """Calling _move_to_finished twice must NOT enqueue two notifications.
+        """Calling _move_to_finished twice must NOT enqueue duplicate notifications.
 
         Regression test: kill_process() and the reader thread can both call
         _move_to_finished() for the same session, producing duplicate
         [SYSTEM: Background process ...] messages.
+
+        Updated: with the success-only guard, non-zero exits never notify.
+        Use exit_code=0 for both calls to test the idempotency guard.
         """
-        s = _make_session(notify_on_complete=True, output="done", exit_code=-15)
+        s = _make_session(notify_on_complete=True, output="done", exit_code=0)
         s.exited = True
-        s.exit_code = -15
+        s.exit_code = 0
         registry._running[s.id] = s
         with patch.object(registry, "_write_checkpoint"):
             registry._move_to_finished(s)  # first call — should enqueue
-            s.exit_code = 143  # reader thread updates exit code
-            registry._move_to_finished(s)  # second call — should be no-op
+            registry._move_to_finished(s)  # second call — should be no-op (was_running=False)
 
         assert registry.completion_queue.qsize() == 1
         completion = registry.completion_queue.get_nowait()
-        assert completion["exit_code"] == -15  # from the first (kill) call
+        assert completion["exit_code"] == 0
 
     def test_kill_process_sets_completion_reason_and_source(self, registry):
         s = _make_session(notify_on_complete=True, output="stopping")

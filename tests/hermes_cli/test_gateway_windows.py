@@ -258,6 +258,7 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
         shell32 = FakeShell32()
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setenv("HERMES_HOME", r"C:\Users\alice\.hermes\profiles\alice")
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
     monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
     monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Hermes\venv\Scripts\python.exe")
@@ -269,6 +270,7 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     _hwnd, verb, executable, params, cwd, show = calls[0]
     assert verb == "runas"
     assert executable.endswith("pythonw.exe")
+    assert "--hermes-home C:\\Users\\alice\\.hermes\\profiles\\alice" in params
     assert "--profile alice gateway install --start-now --elevated-handoff" in params
     assert show == 0
     assert cwd

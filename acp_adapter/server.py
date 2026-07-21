@@ -1785,8 +1785,27 @@ class HermesACPAgent(acp.Agent):
             provider = getattr(state.agent, "provider", None) or "auto"
             return f"Current model: {model}\nProvider: {provider}"
 
+        # Parse --provider/--global flags the same way the CLI /model command
+        # does so ACP clients (Zed, Scarf, etc.) can route a model to an
+        # explicit provider via `/model <model> --provider <name>`. Without
+        # this the entire raw args string was passed through to model
+        # resolution and the current provider rejected it as an unknown model.
+        # See #27119.
+        from hermes_cli.model_switch import parse_model_flags
+
+        model_input, explicit_provider, _persist_global = parse_model_flags(args)
+
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+        requested_provider = explicit_provider or current_provider
+
+        new_model = model_input or state.model or ""
+
+        if new_model:
+            target_provider, new_model = self._resolve_model_selection(
+                new_model, requested_provider
+            )
+        else:
+            target_provider = requested_provider
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(

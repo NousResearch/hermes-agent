@@ -1747,6 +1747,105 @@ class TestSlashCommands:
         # repeatedly) and was redundant with those checks, so it's gone.
         assert "anthropic" in runtime_calls
 
+    def test_model_switch_parses_explicit_provider_flag(self, tmp_path, monkeypatch):
+        """`/model <name> --provider <p>` should route to <p>, not the current provider.
+
+        Regression test for #27119: ACP clients (Zed, Scarf, ...) pass the
+        raw args string to ``_cmd_model``. Without ``parse_model_flags`` the
+        entire string ``"inclusionai/ring-2.6-1t --provider openrouter"`` was
+        treated as a literal model id and resolved against the current
+        provider (e.g. Codex), which rejected it as unknown.
+        """
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openai-codex"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            # Pretend the active session is on a non-openrouter provider so
+            # we can verify the explicit flag overrides it.
+            state.agent = SimpleNamespace(model="gpt-5.5", provider="openai-codex")
+            result = acp_agent._cmd_model(
+                "inclusionai/ring-2.6-1t --provider openrouter", state
+            )
+
+        assert "Provider: openrouter" in result
+        assert state.model == "inclusionai/ring-2.6-1t"
+        assert state.agent.provider == "openrouter"
+        # The runtime resolver must see the explicit --provider value, not the
+        # session's current provider.
+        assert runtime_calls[-1] == "openrouter"
+
+    def test_model_switch_ignores_global_flag_quietly(self, tmp_path, monkeypatch):
+        """`--global` is a CLI persistence flag; ACP sessions should still
+        accept the rest of the command without treating ``--global`` as part of
+        the model id.
+        """
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            result = acp_agent._cmd_model("sonnet --provider anthropic --global", state)
+
+        assert state.model in {"sonnet", "claude-sonnet-4-6"}
+        assert state.agent.provider == "anthropic"
+        assert "Provider: anthropic" in result
+
 
 # ---------------------------------------------------------------------------
 # _register_session_mcp_servers

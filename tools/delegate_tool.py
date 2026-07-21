@@ -316,7 +316,11 @@ def _looks_like_error_output(content: Any) -> bool:
     head = content.lstrip()
     if head.startswith("{") or head.startswith("["):
         try:
-            parsed = json.loads(content)
+            # Subagent/tool output can append diagnostic text after a JSON error
+            # blob (for example loop/iteration warnings).  Decode the leading
+            # JSON value instead of requiring the whole preview to be JSON so the
+            # appended diagnostic cannot hide the original failure signal.
+            parsed, _ = json.JSONDecoder().raw_decode(head)
             if isinstance(parsed, dict):
                 if parsed.get("error"):
                     return True

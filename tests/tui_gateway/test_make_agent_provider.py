@@ -469,3 +469,58 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Sibling session is completely untouched.
     assert sess_a["model_override"] is None
     assert sess_a["agent"].model == "minimax/m3"
+
+
+def test_apply_model_switch_uses_session_override_when_no_agent():
+    """When agent is None (slash_worker mode), _apply_model_switch must use
+    session["model_override"] rather than falling back to _resolve_model()
+    which reads the global profile default.
+    """
+    from tui_gateway import server
+
+    class _FakeResult:
+        success = True
+        error_message = ""
+        warning_message = ""
+        new_model = "opencode-go/deepseek-v4-pro"
+        target_provider = "opencode-go"
+        base_url = ""
+        api_key = ""
+        api_mode = "chat_completions"
+
+    sess = {
+        "agent": None,
+        "session_key": "k-slash",
+        "model_override": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "provider": "opencode-go",
+            "base_url": "",
+            "api_key": "",
+        },
+    }
+
+    captured = {}
+
+    def fake_switch_model(*, raw_input, current_provider, current_model, **kw):
+        captured["model"] = current_model
+        captured["provider"] = current_provider
+        return _FakeResult()
+
+    with (
+        patch("hermes_cli.model_switch.parse_model_flags_detailed",
+              return_value=("deepseek-v4-pro", "opencode-go", False, False, True)),
+        patch("hermes_cli.model_switch.resolve_persist_behavior",
+              return_value=False),
+        patch("hermes_cli.model_switch.switch_model",
+              side_effect=fake_switch_model),
+        patch("tui_gateway.server._emit"),
+        patch("tui_gateway.server._restart_slash_worker"),
+        patch("tui_gateway.server._session_info", return_value={}),
+        patch("tui_gateway.server._persist_model_switch"),
+    ):
+        server._apply_model_switch(
+            "sid-slash", sess, "deepseek-v4-pro --provider opencode-go",
+        )
+
+    assert captured["model"] == "opencode-go/deepseek-v4-pro"
+    assert captured["provider"] == "opencode-go"

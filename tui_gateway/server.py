@@ -3255,6 +3255,17 @@ def _apply_model_switch(
         current_model = getattr(agent, "model", "") or ""
         current_base_url = getattr(agent, "base_url", "") or ""
         current_api_key = getattr(agent, "api_key", "") or ""
+    elif isinstance(session.get("model_override"), dict):
+        # When there is no in-process agent (slash_worker mode), honour
+        # the per-session model_override that a prior /model switch or
+        # Desktop --provider already stored.  Without this, the worker
+        # rebuild falls through to _resolve_model() which reads the
+        # global profile default, ignoring the session's choice.
+        _mo = session["model_override"]
+        current_model = str(_mo.get("model", "") or "")
+        current_provider = str(_mo.get("provider", "") or "")
+        current_base_url = str(_mo.get("base_url", "") or "")
+        current_api_key = _mo.get("api_key", "")
     else:
         current_model = _resolve_model()
         current_provider = explicit_provider.strip()

@@ -1,7 +1,7 @@
 """Behavior tests for the skill review / combined review prompts.
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
+The review prompts steer the background review agent toward signal-gated,
+deduplicated updates, with a strong preference for:
   1. Patching currently-loaded skills first,
   2. Patching existing umbrellas next,
   3. Adding references/ files under an existing umbrella,
@@ -21,16 +21,13 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
+def test_skill_review_prompt_requires_a_concrete_signal():
+    """A smooth session must not manufacture a skill update."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
+    lower = prompt.lower()
+    assert "clear, concrete signal" in lower
+    assert "quality over quantity" in lower
+    assert "no signal should produce no update" in lower
 
 
 def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
@@ -117,9 +114,10 @@ def test_skill_review_prompt_flags_overlap_and_defers_to_curator():
 
 
 def test_skill_review_prompt_still_has_opt_out_clause():
-    """'Nothing to save.' must remain as a real-but-not-default option."""
+    """'Nothing to save.' must be explicitly valid when no signal fired."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
     assert "Nothing to save." in prompt
+    assert "valid and correct" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -133,12 +131,14 @@ def test_combined_review_prompt_has_memory_section():
     assert "memory tool" in prompt
 
 
-def test_combined_review_prompt_skills_biased_toward_active_updates():
-    """Skills half must carry the active-update bias."""
+def test_combined_review_prompt_skills_require_a_concrete_signal():
+    """The combined prompt must not force a skill write without evidence."""
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    lower = prompt.lower()
     assert "**Skills**" in prompt
-    assert "ACTIVE" in prompt or "active" in prompt.lower()
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower()
+    assert "clear, concrete signal" in lower
+    assert "quality over quantity" in lower
+    assert "no signal should produce no skill update" in lower
 
 
 def test_combined_review_prompt_treats_user_corrections_as_skill_signal():
@@ -176,6 +176,25 @@ def test_combined_review_prompt_names_three_support_file_kinds():
 def test_combined_review_prompt_preserves_opt_out_clause():
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "Nothing to save." in prompt
+    assert "valid and correct" in prompt
+
+
+def _assert_write_hygiene_guidance(prompt: str) -> None:
+    lower = prompt.lower()
+    assert "read before write" in lower
+    assert "skill_view" in prompt
+    assert "no duplicates" in lower
+    assert "prefer patch over edit" in lower
+    assert "no date stamps" in lower
+    assert "delete deprecated" in lower
+
+
+def test_skill_review_prompt_has_write_hygiene_guidance():
+    _assert_write_hygiene_guidance(AIAgent._SKILL_REVIEW_PROMPT)
+
+
+def test_combined_review_prompt_has_write_hygiene_guidance():
+    _assert_write_hygiene_guidance(AIAgent._COMBINED_REVIEW_PROMPT)
 
 
 # ---------------------------------------------------------------------------

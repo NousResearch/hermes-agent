@@ -204,7 +204,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", aliases=("bp",), args_hint="[name] [slot=value ...]"),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
+               subcommands=(
+                   "status", "run", "pause", "resume", "pin", "unpin",
+                   "restore", "list-archived", "archive", "prune",
+                   "backup", "rollback",
+               )),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("init", "boards", "create", "list", "ls", "show", "assign",

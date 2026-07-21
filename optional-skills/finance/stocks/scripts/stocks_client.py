@@ -595,74 +595,81 @@ def cmd_compare(symbols: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_crypto(symbol: str, vs: str = "USD") -> None:
-    sym = symbol.upper().strip()
-    vs = vs.upper().strip()
+def cmd_crypto(symbols: list[str], vs: str = "USD") -> None:
+    results = []
 
-    # If user already passed BTC-USD, keep as-is; otherwise append
-    if "-" not in sym:
-        ticker = f"{sym}-{vs}"
-    else:
-        ticker = sym
+    for symbol in symbols:
+        sym = symbol.upper().strip()
+        vs = vs.upper().strip()
 
-    chart_data = yf_chart(ticker, interval="1d", range_="1d")
+        # If user already passed BTC-USD, keep as-is; otherwise append
+        if "-" not in sym:
+            ticker = f"{sym}-{vs}"
+        else:
+            ticker = sym
 
-    if not chart_data:
-        print_json({
-            "error": f"Failed to fetch crypto data for {ticker}",
+        chart_data = yf_chart(ticker, interval="1d", range_="1d")
+
+        if not chart_data:
+            results.append({
+                "symbol": ticker,
+                "error": f"Failed to fetch crypto data for {ticker}",
+                "data_source": "Yahoo Finance",
+            })
+            continue
+
+        chart = safe_get(chart_data, "chart", "result")
+        if not chart or not isinstance(chart, list) or len(chart) == 0:
+            err = safe_get(chart_data, "chart", "error", "description") or "Symbol not found"
+            results.append({"error": err, "symbol": ticker, "data_source": "Yahoo Finance"})
+            continue
+
+        r = chart[0]
+        meta = r.get("meta", {})
+
+        price = meta.get("regularMarketPrice") or meta.get("chartPreviousClose")
+        prev_close = meta.get("previousClose") or meta.get("chartPreviousClose")
+
+        change = None
+        change_pct = None
+        if price and prev_close:
+            try:
+                chg = float(price) - float(prev_close)
+                chg_pct = (chg / float(prev_close)) * 100
+                change = fmt_price(chg)
+                change_pct = fmt_pct(chg_pct)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+        # 24h stats from indicators
+        indicators = r.get("indicators", {})
+        quote_list = indicators.get("quote") or [{}]
+        ohlcv = quote_list[0] if quote_list else {}
+        highs = [h for h in (ohlcv.get("high") or []) if h is not None]
+        lows = [l for l in (ohlcv.get("low") or []) if l is not None]
+        volumes = [v for v in (ohlcv.get("volume") or []) if v is not None]
+
+        results.append({
             "symbol": ticker,
+            "base": sym if "-" not in sym else sym.split("-")[0],
+            "quote_currency": vs,
+            "price": fmt_price(price),
+            "change": change,
+            "change_pct": change_pct,
+            "day_high": fmt_price(max(highs)) if highs else None,
+            "day_low": fmt_price(min(lows)) if lows else None,
+            "volume": fmt_large(sum(volumes)) if volumes else None,
+            "52w_high": fmt_price(meta.get("fiftyTwoWeekHigh")),
+            "52w_low": fmt_price(meta.get("fiftyTwoWeekLow")),
+            "exchange": meta.get("exchangeName"),
+            "short_name": meta.get("shortName") or meta.get("longName"),
             "data_source": "Yahoo Finance",
         })
-        return
 
-    chart = safe_get(chart_data, "chart", "result")
-    if not chart or not isinstance(chart, list) or len(chart) == 0:
-        err = safe_get(chart_data, "chart", "error", "description") or "Symbol not found"
-        print_json({"error": err, "symbol": ticker, "data_source": "Yahoo Finance"})
-        return
-
-    r = chart[0]
-    meta = r.get("meta", {})
-
-    price = meta.get("regularMarketPrice") or meta.get("chartPreviousClose")
-    prev_close = meta.get("previousClose") or meta.get("chartPreviousClose")
-
-    change = None
-    change_pct = None
-    if price and prev_close:
-        try:
-            chg = float(price) - float(prev_close)
-            chg_pct = (chg / float(prev_close)) * 100
-            change = fmt_price(chg)
-            change_pct = fmt_pct(chg_pct)
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-
-    # 24h stats from indicators
-    indicators = r.get("indicators", {})
-    quote_list = indicators.get("quote") or [{}]
-    ohlcv = quote_list[0] if quote_list else {}
-    highs = [h for h in (ohlcv.get("high") or []) if h is not None]
-    lows = [l for l in (ohlcv.get("low") or []) if l is not None]
-    volumes = [v for v in (ohlcv.get("volume") or []) if v is not None]
-
-    output = {
-        "symbol": ticker,
-        "base": sym if "-" not in sym else sym.split("-")[0],
-        "quote_currency": vs,
-        "price": fmt_price(price),
-        "change": change,
-        "change_pct": change_pct,
-        "day_high": fmt_price(max(highs)) if highs else None,
-        "day_low": fmt_price(min(lows)) if lows else None,
-        "volume": fmt_large(sum(volumes)) if volumes else None,
-        "52w_high": fmt_price(meta.get("fiftyTwoWeekHigh")),
-        "52w_low": fmt_price(meta.get("fiftyTwoWeekLow")),
-        "exchange": meta.get("exchangeName"),
-        "short_name": meta.get("shortName") or meta.get("longName"),
-        "data_source": "Yahoo Finance",
-    }
-    print_json(output)
+    if len(results) == 1:
+        print_json(results[0])
+    else:
+        print_json(results)
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +721,7 @@ Examples:
 
     # crypto
     p_crypto = sub.add_parser("crypto", help="Crypto price (BTC, ETH, SOL, etc.)")
-    p_crypto.add_argument("symbol", metavar="SYMBOL", help="Crypto symbol (e.g. BTC, ETH, SOL)")
+    p_crypto.add_argument("symbols", nargs="+", metavar="SYMBOL", help="Crypto symbol(s) (e.g. BTC ETH SOL)")
     p_crypto.add_argument(
         "--vs",
         default="USD",
@@ -739,7 +746,7 @@ def main() -> None:
         elif args.command == "compare":
             cmd_compare(args.symbols)
         elif args.command == "crypto":
-            cmd_crypto(args.symbol, vs=args.vs)
+            cmd_crypto(args.symbols, vs=args.vs)
         else:
             parser.print_help()
             sys.exit(1)

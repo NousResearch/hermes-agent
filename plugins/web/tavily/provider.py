@@ -92,13 +92,22 @@ def _normalize_tavily_documents(
     for result in response.get("results", []):
         url = result.get("url", fallback_url)
         raw = result.get("raw_content", "") or result.get("content", "")
+        title = result.get("title", "")
+        metadata = {
+            "sourceURL": url,
+            "title": title,
+            "description": result.get("description") or result.get("content", ""),
+            "author": result.get("author"),
+            "publishedAt": result.get("publishedAt") or result.get("published_at"),
+            "language": result.get("language") or result.get("lang"),
+        }
         documents.append(
             {
                 "url": url,
-                "title": result.get("title", ""),
+                "title": title,
                 "content": raw,
                 "raw_content": raw,
-                "metadata": {"sourceURL": url, "title": result.get("title", "")},
+                "metadata": metadata,
             }
         )
     for fail in response.get("failed_results", []):

@@ -430,6 +430,102 @@ DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 # refusal ceiling, but stores (capped) instead of refusing.
 MAX_STORED_TEXT_CHARS = 2_000_000
 
+
+_EXTRACT_METADATA_FIELD_LIMITS = {
+    "sourceURL": 500,
+    "title": 300,
+    "description": 500,
+    "author": 200,
+    "publishedAt": 100,
+    "language": 50,
+}
+
+
+def _coerce_metadata_scalar(value: Any, *, max_length: int) -> str:
+    """Coerce metadata values to short plain strings."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple, set)):
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+    if len(text) > max_length:
+        return text[: max_length - 3].rstrip() + "..."
+    return text
+
+
+def _normalize_extract_metadata(
+    metadata: Any,
+    *,
+    fallback_url: str = "",
+    fallback_title: str = "",
+) -> Dict[str, str]:
+    """Return a compact, backend-agnostic metadata subset for extract results."""
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    alias_map = {
+        "sourceURL": ("sourceURL", "url", "canonicalUrl", "canonicalURL"),
+        "title": ("title", "ogTitle"),
+        "description": ("description", "excerpt", "summary", "ogDescription"),
+        "author": ("author", "byline"),
+        "publishedAt": ("publishedAt", "published_at", "publishDate", "date"),
+        "language": ("language", "lang"),
+    }
+
+    normalized: Dict[str, str] = {}
+    for field, aliases in alias_map.items():
+        value = ""
+        for alias in aliases:
+            candidate = _coerce_metadata_scalar(
+                metadata.get(alias),
+                max_length=_EXTRACT_METADATA_FIELD_LIMITS[field],
+            )
+            if candidate:
+                value = candidate
+                break
+
+        if not value:
+            if field == "sourceURL":
+                value = _coerce_metadata_scalar(
+                    fallback_url,
+                    max_length=_EXTRACT_METADATA_FIELD_LIMITS[field],
+                )
+            elif field == "title":
+                value = _coerce_metadata_scalar(
+                    fallback_title,
+                    max_length=_EXTRACT_METADATA_FIELD_LIMITS[field],
+                )
+
+        if value:
+            normalized[field] = value
+
+    return normalized
+
+
+def _trim_extract_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the compact result shape exposed to the agent."""
+    trimmed = {
+        "url": result.get("url", ""),
+        "title": result.get("title", ""),
+        "content": result.get("content", ""),
+        "error": result.get("error"),
+    }
+
+    metadata = _normalize_extract_metadata(
+        result.get("metadata"),
+        fallback_url=result.get("url", ""),
+        fallback_title=result.get("title", ""),
+    )
+    if metadata:
+        trimmed["metadata"] = metadata
+    if "blocked_by_policy" in result:
+        trimmed["blocked_by_policy"] = result["blocked_by_policy"]
+    return trimmed
+
+
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
@@ -1004,16 +1100,7 @@ async def web_extract_tool(
                 logger.info("%s (%d chars, whole)", url, len(clean))
 
         # Trim output to minimal fields per entry: title, content, error
-        trimmed_results = [
-            {
-                "url": r.get("url", ""),
-                "title": r.get("title", ""),
-                "content": r.get("content", ""),
-                "error": r.get("error"),
-                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
-            }
-            for r in response.get("results", [])
-        ]
+        trimmed_results = [_trim_extract_result(r) for r in response.get("results", [])]
         trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:

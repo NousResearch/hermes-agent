@@ -483,6 +483,19 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
         name = fn.get("name", "")
         description = fn.get("description", "")
         parameters = fn.get("parameters", {"type": "object", "properties": {}})
+        # Bedrock Converse rejects top-level oneOf/allOf/anyOf with a
+        # ValidationException — same constraint as the Anthropic native API.
+        # Pydantic discriminated unions and some MCP tools ship schemas with
+        # one of these keywords at the root; strip them and fall back to a
+        # plain object schema so the tool still validates at the AWS boundary.
+        if isinstance(parameters, dict):
+            banned = {"oneOf", "allOf", "anyOf"}
+            if banned & parameters.keys():
+                parameters = {k: v for k, v in parameters.items() if k not in banned}
+                if "type" not in parameters:
+                    parameters["type"] = "object"
+                if not isinstance(parameters.get("properties"), dict):
+                    parameters = {**parameters, "properties": {}}
         result.append({
             "toolSpec": {
                 "name": name,

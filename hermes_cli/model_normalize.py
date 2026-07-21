@@ -18,6 +18,8 @@ Different LLM providers expect model identifiers in different formats:
   Hermes revisions folded every non-reasoner input into
   ``deepseek-chat``, which on aggregators routes to V3 — so a user
   picking V4 Pro was silently downgraded.
+- **NVIDIA NIM** requires vendor-qualified model IDs such as
+  ``z-ai/glm-5.2`` even when users select the bare ``glm-5.2`` name.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -86,6 +88,10 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
     "huggingface",
 })
+
+_NVIDIA_MODEL_ALIASES: dict[str, str] = {
+    "glm-5.2": "z-ai/glm-5.2",
+}
 
 # Direct providers that accept bare native names but should repair a matching
 # provider/ prefix when users copy the aggregator form into config.yaml.
@@ -388,6 +394,10 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return name
 
     provider = _normalize_provider_alias(target_provider)
+
+    # --- NVIDIA NIM: canonical vendor-qualified identifiers ---
+    if provider == "nvidia":
+        return _NVIDIA_MODEL_ALIASES.get(name.lower(), name)
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:

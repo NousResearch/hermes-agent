@@ -164,6 +164,12 @@ class TestAggregatorProviders:
         assert result == "anthropic/claude-sonnet-4.6"
 
 
+class TestNvidiaNimModelNormalization:
+    @pytest.mark.parametrize("provider", ["nvidia", "nvidia-nim", "nim"])
+    def test_glm_5_2_uses_live_nim_identifier(self, provider):
+        assert normalize_model_for_provider("glm-5.2", provider) == "z-ai/glm-5.2"
+
+
 class TestIssue6211NativeProviderPrefixNormalization:
     @pytest.mark.parametrize("model,target_provider,expected", [
         ("zai/glm-5.1", "zai", "glm-5.1"),

@@ -1486,6 +1486,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    memory_mode: str = "on_demand",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1586,6 +1587,11 @@ def _build_child_agent(
     # test_intersection_preserves_delegation_bound test for the design rationale.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
+
+    # If memory_mode is on_demand or full, ensure memory tools are available
+    # so sub-agents can use memory and hermes_mem_search tools.
+    if memory_mode != "off" and "memory" not in child_toolsets:
+        child_toolsets.append("memory")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -1842,7 +1848,7 @@ def _build_child_agent(
                 log_prefix=f"[subagent-{task_index}]",
                 platform="subagent",
                 skip_context_files=True,
-                skip_memory=True,
+                memory_mode=memory_mode,
                 clarify_callback=None,
                 thinking_callback=child_thinking_cb,
                 session_db=child_session_db,
@@ -2017,7 +2023,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("## Child config")
         for attr in (
             "model", "provider", "api_mode", "base_url", "max_iterations",
-            "quiet_mode", "skip_memory", "skip_context_files", "platform",
+            "quiet_mode", "memory_mode", "skip_context_files", "platform",
             "_delegate_role", "_delegate_depth",
         ):
             try:
@@ -3449,6 +3455,7 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    memory_mode: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3537,6 +3544,11 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     effective_max_iter = default_max_iter
+
+    # Resolve memory_mode — default to on_demand for sub-agents so they can
+    # read parent memories, but allow callers (including the model) to set
+    # "off" or "full" explicitly.
+    effective_memory_mode = memory_mode if memory_mode else "on_demand"
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -3702,6 +3714,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                memory_mode=effective_memory_mode,
             )
         except ValueError as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command

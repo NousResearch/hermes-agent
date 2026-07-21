@@ -127,7 +127,7 @@ export interface BillingOverlayCtx {
    */
   charge: (amount: string, idempotencyKey?: string) => Promise<BillingChargeOutcome>
   /**
-   * Run the `billing.step_up` device flow (grant Remote Spending). Resolves
+   * Run the `billing.step_up` device flow (allow Remote Spending). Resolves
    * `true` when the grant lands. The browser opens via the gateway's
    * out-of-band `billing.step_up.verification` event — the overlay just awaits.
    */
@@ -176,15 +176,15 @@ export interface BillingOverlayState {
 //              scheduled at date / no-op / blocked) + the apply action.
 //   result   — the outcome, including an SCA/decline upgrade handed off to the
 //              portal.
-//   stepup   — reached when a mutation returns insufficient_scope: grants the
-//              terminal-billing scope in place, then auto-replays the held action.
+//   stepup   — reached when a mutation returns insufficient_scope: allows remote
+//              spending in place, then auto-replays the held action.
 export type SubscriptionScreen = 'confirm' | 'overview' | 'picker' | 'result' | 'stepup'
 
-// The action held while the stepup screen grants terminal billing, replayed on
-// grant: re-preview a tier, re-apply the confirmed pending change, or re-resume.
+// The action held while the stepup screen allows remote spending, replayed after
+// approval: re-preview a tier, re-apply the confirmed pending change, or re-resume.
 export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tierId: string } | { kind: 'resume' }
 
-/** Outcome of a terminal-billing step-up: granted, plus the typed denial (for copy). */
+/** Outcome of a remote-spending step-up: granted, plus the typed denial (for copy). */
 export interface StepUpResult {
   granted: boolean
   error?: string
@@ -215,7 +215,7 @@ export interface SubscriptionOverlayCtx {
   /** POST /upgrade: charge the card on the subscription + flip the plan now. */
   upgrade: (tierId: string, idempotencyKey?: string) => Promise<SubscriptionUpgradeResponse | null>
   /**
-   * Run the `billing.step_up` device flow (grant terminal billing / "Remote
+   * Run the `billing.step_up` device flow (allow remote spending / "Remote
    * Spending"). Resolves `{granted}` plus the typed denial (`error`/`message`) so
    * the stepup screen shows the right recovery. The browser opens via the
    * gateway's out-of-band verification event — the stepup screen just awaits.

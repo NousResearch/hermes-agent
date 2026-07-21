@@ -149,6 +149,39 @@ describe('SubscriptionOverlay — overview', () => {
     expect(out.toLowerCase()).not.toContain('credits')
   })
 
+  it('free with catalog: plans render inline; the generic portal row disappears', () => {
+    const out = render(overlay(freeWithCatalog()))
+
+    expect(out).toContain('Plus · $20/mo · $1,000 credits/mo')
+    expect(out).toContain('Ultra · $40/mo · $3,000 credits/mo')
+    expect(out).not.toContain('upgrade') // a start, not a move
+    expect(out).not.toContain('$0/mo') // free tier is not an option
+    expect(out).not.toContain('Choose a plan')
+    expect(out).not.toContain('Start a subscription')
+  })
+
+  it('free with catalog: picking a plan opens the portal once, even on double-Enter', async () => {
+    const openManageLink = vi.fn(() => Promise.resolve(true))
+    const preview = vi.fn(() => Promise.resolve(null))
+    const sys = vi.fn()
+
+    const mounted = mount({
+      ctx: { ...ctx, openManageLink, preview, sys } as SubscriptionOverlayState['ctx'],
+      screen: 'overview',
+      state: freeWithCatalog()
+    })
+
+    inputHarness.handler?.('', { return: true }) // first row = Plus
+    inputHarness.handler?.('', { return: true })
+    await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
+    mounted.cleanup()
+
+    expect(openManageLink).toHaveBeenCalledTimes(1)
+    expect(preview).not.toHaveBeenCalled()
+    // openManageLink narrates the handoff itself.
+    expect(sys).not.toHaveBeenCalled()
+  })
+
   it('subscriber: status line + plan bar + top-up bar, no "credits"', () => {
     const out = render(
       overlay(
@@ -318,6 +351,14 @@ const at = (
   extra: Partial<SubscriptionOverlayState> = {}
 ): SubscriptionOverlayState => ({ ctx, screen, state: s, ...extra })
 
+// Free account (no current sub) where NAS still returns the tier catalog.
+const freeWithCatalog = (): SubscriptionStateResponse =>
+  state({
+    current: null,
+    tiers: TIERS.map(tier => ({ ...tier, is_current: false })),
+    usage: { available: true, plan_name: null, status: 'free' }
+  })
+
 describe('SubscriptionOverlay — overview actions', () => {
   it('admin subscriber: offers Change plan + Cancel subscription', () => {
     const out = render(overlay(subscriber()))
@@ -353,11 +394,11 @@ describe('SubscriptionOverlay — overview actions', () => {
 })
 
 describe('SubscriptionOverlay — step-up', () => {
-  it('prompts to enable terminal billing (never leaks the raw scope)', () => {
+  it('prompts to allow Remote Spending (never leaks the raw scope)', () => {
     const out = render(at('stepup', subscriber(), { stepUpRetry: { kind: 'preview', tierId: 'ultra' } }))
 
-    expect(out).toContain('Terminal billing')
-    expect(out).toContain('Enable terminal billing')
+    expect(out).toContain('Remote Spending')
+    expect(out).toContain('Allow Remote Spending')
     expect(out).not.toContain('billing:manage')
   })
 })

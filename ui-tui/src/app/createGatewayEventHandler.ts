@@ -551,7 +551,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        sys('💳 Open this link to grant terminal billing access:')
+        sys('💳 Open this link to allow Remote Spending:')
         sys(url)
 
         if (code) {
@@ -948,12 +948,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'message.interim': {
         const text = ev.payload?.text
+
         if (typeof text === 'string' && text.trim()) {
           turnController.recordInterimMessage(text)
         }
 
         return
       }
+
       case 'message.complete': {
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 

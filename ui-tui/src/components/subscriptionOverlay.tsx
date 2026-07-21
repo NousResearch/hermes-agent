@@ -29,7 +29,7 @@ interface SubscriptionOverlayProps {
 /**
  * The /subscription modal — an in-terminal plan-change flow (V3). A small state
  * machine: overview → picker → confirm → result, with a stepup screen spliced in
- * when a mutation needs terminal billing. Downgrades / cancellations / resume are
+ * when a mutation needs remote spending. Downgrades / cancellations / resume are
  * chargeless; an upgrade charges the card on the subscription, and an SCA/decline
  * is handed off to the portal. Starting a NEW subscription still deep-links (needs
  * a fresh card). All RPCs live in subscription.ts, reached via `overlay.ctx`.
@@ -162,7 +162,7 @@ function upgradeResult(r: null | SubscriptionUpgradeResponse, pendingTierId?: nu
   return errorResult(r)
 }
 
-/** Map a failed terminal-billing step-up to the right recovery copy (typed). */
+/** Map a failed remote-spending step-up to the right recovery copy (typed). */
 function stepUpDenialResult(res: { error?: string; message?: string }): SubscriptionResult {
   if (res.error === 'session_revoked') {
     return { message: 'Your session expired — run /portal to log in again, then retry the change.', ok: false }
@@ -170,8 +170,7 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
 
   if (res.error === 'remote_spending_revoked') {
     return {
-      message:
-        res.message || 'Terminal spending was turned off for this session — reconnect from the portal, then retry.',
+      message: res.message || 'Remote spending was stopped for this terminal — reconnect from the portal, then retry.',
       ok: false
     }
   }
@@ -183,7 +182,7 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
   return {
     message:
       res.message ||
-      'Terminal billing was not enabled — someone with billing permissions (owner, admin, or finance admin) must allow it for this org. You can also make this change on the portal.',
+      'Remote Spending was not allowed — someone with billing permissions (owner, admin, or finance admin) must approve it. You can also make this change on the portal.',
     ok: false
   }
 }
@@ -196,7 +195,8 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
 // Post-grant replays pass allowStepUp=false and surface this instead (mirrors the
 // CLI's allow_stepup=False cap).
 const scopeStillDeniedResult: SubscriptionResult = {
-  message: 'Terminal billing still isn’t enabled for this org — enable it on the portal, then retry.',
+  message:
+    'Remote Spending still isn’t active for this terminal — the authorization didn’t take. Retry, or make this change on the portal.',
   ok: false
 }
 
@@ -375,6 +375,12 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
 
+  // On Free the catalog renders inline; picking a plan hands off to the portal,
+  // where starting a subscription needs card capture + checkout.
+  const freePlans = isFree
+    ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
+    : []
+
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
   const busyRef = useRef(false)
 
@@ -422,7 +428,31 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     }
   }
 
-  rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
+  for (const tier of freePlans) {
+    // NAS sends a bare decimal string; tolerate pre-grouped ("1,000") too.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+    const suffix = Number.isFinite(credits) && credits > 0 ? ` · $${credits.toLocaleString('en-US')} credits/mo` : ''
+
+    rows.push({
+      label: `${tier.name} · ${tier.dollars_per_month_display}/mo${suffix}`,
+      run: () => {
+        if (busyRef.current) {
+          return
+        }
+
+        busyRef.current = true
+        void ctx.openManageLink()
+        onClose()
+      }
+    })
+  }
+
+  // The inline plan rows are the subscribe path; only a catalog-less free state
+  // still needs the generic portal row.
+  if (!isFree || freePlans.length === 0) {
+    rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
+  }
+
   rows.push({ label: 'Close', run: onClose })
 
   const sel = useMenu(rows, onClose)
@@ -818,7 +848,7 @@ function ResultScreen({ onClose, overlay, t }: Omit<ScreenProps, 'onPatch'>) {
   )
 }
 
-// ── Screen: Step-up (grant terminal billing inline, then replay) ──────
+// ── Screen: Step-up (allow remote spending inline, then replay) ───────
 
 function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
   const { ctx } = overlay
@@ -908,7 +938,7 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
         ]
       : phase === 'prompt'
         ? [
-            { color: t.color.ok, label: 'Enable terminal billing', run: enable },
+            { color: t.color.ok, label: 'Allow Remote Spending', run: enable },
             { label: 'Cancel', run: back }
           ]
         : []
@@ -918,12 +948,12 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Terminal billing
+        Remote Spending
       </Text>
       {phase === 'prompt' && (
         <>
           <Text color={t.color.text}>
-            Changing your plan needs terminal billing enabled for this org. Enable it here, then continue.
+            Changing your plan needs Remote Spending allowed for this terminal. Allow it here, then continue.
           </Text>
           <Text color={t.color.muted}>
             Someone with billing permissions (owner, admin, or finance admin) approves it once in the browser.
@@ -935,7 +965,7 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
           Opening your browser to approve… finish there, then come back — nothing is charged until you continue.
         </Text>
       )}
-      {phase === 'granted' && <Text color={t.color.ok}>Terminal billing enabled. Continue to finish your change.</Text>}
+      {phase === 'granted' && <Text color={t.color.ok}>Remote Spending allowed. Continue to finish your change.</Text>}
       {phase === 'resuming' && <Text color={t.color.muted}>Applying your change…</Text>}
       <Text />
       {rows.map((row, i) => (

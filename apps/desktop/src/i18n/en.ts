@@ -225,7 +225,7 @@ export const en: Translations = {
       'nav.agents': 'Open agents',
       'session.new': 'New session',
       'session.newTab': 'New session tab',
-      'session.newWindow': 'New session in window',
+      'session.newWindow': 'New window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
       'session.slot.1': 'Switch to recent session 1',
@@ -523,7 +523,9 @@ export const en: Translations = {
       failedLoad: 'Settings failed to load',
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
-      invalidJson: 'Invalid config JSON'
+      invalidJson: 'Invalid config JSON',
+      keepAwakeTitle: 'Keep computer awake',
+      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
     },
     credentials: {
       pasteKey: 'Paste key',

@@ -5725,6 +5725,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["transport"] = queued["transport"]
     try:
         if _session_uses_compute_host(session):
+            with session["history_lock"]:
+                if session.get("_finalized"):
+                    raise RuntimeError("TUI session finalized before prompt acceptance")
+                _start_inflight_turn(session, queued["text"])
             resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")

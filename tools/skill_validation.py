@@ -21,6 +21,7 @@ from tools.skill_sidecar_io import atomic_write_sidecar, read_sidecar, sidecar_l
 
 VALIDATION_FILE = ".validation.json"
 VALIDATION_LOCK_FILE = ".validation.lock"
+LIFECYCLE_LOCK_FILE = ".lifecycle.lock"
 VALIDATION_SCHEMA = "hermes.skill-validation.v1"
 MAX_VALIDATION_OUTPUT_CHARS = 16_384
 MAX_VALIDATION_RECORD_BYTES = 65_536
@@ -32,6 +33,7 @@ _EXCLUDED_FILES = {
     ".memory.lock",
     VALIDATION_FILE,
     VALIDATION_LOCK_FILE,
+    LIFECYCLE_LOCK_FILE,
 }
 _GENERATED_PACKAGE_DIRS = {
     "__pycache__",
@@ -137,6 +139,14 @@ def _invalidate_skill_validation_locked(skill_dir: Path) -> None:
     )
     if not path.exists() and tests_collected == 0:
         return
+    # A package still under lifecycle construction must never be un-hidden by an
+    # intermediate mutation (e.g. adding scripts before tests). Preserve the
+    # ``draft`` state so it stays out of discovery until the lifecycle registers
+    # it explicitly.
+    existing = read_skill_validation(skill_dir)
+    if isinstance(existing, dict) and existing.get("status") == "draft":
+        _write_draft_validation_locked(skill_dir, tests_collected)
+        return
     status = "pending" if tests_collected else "static"
     record = {
         "schema": VALIDATION_SCHEMA,
@@ -153,6 +163,32 @@ def _invalidate_skill_validation_locked(skill_dir: Path) -> None:
     if tests_collected:
         record["validation_token"] = secrets.token_urlsafe(24)
     _atomic_json_write(path, record)
+
+
+def _write_draft_validation_locked(
+    skill_dir: Path, tests_collected: Optional[int] = None
+) -> None:
+    """Write a ``draft`` record that fails the discovery gate closed."""
+    if tests_collected is None:
+        tests_dir = skill_dir / "tests"
+        tests_collected = (
+            len(list(tests_dir.rglob("test_*.py"))) if tests_dir.is_dir() else 0
+        )
+    record = {
+        "schema": VALIDATION_SCHEMA,
+        "status": "draft",
+        "reason": "skill package under lifecycle construction",
+        "tests_collected": tests_collected,
+        "content_digest": skill_content_digest(skill_dir),
+        "updated_at": _now_iso(),
+    }
+    _atomic_json_write(validation_path(skill_dir), record)
+
+
+def record_draft_validation(skill_dir: Path) -> None:
+    """Atomically stamp a package as an undiscoverable lifecycle draft."""
+    with sidecar_lock(skill_dir, VALIDATION_LOCK_FILE):
+        _write_draft_validation_locked(skill_dir)
 
 
 def invalidate_skill_validation(skill_dir: Path) -> None:
@@ -451,13 +487,11 @@ def validation_allows_discovery(skill_dir: Path) -> bool:
         tests_dir = skill_dir / "tests"
         has_tests = tests_dir.is_dir() and any(tests_dir.rglob("test_*.py"))
         if has_tests:
-            from tools.skill_sidecar_io import secure_sidecar_io_available
-
-            # Tested packages opt into lifecycle validation. When secure
-            # sidecar I/O is available, absence of a record must fail closed;
-            # legacy fallback is retained only on platforms that cannot create
-            # race-safe sidecars.
-            return not secure_sidecar_io_available()
+            # A tested package with no validation record has not been through
+            # the lifecycle gate. Fail closed unconditionally: never discover a
+            # code-backed skill whose tests were not recorded as passing,
+            # regardless of platform sidecar support.
+            return False
         return True
     return record.get("status") in {"passed", "static"}
 
@@ -497,7 +531,7 @@ def read_skill_validation(skill_dir: Path) -> Optional[Dict[str, Any]]:
     if record.get("schema") != VALIDATION_SCHEMA:
         return {"status": "invalid", "reason": "unsupported validation schema"}
     status = record.get("status")
-    if status not in {"pending", "passed", "failed", "static"}:
+    if status not in {"draft", "pending", "passed", "failed", "static"}:
         return {"status": "invalid", "reason": "unknown validation status"}
     tests_collected = record.get("tests_collected")
     if (
@@ -524,6 +558,7 @@ def read_skill_validation(skill_dir: Path) -> Optional[Dict[str, Any]]:
 
     common = {"schema", "status", "tests_collected", "content_digest", "approval_id"}
     allowed_by_status = {
+        "draft": common | {"reason", "updated_at"},
         "pending": common | {"validation_token", "reason", "updated_at"},
         "static": common | {"reason", "validated_at", "updated_at"},
         "passed": common | {"command", "exit_code", "output", "validated_at"},
@@ -539,7 +574,12 @@ def read_skill_validation(skill_dir: Path) -> Optional[Dict[str, Any]]:
         ):
             return {"status": "invalid", "reason": "invalid validation timestamp"}
 
-    if status == "pending":
+    if status == "draft":
+        if not isinstance(record.get("reason"), str) or not isinstance(
+            record.get("updated_at"), str
+        ):
+            return {"status": "invalid", "reason": "invalid draft validation record"}
+    elif status == "pending":
         token = record.get("validation_token")
         if (
             tests_collected <= 0
@@ -586,7 +626,15 @@ def read_skill_validation(skill_dir: Path) -> Optional[Dict[str, Any]]:
     except ValueError as exc:
         return {"status": "invalid", "reason": str(exc)}
     if record.get("content_digest") != current_digest:
-        if tests_collected == 0:
+        if status == "draft":
+            record = {
+                "schema": VALIDATION_SCHEMA,
+                "status": "draft",
+                "tests_collected": tests_collected,
+                "reason": "skill package under lifecycle construction",
+                "content_digest": current_digest,
+            }
+        elif tests_collected == 0:
             record = {
                 "schema": VALIDATION_SCHEMA,
                 "status": "static",

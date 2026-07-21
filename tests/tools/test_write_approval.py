@@ -286,6 +286,55 @@ def test_failed_validation_approval_is_consumed_after_record_is_applied(
     assert record["approval_id"] == staged["pending_id"]
 
 
+def test_approved_tested_skill_write_resumes_lifecycle(hermes_home, monkeypatch):
+    import importlib
+
+    import tools.skill_manager_tool as smt
+    from tools import write_approval as wa
+
+    importlib.reload(smt)
+    assert json.loads(smt.skill_manage("create", "resumed-skill", content=_SKILL))[
+        "success"
+    ]
+
+    _set_approval("skills", True)
+    staged = json.loads(
+        smt.skill_manage(
+            "write_file",
+            "resumed-skill",
+            file_path="tests/test_behavior.py",
+            file_content="def test_ok():\n    assert True\n",
+        )
+    )
+    assert staged.get("staged") is True
+
+    # Stub the isolated executor so no real sandbox is required in unit tests.
+    class _FakeExecutor:
+        python_executable = "python3"
+
+        def __call__(self, _request):
+            from tools.skill_lifecycle_orchestrator import TestExecutionResult
+
+            return TestExecutionResult(exit_code=0, output="1 passed", isolation="test")
+
+    monkeypatch.setattr(
+        "tools.skill_test_sandbox.BubblewrapTestExecutor.discover",
+        classmethod(lambda cls: _FakeExecutor()),
+    )
+
+    record = wa.get_pending("skills", staged["pending_id"])
+    applied = json.loads(smt.apply_skill_pending(record["payload"]))
+
+    assert applied["success"] is True
+    assert applied["lifecycle"]["status"] == "passed"
+    assert applied["lifecycle"]["registered"] is True
+
+    from tools.skill_validation import validation_allows_discovery
+
+    skill_dir = Path(hermes_home) / "skills" / "resumed-skill"
+    assert validation_allows_discovery(skill_dir) is True
+
+
 def test_skill_experience_is_redacted_before_approval_staging(hermes_home):
     import importlib
 

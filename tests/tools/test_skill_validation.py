@@ -142,6 +142,45 @@ def test_content_digest_binds_executable_mode_bits(tmp_path):
     assert executable != non_executable
 
 
+def test_created_code_skill_is_hidden_until_validated(tmp_path):
+    from tools.skill_validation import read_skill_validation, validation_allows_discovery
+
+    with isolated_skills(tmp_path):
+        skill_dir = create_code_skill(PASSING_TEST, tmp_path)
+        # A freshly created, still-untested package must never be discoverable,
+        # even for the brief window before the pending sidecar exists.
+        record = read_skill_validation(skill_dir)
+        assert record is not None
+        assert record["status"] in {"draft", "pending"}
+        assert validation_allows_discovery(skill_dir) is False
+
+
+def test_draft_survives_intermediate_script_write(tmp_path):
+    from tools.skill_validation import (
+        read_skill_validation,
+        record_draft_validation,
+        validation_allows_discovery,
+    )
+
+    with isolated_skills(tmp_path):
+        assert _create_skill("validated-skill", VALID_SKILL)["success"]
+        skill_dir = tmp_path / "skills" / "validated-skill"
+        record_draft_validation(skill_dir)
+
+        # Adding a non-test file must not promote the draft to a discoverable
+        # static skill.
+        assert skill_manage(
+            action="write_file",
+            name="validated-skill",
+            file_path="scripts/add.py",
+            file_content=PASSING_SCRIPT,
+        )
+        record = read_skill_validation(skill_dir)
+        assert record["status"] == "draft"
+        assert validation_allows_discovery(skill_dir) is False
+
+
+
 def test_tested_package_without_validation_sidecar_is_hidden(tmp_path):
     from tools.skill_validation import validation_allows_discovery
 

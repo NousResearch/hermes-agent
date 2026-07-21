@@ -866,7 +866,21 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
-    # Extract description from frontmatter for verbose notifications
+    # Autonomous lifecycle creation must never expose a skill between the
+    # SKILL.md write and its validation. Stamp a draft record (hidden by the
+    # discovery gate) so a background-review-created skill stays invisible until
+    # the lifecycle coordinator validates and registers it. User-directed
+    # foreground creates keep their existing immediately-usable behavior.
+    try:
+        from tools.skill_provenance import is_background_review
+
+        if is_background_review():
+            from tools.skill_validation import record_draft_validation
+
+            record_draft_validation(skill_dir)
+    except Exception:
+        logger.debug("draft stamp skipped for %s", name, exc_info=True)
+
     _desc = ""
     try:
         _fm_end = re.search(r'\n---\s*\n', content[3:])
@@ -1457,10 +1471,74 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             result["validation_pending"] = result.get("validation_status") == "pending"
             result["warning"] = result.pop("error", "Validation state recorded")
             raw = json.dumps(result, ensure_ascii=False)
+        elif (
+            payload.get("action") in {"create", "edit", "patch", "write_file"}
+            and result.get("success") is True
+        ):
+            # An approved mutation to a tested package leaves it pending and
+            # undiscoverable. Resume the deterministic evaluate → register cycle
+            # now, in the foreground, so approval does not silently dead-end the
+            # lifecycle. No model refinement runs here (no agent is present);
+            # the package simply passes or stays hidden.
+            lifecycle = _resume_lifecycle_after_apply(payload.get("name", ""))
+            if lifecycle is not None:
+                result["lifecycle"] = lifecycle
+                raw = json.dumps(result, ensure_ascii=False)
         return raw
     finally:
         _skill_pending_replay_id.reset(replay_token)
         _skill_gate_bypass.reset(token)
+
+
+def _resume_lifecycle_after_apply(name: str) -> Optional[Dict[str, Any]]:
+    """Run one evaluate → register pass for a tested package after approval.
+
+    Returns a compact lifecycle summary, or None when there is nothing to do
+    (skill missing, no tests, or no isolated executor available). Never raises:
+    a resume failure must not turn a successful approved write into an error.
+    """
+    if not name:
+        return None
+    try:
+        existing = _find_skill(name)
+        if not existing:
+            return None
+        skill_dir = Path(existing["path"])
+        tests_dir = skill_dir / "tests"
+        if not (tests_dir.is_dir() and any(tests_dir.rglob("test_*.py"))):
+            return None
+
+        from tools.skill_validation import read_skill_validation
+
+        record = read_skill_validation(skill_dir)
+        if not isinstance(record, dict) or record.get("status") not in {
+            "draft",
+            "pending",
+        }:
+            return None
+
+        from tools.skill_lifecycle_orchestrator import run_skill_lifecycle
+        from tools.skill_test_sandbox import BubblewrapTestExecutor
+
+        executor = BubblewrapTestExecutor.discover()
+        if executor is None:
+            # Fail closed: leave the package pending and undiscoverable.
+            return {"status": "no_executor", "registered": False}
+
+        outcome = run_skill_lifecycle(
+            skill_dir,
+            execute=executor,
+            refine=None,
+            python_executable=executor.python_executable,
+        )
+        return {
+            "status": outcome.status,
+            "registered": outcome.registered,
+            "test_attempts": outcome.test_attempts,
+        }
+    except Exception:
+        logger.debug("lifecycle resume after apply failed for %s", name, exc_info=True)
+        return None
 
 
 def skill_manage(

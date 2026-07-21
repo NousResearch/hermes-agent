@@ -559,8 +559,26 @@ the review fork exits:
 4. A failed test returns a bounded diagnostic to the review agent as explicitly
    untrusted data. The agent may patch the same skill, after which Hermes hashes
    the changed package and reruns the tests. Refinement is capped at two attempts.
-5. Only evidence bound to the current package digest can mark the skill passed
-   and restore automatic discovery.
+5. Only evidence bound to the current package digest — including each file's
+   content and executable mode bits — can mark the skill passed and restore
+   automatic discovery.
+
+Concurrency and lifecycle safety:
+
+- A skill created by the autonomous review is stamped `draft` and stays hidden
+  from discovery through the whole build, so it is never briefly visible between
+  the `SKILL.md` write and its validation. Intermediate writes (adding scripts
+  before tests) preserve the `draft` state rather than promoting it.
+- The entire `evaluate → refine → re-evaluate` cycle holds a per-skill lifecycle
+  lock, so two concurrent reviewers cannot interleave one's patch with another's
+  test run.
+- A code-backed skill with no valid `passed`/`static` record is never
+  discoverable — absence of a validation record fails closed.
+- When write-approval is enabled, a staged skill write is excluded from the
+  review's lifecycle; once the user approves it, `apply_skill_pending` resumes
+  the evaluate → register pass in the foreground so approval does not leave a
+  tested skill stuck pending. If no isolated executor is available at that point,
+  the skill stays pending and undiscoverable.
 
 The lifecycle adds no new model-facing tool schema and does not modify the live
 conversation's system prompt or prompt cache. Refinement runs inside the isolated

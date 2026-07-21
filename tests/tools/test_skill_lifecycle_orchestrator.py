@@ -62,6 +62,42 @@ def test_text_only_skill_uses_static_validation_without_execution(tmp_path: Path
     assert result.test_attempts == 0
 
 
+def test_concurrent_lifecycle_runs_are_serialized_per_skill(tmp_path: Path) -> None:
+    import threading
+
+    skill_dir = _skill(tmp_path)
+    active = 0
+    max_concurrent = 0
+    lock = threading.Lock()
+    start = threading.Barrier(2)
+
+    def execute(_request: SkillTestRequest) -> ExecutionResult:
+        nonlocal active, max_concurrent
+        with lock:
+            active += 1
+            max_concurrent = max(max_concurrent, active)
+        # Hold the critical section so a second unserialized run would overlap.
+        __import__("time").sleep(0.2)
+        with lock:
+            active -= 1
+        return ExecutionResult(exit_code=0, output="1 passed", isolation="test")
+
+    results: list = []
+
+    def run_once() -> None:
+        start.wait()
+        results.append(run_skill_lifecycle(skill_dir, execute=execute))
+
+    threads = [threading.Thread(target=run_once) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert max_concurrent == 1
+    assert all(result.status in {"passed", "stale"} for result in results)
+
+
 def test_failure_triggers_refinement_and_revalidation(tmp_path: Path) -> None:
     skill_dir = _skill(tmp_path)
     executions = iter(

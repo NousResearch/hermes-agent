@@ -783,6 +783,57 @@ generic plugin surface (new hook, new ctx method) — never hardcode
 plugin-specific logic into core. PR #5295 removed 95 lines of hardcoded
 honcho argparse from `main.py` for exactly this reason.
 
+### Dashboard tab plugins (`hermes_cli/web_server.py::_discover_dashboard_plugins` + `plugins/<name>/dashboard/`)
+
+A **second, independent loader** drives the web dashboard at
+`http://127.0.0.1:9119/` (or whatever `hermes dashboard --port` is set to).
+It scans `plugins/<name>/dashboard/manifest.json` from three roots:
+
+1. `~/.hermes/plugins/<name>/dashboard/manifest.json` (user)
+2. `<repo>/plugins/<name>/dashboard/manifest.json` (bundled)
+3. `./.hermes/plugins/<name>/dashboard/manifest.json` (project, requires `HERMES_ENABLE_PROJECT_PLUGINS`)
+
+A tab plugin ships **no** `register(ctx)` function and **no** `plugin.yaml`.
+The manifest declares `name`, `tab.path` (URL slug), `tab.position`,
+`tab.hidden` (opt-out), `entry` (built JS bundle, e.g. `dist/index.js`),
+`css` (built stylesheet), and optionally `api` (a relative Python file
+inside `dashboard/` that gets imported for `/api/plugins/<name>/*` routes).
+See GHSA-5qr3-c538-wm9j in commit history — the `api` path is validated
+against the plugin's own `dashboard/` directory to prevent RCE via
+absolute-path manifest values.
+
+**Bundled dashboard tabs on a source checkout:**
+- `kanban/dashboard` → `/kanban` — multi-agent dispatcher board
+- `hermes-achievements` → `/achievements` — Steam-style session badges
+- `example-dashboard/dashboard` → `sessions:top` slot (banner injector)
+
+**Crucial difference from the general plugin loader:** the dashboard
+loader does **not** consult `plugins.enabled`. There is **no**
+`hermes plugins enable kanban` — the plugin is auto-discovered the
+moment `manifest.json` is on disk and the `dist/` is built. Users who
+read `hermes plugins enable <name>` and see `not installed or bundled`
+for a dashboard tab are hitting this loader seam. To hide a bundled
+dashboard tab: set `tab.hidden: true` in its manifest, move the
+`manifest.json` aside, or override with a user plugin of the same name
+that ships no dashboard.
+
+**Wheel installs (`pipx install hermes-agent`) ship `plugin_api.py`
+only** — the `manifest.json` and `dist/` for the bundled tabs are
+not in the wheel, so the loader silently no-ops and `/kanban` etc.
+never appear (upstream #28609, #30010). Source checkouts have the full
+tree. The `npm run build` step in `website/` is unrelated; the tab
+`dist/` is built by the plugin's own `package.json` if any.
+
+**Why the seam exists (and why not unify it):** the Python plugin
+loader is process-local to the agent run (hooks fire on every tool
+call), so opt-in is a security gate. The dashboard loader is process-
+local to the web server (mounts a route once at startup), and the
+bundle is sandboxed in the browser — opt-in is just clutter. The
+trade-off is that the two loaders don't share a config block, and
+docs that say "Bundled plugins are opt-in" (the Built-in Plugins page)
+contradict the table that lists auto-loading dashboard tabs. PR #43080
+documents the seam; issue #43081 proposes the unification.
+
 **No new in-tree memory providers (policy, May 2026):** the set of
 built-in memory providers under `plugins/memory/` is closed. New memory
 backends must ship as **standalone plugin repos** that users install

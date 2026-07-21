@@ -4370,6 +4370,52 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
     assert second_backup.exists()
 
 
+def test_connect_fast_path_reprobes_health_after_ttl(tmp_path, monkeypatch):
+    """A long-lived process must not trust first-open health forever."""
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    fake_now = [1000.0]
+    monkeypatch.setattr(kb.time, "monotonic", lambda: fake_now[0])
+
+    kb._INITIALIZED_PATHS.discard(resolved)
+    kb._LAST_HEALTH_OK.pop(resolved, None)
+
+    # First connect initializes the schema and both process-local caches.
+    kb.connect(db_path=db_path).close()
+    assert resolved in kb._INITIALIZED_PATHS
+    assert kb._LAST_HEALTH_OK[resolved] == 1000.0
+
+    checks = []
+    real_check = kb._run_integrity_check
+
+    def recording_check(conn):
+        checks.append(conn)
+        return real_check(conn)
+
+    monkeypatch.setattr(kb, "_run_integrity_check", recording_check)
+
+    # Steady-state connects inside the TTL keep the fast path cheap.
+    fake_now[0] = 1000.0 + kb._HEALTH_CHECK_TTL_SECONDS - 1
+    kb.connect(db_path=db_path).close()
+    assert checks == []
+
+    # Once the TTL expires, the same initialized-path fast path probes again.
+    fake_now[0] = 1000.0 + kb._HEALTH_CHECK_TTL_SECONDS + 1
+    kb.connect(db_path=db_path).close()
+    assert len(checks) == 1
+    assert kb._LAST_HEALTH_OK[resolved] == fake_now[0]
+
+    # Tear the file after that successful probe. Once the next TTL expires,
+    # the real guard fails closed before a new r/w connection is returned and
+    # evicts the stale success stamp.
+    monkeypatch.setattr(kb, "_run_integrity_check", real_check)
+    _write_corrupt_db(db_path)
+    fake_now[0] += kb._HEALTH_CHECK_TTL_SECONDS + 1
+    with pytest.raises(kb.KanbanDbCorruptError):
+        kb.connect(db_path=db_path)
+    assert resolved not in kb._LAST_HEALTH_OK
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

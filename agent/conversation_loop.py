@@ -5682,6 +5682,26 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # ── Restore pending verification response ──────────────
+                # When verify-on-stop fired, the original answer was saved
+                # in _pending_verification_response and final_response
+                # cleared.  After verification passes, the model's new
+                # response is typically a short receipt ("tests pass").
+                # Merge the saved answer back so the user gets both the
+                # verification result AND the substantive response.
+                if (
+                    _pending_verification_response
+                    and final_response
+                    and len(final_response) < 300
+                ):
+                    final_response = (
+                        f"{_pending_verification_response}\n\n---\n{final_response}"
+                    )
+                    if not getattr(agent, "quiet_mode", False):
+                        agent._safe_print(
+                            f"\n💬 {_pending_verification_response}"
+                        )
+
                 # ── Kanban worker terminal-tool stop guard ─────────────
                 # Workers must end with kanban_complete / kanban_block.
                 # Models sometimes narrate the next step ("Let me write the

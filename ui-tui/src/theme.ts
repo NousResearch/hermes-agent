@@ -288,8 +288,8 @@ export const DARK_THEME: Theme = {
     statusCritical: '#FF6B6B',
     selectionBg: '#3a3a55',
 
-    diffAdded: 'rgb(220,255,220)',
-    diffRemoved: 'rgb(255,220,220)',
+    diffAdded: 'rgb(30,70,30)',
+    diffRemoved: 'rgb(70,30,30)',
     diffAddedWord: 'rgb(36,138,61)',
     diffRemovedWord: 'rgb(207,34,46)',
     shellDollar: '#4dabf7'

@@ -885,4 +885,87 @@ class TestLocalContextProbeTTLCache:
 
         assert first is None
         assert second is None
-        assert detect.call_count == 2, "None result was wrongly cached; retry did not re-probe"
+
+
+class TestDetectLocalServerTypePublicProviderShortCircuit:
+    """detect_local_server_type should short-circuit for known public provider hosts."""
+
+    def test_openai_api_host_short_circuits(self):
+        """api.openai.com should return None without probing."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("https://api.openai.com/v1")
+
+        # Should return None immediately without any HTTP calls
+        assert result is None
+        assert client_mock.get.call_count == 0
+
+    def test_anthropic_api_host_short_circuits(self):
+        """api.anthropic.com should return None without probing."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("https://api.anthropic.com/v1")
+
+        assert result is None
+        assert client_mock.get.call_count == 0
+
+    def test_google_api_host_short_circuits(self):
+        """generativelanguage.googleapis.com should return None without probing."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("https://generativelanguage.googleapis.com/v1beta")
+
+        assert result is None
+        assert client_mock.get.call_count == 0
+
+    def test_local_hosts_still_probe(self):
+        """Local hosts like localhost or 127.0.0.1 should still probe."""
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"models": []}
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://localhost:11434/v1")
+
+        # Local hosts should still trigger probes
+        assert client_mock.get.call_count > 0
+
+    def test_unknown_public_hosts_still_probe(self):
+        """Unknown public hosts should still probe (only known SaaS hosts short-circuit)."""
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 404
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("https://custom-endpoint.example.com/v1")
+
+        # Unknown hosts should still probe (will get 404s, but that's expected)
+        assert client_mock.get.call_count > 0

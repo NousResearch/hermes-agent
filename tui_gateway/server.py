@@ -13403,8 +13403,14 @@ def _(rid, params: dict) -> dict:
                         "name": cmds[key].get("name", name),
                     },
                 )
-    except Exception:
-        pass
+            return _err(
+                rid,
+                4018,
+                f"skill '{cmds[key].get('name', name)}' is registered but "
+                f"failed to load — check the skill files",
+            )
+    except Exception as exc:
+        return _err(rid, 4018, f"skill command '{name}' error: {exc}")
 
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,

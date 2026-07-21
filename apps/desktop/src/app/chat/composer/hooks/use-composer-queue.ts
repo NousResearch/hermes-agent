@@ -1,23 +1,19 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { useSessionSlice } from '@/lib/use-session-slice'
+import { queueManager as QueueManager } from '@/lib/queue-manager'
 import { type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
-  $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
-  MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
-  shouldAutoDrain,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { useComposerScope } from '../scope'
@@ -64,10 +60,11 @@ export function useComposerQueue({
   const { t } = useI18n()
   const scope = useComposerScope()
 
-  // Per-session slice (edge): re-renders only when THIS session's queue changes,
-  // not on cross-session queue churn (the plain atom's map ref changes on every
-  // write; the keyed array does not).
-  const queuedPrompts = useSessionSlice($queuedPromptsBySession, activeQueueSessionKey)
+  // Per-session queue slice: re-renders only when THIS session's queue changes.
+  const queuedPrompts = useSyncExternalStore(
+    QueueManager.subscribe,
+    () => activeQueueSessionKey ? QueueManager.getAll(activeQueueSessionKey) : []
+  )
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit
@@ -180,50 +177,41 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  const prevQueueKeyRef = useRef(activeQueueSessionKey)
+  const drainingQueueRef = useRef(false)
+  const prevQueueKeyRef = useRef(activeQueueSessionKey)
+  const drainingQueueRef = useRef(false)
+  const drainFailuresRef = useRef(new Map<string, number>())
 
   // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
   const runDrain = useCallback(
     async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
-      if (drainingQueueRef.current || !activeQueueSessionKey) {
+      if (!activeQueueSessionKey) {
         return false
       }
 
-      const drainQueueSessionKey = activeQueueSessionKey
-      const drainRuntimeSessionId = sessionId ?? null
-      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
+      const entry = pickEntry(getQueuedPrompts(activeQueueSessionKey))
 
       if (!entry) {
         return false
       }
 
-      drainingQueueRef.current = true
+      const accepted = await Promise.resolve(
+        onSubmit(entry.text, {
+          attachments: entry.attachments,
+          fromQueue: true,
+          storedSessionId: activeQueueSessionKey
+        })
+      )
 
-      try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, {
-            attachments: entry.attachments,
-            fromQueue: true,
-            sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
-          })
-        )
-
-        if (accepted === false) {
-          return false
-        }
-
-        drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(drainQueueSessionKey, entry.id)
-        resetBrowseState(drainRuntimeSessionId)
-
-        return true
-      } finally {
-        drainingQueueRef.current = false
+      if (accepted !== false) {
+        removeQueuedPrompt(activeQueueSessionKey, entry.id)
+        resetBrowseState(activeQueueSessionKey)
       }
+
+      return accepted !== false
     },
-    [activeQueueSessionKey, onSubmit, sessionId]
+    [activeQueueSessionKey, onSubmit]
   )
 
   const pickDrainHead = useCallback(

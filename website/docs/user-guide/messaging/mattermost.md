@@ -325,6 +325,19 @@ mattermost:
 
 Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Per-Channel Working Directories
+
+Give a channel its own project folder. Without this, a session started from Mattermost has no working directory — project context files are not picked up and the terminal sandbox starts in the gateway's launch directory.
+
+```yaml
+mattermost:
+  channel_cwds:
+    "channel_id_abc123": /Users/me/projects/research
+    "channel_id_def456": /Users/me/projects/hermes
+```
+
+Keys are Mattermost channel IDs, same as `channel_prompts`. The folder becomes the session's working directory, so `AGENTS.md` / `HERMES.md` in it load as context files, the terminal tool starts there, and the session groups by workspace in Hermes Desktop. Paths that do not exist are ignored with a warning. `channel_prompts` and `channel_cwds` are independent — set either or both on the same channel.
+
 ## Security
 
 :::warning

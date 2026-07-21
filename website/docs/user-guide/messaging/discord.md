@@ -348,6 +348,7 @@ discord:
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  channel_cwds: {}                # Per-channel working directories
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -474,6 +475,26 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.channel_cwds`
+
+**Type:** mapping — **Default:** `{}`
+
+Per-channel working directories. Sessions started from a messaging channel otherwise have no project folder: context files are not picked up and the terminal sandbox starts wherever the gateway was launched. Mapping a channel to a folder gives that channel its own project.
+
+```yaml
+discord:
+  channel_cwds:
+    "1234567890": /Users/me/projects/hermes
+    "9876543210": /Users/me/projects/website
+```
+
+Behavior:
+- Exact thread/channel ID matches win; threads and forum posts fall back to the parent channel/forum ID, same as `channel_prompts`.
+- The folder becomes the session's working directory, so `AGENTS.md` / `HERMES.md` in it are loaded as context files and the terminal tool starts there.
+- The directory is stamped on the session row at creation, so messaging sessions group by workspace in Hermes Desktop.
+- Configured paths that do not exist are ignored with a warning, and resolution continues — a stale thread entry still inherits a valid parent channel's folder.
+- Independent of `channel_prompts`; both keys can be set on the same channel.
 
 #### `discord.history_backfill`
 

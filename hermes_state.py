@@ -1394,6 +1394,39 @@ class SessionDB:
                         )
                         time.sleep(jitter)
                         continue
+                # VACUUM replaces the database file on disk — connections
+                # opened before the VACUUM may see the old (unlinked) file
+                # and fail with "file is not a database" on the next
+                # BEGIN IMMEDIATE.  Reconnect and retry — SQLite's WAL-mode
+                # autorecovery handles this on the fresh connection.
+                if "file is not a database" in err_msg:
+                    last_err = exc
+                    if attempt < self._WRITE_MAX_RETRIES - 1:
+                        if self._conn is not None:
+                            try:
+                                self._conn.close()
+                            except Exception:
+                                pass
+                        self._conn = sqlite3.connect(
+                            str(self.db_path),
+                            check_same_thread=False,
+                            timeout=1.0,
+                            isolation_level=None,
+                        )
+                        self._conn.row_factory = sqlite3.Row
+                        apply_wal_with_fallback(self._conn, db_label="state.db")
+                        self._conn.execute("PRAGMA foreign_keys=ON")
+                        logger.debug(
+                            "state.db: reconnected after VACUUM-induced "
+                            "\"file is not a database\" (attempt %d/%d)",
+                            attempt + 1, self._WRITE_MAX_RETRIES,
+                        )
+                        jitter = random.uniform(
+                            self._WRITE_RETRY_MIN_S,
+                            self._WRITE_RETRY_MAX_S,
+                        )
+                        time.sleep(jitter)
+                        continue
                 # Non-lock error or retries exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:

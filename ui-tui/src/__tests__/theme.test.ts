@@ -303,7 +303,10 @@ describe('fromSkin', () => {
   })
 
   it('keeps truecolor light Apple Terminal in truecolor (adapting, not ansi256-bucketing)', async () => {
-    const { contrastRatio, fromSkin } = await importThemeWithEnv({ COLORTERM: 'truecolor', TERM_PROGRAM: 'Apple_Terminal' })
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({
+      COLORTERM: 'truecolor',
+      TERM_PROGRAM: 'Apple_Terminal'
+    })
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     // No ansi256 bucketing on truecolor terminals — a truly invisible cream
@@ -418,10 +421,7 @@ describe('derived tone ladder', () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 
     // A seeds-only skin (no dim/label/menu keys authored at all).
-    const { color } = fromSkin(
-      { banner_accent: '#DD4A3A', banner_text: '#F1E6CF', banner_title: '#C7A96B' },
-      {}
-    )
+    const { color } = fromSkin({ banner_accent: '#DD4A3A', banner_text: '#F1E6CF', banner_title: '#C7A96B' }, {})
 
     // Muted recedes from THIS skin's text toward the background with an
     // accent tint — a red-family derivative, never another skin's gold.

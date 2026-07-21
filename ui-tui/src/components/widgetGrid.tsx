@@ -255,17 +255,12 @@ export const GridAreas = memo(function GridAreas({
 
 const AreaCell = memo(function AreaCell({ cell, widget }: { cell: GridAreaCell; widget?: GridAreaWidget }) {
   const node =
-    widget?.render?.(cell) ?? (typeof widget?.children === 'function' ? widget.children(cell) : widget?.children) ?? null
+    widget?.render?.(cell) ??
+    (typeof widget?.children === 'function' ? widget.children(cell) : widget?.children) ??
+    null
 
   return (
-    <Box
-      height={cell.height}
-      left={cell.x}
-      overflow="hidden"
-      position="absolute"
-      top={cell.y}
-      width={cell.width}
-    >
+    <Box height={cell.height} left={cell.x} overflow="hidden" position="absolute" top={cell.y} width={cell.width}>
       {node}
     </Box>
   )

@@ -47,10 +47,16 @@ const themeForSkin = (s: GatewaySkin) => {
   // still works — it just overrides every key it lists.
   const paired = detectLightMode() ? s.light_colors : s.dark_colors
 
-  const colors =
-    paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
+  const colors = paired && Object.keys(paired).length ? { ...(s.colors ?? {}), ...paired } : (s.colors ?? {})
 
-  return fromSkin(colors, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '', s.tool_prefix ?? '', s.help_header ?? '')
+  return fromSkin(
+    colors,
+    s.branding ?? {},
+    s.banner_logo ?? '',
+    s.banner_hero ?? '',
+    s.tool_prefix ?? '',
+    s.help_header ?? ''
+  )
 }
 
 // Patch the live theme AND persist it for the next launch's first frame
@@ -95,7 +101,12 @@ const themesEqual = (a: Theme, b: Theme) => {
     }
   }
 
-  return a.brand.name === b.brand.name && a.brand.prompt === b.brand.prompt && a.bannerLogo === b.bannerLogo && a.bannerHero === b.bannerHero
+  return (
+    a.brand.name === b.brand.name &&
+    a.brand.prompt === b.brand.prompt &&
+    a.bannerLogo === b.bannerLogo &&
+    a.bannerHero === b.bannerHero
+  )
 }
 
 const applySkin = (s: GatewaySkin) => {

@@ -667,7 +667,9 @@ export function TextInput({
     }
 
     if (!display && placeholder) {
-      return hintCursorCell(placeholder[0] ?? ' ', placeholderColor) + colorizeHint(placeholder.slice(1), placeholderColor)
+      return (
+        hintCursorCell(placeholder[0] ?? ' ', placeholderColor) + colorizeHint(placeholder.slice(1), placeholderColor)
+      )
     }
 
     if (selected) {

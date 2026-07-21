@@ -2013,6 +2013,38 @@ def _looks_like_help_or_version_command(command: str) -> bool:
     )
 
 
+
+# Package manager subcommands that take package-name arguments.
+_PM_INSTALL_VERBS = re.compile(
+    r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|update|up(?:grade)?|remove|uninstall|rm)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_pm_package_argument(command: str, keyword: str) -> bool:
+    """Return True when *keyword* appears as a package name in a pm install/update command.
+
+    Prevents false-positive long-lived-process detection for commands like
+    ``npm update vite`` or ``pnpm add nodemon`` where the keyword is a
+    *package name argument*, not a standalone server invocation.
+    """
+    if not _PM_INSTALL_VERBS.search(command):
+        return False
+    # Extract tokens after the pm install verb; keyword must be one of them.
+    after_pm = re.split(
+        r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|update|up(?:grade)?|remove|uninstall|rm)\b",
+        command,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )
+    if len(after_pm) < 2:
+        return False
+    tokens = after_pm[1].split()
+    # Filter out flags (starting with -)
+    pkg_tokens = [t for t in tokens if not t.startswith("-")]
+    return keyword.lower() in {t.lower() for t in pkg_tokens}
+
+
 def _foreground_background_guidance(command: str) -> str | None:
     """Suggest background mode when a foreground command looks long-lived.
 
@@ -2040,7 +2072,14 @@ def _foreground_background_guidance(command: str) -> str | None:
         )
 
     for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
-        if pattern.search(unquoted):
+        m = pattern.search(unquoted)
+        if m:
+            # Skip false positives where the matched keyword is a package
+            # name argument to a package-manager install/update command
+            # (e.g. "npm update vite" should not trigger the vite pattern).
+            keyword = m.group().strip().split()[0].lower()
+            if _is_pm_package_argument(unquoted, keyword):
+                continue
             return (
                 "This foreground command appears to start a long-lived server/watch process. "
                 "Run it with background=true, verify readiness (health endpoint/log signal), "

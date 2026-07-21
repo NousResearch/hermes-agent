@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import urllib.error
 import urllib.request
@@ -53,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli import __version__ as _HERMES_VERSION
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -104,11 +105,24 @@ def _load_catalog_config() -> dict[str, Any]:
         raw = {}
 
     return {
-        "enabled": bool(raw.get("enabled", True)),
+        "enabled": is_truthy_value(raw.get("enabled"), default=True),
         "url": str(raw.get("url") or DEFAULT_CATALOG_URL),
-        "ttl_hours": float(raw.get("ttl_hours") or DEFAULT_TTL_HOURS),
+        "ttl_hours": _parse_ttl_hours(raw.get("ttl_hours")),
         "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {},
     }
+
+
+def _parse_ttl_hours(value: Any) -> float:
+    """Parse ``model_catalog.ttl_hours`` while preserving explicit zero."""
+    if value is None or value == "":
+        return float(DEFAULT_TTL_HOURS)
+    try:
+        ttl = float(value)
+    except (TypeError, ValueError):
+        return float(DEFAULT_TTL_HOURS)
+    if not math.isfinite(ttl):
+        return float(DEFAULT_TTL_HOURS)
+    return max(0.0, ttl)
 
 
 def _cache_path() -> Path:

@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from threading import Thread as _MaintenanceThread
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,12 @@ class StateDbMaintenanceCoordinator:
         self._active = False
         self._merge_pages = self._INITIAL_MERGE_PAGES
         self._gate_deferred_since: Optional[float] = None
-        self._thread = threading.Thread(
+        # Bind the worker implementation to this module.  Several gateway
+        # callers replace ``server.threading.Thread`` with a synchronous test
+        # double; because ``threading`` is a shared module object, looking up
+        # Thread dynamically here would also replace this long-lived worker
+        # and run its wait loop inline on the request thread.
+        self._thread = _MaintenanceThread(
             target=self._worker_main,
             name=f"state-db-maintenance-{uuid.uuid4().hex[:8]}",
             daemon=True,

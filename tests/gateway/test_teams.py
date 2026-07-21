@@ -1125,3 +1125,102 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", "/no/such/file.pdf")
         assert not result.success
         adapter._app.send.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Tests: approval card actions — stale-tap honesty
+# ---------------------------------------------------------------------------
+
+
+class TestTeamsApprovalCardAction:
+    """A tap must never claim approval the resolver did not actually grant.
+
+    ``has_blocking_approval`` runs BEFORE the resolve, so the approval wait can
+    time out — failing closed and denying the command — in the window between
+    the two, and another surface (/approve, a second platform, the TUI) can
+    resolve it there too.  The resolve count is the only authoritative answer.
+    Same contract the Telegram/Discord/Slack and WhatsApp Cloud/Feishu button
+    paths follow.
+    """
+
+    def _adapter(self):
+        return TeamsAdapter(
+            _make_config(client_id="id", client_secret="secret", tenant_id="tenant")
+        )
+
+    def _ctx(self, action="approve_once", user="u1"):
+        ctx = MagicMock()
+        ctx.activity.value.action.data = {
+            "hermes_action": action,
+            "session_key": "agent:main:teams:dm:u1",
+            "cmd": "rm -rf /important",
+            "desc": "recursive delete",
+        }
+        ctx.activity.from_ = MagicMock(aad_object_id=user, id=user)
+        return ctx
+
+    async def _render(self, resolve_count):
+        """Drive _on_card_action and return the rendered TextBlock texts."""
+        import os
+        from unittest.mock import patch
+
+        seen = []
+
+        def _record(*args, **kwargs):
+            if "text" in kwargs:
+                seen.append(str(kwargs["text"]))
+            elif args:
+                seen.append(str(args[0]))
+            return MagicMock()
+
+        adapter = self._adapter()
+        with patch.dict(os.environ, {"TEAMS_ALLOWED_USERS": "*"}, clear=False), \
+             patch.object(_teams_mod, "TextBlock", _record), \
+             patch("tools.approval.has_blocking_approval", return_value=True), \
+             patch("tools.approval.resolve_gateway_approval", return_value=resolve_count):
+            await adapter._on_card_action(self._ctx())
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_stale_tap_shows_expired_not_approved(self):
+        """Resolver matched nothing → the command was already denied."""
+        texts = await self._render(resolve_count=0)
+
+        joined = " ".join(texts)
+        assert "Allowed" not in joined, (
+            "a tap that resolved nothing claimed the command was approved"
+        )
+        assert "expired" in joined.lower()
+        assert "was not run" in joined.lower()
+
+    @pytest.mark.asyncio
+    async def test_successful_tap_still_renders_the_choice(self):
+        """Control: a real approval must keep its normal confirmation."""
+        texts = await self._render(resolve_count=1)
+
+        joined = " ".join(texts)
+        assert "✅ Allowed (once)" in joined
+        assert "expired" not in joined.lower()
+
+    @pytest.mark.asyncio
+    async def test_stale_deny_tap_does_not_claim_a_denial_it_did_not_make(self):
+        """The same honesty applies to the deny button."""
+        seen = []
+        import os
+        from unittest.mock import patch
+
+        def _record(*args, **kwargs):
+            if "text" in kwargs:
+                seen.append(str(kwargs["text"]))
+            return MagicMock()
+
+        adapter = self._adapter()
+        with patch.dict(os.environ, {"TEAMS_ALLOWED_USERS": "*"}, clear=False), \
+             patch.object(_teams_mod, "TextBlock", _record), \
+             patch("tools.approval.has_blocking_approval", return_value=True), \
+             patch("tools.approval.resolve_gateway_approval", return_value=0):
+            await adapter._on_card_action(self._ctx(action="deny"))
+
+        joined = " ".join(seen)
+        assert "❌ Denied" not in joined
+        assert "expired" in joined.lower()

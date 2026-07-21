@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
+from agent.secret_scope import get_secret
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -1311,7 +1312,12 @@ def resolve_anthropic_token() -> Optional[str]:
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
-    token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    #
+    # Routed through get_secret() (not os.getenv) so a multiplexed gateway's
+    # per-profile scope is honored instead of falling through to whatever
+    # profile's value happens to be sitting in process-global os.environ —
+    # see #51603.
+    token = (get_secret("ANTHROPIC_TOKEN", "") or "").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
         if preferred:
@@ -1319,7 +1325,7 @@ def resolve_anthropic_token() -> Optional[str]:
         return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
-    cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    cc_token = (get_secret("CLAUDE_CODE_OAUTH_TOKEN", "") or "").strip()
     if cc_token:
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
         if preferred:
@@ -1338,7 +1344,7 @@ def resolve_anthropic_token() -> Optional[str]:
 
     # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    api_key = (get_secret("ANTHROPIC_API_KEY", "") or "").strip()
     if api_key:
         return api_key
 

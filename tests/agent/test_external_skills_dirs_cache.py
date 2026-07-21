@@ -146,3 +146,26 @@ def test_cache_key_is_per_config_path(tmp_path, monkeypatch):
     # And switching back still works — both entries coexist in the cache.
     monkeypatch.setenv("HERMES_HOME", str(home_a))
     assert get_external_skills_dirs() == [ext_a.resolve()]
+
+
+def test_cache_rechecks_paths_after_environment_variable_appears(
+    tmp_path, monkeypatch
+):
+    """An early unresolved profile path must not poison the process cache."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    external = tmp_path / "external_skills"
+    external.mkdir()
+    (home / "config.yaml").write_text(
+        "skills:\n  external_dirs:\n    - ${TEAM_SKILLS_ROOT}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TEAM_SKILLS_ROOT", raising=False)
+    _external_dirs_cache_clear()
+
+    assert get_external_skills_dirs() == []
+
+    monkeypatch.setenv("TEAM_SKILLS_ROOT", str(external))
+    assert get_external_skills_dirs() == [external.resolve()]

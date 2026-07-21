@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
+from agent.prompt_caching import apply_tool_cache_control
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -116,6 +117,16 @@ class TestBuildApiKwargsOpenRouter:
         assert "tools" in kwargs
         tool_names = [t["function"]["name"] for t in kwargs["tools"]]
         assert "web_search" in tool_names
+
+    def test_request_local_tool_cache_markers_reach_openai_wire_kwargs(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "anthropic/claude-sonnet-4-20250514"
+        messages = [{"role": "user", "content": "hi"}]
+        cached_tools = apply_tool_cache_control(agent.tools, cache_ttl="1h")
+
+        kwargs = agent._build_api_kwargs(messages, tools_for_api=cached_tools)
+
+        assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
     def test_no_responses_api_fields(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")

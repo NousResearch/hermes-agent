@@ -46,3 +46,45 @@ def test_wait_still_joins_entry_local_thread(monkeypatch):
     entry.wait_for_mcp_discovery(timeout=2.0)
 
     assert not thread.is_alive()
+
+
+def test_wait_reinvokes_shared_spawn_when_discovery_enabled(monkeypatch):
+    """The TUI wait path must give the shared owner a retry opportunity.
+
+    start_background_mcp_discovery() allows a retry after a run that
+    connected zero servers — but only when it is CALLED again. main() calls
+    it exactly once, so the per-agent-build wait must re-invoke the
+    idempotent spawn when this process is MCP-enabled.
+    """
+    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(entry, "_mcp_discovery_enabled", True)
+
+    calls = []
+
+    def _fake_start(*, logger, thread_name):
+        calls.append(thread_name)
+
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", _fake_start)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+
+    entry.wait_for_mcp_discovery(timeout=0.1)
+
+    assert calls == ["tui-mcp-discovery"]
+
+
+def test_wait_skips_spawn_when_discovery_not_enabled(monkeypatch):
+    """Non-MCP sessions must not import/spawn discovery on the wait path."""
+    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(entry, "_mcp_discovery_enabled", False)
+
+    calls = []
+
+    def _fake_start(*, logger, thread_name):
+        calls.append(thread_name)
+
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", _fake_start)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+
+    entry.wait_for_mcp_discovery(timeout=0.1)
+
+    assert calls == []

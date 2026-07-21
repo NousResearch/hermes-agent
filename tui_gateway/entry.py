@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 # the agent snapshots its tool list (see wait_for_mcp_discovery).
 _mcp_discovery_thread = None
 
+# True once main() decided this TUI process has MCP servers configured and
+# spawned discovery through the shared owner. Lets wait_for_mcp_discovery
+# re-invoke the (idempotent) spawn on later agent builds so the
+# retry-after-zero-connected allowance in
+# hermes_cli.mcp_startup.start_background_mcp_discovery can actually fire for
+# the stdio TUI — without this, main()'s single spawn is the only call and a
+# first run that connected nothing latches the process MCP-less. Kept as a
+# flag (rather than re-probing config) so non-MCP sessions never pay the
+# tools.mcp_tool import on the per-agent-build wait path.
+_mcp_discovery_enabled = False
+
 
 def _install_sidecar_publisher() -> None:
     """Mirror every dispatcher emit to the dashboard sidebar via WS.
@@ -233,7 +244,22 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
         thread.join(timeout=bound)
         return
     # The stdio TUI spawns discovery via the shared owner (see main()); wait
-    # on it so the first agent build still catches fast servers.
+    # on it so the first agent build still catches fast servers. Re-invoke
+    # the idempotent spawn first: if the previous run finished with zero
+    # connected servers, start_background_mcp_discovery's
+    # retry-after-zero-connected allowance kicks off a fresh discovery run
+    # here instead of leaving the TUI latched MCP-less for the session.
+    if _mcp_discovery_enabled:
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+            start_background_mcp_discovery(
+                logger=logger, thread_name="tui-mcp-discovery"
+            )
+        except Exception:
+            logger.debug(
+                "TUI MCP discovery retry-spawn failed", exc_info=True
+            )
     try:
         from hermes_cli.mcp_startup import (
             wait_for_mcp_discovery as _startup_wait,
@@ -345,6 +371,8 @@ def main():
         # instead of latching the process into a no-MCP-tools state.
         # wait_for_mcp_discovery/mcp_discovery_in_flight/
         # join_mcp_discovery below already consult that owner.
+        global _mcp_discovery_enabled
+        _mcp_discovery_enabled = True
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery
 

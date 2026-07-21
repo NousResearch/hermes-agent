@@ -38,7 +38,7 @@ const VOLUME_STORAGE_KEY = 'hermes.desktop.completionSoundVolume'
 /** Default matches the current hardcoded master gain of 0.48 for back-compat. */
 export const DEFAULT_COMPLETION_SOUND_VOLUME = 0.48
 
-/** Clamp to [0, 3] so invalid persisted values never produce silence or clipping. */
+/** Clamp to [0, 3] so invalid persisted values can't produce extreme gain. */
 const VOLUME_MIN = 0
 const VOLUME_MAX = 3
 

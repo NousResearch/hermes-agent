@@ -178,7 +178,10 @@ _ALWAYS_BLOCKED_NETWORKS = (
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
 # This is intentionally narrow: QQ media downloads can legitimately resolve
-# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+# to private IPs behind local proxy infrastructure.  Note: the 198.18.0.0/15
+# benchmark range is now excluded from _is_blocked_ip entirely (see
+# _BENCHMARK_RANGE), so this allowlist only matters for hosts that resolve
+# to *other* private ranges.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
 })
@@ -188,6 +191,16 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+# 198.18.0.0/15 (Benchmarking / DNS-filtering proxy range) IS marked as
+# is_private by Python's ipaddress module, but it is NOT a real private
+# network used for internal services.  DNS-based content-filtering services
+# (OpenDNS/Cisco Umbrella, CleanBrowsing, etc.) resolve blocked or
+# sinkholed domains into this range.  Public sites like cdimage.ubuntu.com
+# can legitimately resolve here on filtered networks.  Blocking the entire
+# range produces false positives without meaningful SSRF protection — the
+# actual SSRF targets (RFC 1918, cloud metadata) are handled separately.
+_BENCHMARK_RANGE = ipaddress.ip_network("198.18.0.0/15")
 
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
@@ -261,6 +274,8 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     # by their embedded IPv4 address, not as IPv6
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         embedded_ip = ip.ipv4_mapped
+        if embedded_ip in _BENCHMARK_RANGE:
+            return False
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or
@@ -268,6 +283,9 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
     # Standard IPv4/IPv6 address checking
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        # Exclude 198.18.0.0/15 benchmark range — not a real private network
+        if ip in _BENCHMARK_RANGE:
+            return False
         return True
     if ip.is_multicast or ip.is_unspecified:
         return True

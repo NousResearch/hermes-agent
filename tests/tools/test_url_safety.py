@@ -244,11 +244,24 @@ class TestIsSafeUrl:
             # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
 
-    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
+    def test_benchmark_range_allowed_for_any_host(self):
+        """198.18.0.0/15 (benchmark/DNS-filtering range) is not blocked."""
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
-            assert is_safe_url("https://example.com/file.jpg") is False
+            assert is_safe_url("https://example.com/file.jpg") is True
+
+    def test_cdimage_ubuntu_allowed_on_filtered_network(self):
+        """cdimage.ubuntu.com resolving to benchmark range should be allowed.
+
+        Regression test for https://github.com/NousResearch/hermes-agent/issues/35423
+        DNS-based content-filtering services (OpenDNS, etc.) may resolve
+        public domains into the 198.18.0.0/15 range.
+        """
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.65", 0)),
+        ]):
+            assert is_safe_url("https://cdimage.ubuntu.com/ubuntu/releases/26.04/release/") is True
 
     def test_qq_multimedia_hostname_allowed_with_benchmark_ip(self):
         with patch("socket.getaddrinfo", return_value=[
@@ -256,17 +269,27 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
 
-    def test_qq_multimedia_hostname_exception_is_exact_match(self):
-        with patch("socket.getaddrinfo", return_value=[
-            (2, 1, 6, "", ("198.18.0.23", 0)),
-        ]):
-            assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is False
+    def test_qq_multimedia_subdomain_also_allowed_via_benchmark_range(self):
+        """Subdomain is allowed because the entire benchmark range is allowed.
 
-    def test_qq_multimedia_hostname_exception_requires_https(self):
+        Previously only exact _TRUSTED_PRIVATE_IP_HOSTS entries were exempt;
+        now 198.18.0.0/15 is excluded from _is_blocked_ip entirely.
+        """
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
-            assert is_safe_url("http://multimedia.nt.qq.com.cn/download?id=123") is False
+            assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is True
+
+    def test_qq_multimedia_http_allowed_via_benchmark_range(self):
+        """HTTP is now allowed because the benchmark range is excluded from blocking.
+
+        Previously the QQ allowlist required HTTPS; now 198.18.0.0/15 is
+        excluded from _is_blocked_ip entirely, so both HTTP and HTTPS pass.
+        """
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("http://multimedia.nt.qq.com.cn/download?id=123") is True
 
     def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
@@ -297,7 +320,7 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
         "169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255",
-        "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
+        "100.64.0.1", "100.100.100.100", "100.127.255.254",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
     ])
@@ -307,6 +330,7 @@ class TestIsBlockedIp:
 
     @pytest.mark.parametrize("ip_str", [
         "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",
+        "198.18.0.23", "198.19.255.255",
         "2606:4700::1", "2001:4860:4860::8888",
     ])
     def test_allowed_ips(self, ip_str):
@@ -619,6 +643,7 @@ class TestIPv4MappedIPv6SSRF:
         "::ffff:8.8.8.8",          # Public DNS
         "::ffff:93.184.216.34",    # example.com
         "::ffff:100.0.0.1",        # Not in CGNAT range
+        "::ffff:198.18.0.65",      # Benchmark range (DNS filtering)
     ])
     def test_ipv4_mapped_allowed_ips(self, ip_str):
         """IPv4-mapped IPv6 addresses that should be allowed."""

@@ -2884,6 +2884,24 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
+
+    def _fire_gateway_hook(self, name: str, **kwargs: Any) -> None:
+        """Fire a ``gateway_*`` platform-boundary observer hook (see VALID_HOOKS).
+
+        Observer-only: ``invoke_hook`` isolates each callback and this wrapper
+        swallows any plugin-layer error so a misbehaving plugin can't break the
+        adapter. A ``has_hook`` guard skips all dispatch when nothing subscribes
+        (the common case). Callers pass the hook's documented kwargs (e.g. the
+        normalized ``gateway_platform_event`` envelope) — never raw SDK objects.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            mgr = get_plugin_manager()
+            if not mgr.has_hook(name):
+                return
+            mgr.invoke_hook(name, **kwargs)
+        except Exception as exc:
+            logger.debug("[%s] %s hook fire error: %s", self.name, name, exc)
     
     def set_message_handler(self, handler: MessageHandler) -> None:
         """

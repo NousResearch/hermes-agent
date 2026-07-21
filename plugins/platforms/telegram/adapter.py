@@ -218,6 +218,7 @@ try:
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
+        TypeHandler,
         filters,
     )
     from telegram.constants import ParseMode, ChatType
@@ -234,6 +235,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    TypeHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -3376,6 +3378,64 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    async def _on_platform_update(self, update, context) -> None:
+        """Catch-all PTB handler firing ``gateway_platform_event`` per inbound update.
+
+        Normalizes the update into a stable envelope (no raw SDK objects — see
+        #64176) and fires the observer hook. Registered in a dedicated high
+        group so it observes alongside — never displaces — the core handlers.
+        Normalization is wrapped so a malformed update can't raise into PTB
+        dispatch — the observer can't break the adapter.
+        """
+        try:
+            event = self._normalize_platform_event(update)
+        except Exception as exc:
+            logger.debug("[%s] gateway_platform_event normalize error: %s", self.name, exc)
+            return
+        if event is None:
+            return
+        self._fire_gateway_hook("gateway_platform_event", **event)
+
+    def _normalize_platform_event(self, update) -> Optional[Dict[str, Any]]:
+        """Map an inbound PTB update to a normalized ``gateway_platform_event``
+        envelope ``{platform, event_type, payload}``, or ``None`` if unsupported.
+
+        Reaction (the motivating use case: a plugin that re-renders or reacts to
+        a message when the user reacts to it) is normalized to the fields a
+        plugin consumes: ``emojis`` (standard unicode), ``custom_emoji_ids``
+        (custom reaction emojis — PTB exposes ``custom_emoji_id`` with no
+        ``.emoji``), ``chat_id``, ``message_id``, ``thread_id``. Other update
+        types (forward, edit, chat-member) return ``None`` for now; their
+        payload contracts land with #64176's taxonomy (#64231).
+        """
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            return None
+        chat = getattr(mr, "chat", None)
+        new_reaction = getattr(mr, "new_reaction", None) or []
+        emojis: List[str] = []
+        custom_emoji_ids: List[str] = []
+        for r in new_reaction:
+            emoji = getattr(r, "emoji", None)
+            if emoji is not None:
+                emojis.append(emoji)
+            custom_id = getattr(r, "custom_emoji_id", None)
+            if custom_id is not None:
+                custom_emoji_ids.append(str(custom_id))
+        return {
+            "platform": "telegram",
+            "event_type": "reaction",
+            "payload": {
+                "emojis": emojis,
+                "custom_emoji_ids": custom_emoji_ids,
+                "chat_id": str(getattr(chat, "id", "")) if chat is not None else None,
+                "message_id": str(getattr(mr, "message_id", "")),
+                # Reactions don't carry thread_id; plugins route the reply via
+                # their own send/edit cache or the future action API (#64176).
+                "thread_id": None,
+            },
+        }
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3592,6 +3652,9 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # gateway_platform_event observer (see _on_platform_update); group 99
+            # so it observes alongside — never displaces — the core handlers.
+            self._app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable

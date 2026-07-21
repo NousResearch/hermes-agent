@@ -559,19 +559,23 @@ class _Runtime:
         *,
         allow_task_id_fallback: bool = False,
     ) -> _MetricsSession | None:
-        task_key = self._task_key(event)
-        if task_key is None:
+        session_id = str(event.get("session_id") or "")
+        task_id = str(event.get("task_id") or "")
+        if not task_id:
             return None
+        task_key = (session_id, task_id) if session_id else None
         turn_key = self._turn_key(event)
         with self._task_sessions_lock:
             if turn_key is not None:
                 owner = self._turn_sessions.get(turn_key)
                 if owner is not None:
                     return owner
-            owner = self._task_sessions.get(task_key)
-            if owner is not None or not allow_task_id_fallback:
-                return owner
-            task_id = task_key[1]
+            if task_key is not None:
+                # An explicit session is authoritative. Never attach an event
+                # to another profile/session just because its task ID is unique.
+                return self._task_sessions.get(task_key)
+            if not allow_task_id_fallback:
+                return None
             candidates: list[_MetricsSession] = []
             for (_, candidate_task_id), session in self._task_sessions.items():
                 if candidate_task_id != task_id:

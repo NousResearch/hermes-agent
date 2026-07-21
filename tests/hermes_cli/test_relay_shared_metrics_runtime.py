@@ -2013,6 +2013,35 @@ def test_pending_tool_is_closed_and_counted_when_task_is_interrupted(direct_runt
     assert len(task_starts) == 1
 
 
+def test_explicit_session_does_not_reuse_another_sessions_task(direct_runtime):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    first_task = runtime.start_task({
+        "session_id": "session-1",
+        "task_id": "shared-task",
+        "platform": "cli",
+    })
+    assert first_task is not None
+
+    lifecycle.invoke_hook(
+        "pre_tool_call",
+        session_id="session-2",
+        task_id="shared-task",
+        platform="cli",
+        tool_call_id="tool-1",
+        tool_name="read_file",
+        args={"path": "private.txt"},
+    )
+
+    second_session = runtime._sessions["session-2"]
+    second_task = second_session.tasks["shared-task"]
+    assert second_task.handle != first_task.handle
+    [tool_start] = [
+        event for event in direct_runtime.events if event[0] == "tool.call"
+    ]
+    assert tool_start[3]["handle"] == second_task.handle
+
+
 def test_approval_without_tool_context_is_counted_as_unattributed(direct_runtime):
     base = {
         "session_id": "s1",

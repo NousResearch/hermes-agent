@@ -6269,8 +6269,15 @@ def _find_stale_dashboard_pids(
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
             # both words (e.g. a chat session discussing "dashboard").
+            cmd = ["ps"]
+            if hasattr(os, "getuid"):
+                cmd.extend(["-u", str(os.getuid())])
+            else:
+                cmd.append("-A")
+            cmd.extend(["-o", "pid=,command="])
+            
             result = subprocess.run(
-                ["ps", "-A", "-o", "pid=,command="],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=10,

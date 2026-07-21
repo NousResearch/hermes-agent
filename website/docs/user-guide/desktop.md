@@ -54,6 +54,23 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
+#### Repository discovery
+
+Hermes Desktop discovers local Git repositories for the Projects sidebar by scanning your home directory to a bounded depth. You can change this per profile in **Settings → Workspace**, or in `config.yaml`:
+
+```yaml
+desktop:
+  repo_scan_enabled: true
+  repo_scan_roots: []
+  repo_scan_exclude_paths: []
+```
+
+- Set `repo_scan_enabled: false` to stop the filesystem scan completely. Existing disk-discovery cache rows for that profile are cleared; explicit projects and repositories inferred from intentional Hermes sessions remain available.
+- Set `repo_scan_roots` to a list of folders to restrict scanning. An empty list preserves the default home-directory scan.
+- Set `repo_scan_exclude_paths` to folders whose complete subtrees should be skipped.
+
+Changing any of these values invalidates only that profile's disk-discovery cache and starts a policy-compliant refresh. **Hide from sidebar** remains a separate per-item curation action.
+
 #### Choosing a model
 
 The model picker lives in the **composer**, just left of the microphone. Click it to switch the model, reasoning effort, and fast mode from one dropdown.

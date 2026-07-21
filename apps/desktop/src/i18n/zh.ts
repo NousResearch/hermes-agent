@@ -478,6 +478,11 @@ export const zh: Translations = {
         personality: '人格',
         showReasoning: '推理过程块'
       },
+      desktop: {
+        repoScanEnabled: '自动发现代码仓库',
+        repoScanRoots: '代码仓库扫描根目录',
+        repoScanExcludePaths: '排除的代码仓库路径'
+      },
       agent: {
         maxTurns: '最大智能体步数',
         imageInputMode: '图片附件',
@@ -632,6 +637,11 @@ export const zh: Translations = {
       display: {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。'
+      },
+      desktop: {
+        repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
+        repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
+        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {

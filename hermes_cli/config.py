@@ -3455,6 +3455,11 @@ DEFAULT_CONFIG = {
     # Hermes Desktop (Electron app) launch options. These only affect
     # `hermes desktop`; they do not touch the CLI/gateway.
     "desktop": {
+        # Git repository discovery for the Desktop Projects sidebar. Empty
+        # roots preserve the historical bounded scan of the user's home.
+        "repo_scan_enabled": True,
+        "repo_scan_roots": [],
+        "repo_scan_exclude_paths": [],
         # Extra Electron command-line flags appended to every desktop launch,
         # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
         # explicit ozone backend, or GPU workaround flags. A list of strings;

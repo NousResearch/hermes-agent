@@ -4538,6 +4538,31 @@ _BUILD_STEP_KEYS = frozenset({"build", "implement", "implementation"})
 _BUILD_COMPLETION_CONTRACT = "build-receipt-v1"
 _POST_STAGE_BENIGN_EVENT_KINDS = frozenset({"heartbeat"})
 
+# Unicode 17.0 ``Default_Ignorable_Code_Point`` ranges from
+# DerivedCoreProperties.txt. Most are format/control code points, but several
+# are marks or Hangul letters, so filtering general category ``C`` alone is not
+# a sufficient visibility check for durable audit fields.
+_DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+_NON_RENDERING_AUDIT_BASES = frozenset({0x115F, 0x1160, 0x2800})
+
 
 def _completion_non_pass_reason(
     *,
@@ -5015,9 +5040,13 @@ def _audited_dependency_override_matches(
     recorded = payload.get("invalid_dependencies")
     recorded_guard = payload.get("dependency_guard")
     recorded_snapshot = payload.get("dependency_snapshot")
+    normalized_actor = _normalize_visible_audit_text(actor)
+    normalized_reason = _normalize_visible_audit_text(reason)
     return (
-        _normalize_visible_audit_text(actor) is not None
-        and _normalize_visible_audit_text(reason) is not None
+        normalized_actor is not None
+        and normalized_actor == actor
+        and normalized_reason is not None
+        and normalized_reason == reason
         and recorded_guard == dependency_guard
         and isinstance(recorded, list)
         and sorted(str(item) for item in recorded) == sorted(invalid_dependencies)
@@ -5027,19 +5056,30 @@ def _audited_dependency_override_matches(
     )
 
 
+def _is_default_ignorable_code_point(char: str) -> bool:
+    code_point = ord(char)
+    return any(
+        start <= code_point <= end
+        for start, end in _DEFAULT_IGNORABLE_CODE_POINT_RANGES
+    )
+
+
 def _normalize_visible_audit_text(value: object) -> Optional[str]:
-    """Normalize audit prose and reject values with no visible Unicode text."""
+    """Canonicalize audit prose and require a renderable Unicode base."""
     if not isinstance(value, str):
         return None
     normalized = unicodedata.normalize("NFKC", value)
-    without_controls = "".join(
+    without_ignorables = "".join(
         " " if char.isspace() else char
         for char in normalized
         if not unicodedata.category(char).startswith("C")
+        and not _is_default_ignorable_code_point(char)
     )
-    cleaned = " ".join(without_controls.split())
+    cleaned = " ".join(without_ignorables.split())
     if not cleaned or not any(
-        unicodedata.category(char)[0] in "LMNPS" for char in cleaned
+        unicodedata.category(char)[0] in "LNPS"
+        and ord(char) not in _NON_RENDERING_AUDIT_BASES
+        for char in cleaned
     ):
         return None
     return cleaned

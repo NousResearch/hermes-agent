@@ -123,7 +123,20 @@ def test_promote_force_requires_non_empty_actor(conn, actor):
     assert task is not None and task.status == "todo"
 
 
-@pytest.mark.parametrize("invisible", ["\u200b", "\ufeff", "\u2060"])
+@pytest.mark.parametrize(
+    "invisible",
+    [
+        "\u200b",  # ZERO WIDTH SPACE (Cf)
+        "\ufeff",  # ZERO WIDTH NO-BREAK SPACE (Cf)
+        "\u2060",  # WORD JOINER (Cf)
+        "\u034f",  # COMBINING GRAPHEME JOINER (Mn)
+        "\ufe0f",  # VARIATION SELECTOR-16 (Mn)
+        "\u115f",  # HANGUL CHOSEONG FILLER (Lo)
+        "\u0301",  # COMBINING ACUTE ACCENT (Mn-only text)
+        "\u20dd",  # COMBINING ENCLOSING CIRCLE (Me-only text)
+        "\u2800",  # BRAILLE PATTERN BLANK (So)
+    ],
+)
 @pytest.mark.parametrize("field", ["actor", "reason"])
 def test_promote_force_requires_unicode_visible_audit_fields(
     conn,
@@ -151,8 +164,8 @@ def test_promote_force_strips_unicode_format_controls_from_audit_fields(conn):
     ok, err = kb.promote_task(
         conn,
         child,
-        actor="\u200b operator \ufeff",
-        reason="\u2060 audited recovery \u200b",
+        actor="\u200b\u034f\u115f operator \ufeff",
+        reason="\u2060\ufe0f audited recovery \u200b",
         force=True,
     )
     assert ok and err is None
@@ -193,8 +206,16 @@ def test_claim_rejects_tampered_override_with_blank_actor(conn):
     assert task is not None and task.status == "todo"
 
 
+@pytest.mark.parametrize(
+    "invisible",
+    ["\u200b\ufeff\u2060", "\u034f", "\ufe0f", "\u115f"],
+)
 @pytest.mark.parametrize("field", ["actor", "reason"])
-def test_claim_rejects_tampered_override_with_invisible_audit_field(conn, field):
+def test_claim_rejects_tampered_override_with_invisible_audit_field(
+    conn,
+    field,
+    invisible,
+):
     child, _ = _stuck_todo(conn, parents_done=False)
     ok, err = kb.promote_task(
         conn,
@@ -210,7 +231,34 @@ def test_claim_rejects_tampered_override_with_invisible_audit_field(conn, field)
         (child,),
     ).fetchone()
     payload = json.loads(event["payload"])
-    payload[field] = "\u200b\ufeff\u2060"
+    payload[field] = invisible
+    conn.execute(
+        "UPDATE task_events SET payload = ? WHERE id = ?",
+        (json.dumps(payload), event["id"]),
+    )
+    assert kb.claim_task(conn, child) is None
+    task = kb.get_task(conn, child)
+    assert task is not None and task.status == "todo"
+
+
+@pytest.mark.parametrize("field", ["actor", "reason"])
+def test_claim_rejects_tampered_noncanonical_audit_field(conn, field):
+    child, _ = _stuck_todo(conn, parents_done=False)
+    ok, err = kb.promote_task(
+        conn,
+        child,
+        actor="operator",
+        force=True,
+        reason="operator recovery",
+    )
+    assert ok and err is None
+    event = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'promoted_manual' ORDER BY id DESC LIMIT 1",
+        (child,),
+    ).fetchone()
+    payload = json.loads(event["payload"])
+    payload[field] = f"{payload[field]}\u034f"
     conn.execute(
         "UPDATE task_events SET payload = ? WHERE id = ?",
         (json.dumps(payload), event["id"]),

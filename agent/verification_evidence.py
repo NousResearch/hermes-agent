@@ -60,11 +60,10 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    from hermes_state import apply_wal_with_fallback
-
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    from hermes_state import apply_wal_with_fallback
     apply_wal_with_fallback(conn, db_label="verification_evidence.db")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row

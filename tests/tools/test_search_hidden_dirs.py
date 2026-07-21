@@ -17,6 +17,9 @@ import subprocess
 
 import pytest
 
+from tools.environments.local import LocalEnvironment
+from tools.file_operations import ShellFileOperations
+
 
 @pytest.fixture
 def searchable_tree(tmp_path):
@@ -72,25 +75,43 @@ class TestFindExcludesHiddenDirs:
 
 
 class TestGrepExcludesHiddenDirs:
-    """_search_with_grep should exclude hidden directories."""
+    """_search_with_grep should exclude hidden directories on any grep build.
+
+    Drives the real ``_search_with_grep`` method instead of a raw
+    ``grep --exclude-dir`` shell command, so the test is correct on both GNU
+    grep and BusyBox grep hosts -- the method feature-detects and either
+    passes ``--exclude-dir`` (GNU) or post-filters hidden dirs in Python
+    (BusyBox).
+    """
+
+    def _grep_ops(self, root):
+        """ShellFileOperations wired to a real environment rooted at `root`."""
+        env = LocalEnvironment(cwd=str(root), timeout=15)
+        return ShellFileOperations(env, cwd=str(root))
 
     def test_grep_skips_hub_cache(self, searchable_tree):
-        """grep --exclude-dir should skip .hub/ directory."""
-        cmd = (
-            f"grep -rnH --exclude-dir='.*' 'ignore' {searchable_tree}"
+        """_search_with_grep should skip the .hub/ directory."""
+        ops = self._grep_ops(searchable_tree)
+        result = ops._search_with_grep(
+            "ignore", path=str(searchable_tree), file_glob=None,
+            limit=50, offset=0, output_mode="content", context=0,
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        # Should NOT find the injection text in .hub/index-cache/catalog.json
-        assert ".hub" not in result.stdout
-        assert "catalog.json" not in result.stdout
+        assert result.error is None
+        paths = [m.path for m in (result.matches or [])]
+        # Must NOT surface the injection text in .hub/index-cache/catalog.json
+        assert all(".hub" not in p for p in paths)
+        assert all("catalog.json" not in p for p in paths)
 
     def test_grep_still_finds_visible_content(self, searchable_tree):
-        """grep should still find content in visible directories."""
-        cmd = (
-            f"grep -rnH --exclude-dir='.*' 'real skill' {searchable_tree}"
+        """_search_with_grep should still find content in visible directories."""
+        ops = self._grep_ops(searchable_tree)
+        result = ops._search_with_grep(
+            "real skill", path=str(searchable_tree), file_glob=None,
+            limit=50, offset=0, output_mode="content", context=0,
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "SKILL.md" in result.stdout
+        assert result.error is None
+        paths = [m.path for m in (result.matches or [])]
+        assert any("SKILL.md" in p for p in paths)
 
 
 class TestRipgrepAlreadyExcludesHidden:

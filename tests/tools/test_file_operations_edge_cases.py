@@ -362,7 +362,8 @@ class TestSearchContextParsing:
         env.cwd = "/tmp"
         ops = ShellFileOperations(env)
 
-        with patch.object(ops, "_exec") as mock_exec:
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=True):
             mock_exec.return_value = MagicMock(
                 exit_code=0,
                 stdout="dir/file-12-name.py-8-context here\n",
@@ -382,3 +383,66 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+    def test_search_with_grep_busybox_filters_hidden_and_glob(self):
+        """BusyBox path (no --exclude-dir/--include) post-filters in Python."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        # grep without GNU flags traverses hidden dirs and ignores file_glob,
+        # so stdout contains a visible .py hit, a hidden-dir hit and a
+        # non-matching extension. Only the first should survive.
+        stdout = (
+            "src/app.py:3:needle here\n"
+            ".git/config.py:1:needle hidden\n"
+            "src/notes.txt:9:needle txt\n"
+        )
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout=stdout)
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob="*.py",
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path == "src/app.py"
+        # GNU-only flags must not be emitted to a BusyBox grep.
+        sent_cmd = mock_exec.call_args[0][0]
+        assert "--exclude-dir" not in sent_cmd
+        assert "--include" not in sent_cmd
+
+    def test_search_with_grep_detects_busybox_usage_text(self):
+        """Leaked BusyBox usage text must surface as an error, not fake hits."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        usage = (
+            "grep: unrecognized option: exclude-dir=.*\n"
+            "BusyBox v1.37.0 (2025-12-16 14:19:28 UTC) multi-call binary.\n"
+            "Usage: grep [-HhnlLoqvsrRiwFE] ...\n"
+        )
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=True):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout=usage)
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is not None
+        assert result.total_count == 0
+        assert not result.matches

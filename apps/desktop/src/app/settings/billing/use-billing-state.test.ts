@@ -225,7 +225,6 @@ describe('deriveBillingView', () => {
     const subscription = view.accountRows.find(row => row.id === 'subscription')
 
     expect(subscription?.description).toBe('Paid models need a subscription — pick a plan to start it on the portal.')
-    // Sorted by tier order, free tier excluded, every chip clickable → portal.
     expect(subscription?.chips).toEqual([
       { disabled: false, label: 'Plus · $20/mo · $1,000 credits/mo', url: subscription?.action?.url },
       { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: subscription?.action?.url }

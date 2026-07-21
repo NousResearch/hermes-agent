@@ -41,7 +41,7 @@ export interface BillingRowActionView {
 export interface BillingChipView {
   disabled: boolean
   label: string
-  /** When set, clicking the chip opens this URL externally (portal handoff). */
+  /** When set, clicking the chip opens this URL externally. */
   url?: string
 }
 
@@ -275,10 +275,8 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
 }
 
 /**
- * The tier catalog as chips — the upsell lives where the user already is
- * (mirrors the TUI's inline Free-plan rows). Only for accounts that can act
- * (can_change_plan); the current plan is marked and inert, every other plan
- * opens the portal, where the change/start actually happens.
+ * Tier catalog as chips for accounts that can change plans; the current plan is
+ * inert, every other opens the portal where the change/start happens.
  */
 function subscriptionTierChips(
   subscription: null | SubscriptionStateResponse,

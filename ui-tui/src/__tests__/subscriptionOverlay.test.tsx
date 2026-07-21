@@ -172,13 +172,13 @@ describe('SubscriptionOverlay — overview', () => {
     })
 
     inputHarness.handler?.('', { return: true }) // first row = Plus
-    inputHarness.handler?.('', { return: true }) // double-press must not re-fire
+    inputHarness.handler?.('', { return: true })
     await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
     mounted.cleanup()
 
     expect(openManageLink).toHaveBeenCalledTimes(1)
     expect(preview).not.toHaveBeenCalled()
-    // openManageLink narrates the handoff itself — the overview adds nothing.
+    // openManageLink narrates the handoff itself.
     expect(sys).not.toHaveBeenCalled()
   })
 
@@ -351,8 +351,7 @@ const at = (
   extra: Partial<SubscriptionOverlayState> = {}
 ): SubscriptionOverlayState => ({ ctx, screen, state: s, ...extra })
 
-// Free account that can still see the catalog: no current sub, but NAS returns
-// the tier list (is_current false everywhere).
+// Free account (no current sub) where NAS still returns the tier catalog.
 const freeWithCatalog = (): SubscriptionStateResponse =>
   state({
     current: null,

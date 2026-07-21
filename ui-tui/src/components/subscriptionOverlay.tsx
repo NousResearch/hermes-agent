@@ -374,10 +374,8 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   // Admin/owner on a personal paid plan can change it in-terminal; otherwise the
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
-  // On Free nothing can be mutated in-terminal (starting a subscription lives
-  // on the portal — card capture + checkout), but the catalog renders inline
-  // right here — the upsell happens where the user already is. Picking a plan
-  // opens the portal; openManageLink narrates the handoff itself.
+  // On Free the catalog renders inline; picking a plan hands off to the portal,
+  // where starting a subscription needs card capture + checkout.
   const freePlans = isFree
     ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
     : []
@@ -448,8 +446,8 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     })
   }
 
-  // With the catalog inline, the plan rows ARE the subscribe path — only a
-  // catalog-less free state still needs the generic portal row.
+  // The inline plan rows are the subscribe path; only a catalog-less free state
+  // still needs the generic portal row.
   if (!isFree || freePlans.length === 0) {
     rows.push({ label: isFree ? 'Start a subscription' : 'Manage on portal', run: doManage })
   }

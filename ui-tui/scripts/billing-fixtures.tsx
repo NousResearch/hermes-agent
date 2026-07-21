@@ -42,9 +42,8 @@ const tier = (o: Partial<SubscriptionTierOption> = {}): SubscriptionTierOption =
   ...o
 })
 
-// Mirrors the LIVE catalog (portal pricing page, 2026-07: 10% bonus tiers) so
-// fixture screenshots can't drift from what the API actually serves. The real
-// overlay reads these from GET /api/billing/subscription — never from here.
+// Mirrors the live portal catalog so fixtures don't drift; the real overlay
+// reads tiers from GET /api/billing/subscription, never from here.
 const TIERS = {
   free: tier({ tier_id: 'free', name: 'Free', tier_order: 0, dollars_per_month_display: '$0', monthly_credits: '0' }),
   plus: tier({ tier_id: 'plus', name: 'Plus', tier_order: 1, dollars_per_month_display: '$20', monthly_credits: '22' }),

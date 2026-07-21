@@ -192,3 +192,5 @@ class TestActiveProfileHint:
         stable = _stable_prompt(_make_agent())
         assert "Active Hermes profile: default" in stable
         assert f"{root}/profiles/<name>/" in stable
+        # Same invariant as the named-profile case: never teach the bypass.
+        assert "cross_profile=True" not in stable

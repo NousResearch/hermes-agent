@@ -818,11 +818,12 @@ class MoAChatCompletions:
         # recent cache-MISS create() call, awaiting consumption by session
         # accounting. Set on every create() (zeroed on a cache HIT so per-turn
         # advisor spend is counted exactly once). Consumed via
-        # ``consume_reference_usage``.
+        # ``consume_reference_usage`` / ``consume_reference_details``.
         from agent.usage_pricing import CanonicalUsage
 
         self._pending_reference_usage: Any = CanonicalUsage()
         self._pending_reference_cost: Any = None
+        self._pending_reference_details: list[dict] = []
         # Resolved aggregator slot ({provider, model, ...}) from the most recent
         # create(); read by session cost accounting to price the aggregator's
         # acting turn at its real model instead of the virtual preset name.
@@ -841,13 +842,24 @@ class MoAChatCompletions:
         always a ``CanonicalUsage`` (zeroed if none); cost is a summed-dollars
         float or ``None`` when no advisor could be priced.
         """
+        usage, cost, _details = self._consume_reference_accounting()
+        return usage, cost
+
+    def consume_reference_details(self) -> tuple[Any, Any, list[dict]]:
+        """Pop usage, cost, and privacy-safe per-reference metadata rows."""
+        return self._consume_reference_accounting()
+
+    def _consume_reference_accounting(self) -> tuple[Any, Any, list[dict]]:
+        """Pop and clear all pending reference accounting representations."""
         from agent.usage_pricing import CanonicalUsage
 
         usage = self._pending_reference_usage or CanonicalUsage()
         cost = self._pending_reference_cost
+        details = list(self._pending_reference_details)
         self._pending_reference_usage = CanonicalUsage()
         self._pending_reference_cost = None
-        return usage, cost
+        self._pending_reference_details = []
+        return usage, cost, details
 
     def consume_and_save_trace(
         self, session_id: Any = None, aggregator_output_fallback: Any = None
@@ -1000,6 +1012,7 @@ class MoAChatCompletions:
             # advisor spend by the tool-iteration count, so pending is zero.
             self._pending_reference_usage = CanonicalUsage()
             self._pending_reference_cost = None
+            self._pending_reference_details = []
             # Likewise no trace on a cache HIT — the full turn was already
             # traced on the MISS that ran the references. A repeat iteration is
             # not a new MoA turn.
@@ -1023,14 +1036,26 @@ class MoAChatCompletions:
             # NOT be repriced at the aggregator's rate.
             _ref_usage = CanonicalUsage()
             _ref_cost: Any = None
-            for _lbl, _txt, _acct in reference_outputs:
+            _ref_details: list[dict] = []
+            for _idx, (_lbl, _txt, _acct) in enumerate(reference_outputs):
                 if isinstance(_acct, _RefAccounting):
                     if isinstance(_acct.usage, CanonicalUsage):
                         _ref_usage = _ref_usage + _acct.usage
                     if _acct.cost_usd is not None:
                         _ref_cost = (_ref_cost or 0) + _acct.cost_usd
+                    _ref_details.append(
+                        {
+                            "role": "reference",
+                            "slot_index": _idx,
+                            "provider": _acct.provider,
+                            "model": _acct.model,
+                            "usage": _acct.usage,
+                            "cost_usd": _acct.cost_usd,
+                        }
+                    )
             self._pending_reference_usage = _ref_usage
             self._pending_reference_cost = _ref_cost
+            self._pending_reference_details = _ref_details
             # Stash the full reference fan-out for trace persistence. The
             # aggregator input/label are filled in below once agg_messages is
             # built; the aggregator OUTPUT is stitched in by the caller
@@ -1150,7 +1175,11 @@ class MoAChatCompletions:
 class MoAClient:
     def __init__(self, preset_name: str, reference_callback: Any = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+        self.chat.completions = MoAChatCompletions(
+            preset_name,
+            reference_callback=reference_callback,
+        )
+        self.preset_name = self.chat.completions.preset_name
 
     def consume_reference_usage(self) -> Any:
         """Pop the pending reference-fan-out usage from the completions facade.
@@ -1159,6 +1188,10 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    def consume_reference_details(self) -> Any:
+        """Pop pending reference usage, cost, and per-slot details."""
+        return self.chat.completions.consume_reference_details()
 
     @property
     def last_aggregator_slot(self) -> Any:

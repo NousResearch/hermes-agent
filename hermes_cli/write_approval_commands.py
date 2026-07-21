@@ -16,9 +16,13 @@ platform the gateway truncates it and points the user at the dashboard / file.
 from __future__ import annotations
 
 import json
+import logging
 from typing import List, Optional
 
 from tools import write_approval as wa
+
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_state(subsystem: str) -> str:
@@ -105,6 +109,35 @@ def _resolve_one(subsystem: str, rest: List[str]):
     return rest[0], None
 
 
+def _record_terminal_receipt(rec, *, decision: str, terminal_outcome: str):
+    """Persist one immutable audit receipt for an already-terminal claim.
+
+    The receipt database is deliberately separate from outcome-learning
+    candidates.  A failure is returned to the caller so it can retain the
+    private claim for manual reconciliation instead of replaying a mutation.
+    """
+    try:
+        from agent.verification_evidence import record_approval_decision_receipt
+
+        return record_approval_decision_receipt(
+            record=rec,
+            decision=decision,
+            terminal_outcome=terminal_outcome,
+        )
+    except Exception:
+        logger.exception("Failed to record terminal %s receipt", rec.get("subsystem"))
+        return None
+
+
+def _held_claim_message(pending_id: str, claim_path) -> str:
+    """Describe the non-replayable manual-recovery state after receipt failure."""
+    return (
+        f"{pending_id}: terminal decision is final and must not be reapplied; "
+        f"approval receipt was not recorded. Held non-actionable claim: {claim_path}. "
+        "Manual reconciliation is required."
+    )
+
+
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     target, err = _resolve_one(subsystem, rest)
     if err or target is None:
@@ -133,9 +166,19 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         terminal = bool(apply_result[2]) if len(apply_result) > 2 else False
         if ok:
             applied += 1
+            if _record_terminal_receipt(
+                rec, decision="approved", terminal_outcome="applied"
+            ) is None:
+                failed.append(_held_claim_message(pending_id, claim_path))
+                continue
             if not wa.complete_claim(claim_path):
                 failed.append(f"{pending_id}: applied; cleanup is pending and will not be replayed")
         elif terminal:
+            if _record_terminal_receipt(
+                rec, decision="approved", terminal_outcome="terminal_noop"
+            ) is None:
+                failed.append(_held_claim_message(pending_id, claim_path))
+                continue
             if wa.complete_claim(claim_path):
                 failed.append(f"{pending_id}: {msg}")
             else:
@@ -190,9 +233,16 @@ def _reject(subsystem: str, rest: List[str]) -> str:
         for rec in wa.list_pending(subsystem):
             pending_id = str(rec.get("id", ""))
             claimed = wa.claim_pending(subsystem, pending_id)
-            if claimed is not None and wa.complete_claim(claimed[1]):
+            if claimed is None:
+                continue
+            rec, claim_path = claimed
+            if _record_terminal_receipt(
+                rec, decision="rejected", terminal_outcome="rejected"
+            ) is None:
+                failed.append(_held_claim_message(pending_id, claim_path))
+            elif wa.complete_claim(claim_path):
                 n += 1
-            elif claimed is not None:
+            else:
                 failed.append(f"{pending_id}: cleanup is pending and requires manual recovery")
         out = [f"Rejected {n} pending {subsystem} write(s)."]
         if failed:
@@ -201,7 +251,12 @@ def _reject(subsystem: str, rest: List[str]) -> str:
         return "\n".join(out)
     claimed = wa.claim_pending(subsystem, target)
     if claimed is not None:
-        if wa.complete_claim(claimed[1]):
+        rec, claim_path = claimed
+        if _record_terminal_receipt(
+            rec, decision="rejected", terminal_outcome="rejected"
+        ) is None:
+            return _held_claim_message(target, claim_path)
+        if wa.complete_claim(claim_path):
             return f"Rejected pending {subsystem} write '{target}'."
         return (
             f"Rejected pending {subsystem} write '{target}', but cleanup is pending "

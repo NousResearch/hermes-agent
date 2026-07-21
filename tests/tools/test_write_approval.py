@@ -795,6 +795,112 @@ def test_handle_reject(hermes_home):
     assert wa.pending_count("skills") == 0
 
 
+def test_approval_and_rejection_persist_immutable_decision_receipts(hermes_home):
+    from agent.verification_evidence import list_approval_decision_receipts
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, memory_tool
+
+    _set_approval(wa.MEMORY, True)
+    store = MemoryStore()
+    store.load_from_disk()
+    staged = json.loads(memory_tool("add", "memory", "approved once", store=store))
+    approved = wa.get_pending(wa.MEMORY, staged["pending_id"])
+    rejected = wa.stage_write(
+        "skills", {"action": "create", "name": "rejected-skill"},
+        summary="reject this", origin="background_review",
+    )
+    assert approved is not None and rejected is not None
+
+    assert "Approved 1" in handle_pending_subcommand(
+        wa.MEMORY, ["approve", approved["id"]], memory_store=store
+    )
+    assert "Rejected" in handle_pending_subcommand(wa.SKILLS, ["reject", rejected["id"]])
+
+    memory_receipts = list_approval_decision_receipts(subsystem="memory")
+    skill_receipts = list_approval_decision_receipts(subsystem="skills")
+    assert [(r["decision"], r["terminal_outcome"]) for r in memory_receipts] == [
+        ("approved", "applied")
+    ]
+    assert [(r["decision"], r["terminal_outcome"]) for r in skill_receipts] == [
+        ("rejected", "rejected")
+    ]
+    assert "approved once" not in str(memory_receipts[0])
+
+
+def test_terminal_memory_noop_persists_receipt_but_retryable_failure_does_not(
+    hermes_home, monkeypatch
+):
+    from agent.verification_evidence import list_approval_decision_receipts
+    from hermes_cli import write_approval_commands as commands
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+
+    terminal = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "stale"},
+        summary="stale", origin="foreground", proposal_version=2,
+        freshness={"exists": False, "sha256": None},
+    )
+    retryable = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "retry"},
+        summary="retry", origin="foreground", proposal_version=2,
+        freshness={"exists": False, "sha256": None},
+    )
+    assert terminal is not None and retryable is not None
+    store = MemoryStore()
+    store.load_from_disk()
+    monkeypatch.setattr(
+        commands,
+        "_apply_one",
+        lambda _subsystem, rec, _store: (
+            False,
+            "terminal no-op" if rec["id"] == terminal["id"] else "retry later",
+            rec["id"] == terminal["id"],
+        ),
+    )
+
+    commands.handle_pending_subcommand(wa.MEMORY, ["approve", terminal["id"]], memory_store=store)
+    commands.handle_pending_subcommand(wa.MEMORY, ["approve", retryable["id"]], memory_store=store)
+
+    receipts = list_approval_decision_receipts(subsystem="memory")
+    assert [(r["pending_id"], r["terminal_outcome"], r["failure_code"]) for r in receipts] == [
+        (terminal["id"], "terminal_noop", "terminal_noop")
+    ]
+    assert wa.get_pending(wa.MEMORY, retryable["id"]) is not None
+
+
+def test_receipt_failure_holds_terminal_claim_without_reapplying(hermes_home, monkeypatch):
+    from hermes_cli import write_approval_commands as commands
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "apply once"},
+        summary="apply once", origin="foreground", proposal_version=2,
+        freshness={"exists": False, "sha256": None},
+    )
+    assert record is not None
+    calls = []
+    monkeypatch.setattr(
+        commands,
+        "_apply_one",
+        lambda *_args: calls.append("apply") or (True, "", False),
+    )
+    monkeypatch.setattr(commands, "_record_terminal_receipt", lambda *_args, **_kwargs: None)
+
+    out = commands.handle_pending_subcommand(
+        wa.MEMORY, ["approve", record["id"]], memory_store=MemoryStore()
+    )
+
+    assert calls == ["apply"]
+    assert "must not be reapplied" in out
+    assert record["id"] in out
+    assert "Held non-actionable claim" in out
+    assert wa.get_pending(wa.MEMORY, record["id"]) is None
+    claim_dir = Path(hermes_home) / "pending" / "memory"
+    assert list(claim_dir.glob(f".{record['id']}.*.claim"))
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

@@ -10,8 +10,10 @@ import agent.verification_evidence as verification_evidence
 from agent.verification_evidence import (
     classify_verification_command,
     confirm_outcome_receipt,
+    list_approval_decision_receipts,
     list_reusable_outcome_receipts,
     mark_workspace_edited,
+    record_approval_decision_receipt,
     record_outcome_receipt,
     record_terminal_result,
     verification_status,
@@ -30,6 +32,95 @@ def _node_project(root: Path) -> None:
 
 def _python_project(root: Path) -> None:
     (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+
+
+def _approval_record() -> dict:
+    return {
+        "id": "a1b2c3d4",
+        "subsystem": "memory",
+        "action": "add",
+        "summary": "sensitive human-readable proposal",
+        "origin": "background_review",
+        "created_at": 1.0,
+        "payload": {"action": "add", "target": "memory", "content": "secret payload"},
+    }
+
+
+def test_approval_decision_receipt_is_immutable_and_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    receipt = record_approval_decision_receipt(
+        record=_approval_record(), decision="approved", terminal_outcome="applied"
+    )
+
+    assert receipt is not None
+    assert receipt["decision"] == "approved"
+    assert receipt["terminal_outcome"] == "applied"
+    assert receipt["proposal_origin"] == "background_review"
+    assert "payload" not in receipt
+    assert "summary" not in receipt
+    assert "secret payload" not in str(receipt)
+
+    retry = record_approval_decision_receipt(
+        record=_approval_record(), decision="approved", terminal_outcome="applied"
+    )
+    assert retry == receipt
+    assert list_approval_decision_receipts(subsystem="memory") == [receipt]
+
+    db_path = tmp_path / ".hermes" / "verification_evidence.db"
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE approval_decision_receipts SET decision = 'rejected' WHERE id = ?",
+                (receipt["id"],),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "DELETE FROM approval_decision_receipts WHERE id = ?", (receipt["id"],)
+            )
+
+
+def test_approval_decision_receipt_rejects_conflicting_terminalization(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    record = _approval_record()
+    assert record_approval_decision_receipt(
+        record=record, decision="approved", terminal_outcome="terminal_noop"
+    ) is not None
+    assert record_approval_decision_receipt(
+        record=record, decision="rejected", terminal_outcome="rejected"
+    ) is None
+    assert len(list_approval_decision_receipts()) == 1
+
+
+def test_approval_receipt_schema_upgrades_v3_metadata_and_creates_guards(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    home.mkdir()
+    database_path = home / "verification_evidence.db"
+    with sqlite3.connect(database_path) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '3')")
+
+    assert list_approval_decision_receipts() == []
+
+    with sqlite3.connect(database_path) as conn:
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'approval_decision_receipts'"
+        ).fetchone()
+        triggers = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND name LIKE 'approval_decision_receipts_no_%' ORDER BY name"
+        ).fetchall()
+
+    assert version == "4"
+    assert table is not None
+    assert [row[0] for row in triggers] == [
+        "approval_decision_receipts_no_delete",
+        "approval_decision_receipts_no_update",
+    ]
 
 
 def test_classifies_targeted_project_verify_command(tmp_path, monkeypatch):

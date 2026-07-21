@@ -79,6 +79,31 @@ monotonic: a later verification can establish a new receipt, but cannot revive
 an older receipt whose proof predates the edit. The read path does not update
 receipt state, inject a prompt, or create a memory/skill artifact.
 
+## Immutable approval-decision receipts
+
+Pending memory and skill changes have a separate, profile-scoped audit trail in
+the same `verification_evidence.db`. `approval_decision_receipts` is append
+only: database triggers reject every update and delete, while a unique proposal
+digest makes a terminalization retry return the first receipt rather than add a
+second decision.
+
+Each row retains only the pending subsystem/id, canonical proposal digest,
+staged origin, decision, terminal outcome, safe terminal-noop code, and time.
+It deliberately stores no proposal payload, summary, user id, session id, or
+raw content. The shared approval handler does not receive a trustworthy actor
+identity on every CLI, gateway, TUI, and desktop route, so profile scope is the
+honest attribution boundary for this milestone.
+
+An approval receipt records an authorization decision, not demonstrated task
+success. It never changes `GoalState`, verification evidence, an outcome
+receipt's reusable flag, memory, or skills. In particular, it cannot promote a
+goal-learning candidate. A receipt is written only after a claimed proposal is
+known to be terminal: applied, explicitly rejected, or rejected as a stale or
+invalid memory proposal. Retryable application failures are requeued without a
+receipt. If persistence fails after a terminal mutation, Hermes holds the
+private non-actionable claim and reports its path for manual reconciliation;
+automatic replay is prohibited.
+
 ## Manual wait controls
 
 The same durable wait state is available on CLI, gateway, and TUI without new

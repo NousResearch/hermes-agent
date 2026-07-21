@@ -28,11 +28,14 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 3
+_VERIFY_SCHEMA_VERSION = 4
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 _OUTCOME_TERMINAL_KINDS = frozenset(
     {"judge_done_unconfirmed", "blocked", "cancelled", "achieved_confirmed"}
 )
+_APPROVAL_RECEIPT_DECISIONS = frozenset({"approved", "rejected"})
+_APPROVAL_RECEIPT_OUTCOMES = frozenset({"applied", "rejected", "terminal_noop"})
+_APPROVAL_PENDING_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,57 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_outcome_receipts_reusable
         ON outcome_receipts(root, reusable, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approval_decision_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at TEXT NOT NULL,
+            subsystem TEXT NOT NULL CHECK (subsystem IN ('memory', 'skills')),
+            pending_id TEXT NOT NULL,
+            proposal_digest TEXT NOT NULL,
+            proposal_origin TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
+            terminal_outcome TEXT NOT NULL
+                CHECK (terminal_outcome IN ('applied', 'rejected', 'terminal_noop')),
+            failure_code TEXT,
+            UNIQUE (subsystem, pending_id, proposal_digest),
+            CHECK (
+                (decision = 'approved' AND terminal_outcome = 'applied'
+                 AND failure_code IS NULL)
+                OR
+                (decision = 'approved' AND terminal_outcome = 'terminal_noop'
+                 AND failure_code = 'terminal_noop')
+                OR
+                (decision = 'rejected' AND terminal_outcome = 'rejected'
+                 AND failure_code IS NULL)
+            )
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_approval_decision_receipts_recent
+        ON approval_decision_receipts(subsystem, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS approval_decision_receipts_no_update
+        BEFORE UPDATE ON approval_decision_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'approval decision receipts are immutable');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS approval_decision_receipts_no_delete
+        BEFORE DELETE ON approval_decision_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'approval decision receipts are immutable');
+        END
         """
     )
     # Existing session-local stale records predate workspace-level receipt
@@ -710,6 +764,143 @@ def _receipt_from_row(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
     receipt = dict(row)
     receipt["reusable"] = bool(receipt.get("reusable"))
     return receipt
+
+
+def _approval_receipt_from_row(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
+    """Return one immutable approval receipt as a plain dictionary."""
+    return dict(row) if row is not None else None
+
+
+def _approval_proposal_digest(record: dict[str, Any]) -> str:
+    """Hash a proposal record without retaining its replay payload in the ledger."""
+    protected = {key: value for key, value in record.items() if key != "record_digest"}
+    encoded = json.dumps(
+        protected,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def record_approval_decision_receipt(
+    *,
+    record: dict[str, Any],
+    decision: str,
+    terminal_outcome: str,
+) -> Optional[dict[str, Any]]:
+    """Append one profile-scoped, immutable pending-write decision receipt.
+
+    This records authorization/audit provenance only.  It never changes goal
+    state, verification status, outcome-receipt reuse, memory, or skills.  The
+    pending proposal payload and summary are represented only by a canonical
+    digest.  Retrying the same terminalization returns the original row without
+    altering it; a conflicting terminalization fails closed.
+    """
+    if not isinstance(record, dict):
+        return None
+    subsystem = str(record.get("subsystem") or "")
+    pending_id = str(record.get("id") or "")
+    clean_decision = str(decision or "").strip()
+    clean_outcome = str(terminal_outcome or "").strip()
+    if (
+        subsystem not in {"memory", "skills"}
+        or not _APPROVAL_PENDING_ID_RE.fullmatch(pending_id)
+        or clean_decision not in _APPROVAL_RECEIPT_DECISIONS
+        or clean_outcome not in _APPROVAL_RECEIPT_OUTCOMES
+    ):
+        return None
+
+    failure_code = "terminal_noop" if clean_outcome == "terminal_noop" else None
+    if not (
+        (clean_decision == "approved" and clean_outcome in {"applied", "terminal_noop"})
+        or (clean_decision == "rejected" and clean_outcome == "rejected")
+    ):
+        return None
+
+    proposal_digest = _approval_proposal_digest(record)
+    origin = str(record.get("origin") or "").strip()
+    proposal_origin = origin if origin in {"foreground", "background_review"} else "unknown"
+    expected = {
+        "subsystem": subsystem,
+        "pending_id": pending_id,
+        "proposal_digest": proposal_digest,
+        "proposal_origin": proposal_origin,
+        "decision": clean_decision,
+        "terminal_outcome": clean_outcome,
+        "failure_code": failure_code,
+    }
+
+    with _DB_LOCK:
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM approval_decision_receipts
+                WHERE subsystem = ? AND pending_id = ? AND proposal_digest = ?
+                """,
+                (subsystem, pending_id, proposal_digest),
+            ).fetchone()
+            if row is not None:
+                existing = _approval_receipt_from_row(row)
+                if existing is not None and all(existing[key] == value for key, value in expected.items()):
+                    return existing
+                return None
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO approval_decision_receipts(
+                        recorded_at, subsystem, pending_id, proposal_digest,
+                        proposal_origin, decision, terminal_outcome, failure_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _utc_now(),
+                        subsystem,
+                        pending_id,
+                        proposal_digest,
+                        proposal_origin,
+                        clean_decision,
+                        clean_outcome,
+                        failure_code,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                row = conn.execute(
+                    """
+                    SELECT * FROM approval_decision_receipts
+                    WHERE subsystem = ? AND pending_id = ? AND proposal_digest = ?
+                    """,
+                    (subsystem, pending_id, proposal_digest),
+                ).fetchone()
+                existing = _approval_receipt_from_row(row)
+                if existing is not None and all(existing[key] == value for key, value in expected.items()):
+                    return existing
+                return None
+            row = conn.execute(
+                "SELECT * FROM approval_decision_receipts WHERE id = ?", (int(cur.lastrowid),)
+            ).fetchone()
+            conn.commit()
+    return _approval_receipt_from_row(row)
+
+
+def list_approval_decision_receipts(
+    *, subsystem: str | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Return recent profile-scoped approval audit receipts without mutation."""
+    if subsystem is not None and subsystem not in {"memory", "skills"}:
+        return []
+    bounded_limit = max(1, min(int(limit or 20), 100))
+    query = "SELECT * FROM approval_decision_receipts"
+    params: list[Any] = []
+    if subsystem is not None:
+        query += " WHERE subsystem = ?"
+        params.append(subsystem)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(bounded_limit)
+    with _DB_LOCK:
+        with _connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _outcome_verification_status(

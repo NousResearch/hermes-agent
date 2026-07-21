@@ -475,3 +475,36 @@ class TestDemoteTables:
         types = [b["type"] for b in demoted]
         assert "header" in types  # non-table blocks untouched
         assert not has_table_block(demoted)
+
+
+class TestNoEmptyTextElements:
+    """Slack rejects a zero-length rich_text ``text`` element ('must be more
+    than 0 characters') and one bad element fails the WHOLE blocks payload —
+    the message then degrades to plain text. Empty table cells / code fences
+    must never emit an empty text element."""
+
+    @staticmethod
+    def _has_empty_text(obj):
+        if isinstance(obj, dict):
+            if obj.get("type") == "text" and obj.get("text", "") == "":
+                return True
+            return any(TestNoEmptyTextElements._has_empty_text(v) for v in obj.values())
+        if isinstance(obj, list):
+            return any(TestNoEmptyTextElements._has_empty_text(x) for x in obj)
+        return False
+
+    def test_empty_table_cells_no_empty_text(self):
+        md = "| A | B |\n|---|---|\n| x |  |\n|  | y |"
+        assert not self._has_empty_text(render_blocks(md))
+
+    def test_all_empty_row_no_empty_text(self):
+        md = "| A | B |\n|---|---|\n|  |  |"
+        assert not self._has_empty_text(render_blocks(md))
+
+    def test_empty_code_fence_no_empty_text(self):
+        assert not self._has_empty_text(render_blocks("```\n\n```"))
+
+    def test_inline_elements_empty_string(self):
+        from plugins.platforms.slack.block_kit import _inline_elements
+        els = _inline_elements("")
+        assert els and all(e.get("text") for e in els if e.get("type") == "text")

@@ -201,7 +201,14 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         emit_text(s, dict(style) if style else None)
 
     walk(text, {})
-    return elements or [{"type": "text", "text": text}]
+    # Slack rejects a rich_text ``text`` element whose string is empty
+    # ("must be more than 0 characters") — and one bad element (e.g. an empty
+    # table cell) fails the ENTIRE blocks payload. Drop zero-length text
+    # elements and guarantee at least one non-empty element in the run.
+    elements = [
+        el for el in elements if el.get("type") != "text" or el.get("text")
+    ]
+    return elements or [{"type": "text", "text": " "}]
 
 
 # ----------------------------------------------------------------------------
@@ -223,12 +230,15 @@ def _divider_block() -> Block:
 
 def _preformatted_block(text: str) -> Block:
     # rich_text_preformatted renders monospace; used for code fences + tables.
+    # Slack rejects a zero-length text element (an empty code fence would fail
+    # the whole payload), so fall back to a single space.
+    body = text.rstrip("\n") or " "
     return {
         "type": "rich_text",
         "elements": [
             {
                 "type": "rich_text_preformatted",
-                "elements": [{"type": "text", "text": text.rstrip("\n")}],
+                "elements": [{"type": "text", "text": body}],
             }
         ],
     }
@@ -712,7 +722,7 @@ def _pack_elements(
         cur.append(el)
         cur_len += elen
     flush()
-    return out or [[{"type": "text", "text": ""}]]
+    return out or [[{"type": "text", "text": " "}]]
 
 
 # ----------------------------------------------------------------------------

@@ -3799,8 +3799,8 @@ def task_outcome_accepted(conn: sqlite3.Connection, task_id: str) -> bool:
         return False
     verifier_run = conn.execute(
         "SELECT id, profile, metadata FROM task_runs "
-        "WHERE id = ? AND task_id = ? AND outcome = 'completed' AND ended_at IS NOT NULL",
-        (verifier_run_id, task_id),
+        "WHERE id = ? AND outcome = 'completed' AND ended_at IS NOT NULL",
+        (verifier_run_id,),
     ).fetchone()
     if (
         verifier_run is None

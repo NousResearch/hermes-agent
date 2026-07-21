@@ -58,7 +58,11 @@ def _accepted_verifier(conn, task_id, *, classification="SHIPPED", evidence_type
             "evidence_refs": [{"kind": "comment", "id": comment_id}],
         }
     }
-    return _verifier_run(conn, task_id, profile=profile, metadata=metadata)
+    verifier_task = kb.create_task(conn, title="independent verification", assignee=profile)
+    assert kb.complete_task(conn, verifier_task, summary="verification finished", metadata=metadata)
+    run = kb.latest_run(conn, verifier_task)
+    assert run is not None
+    return run.id
 
 
 def _complete(conn, task_id, metadata=None):

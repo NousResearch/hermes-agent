@@ -7566,6 +7566,19 @@ def _minimax_pkce_pair() -> tuple:
     return verifier, challenge, state
 
 
+def _normalize_minimax_verification_uri(uri: str) -> str:
+    """Rewrite stale MiniMax approval URLs while preserving query parameters."""
+    verification_uri = str(uri)
+    parsed = urlparse(verification_uri)
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc.lower() == "www.minimax.io"
+        and parsed.path.rstrip("/") == "/oauth-authorize"
+    ):
+        return parsed._replace(netloc="platform.minimax.io").geturl()
+    return verification_uri
+
+
 def _minimax_request_user_code(
     client: httpx.Client, *, portal_base_url: str, client_id: str,
     code_challenge: str, state: str,
@@ -7603,6 +7616,9 @@ def _minimax_request_user_code(
             "MiniMax OAuth state mismatch (possible CSRF).",
             provider="minimax-oauth", code="state_mismatch",
         )
+    payload["verification_uri"] = _normalize_minimax_verification_uri(
+        str(payload["verification_uri"])
+    )
     return payload
 
 

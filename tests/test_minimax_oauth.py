@@ -28,6 +28,7 @@ from hermes_cli.auth import (
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
     _minimax_pkce_pair,
     _minimax_request_user_code,
+    _normalize_minimax_verification_uri,
     _minimax_poll_token,
     _minimax_resolve_token_expiry_unix,
     _refresh_minimax_oauth_state,
@@ -146,6 +147,48 @@ def test_request_user_code_happy_path():
     assert "/oauth/code" in call_args[0][0]
     headers = call_args[1].get("headers", {})
     assert "x-request-id" in headers
+
+
+def test_request_user_code_rewrites_stale_minimax_authorize_host():
+    state = "test-state-abc"
+    mock_response = _make_httpx_response(200, {
+        "user_code": "ABC-123",
+        "verification_uri": (
+            "https://www.minimax.io/oauth-authorize"
+            "?user_code=ABC-123&client=OpenClaw"
+        ),
+        "expired_in": int(time.time() * 1000) + 300_000,
+        "state": state,
+    })
+
+    client = MagicMock()
+    client.post.return_value = mock_response
+
+    result = _minimax_request_user_code(
+        client,
+        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        code_challenge="test-challenge",
+        state=state,
+    )
+
+    assert result["verification_uri"] == (
+        "https://platform.minimax.io/oauth-authorize"
+        "?user_code=ABC-123&client=OpenClaw"
+    )
+
+
+def test_normalize_minimax_verification_uri_preserves_unrelated_urls():
+    assert (
+        _normalize_minimax_verification_uri("https://minimax.io/verify")
+        == "https://minimax.io/verify"
+    )
+    assert (
+        _normalize_minimax_verification_uri(
+            "https://www.minimax.io/account?user_code=ABC-123"
+        )
+        == "https://www.minimax.io/account?user_code=ABC-123"
+    )
 
 
 # ---------------------------------------------------------------------------

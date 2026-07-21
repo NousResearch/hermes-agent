@@ -6131,6 +6131,31 @@ def cmd_gui(args: argparse.Namespace):
                 # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
                 _desktop_macos_relaunchable_fixup(desktop_dir)
+                # Linux: post-build the electron chrome-sandbox SUID helper
+                # ends up owned by the build user (not as installed by
+                # electron-builder, which copies it into the unpacked app
+                # fine but leaves its perms to whatever the build user
+                # happened to have). After pip-sync / electron rebuild the
+                # helper can flip back to mode 0755 + user-owned, which
+                # breaks AppArmor user-namespace sandboxes and silently
+                # makes the desktop-icon launcher fail (#58593). Re-run
+                # the existing launch-time fixup right here so launching
+                # from the application icon works without a manual
+                # ``sudo chown root:root``.
+                if sys.platform == "linux" and packaged_executable is not None:
+                    if not _desktop_linux_sandbox_fixup(packaged_executable):
+                        # A failed fixup would otherwise let `--build-only`
+                        # report success on a launch-time-broken install
+                        # (#58593 follow-up). The normal launch path fails
+                        # fatal for the same case; mirror that here so the
+                        # build stamp does not get written on a broken run.
+                        raise SystemExit(
+                            "Linux chrome-sandbox fixup failed after "
+                            "desktop build — see prior failures in the log "
+                            "for chown/chmod context. Aborting before the "
+                            "build stamp is written so the next launch can "
+                            "retry. (#58593)"
+                        )
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

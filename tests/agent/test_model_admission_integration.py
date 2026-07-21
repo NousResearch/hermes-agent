@@ -266,6 +266,62 @@ def test_auxiliary_sync_stream_holds_permit_until_exhaustion(monkeypatch):
     )
 
 
+def test_auxiliary_opaque_stream_sentinel_is_returned_raw(monkeypatch):
+    permit = _RecordingPermit()
+    monkeypatch.setattr(aux, "acquire_model_admission", lambda *_args: permit)
+    sentinel = "RAW_STREAM"
+    client = SimpleNamespace(
+        base_url="https://api.example.test/v1",
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: sentinel)
+        ),
+    )
+    wrapped = aux._wrap_auxiliary_client(
+        client,
+        provider="custom",
+        model="m",
+        base_url=None,
+        async_mode=False,
+    )
+
+    response = wrapped.chat.completions.create(model="m", stream=True)
+
+    assert response is sentinel
+    assert permit.events == ["succeed"]
+
+
+def test_auxiliary_async_opaque_stream_sentinel_is_returned_raw(monkeypatch):
+    permit = _RecordingPermit()
+    sentinel = object()
+
+    async def acquire(*_args):
+        return permit
+
+    async def create(**_kwargs):
+        return sentinel
+
+    monkeypatch.setattr(aux, "acquire_model_admission_async", acquire)
+    client = SimpleNamespace(
+        base_url="https://api.example.test/v1",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    )
+    wrapped = aux._wrap_auxiliary_client(
+        client,
+        provider="custom",
+        model="m",
+        base_url=None,
+        async_mode=True,
+    )
+
+    async def exercise():
+        return await wrapped.chat.completions.create(model="m", stream=True)
+
+    response = asyncio.run(exercise())
+
+    assert response is sentinel
+    assert permit.events == ["succeed"]
+
+
 def test_auxiliary_async_attempt_has_its_own_permit(monkeypatch):
     first_permit = _RecordingPermit()
     second_permit = _RecordingPermit()

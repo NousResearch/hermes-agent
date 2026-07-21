@@ -243,7 +243,18 @@ class _SyncAdmissionCompletionsProxy:
             permit.fail(error)
             raise
         if kwargs.get("stream"):
-            return permit.wrap_stream(response)
+            if _is_sync_stream_lifetime_carrier(response):
+                if _has_static_callable(response, "__next__") or (
+                    _has_static_callable(response, "__enter__")
+                    and _has_static_callable(response, "__exit__")
+                ):
+                    return permit.wrap_stream(response)
+                return _SyncCloseAdmissionProxy(response, permit)
+            # Some adapters and legacy tests return an opaque sentinel even
+            # when stream=True. There is no lifecycle to observe in that
+            # shape, so preserve the raw-return contract and release now.
+            permit.succeed()
+            return response
         permit.succeed()
         return response
 
@@ -277,12 +288,108 @@ class _AsyncAdmissionCompletionsProxy:
             permit.fail(error)
             raise
         if kwargs.get("stream"):
-            return permit.wrap_async_stream(response)
+            if _is_async_stream_lifetime_carrier(response):
+                if _has_static_callable(response, "__anext__") or (
+                    _has_static_callable(response, "__aenter__")
+                    and _has_static_callable(response, "__aexit__")
+                ):
+                    return permit.wrap_async_stream(response)
+                return _AsyncCloseAdmissionProxy(response, permit)
+            permit.succeed()
+            return response
         permit.succeed()
         return response
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._completions, name)
+
+
+def _has_static_callable(response: Any, name: str) -> bool:
+    """Ignore attributes fabricated dynamically by mocks or response shims."""
+
+    try:
+        inspect.getattr_static(response, name)
+        return callable(getattr(response, name))
+    except Exception:
+        return False
+
+
+def _is_sync_stream_lifetime_carrier(response: Any) -> bool:
+    """Whether a sync result exposes a boundary admission can observe."""
+
+    return (
+        _has_static_callable(response, "__next__")
+        or (
+            _has_static_callable(response, "__enter__")
+            and _has_static_callable(response, "__exit__")
+        )
+        or _has_static_callable(response, "close")
+    )
+
+
+def _is_async_stream_lifetime_carrier(response: Any) -> bool:
+    """Async counterpart; ordinary iterables and scalar sentinels are raw."""
+
+    return (
+        _has_static_callable(response, "__anext__")
+        or (
+            _has_static_callable(response, "__aenter__")
+            and _has_static_callable(response, "__aexit__")
+        )
+        or _has_static_callable(response, "aclose")
+    )
+
+
+class _SyncCloseAdmissionProxy:
+    """Delegate a close-only SDK response while releasing its permit on close."""
+
+    def __init__(self, response: Any, permit: Any) -> None:
+        self._response = response
+        self._permit = permit
+
+    def close(self) -> Any:
+        try:
+            result = self._response.close()
+        except BaseException as error:
+            self._permit.fail(error)
+            raise
+        self._permit.release()
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._response, name)
+
+    def __del__(self) -> None:
+        try:
+            self._permit.release()
+        except BaseException:
+            pass
+
+
+class _AsyncCloseAdmissionProxy:
+    """Delegate an aclose-only SDK response with the same lifetime contract."""
+
+    def __init__(self, response: Any, permit: Any) -> None:
+        self._response = response
+        self._permit = permit
+
+    async def aclose(self) -> Any:
+        try:
+            result = await self._response.aclose()
+        except BaseException as error:
+            self._permit.fail(error)
+            raise
+        self._permit.release()
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._response, name)
+
+    def __del__(self) -> None:
+        try:
+            self._permit.release()
+        except BaseException:
+            pass
 
 
 class _AdmissionChatProxy:

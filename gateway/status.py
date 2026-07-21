@@ -1642,6 +1642,108 @@ def _wait_for_scoped_lock_owner_exit(
     return False, _scoped_lock_owner_state(owner_pid, owner_start_time) == "same"
 
 
+def _snapshot_gateway_children(pid: int) -> list:
+    """Best-effort snapshot of ``pid``'s live descendants (POSIX only).
+
+    Must be taken while the old gateway is still alive: once the parent
+    exits, its children are reparented (to init or a subreaper) and can no
+    longer be discovered by a parent walk.  Returns ``[]`` on Windows —
+    ``terminate_pid(force=True)`` there already tree-kills via
+    ``taskkill /T`` — and on any error (missing psutil, process already
+    gone, access denied).  Never raises.
+    """
+    if _IS_WINDOWS:
+        return []
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process(int(pid)).children(recursive=True)
+    except Exception:
+        logger.debug(
+            "Could not snapshot children of gateway PID %d", pid, exc_info=True
+        )
+        return []
+
+
+def reap_gateway_children(children: list, *, parent_pid: int, timeout: float = 5.0) -> int:
+    """Best-effort reap of a dead gateway's orphaned descendants (POSIX).
+
+    Mirrors the Windows ``taskkill /T`` tree-kill for the POSIX ``--replace``
+    paths: adapter subprocesses that survive their parent keep holding scoped
+    token locks and block the replacement gateway.  Call only AFTER the main
+    gateway PID is confirmed dead, with a ``children`` snapshot taken via
+    :func:`_snapshot_gateway_children` while it was still alive.
+
+    Safety properties:
+    - ``psutil.Process.is_running()`` is identity-aware (PID + create time),
+      so a recycled child PID is never signalled.
+    - A child whose current ppid still equals ``parent_pid`` is skipped: that
+      means the parent is in fact alive (caller raced or was mocked) and the
+      child is not an orphan.
+    - SIGTERM first, bounded wait, SIGKILL only for survivors.
+    - Never raises; returns the number of children signalled.
+    """
+    if _IS_WINDOWS or not children:
+        return 0
+    reaped = 0
+    try:
+        import psutil  # type: ignore
+
+        live = []
+        for child in children:
+            try:
+                if not child.is_running():
+                    continue
+                if child.status() == psutil.STATUS_ZOMBIE:
+                    continue
+                if child.ppid() == parent_pid:
+                    # Parent still alive — this is not an orphan; leave it.
+                    logger.debug(
+                        "Skipping child PID %d of old gateway %d: parent "
+                        "still appears alive",
+                        child.pid,
+                        parent_pid,
+                    )
+                    continue
+                child.terminate()
+                live.append(child)
+            except psutil.NoSuchProcess:
+                continue
+            except Exception:
+                logger.debug(
+                    "Could not terminate child PID %s of old gateway %d",
+                    getattr(child, "pid", "?"),
+                    parent_pid,
+                    exc_info=True,
+                )
+        if not live:
+            return 0
+        gone, alive = psutil.wait_procs(live, timeout=max(0.0, timeout))
+        reaped = len(gone)
+        for child in alive:
+            try:
+                child.kill()
+                reaped += 1
+            except Exception:
+                logger.debug(
+                    "Could not force-kill child PID %s of old gateway %d",
+                    getattr(child, "pid", "?"),
+                    parent_pid,
+                    exc_info=True,
+                )
+        if reaped:
+            logger.info(
+                "Reaped %d orphaned child process(es) of replaced gateway PID %d.",
+                reaped,
+                parent_pid,
+            )
+    except Exception:
+        logger.debug(
+            "Child reap for replaced gateway PID %d failed", parent_pid, exc_info=True
+        )
+    return reaped
+
+
 def take_over_scoped_lock_holder(
     record: dict[str, Any],
     *,
@@ -1656,12 +1758,42 @@ def take_over_scoped_lock_holder(
     deliberately stricter than the same-home PID-file replacement path: a
     cross-home handoff must place a consumable marker in the target's home or a
     service supervisor could revive the target and start a flap loop.
+
+    On POSIX, after the owner is confirmed dead, its previously snapshotted
+    child processes are reaped best-effort (see :func:`reap_gateway_children`)
+    so orphaned adapter subprocesses cannot keep holding token locks.
     """
     owner = _validated_scoped_lock_gateway_owner(record)
     if owner is None:
         return None
     owner_pid, owner_start_time, target_home = owner
 
+    # Snapshot descendants while the owner is still alive — after it exits
+    # they are reparented and undiscoverable (POSIX; [] on Windows where
+    # taskkill /T already tree-kills).
+    owner_children = _snapshot_gateway_children(owner_pid)
+
+    replaced = _terminate_scoped_lock_owner_once(
+        owner_pid,
+        owner_start_time,
+        target_home,
+        graceful_attempts=graceful_attempts,
+        force_attempts=force_attempts,
+    )
+    if replaced is not None:
+        reap_gateway_children(owner_children, parent_pid=owner_pid)
+    return replaced
+
+
+def _terminate_scoped_lock_owner_once(
+    owner_pid: int,
+    owner_start_time: int,
+    target_home: Path,
+    *,
+    graceful_attempts: int = 20,
+    force_attempts: int = 20,
+) -> Optional[int]:
+    """Marker-write + bounded identity-aware termination of a verified owner."""
     if not write_takeover_marker(
         owner_pid,
         target_home=target_home,

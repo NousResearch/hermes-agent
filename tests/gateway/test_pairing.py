@@ -256,6 +256,29 @@ class TestLegacyPendingFileCompat:
             # Approved list must be empty
             assert store.is_approved("telegram", "legacy-user") is False
 
+    def test_legacy_only_pending_does_not_trigger_lockout(self, tmp_path):
+        """Regression: approve_code with only legacy entries must not count as a
+        failed attempt (#30383). A platform upgraded mid-session has pending.json
+        entries written by the old code (no salt/hash fields). Calling approve_code
+        before those entries expire must not penalise the platform's failure counter
+        and must not cause lockout after MAX_FAILED_ATTEMPTS such calls."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            self._write_legacy(tmp_path, code="LEGACY01")
+            store = PairingStore()
+            # Drive approve_code more than MAX_FAILED_ATTEMPTS times —
+            # if the bug is present, this would lock the platform out.
+            for _ in range(MAX_FAILED_ATTEMPTS + 1):
+                result = store.approve_code("telegram", "LEGACY01")
+                assert result is None
+            # Platform must NOT be locked out.
+            assert store._is_locked_out("telegram") is False
+            # A legitimately generated new-format code must still work.
+            new_code = store.generate_code("telegram", "realuser", "Real")
+            assert new_code is not None
+            approved = store.approve_code("telegram", new_code)
+            assert approved is not None
+            assert approved["user_id"] == "realuser"
+
     def test_list_pending_handles_legacy_entries(self, tmp_path):
         """list_pending must not KeyError on a missing 'hash' field."""
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):

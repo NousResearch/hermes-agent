@@ -56,7 +56,7 @@ describe('appendToolShelfMessage', () => {
     expect(merged).toEqual([{ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓', 'two ✓'] }])
   })
 
-  it('merges through intervening thinking-only rows back into the nearest holder', () => {
+  it('stops merging at an intervening thinking-only row', () => {
     const prev: Msg[] = [
       { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
       { kind: 'trail', role: 'system', text: '', thinking: 'more plan' }
@@ -69,18 +69,13 @@ describe('appendToolShelfMessage', () => {
       tools: ['two ✓']
     })
 
-    expect(merged).toHaveLength(2)
-    expect(merged[0]).toEqual({
-      kind: 'trail',
-      role: 'system',
-      text: '',
-      thinking: 'plan',
-      tools: ['one ✓', 'two ✓']
-    })
-    expect(merged[1]).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'more plan' })
+    expect(merged).toEqual([
+      { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
+      { kind: 'trail', role: 'system', text: '', thinking: 'more plan', tools: ['two ✓'] }
+    ])
   })
 
-  it('collapses a chronological thinking/tool/thinking/tool stream into one shelf', () => {
+  it('preserves chronological thinking/tool shelves while merging adjacent tools', () => {
     const events: Msg[] = [
       { kind: 'trail', role: 'system', text: '', thinking: 'plan' },
       { kind: 'trail', role: 'system', text: '', tools: ['one ✓'] },
@@ -91,15 +86,16 @@ describe('appendToolShelfMessage', () => {
 
     const reduced = events.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
 
-    expect(reduced).toHaveLength(2)
-    expect(reduced[0]).toEqual({
-      kind: 'trail',
-      role: 'system',
-      text: '',
-      thinking: 'plan',
-      tools: ['one ✓', 'two ✓', 'three ✓']
-    })
-    expect(reduced[1]).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'more plan' })
+    expect(reduced).toEqual([
+      { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
+      {
+        kind: 'trail',
+        role: 'system',
+        text: '',
+        thinking: 'more plan',
+        tools: ['two ✓', 'three ✓']
+      }
+    ])
   })
 
   it('starts a new shelf across assistant text boundaries', () => {

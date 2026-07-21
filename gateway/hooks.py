@@ -44,6 +44,7 @@ from typing import Any, Callable, Dict, List, Optional
 import yaml
 
 from hermes_cli.config import get_hermes_home
+from utils import is_truthy_value
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
@@ -110,6 +111,13 @@ class HookRegistry:
                     continue
 
                 hook_name = manifest.get("name", hook_dir.name)
+                # Optional 'enabled' field (defaults to true).
+                # Uses is_truthy_value to handle YAML booleans, quoted
+                # strings ("false", "no"), and numeric 0.
+                if not is_truthy_value(manifest.get("enabled"), default=True):
+                    print(f"[hooks] Skipping {hook_name}: disabled by manifest", flush=True)
+                    continue
+
                 events = manifest.get("events", [])
                 if not events:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)

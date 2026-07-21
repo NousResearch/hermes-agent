@@ -599,21 +599,21 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     force-quit (double Ctrl‑C, terminal‑close, SIGHUP) while the agent
     is mid‑turn.
     """
-    if not session or session.get("_finalized"):
+    if not session:
         return
-    session["_finalized"] = True
+    lock = session.get("history_lock")
+    guard = lock if lock is not None else contextlib.nullcontext()
+    with guard:
+        if session.get("_finalized"):
+            return
+        session["_finalized"] = True
+        history = list(session.get("history", []))
     _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
 
     agent = session.get("agent")
-    lock = session.get("history_lock")
-    if lock is not None:
-        with lock:
-            history = list(session.get("history", []))
-    else:
-        history = list(session.get("history", []))
 
     # ── Persist unflushed messages to SQLite ──────────────────────────
     # Flush ``agent._session_messages`` via ``_persist_session``'s marker-based
@@ -9765,7 +9765,6 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                                 lines.append(
                                     f"Kanban {event.task_id} {event.kind.replace('_', ' ')}"
                                 )
-                        _emit("message.start", sid)
                         _run_prompt_submit(
                             f"__kanban__{int(time.time() * 1000)}",
                             sid,
@@ -10044,6 +10043,8 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
+        if session.get("_finalized"):
+            raise RuntimeError("TUI session finalized before prompt acceptance")
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))

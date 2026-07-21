@@ -3445,6 +3445,118 @@ def test_tui_kanban_busy_two_poller_claims_keep_full_range_retryable(
             server._sessions.pop(name, None)
 
 
+def test_tui_kanban_finalization_before_acceptance_rolls_back_claim(
+    monkeypatch, tmp_path
+):
+    """Finalization winning before acceptance leaves the event retryable."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    real_connect = kb.connect
+    conn = real_connect()
+    try:
+        task_id = kb.create_task(conn, title="finalize race", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        assert kb.block_task(conn, task_id, reason="retry after finalize")
+    finally:
+        conn.close()
+
+    opened = []
+
+    class _TrackedConnection:
+        def __init__(self, inner):
+            self.inner = inner
+            self.closed = False
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def close(self):
+            self.inner.close()
+            self.closed = True
+
+    def _tracked_connect(*args, **kwargs):
+        tracked = _TrackedConnection(real_connect(*args, **kwargs))
+        opened.append(tracked)
+        return tracked
+
+    session = _session(
+        session_key="live-key",
+        attached_images=["still-attached.png"],
+    )
+    session["agent"] = None
+    server._sessions["live"] = session
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    errors = []
+    emitted = []
+    handoffs = []
+    original_submit = server._run_prompt_submit
+
+    def _pause_before_acceptance(*args):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return original_submit(*args)
+
+    def _poll():
+        try:
+            result.append(server._poll_tui_kanban_subscriptions("live", session))
+        except BaseException as exc:
+            errors.append(exc)
+
+    class _CapturedRunThread:
+        def __init__(self, *args, **kwargs):
+            handoffs.append("created")
+
+        def start(self):
+            handoffs.append("started")
+
+    poller = threading.Thread(target=_poll, name="finalize-race-poller")
+    monkeypatch.setattr(kb, "connect", _tracked_connect)
+    monkeypatch.setattr(server, "_run_prompt_submit", _pause_before_acceptance)
+    monkeypatch.setattr(server, "_emit", lambda event, *_args: emitted.append(event))
+    monkeypatch.setattr(server.threading, "Thread", _CapturedRunThread)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    try:
+        poller.start()
+        assert reserved.wait(5)
+        server._finalize_session(session)
+        assert session.get("_finalized") is True
+        finalized.set()
+        poller.join(5)
+        assert not poller.is_alive()
+
+        conn = real_connect()
+        try:
+            cursor = kb.list_notify_subs(conn, task_id)[0]["last_event_id"]
+        finally:
+            conn.close()
+
+        assert errors == []
+        assert result == [False]
+        assert cursor == 0
+        assert handoffs == []
+        assert emitted == []
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert "inflight_turn" not in session
+        assert "_run_thread" not in session
+        assert session["attached_images"] == ["still-attached.png"]
+        assert opened and all(connection.closed for connection in opened)
+    finally:
+        finalized.set()
+        poller.join(5)
+        server._sessions.pop("live", None)
+
+
 def test_notification_poller_tui_kanban_rewinds_failed_injection(monkeypatch, tmp_path):
     """A failed TUI injection leaves the claimed Kanban event retryable."""
     import queue as _queue_mod

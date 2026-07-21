@@ -7638,14 +7638,14 @@ def _format_concurrent_instances_message(
 
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
-) -> list[tuple[Path, Path]]:
+) -> tuple[list[tuple[Path, Path]], list[tuple[Path, str]]]:
     """Pre-empt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
     file by handle, not path), but blocks DELETE/REPLACE while it's loaded. uv
     needs to overwrite the entry-point shims during ``pip install -e .``;
     when ``hermes update`` runs, ``hermes.exe`` IS the live process, and uv
-    fails with ``Access is denied. (os error 5)``.
+    fails with ``Access is denied. (os error 5)`` / ``WinError 32``.
 
     We rename live shims to ``hermes.exe.old.<unix-ms>`` first. uv then writes
     fresh shims at the original paths. The ``.old`` files are cleaned up on
@@ -7659,22 +7659,21 @@ def _quarantine_running_hermes_exe(
     1. Retry up to ``max_attempts`` times with exponential backoff
        (100/250/500/1000 ms). Handles the AV-scanner case.
     2. If all retries fail, schedule the .exe for replacement on next
-       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
-       lets uv create a fresh shim at the original path (Windows will keep
-       the old file's content under a new name until the reboot), so the
-       update can complete; the user just needs to reboot to fully unload
-       the stale image.
-    3. Print a clear warning naming the most likely culprit (running
-       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``.
+       **The file remains locked until reboot** — callers must NOT proceed
+       with uv install when blocked is non-empty (#68760). We used to
+       continue and print three WinError 32 failures then fall back to ZIP.
+    3. Print a clear warning naming the most likely culprit.
 
-    Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
-    are already deferred and roll-back is meaningless.
+    Returns:
+        ``(moved, blocked)`` where *moved* is ``(original, quarantined)``
+        pairs safe to roll back, and *blocked* is ``(shim, reason)`` pairs
+        that remain locked (``"locked"`` or ``"reboot_required"``).
     """
     moved: list[tuple[Path, Path]] = []
+    blocked: list[tuple[Path, str]] = []
     if not _is_windows():
-        return moved
+        return moved, blocked
 
     import time
 
@@ -7707,10 +7706,9 @@ def _quarantine_running_hermes_exe(
             continue
 
         # All in-process renames failed. Try MoveFileEx with
-        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
-        # exact case where the inline rename failed (another process holds
-        # the handle without share-delete), at the cost of requiring a
-        # reboot to fully reclaim the old .exe.
+        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This records a
+        # PendingFileRenameOperations entry but does NOT free the path for
+        # uv to overwrite until reboot (#68760).
         scheduled = _schedule_replace_on_reboot(shim, target)
         if scheduled:
             print(
@@ -7718,15 +7716,13 @@ def _quarantine_running_hermes_exe(
                 f"replacement on next reboot."
             )
             print(
-                "    The new shim was written at the same path, but a "
-                "reboot is needed to fully unload the old one."
+                "    Do not continue the install until after reboot — the "
+                "shim path is still locked (continuing would yield WinError 32)."
             )
-            # Do NOT append to ``moved``: we don't want roll-back to undo a
-            # reboot-deferred operation.
+            blocked.append((shim, "reboot_required"))
             continue
 
-        # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck — sometimes uv's own retry handling pulls through.
+        # Truly couldn't budge the .exe.
         print(
             f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
             f"another process is holding it open)."
@@ -7735,8 +7731,9 @@ def _quarantine_running_hermes_exe(
             "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
             "gateway, or pause AV scanning, then re-run `hermes update`."
         )
+        blocked.append((shim, "locked"))
 
-    return moved
+    return moved, blocked
 
 
 def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
@@ -7784,6 +7781,54 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
             pass
 
 
+def _format_blocked_shim_message(
+    blocked: list[tuple[Path, str]], scripts_dir: Path
+) -> str:
+    """Explain why install must stop when hermes.exe shims stay locked (#68760)."""
+    lines = [
+        "✗ Cannot replace locked Hermes entry-point shim(s) on Windows:",
+    ]
+    for shim, reason in blocked:
+        tag = (
+            "reboot required to finish pending rename"
+            if reason == "reboot_required"
+            else "file in use (WinError 32 if install continues)"
+        )
+        lines.append(f"    {shim.name}  — {tag}")
+    lines.append("")
+    # Re-probe holders so the user gets PIDs, not just a generic warning.
+    holders = _detect_concurrent_hermes_instances(scripts_dir)
+    venv_holders = _detect_venv_python_processes()
+    if holders:
+        lines.append("  Processes holding hermes.exe shims:")
+        for pid, name in holders[:8]:
+            lines.append(f"    PID {pid}  {name}")
+        pid_args = " ".join(f"/PID {pid}" for pid, _ in holders)
+        lines.append(f"      taskkill {pid_args} /F")
+        lines.append("")
+    if venv_holders:
+        lines.append("  Venv python processes (Desktop backend / gateway):")
+        for pid, name, cmdline in venv_holders[:6]:
+            lines.append(f"    PID {pid}  {name}  {cmdline}")
+        lines.append("    → close Hermes Desktop / stop gateway, then retry")
+        lines.append("")
+    if any(reason == "reboot_required" for _, reason in blocked):
+        lines.append("  A reboot-deferred rename is pending. Reboot, then run:")
+        lines.append("    hermes update")
+    else:
+        lines.append("  Close Hermes Desktop, exit open `hermes` sessions, stop the")
+        lines.append("  gateway (`hermes gateway stop`), then re-run:")
+        lines.append("    hermes update")
+    lines.append("")
+    lines.append("  Refusing to continue into uv/pip (avoids three WinError 32")
+    lines.append("  retries and a doomed ZIP fallback).")
+    return "\n".join(lines)
+
+
+class HermesShimLockedError(RuntimeError):
+    """Raised when Windows hermes.exe shims could not be quarantined (#68760)."""
+
+
 def _run_quarantined_install(
     cmd: list[str],
     *,
@@ -7803,11 +7848,20 @@ def _run_quarantined_install(
     :func:`_verify_core_dependencies_installed`, which previously called
     ``_run_install_with_heartbeat`` directly and bypassed quarantine.
 
+    If quarantine cannot free a shim, raises :class:`HermesShimLockedError`
+    instead of letting uv print repeated WinError 32 failures (#68760).
+
     Off-Windows (``scripts_dir is None``) this is a thin pass-through.
     """
     moved: list[tuple[Path, Path]] = []
     if scripts_dir is not None:
-        moved = _quarantine_running_hermes_exe(scripts_dir)
+        moved, blocked = _quarantine_running_hermes_exe(scripts_dir)
+        if blocked:
+            msg = _format_blocked_shim_message(blocked, scripts_dir)
+            print(msg)
+            # Restore any shims we did move so the install is left consistent.
+            _restore_quarantined_exes(moved)
+            raise HermesShimLockedError(msg)
     try:
         _run_install_with_heartbeat(cmd, env=env)
     except BaseException:
@@ -7936,6 +7990,10 @@ def _install_python_dependencies_with_optional_fallback(
         _install(["install", "-e", f".[{group}]"])
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
         return
+    except HermesShimLockedError:
+        # Do not fall through into base/extras retries — every attempt would
+        # hit the same locked shim (WinError 32 x3 + ZIP fallback). #68760
+        raise
     except subprocess.CalledProcessError:
         print(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
@@ -9855,7 +9913,10 @@ def cmd_update(args):
     # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        try:
+            _cmd_update_impl(args, gateway_mode=gateway_mode)
+        except HermesShimLockedError:
+            sys.exit(2)
     finally:
         _finalize_update_output(_update_io_state)
 

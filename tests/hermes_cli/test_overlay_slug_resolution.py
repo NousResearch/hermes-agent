@@ -81,6 +81,17 @@ def test_kilo_overlay_uses_hermes_slug():
     assert kilo_mdev is None, "kilo slug should not appear (resolved to kilocode)"
 
 
+def test_resolve_provider_full_preserves_explicit_hermes_slugs():
+    """Built-in models.dev aliases should not leak into persisted Hermes slugs."""
+    from hermes_cli.providers import normalize_provider, resolve_provider_full
+
+    assert normalize_provider("kilocode") == "kilocode"
+    assert resolve_provider_full("kilocode").id == "kilocode"
+
+    assert normalize_provider("opencode-zen") == "opencode-zen"
+    assert resolve_provider_full("opencode-zen").id == "opencode-zen"
+
+
 
 def test_mapped_provider_credential_pool_visibility(monkeypatch):
     """Mapped providers should appear when credentials live only in auth-store credential_pool."""

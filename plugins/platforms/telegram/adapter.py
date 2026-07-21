@@ -2357,11 +2357,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if attempt > MAX_NETWORK_RETRIES:
             message = (
                 "Telegram polling could not reconnect after %d network error retries. "
-                "Restarting gateway." % MAX_NETWORK_RETRIES
+                "Escalating to gateway recovery." % MAX_NETWORK_RETRIES
             )
             logger.error("[%s] %s Last error: %s", self.name, message, _redact_telegram_error_text(error))
             self._set_fatal_error("telegram_network_error", message, retryable=True)
-            await self._notify_fatal_error()
+            await self._handoff_polling_fatal_error()
             return
 
         delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
@@ -2523,7 +2523,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "gateway reconnect." % stuck_for,
                             retryable=True,
                         )
-                        await self._notify_fatal_error()
+                        await self._handoff_polling_fatal_error()
                         return
                 else:
                     stuck_task_ref = None
@@ -2982,7 +2982,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, stop_error, exc_info=True,
             )
         if not _already_fatal:
-            await self._notify_fatal_error()
+            await self._handoff_polling_fatal_error()
+
+    async def _handoff_polling_fatal_error(self) -> None:
+        """Notify the runner without letting child teardown cancel this owner.
+
+        The runner bounds adapter cleanup in a child task.  ``disconnect()``
+        cancels the tracked polling-recovery task and the heartbeat task, so
+        retaining the current notifier in either field would cancel the fatal
+        callback before the runner can finish its reconnect or shutdown
+        decision.  Release only the current owner from whichever field tracks
+        it; unrelated tasks remain under teardown control.
+        """
+        current_task = asyncio.current_task()
+        if self._polling_error_task is current_task:
+            self._polling_error_task = None
+        if getattr(self, "_polling_heartbeat_task", None) is current_task:
+            self._polling_heartbeat_task = None
+        await self._notify_fatal_error()
 
     async def _create_dm_topic(
         self,

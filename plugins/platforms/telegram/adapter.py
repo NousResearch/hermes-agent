@@ -1014,16 +1014,32 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
-        # Adapter-level allow_from / group_allow_from: when set, they are the
-        # sole authority.  Group chats use group_allow_from; DMs use allow_from.
-        chat_type = source.chat_type or ""
-        if chat_type in ("group", "forum", "channel"):
-            adapter_allow_from = self.config.extra.get("group_allow_from")
-        else:
-            adapter_allow_from = self.config.extra.get("allow_from")
-        if adapter_allow_from is not None:
+        # Adapter-level allow_from is the platform-wide allowlist. It remains
+        # the sole authority for plain DMs, but it does NOT short-circuit
+        # group-scoped authorization when the adapter is *also* configured
+        # with group_allow_from or group_allowed_chats (#68716). A sender
+        # excluded from the global list may still be authorized for
+        # group/forum chats via the group-scoped rules; rejecting them
+        # here would contradict the documented orthogonal authorization
+        # semantics ("restricted DMs + open groups").
+        is_group_context = source.chat_type in {"group", "forum", "supergroup"}
+        has_group_scope = (
+            self.config.extra.get("group_allow_from") is not None
+            or self.config.extra.get("group_allowed_chats") is not None
+        )
+        adapter_allow_from = self.config.extra.get("allow_from")
+        if adapter_allow_from is not None and not (is_group_context and has_group_scope):
             allowed = _coerce_allow_set(adapter_allow_from)
             return user_id in allowed or "*" in allowed
+        if adapter_allow_from is not None and is_group_context and has_group_scope:
+            # Group scope is configured: defer to the runner path so
+            # group_allow_from / group_allowed_chats can authorize the
+            # sender or chat. We only short-circuit when the sender IS in
+            # the platform-wide allowlist — that case is unconditionally
+            # authorized.
+            allowed = _coerce_allow_set(adapter_allow_from)
+            if "*" in allowed or user_id in allowed:
+                return True
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must

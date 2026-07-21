@@ -3270,14 +3270,13 @@ def _disable_prompt_toolkit_cpr_warning(app) -> None:
         pass
 
 
-def _terminal_may_leak_cpr(*, platform: str | None = None) -> bool:
+def _terminal_may_leak_cpr() -> bool:
     """Whether classic CLI should suppress prompt_toolkit CPR (ESC[6n) queries.
 
     Delayed CPR replies (``ESC[<row>;<col>R`` / visible ``^[[<row>;<col>R``)
     leak into the status line and can freeze input when the reply is slow
-    (#13870 on SSH/slow PTYs). The same race hits **local POSIX** TTYs under
-    heavy subagent / status-line load — deterministic delayed-CPR PTY harness
-    in ``tests/cli/test_cpr_local_leak.py``.
+    (#13870 on SSH/slow PTYs). The same race hits local POSIX TTYs under
+    heavy subagent / status-line load — see ``tests/cli/test_cpr_local_leak.py``.
 
     Policy:
     - ``PROMPT_TOOLKIT_NO_CPR=1`` → always suppress
@@ -3288,8 +3287,7 @@ def _terminal_may_leak_cpr(*, platform: str | None = None) -> bool:
     """
     if os.environ.get("PROMPT_TOOLKIT_NO_CPR", "") == "1":
         return True
-    plat = sys.platform if platform is None else platform
-    if plat == "win32":
+    if sys.platform == "win32":
         return False
     return True
 

@@ -1,7 +1,5 @@
 """Local CPR leak reproduction + classic-CLI Application output selection.
 
-Addresses review on #67377:
-
 * Deterministic local-PTY proof that delayed CPR replies leak as
   ``ESC[row;colR`` / ``^[[row;colR`` when ``enable_cpr=True`` (no SSH).
 * Integration-level assertion that, with no SSH env vars, classic CLI
@@ -92,83 +90,102 @@ class TestDelayedCprLocalPtyLeak:
         from prompt_toolkit.output.vt100 import Vt100_Output
 
         master, slave = _openpty_or_skip()
-        tty.setraw(slave)
-        slave_w = os.fdopen(os.dup(slave), "w", buffering=1)
-        stop = threading.Event()
-        queries = 0
+        try:
+            tty.setraw(slave)
+            slave_w = os.fdopen(os.dup(slave), "w", buffering=1)
+            stop = threading.Event()
+            queries = 0
 
-        def terminal() -> None:
-            nonlocal queries
-            buf = b""
-            while not stop.is_set():
-                r, _, _ = select.select([master], [], [], 0.05)
-                if not r:
-                    continue
-                try:
-                    chunk = os.read(master, 4096)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                buf += chunk
-                while True:
-                    idx = buf.find(b"\x1b[6n")
-                    if idx < 0:
-                        buf = buf[-8:] if len(buf) > 8 else buf
+            def terminal() -> None:
+                nonlocal queries
+                buf = b""
+                while not stop.is_set():
+                    try:
+                        r, _, _ = select.select([master], [], [], 0.05)
+                    except OSError:
                         break
-                    buf = buf[idx + 4 :]
-                    queries += 1
-                    time.sleep(0.12)
-                    os.write(master, b"\x1b[39;1R")
+                    if not r:
+                        continue
+                    try:
+                        chunk = os.read(master, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while True:
+                        idx = buf.find(b"\x1b[6n")
+                        if idx < 0:
+                            buf = buf[-8:] if len(buf) > 8 else buf
+                            break
+                        buf = buf[idx + 4 :]
+                        queries += 1
+                        time.sleep(0.12)
+                        try:
+                            os.write(master, b"\x1b[39;1R")
+                        except OSError:
+                            pass
 
-        threading.Thread(target=terminal, daemon=True).start()
-        out = Vt100_Output(
-            slave_w, lambda: Size(rows=40, columns=80), enable_cpr=True
-        )
-        out.ask_for_cpr()
-        out.flush()
-        for i in range(4):
-            slave_w.write(f"\rgpt-5.6-sol Q {i}\n")
-            slave_w.flush()
-            time.sleep(0.02)
-        time.sleep(0.3)
+            threading.Thread(target=terminal, daemon=True).start()
+            out = Vt100_Output(
+                slave_w, lambda: Size(rows=40, columns=80), enable_cpr=True
+            )
+            out.ask_for_cpr()
+            out.flush()
+            for i in range(4):
+                slave_w.write(f"\rgpt-5.6-sol Q {i}\n")
+                slave_w.flush()
+                time.sleep(0.02)
+            time.sleep(0.3)
 
-        data = b""
-        while True:
-            r, _, _ = select.select([slave], [], [], 0.05)
-            if not r:
-                break
-            data += os.read(slave, 4096)
+            data = b""
+            while True:
+                r, _, _ = select.select([slave], [], [], 0.05)
+                if not r:
+                    break
+                data += os.read(slave, 4096)
 
-        stop.set()
-        slave_w.close()
-        os.close(slave)
-        os.close(master)
+            stop.set()
+            slave_w.close()
 
-        assert queries >= 1
-        assert b"\x1b[39;1R" in data
+            assert queries >= 1
+            assert b"\x1b[39;1R" in data
+        finally:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+            try:
+                os.close(master)
+            except OSError:
+                pass
 
     def test_cpr_disabled_output_sends_no_query(self):
         """Hermes CPR-disabled builder must not emit ESC[6n."""
         master, slave = _openpty_or_skip()
-        slave_w = os.fdopen(slave, "w", buffering=1)
-        out = _build_cpr_disabled_output(slave_w)
-        assert out is not None
-        assert out.enable_cpr is False
+        try:
+            slave_w = os.fdopen(slave, "w", buffering=1)
+            out = _build_cpr_disabled_output(slave_w)
+            assert out is not None
+            assert out.enable_cpr is False
 
-        seen = b""
+            seen = b""
 
-        def reader() -> None:
-            nonlocal seen
-            r, _, _ = select.select([master], [], [], 0.25)
-            if r:
-                seen = os.read(master, 4096)
+            def reader() -> None:
+                nonlocal seen
+                r, _, _ = select.select([master], [], [], 0.25)
+                if r:
+                    seen = os.read(master, 4096)
 
-        threading.Thread(target=reader, daemon=True).start()
-        slave_w.write("status ok\n")
-        slave_w.flush()
-        # Do not call ask_for_cpr — renderer skips it when NOT_SUPPORTED.
-        time.sleep(0.3)
-        slave_w.close()
-        os.close(master)
-        assert b"\x1b[6n" not in seen
+            threading.Thread(target=reader, daemon=True).start()
+            slave_w.write("status ok\n")
+            slave_w.flush()
+            # Do not call ask_for_cpr — renderer skips it when NOT_SUPPORTED.
+            time.sleep(0.3)
+            slave_w.close()
+            assert b"\x1b[6n" not in seen
+        finally:
+            try:
+                os.close(master)
+            except OSError:
+                pass

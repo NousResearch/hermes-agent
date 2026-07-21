@@ -16361,37 +16361,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.thread_id,
                     adapter=adapter,
                 )
-                if metadata:
-                    result = await adapter.send(
-                        str(home.chat_id),
-                        message,
-                        metadata=_non_conversational_metadata(metadata, platform=platform),
-                    )
-                else:
-                    _startup_meta = _non_conversational_metadata(platform=platform)
-                    if _startup_meta:
+
+                _STARTUP_NOTIFY_MAX_RETRIES = 5
+                _STARTUP_NOTIFY_RETRY_DELAY = 1.0
+
+                for attempt in range(1, _STARTUP_NOTIFY_MAX_RETRIES + 1):
+                    if metadata:
                         result = await adapter.send(
                             str(home.chat_id),
                             message,
-                            metadata=_startup_meta,
+                            metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     else:
-                        result = await adapter.send(str(home.chat_id), message)
-                if result is not None and getattr(result, "success", True) is False:
+                        _startup_meta = _non_conversational_metadata(platform=platform)
+                        if _startup_meta:
+                            result = await adapter.send(
+                                str(home.chat_id),
+                                message,
+                                metadata=_startup_meta,
+                            )
+                        else:
+                            result = await adapter.send(str(home.chat_id), message)
+
+                    if result is None or getattr(result, "success", True):
+                        delivered.add(target)
+                        logger.info(
+                            "Sent home-channel startup notification to %s:%s",
+                            platform.value,
+                            home.chat_id,
+                        )
+                        break
+
+                    error = getattr(result, "error", "send returned success=False")
+                    is_transient = getattr(result, "retryable", False) or error == "send_path_degraded"
+                    if is_transient and attempt < _STARTUP_NOTIFY_MAX_RETRIES:
+                        logger.debug(
+                            "Home-channel startup notification to %s:%s transient (attempt %d/%d): %s — retrying in %.1fs",
+                            platform.value, home.chat_id, attempt,
+                            _STARTUP_NOTIFY_MAX_RETRIES, error, _STARTUP_NOTIFY_RETRY_DELAY,
+                        )
+                        await asyncio.sleep(_STARTUP_NOTIFY_RETRY_DELAY)
+                        continue
+
                     logger.warning(
-                        "Home-channel startup notification failed for %s:%s: %s",
+                        "Home-channel startup notification failed for %s:%s after %d attempt(s): %s",
                         platform.value,
                         home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        attempt,
+                        error,
                     )
-                    continue
-
-                delivered.add(target)
-                logger.info(
-                    "Sent home-channel startup notification to %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
             except Exception as exc:
                 logger.warning(
                     "Home-channel startup notification failed for %s:%s: %s",

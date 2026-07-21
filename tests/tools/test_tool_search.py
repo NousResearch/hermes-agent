@@ -285,10 +285,67 @@ class TestAssembly:
 
 
 class TestBridgeDispatch:
-    def test_tool_search_requires_query(self):
-        from tools.tool_search import dispatch_tool_search
-        result = dispatch_tool_search({}, current_tool_defs=[])
-        assert "error" in json.loads(result)
+    def _deferrable_defs(self):
+        return [
+            _td("mcp__notion__create_page", "Create a Notion page"),
+            _td("mcp__notion__search", "Search Notion content"),
+            _td("mcp__github__list_repos", "List GitHub repositories"),
+            _td("mcp__vercel__list_projects", "List Vercel projects"),
+        ]
+
+    def test_tool_search_empty_query_lists_all(self, monkeypatch):
+        """Regression: empty query used to error, blocking the "list every
+        connected tool" use-case. It must now enumerate."""
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "classify_tools", lambda defs: ([], defs))
+        result = json.loads(ts.dispatch_tool_search(
+            {}, current_tool_defs=self._deferrable_defs(),
+        ))
+        assert "error" not in result
+        assert result["query"] == "*"
+        assert result["total_available"] == 4
+        assert len(result["matches"]) >= 1
+
+    def test_tool_search_star_query_enumerates_in_name_order(self, monkeypatch):
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "classify_tools", lambda defs: ([], defs))
+        result = json.loads(ts.dispatch_tool_search(
+            {"query": "*", "limit": 10},
+            current_tool_defs=self._deferrable_defs(),
+        ))
+        names = [m["name"] for m in result["matches"]]
+        assert names == sorted(names)
+        assert result["total_available"] == 4
+        assert result["next_offset"] is None
+
+    def test_tool_search_pagination(self, monkeypatch):
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "classify_tools", lambda defs: ([], defs))
+        page1 = json.loads(ts.dispatch_tool_search(
+            {"query": "*", "limit": 2, "offset": 0},
+            current_tool_defs=self._deferrable_defs(),
+        ))
+        assert len(page1["matches"]) == 2
+        assert page1["next_offset"] == 2
+        page2 = json.loads(ts.dispatch_tool_search(
+            {"query": "*", "limit": 2, "offset": page1["next_offset"]},
+            current_tool_defs=self._deferrable_defs(),
+        ))
+        assert len(page2["matches"]) == 2
+        assert page2["next_offset"] is None
+        seen = {m["name"] for m in page1["matches"]} | {m["name"] for m in page2["matches"]}
+        assert len(seen) == 4
+
+    def test_tool_search_keyword_with_offset(self, monkeypatch):
+        import tools.tool_search as ts
+        monkeypatch.setattr(ts, "classify_tools", lambda defs: ([], defs))
+        defs = [_td(f"mcp__svc__list_{i}", "list things") for i in range(8)]
+        page = json.loads(ts.dispatch_tool_search(
+            {"query": "list", "limit": 3, "offset": 2},
+            current_tool_defs=defs,
+        ))
+        assert len(page["matches"]) == 3
+        assert page["offset"] == 2
 
     def test_tool_describe_requires_name(self):
         from tools.tool_search import dispatch_tool_describe

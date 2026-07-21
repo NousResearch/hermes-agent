@@ -432,7 +432,9 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
     """
     desc_search = (
         f"Search {deferred_count} additional tools that are loaded on demand. "
-        "Returns up to ``limit`` matches with name and description. Follow "
+        "Returns up to ``limit`` matches with name and description. Use "
+        "``query='*'`` with ``offset`` pagination to enumerate the full deferred "
+        "catalog when you must list/summarise every available tool. Follow "
         f"with `{TOOL_DESCRIBE_NAME}` to load a tool's full parameter schema, "
         f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
         "system prompt are already available and do not need to be searched."
@@ -458,11 +460,15 @@ def bridge_tool_schemas(deferred_count: int) -> List[Dict[str, Any]]:
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Keywords describing the capability you need (e.g. 'create github issue').",
+                            "description": "Keywords describing the capability you need (e.g. 'create github issue'). Use '*' to list every deferred tool (paginate via offset).",
                         },
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results to return. Default 5.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Skip this many matches for pagination. Default 0. Response includes next_offset when more results remain.",
                         },
                     },
                     "required": ["query"],
@@ -606,12 +612,16 @@ def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None) -> str:
-    """Execute the ``tool_search`` bridge tool. Returns a JSON string."""
+    """Execute the ``tool_search`` bridge tool. Returns a JSON string.
+
+    ``query='*'`` (or an empty query) enumerates the deferred catalog in stable
+    name order so callers can summarize/export the full surface (for example,
+    "list every connected tool"). ``offset`` paginates catalogs larger than the
+    per-call search limit; ``next_offset`` signals more results when non-null.
+    """
     if config is None:
         config = load_config()
     query = str(args.get("query") or "").strip()
-    if not query:
-        return json.dumps({"error": "query is required"}, ensure_ascii=False)
 
     raw_limit = args.get("limit")
     if raw_limit is None:
@@ -619,13 +629,33 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
+    offset = max(0, _safe_int(args.get("offset"), 0))
+
     _, deferrable = classify_tools(current_tool_defs)
     catalog = build_catalog(deferrable)
-    hits = search_catalog(catalog, query, limit=limit)
+
+    list_all = (not query) or query == "*"
+    if list_all:
+        ordered = sorted(catalog, key=lambda e: e.name)
+        page = ordered[offset:offset + limit]
+        next_offset = offset + len(page) if (offset + len(page)) < len(ordered) else None
+        return json.dumps({
+            "query": "*",
+            "total_available": len(catalog),
+            "offset": offset,
+            "next_offset": next_offset,
+            "matches": [_format_search_hit(h) for h in page],
+        }, ensure_ascii=False)
+
+    hits = search_catalog(catalog, query, limit=limit + offset)
+    page = hits[offset:offset + limit]
+    next_offset = offset + len(page) if (offset + len(page)) < len(hits) else None
     return json.dumps({
         "query": query,
         "total_available": len(catalog),
-        "matches": [_format_search_hit(h) for h in hits],
+        "offset": offset,
+        "next_offset": next_offset,
+        "matches": [_format_search_hit(h) for h in page],
     }, ensure_ascii=False)
 
 

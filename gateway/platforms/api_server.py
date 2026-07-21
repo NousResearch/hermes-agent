@@ -96,23 +96,25 @@ logger = logging.getLogger(__name__)
 
 
 def _hermes_version() -> str:
-    """Return the hermes-agent version string, or "dev" if it can't be resolved.
+    """Return the canonical Hermes Agent version string.
 
-    Tries the installed package metadata first (authoritative for a pip/uv
-    install), then the in-tree ``hermes_cli.__version__`` (covers editable /
-    source checkouts where metadata may be stale or absent). Never raises —
-    a version probe must not be able to break the health endpoint.
+    ``hermes_cli.__version__`` is the runtime source of truth used by the CLI,
+    dashboard, portal tags, and release script. Prefer it over installed
+    distribution metadata because editable/source checkouts can retain stale
+    ``hermes_agent-*.dist-info`` after a source update until the environment is
+    reinstalled. Never raises — a version probe must not be able to break the
+    health endpoint.
     """
-    try:
-        from importlib.metadata import version
-
-        return version("hermes-agent")
-    except Exception:
-        pass
     try:
         from hermes_cli import __version__
 
         return __version__
+    except Exception:
+        pass
+    try:
+        from importlib.metadata import version
+
+        return version("hermes-agent")
     except Exception:
         return "dev"
 
@@ -1069,7 +1071,13 @@ class APIServerAdapter(BasePlatformAdapter):
         active_api_runs = sum(
             1
             for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval"}
+            # "stopping" (set by _handle_stop_run) is not terminal: the run
+            # stays in this state, doing real executor-thread work, until the
+            # agent actually notices the interrupt and the task settles to
+            # "cancelled" — an unbounded window, not the old ~5s hard-timeout
+            # wait. Excluding it here undercounts active_api_runs for the
+            # whole duration of a cooperative stop.
+            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
         )
         process_depth = 0
         active_delegations = 0
@@ -1777,6 +1785,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from run_agent import AIAgent
         from gateway.run import (
+            _checkpoint_agent_kwargs,
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
             _resolve_gateway_model,
@@ -1858,6 +1867,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
+            **_checkpoint_agent_kwargs(user_config),
             max_iterations=max_iterations,
             quiet_mode=True,
             verbose_logging=False,
@@ -1900,6 +1910,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.status import (
             derive_gateway_busy,
             derive_gateway_drainable,
+            normalize_updated_at,
             parse_active_agents,
             read_runtime_status,
         )
@@ -1938,7 +1949,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_state=gw_state,
             ),
             "exit_reason": runtime.get("exit_reason"),
-            "updated_at": runtime.get("updated_at"),
+            # Contract: updated_at is RFC3339 string | null, never a number —
+            # the state file may carry legacy epoch floats or hand-edited junk.
+            "updated_at": normalize_updated_at(runtime.get("updated_at")),
             "pid": os.getpid(),
         })
 

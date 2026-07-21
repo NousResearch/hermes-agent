@@ -5,6 +5,7 @@ import os
 import json
 import shutil
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -3989,6 +3990,18 @@ class TestWebServerEndpoints:
         assert "api_key" not in out
         assert "api_mode" not in out
 
+        # switching providers when the stale secret lives under the legacy
+        # ``api`` alias only (no api_key) → it must be cleared too. The resolver
+        # reads ``model.api`` as a key, so leaving it behind keeps a secret in
+        # config.yaml that contaminates the next custom resolution.
+        out = _apply_main_model_assignment(
+            {"provider": "custom", "api": "sk-legacy-stale", "base_url": "http://endpoint-a/v1"},
+            "openrouter",
+            "m",
+        )
+        assert "api" not in out
+        assert "api_key" not in out
+
     def test_parse_model_ids_handles_openai_and_bare_shapes(self):
         """Model discovery must tolerate the common /v1/models shapes and
         never raise (so a slightly non-standard local endpoint still works)."""
@@ -4187,6 +4200,301 @@ class TestWebServerEndpoints:
         model_cfg = load_config().get("model")
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
+
+    def test_custom_endpoints_list_includes_direct_custom_config(self):
+        """A bare model.provider=custom config should show up in Desktop even
+        before the user has materialized it under providers.
+        """
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "gpt-5.4",
+                "base_url": "http://127.0.0.1:8081/v1",
+                "api_key": "sk-local",
+            },
+            "providers": {},
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current"] == {
+            "provider": "custom",
+            "model": "gpt-5.4",
+            "base_url": "http://127.0.0.1:8081/v1",
+        }
+        assert data["endpoints"][0]["id"] == "custom"
+        assert data["endpoints"][0]["source"] == "direct-config"
+        assert data["endpoints"][0]["has_api_key"] is True
+
+    def test_custom_endpoint_upsert_persists_provider_and_sets_default(self):
+        """Desktop can persist an OpenAI-compatible proxy in providers and make
+        it the default for new chats.
+        """
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "axet-proxy",
+                "name": "Axet Proxy",
+                "base_url": "http://127.0.0.1:8081/v1/",
+                "model": "gpt-5.4",
+                "api_key": "sk-local",
+                "context_length": 262144,
+                "make_default": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["id"] == "axet-proxy"
+        endpoint = next(e for e in data["endpoints"] if e["id"] == "axet-proxy")
+        assert endpoint["base_url"] == "http://127.0.0.1:8081/v1"
+        assert endpoint["model"] == "gpt-5.4"
+        assert endpoint["is_current"] is True
+
+        cfg = load_config()
+        assert cfg["providers"]["axet-proxy"]["base_url"] == "http://127.0.0.1:8081/v1"
+        assert cfg["providers"]["axet-proxy"]["models"]["gpt-5.4"]["context_length"] == 262144
+        assert cfg["model"]["provider"] == "axet-proxy"
+        assert cfg["model"]["default"] == "gpt-5.4"
+        assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
+
+    def _seed_custom_provider_with_key(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/m1",
+                "api_key": "sk-stored-old",
+                "models": {"acme/m1": {}},
+            }
+        }
+        save_config(cfg)
+
+    def test_set_model_main_honors_an_explicitly_supplied_api_key(self):
+        """A key in the request must win over the provider entry's stored one.
+
+        The entry-key fallback exists so switching to a configured provider
+        picks up its credential. Applying it unconditionally discards a key the
+        caller is rotating in — and ``model.api_key`` outranks the environment
+        at client construction (#62269), so the stale key keeps authenticating
+        while the UI reports the change saved.
+        """
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "acme",
+                "model": "acme/m1",
+                "api_key": "sk-new-rotated",
+            },
+        )
+        assert resp.status_code == 200
+        assert load_config()["model"]["api_key"] == "sk-new-rotated"
+
+    def test_set_model_main_falls_back_to_the_provider_entry_key(self):
+        """With no key in the request the stored one is still adopted."""
+        from hermes_cli.config import load_config
+
+        self._seed_custom_provider_with_key()
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "acme", "model": "acme/m1"},
+        )
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["api_key"] == "sk-stored-old"
+        # The sibling base_url fill is unaffected.
+        assert model_cfg["base_url"] == "https://llm.acme.corp/v1"
+
+    def test_custom_endpoint_edit_preserves_hand_written_provider_fields(self):
+        """The panel edits a few fields; it does not own the whole entry.
+
+        A ``providers.<name>`` block can carry keys the dashboard has no field
+        for — ``api_mode``, ``key_env``, ``extra_headers`` (which may carry
+        credentials), ``request_overrides``. Rebuilding the entry from scratch
+        on an unrelated edit silently dropped all of them, leaving a provider
+        that no longer authenticates or speaks the right protocol.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_mode": "responses",
+                "key_env": "ACME_API_KEY",
+                "extra_headers": {"X-Org-Id": "org_123"},
+                "request_overrides": {"reasoning_effort": "high"},
+                "models": {
+                    "acme/model-1": {"context_length": 200000},
+                    "acme/model-2": {"context_length": 400000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        # The user opens the panel and only switches the default model.
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-2",
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = load_config()["providers"]["acme"]
+        assert entry["api_mode"] == "responses"
+        assert entry["key_env"] == "ACME_API_KEY"
+        assert entry["extra_headers"] == {"X-Org-Id": "org_123"}
+        assert entry["request_overrides"] == {"reasoning_effort": "high"}
+        # The edit still applies.
+        assert entry["model"] == "acme/model-2"
+
+    def test_custom_endpoint_edit_keeps_the_other_models(self):
+        """The panel names one default model; it doesn't enumerate the catalogue."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "models": {
+                    "acme/model-1": {"context_length": 200000},
+                    "acme/model-2": {"context_length": 400000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-2",
+            },
+        )
+
+        models = load_config()["providers"]["acme"]["models"]
+        assert sorted(models) == ["acme/model-1", "acme/model-2"]
+        assert models["acme/model-1"]["context_length"] == 200000
+
+    def test_deleting_the_active_custom_endpoint_clears_its_model_mirror(self):
+        """Deleting an endpoint must not leave its key running the agent.
+
+        ``activate`` copies the endpoint's base_url + api_key onto ``model``,
+        and ``model.api_key`` outranks the environment at client construction
+        (#62269). Without clearing that mirror the agent keeps authenticating
+        to the deleted host with the deleted key, and the key the operator
+        just removed through the dashboard stays in config.yaml.
+        """
+        from hermes_cli.config import load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_key": "sk-acme-secret",
+            },
+        )
+        assert self.client.post(
+            "/api/providers/custom-endpoints/acme/activate", json={}
+        ).status_code == 200
+
+        cfg = load_config()
+        assert cfg["model"]["api_key"] == "sk-acme-secret"
+
+        assert self.client.request(
+            "DELETE", "/api/providers/custom-endpoints/acme"
+        ).status_code == 200
+
+        cfg = load_config()
+        assert "acme" not in (cfg.get("providers") or {})
+        model_cfg = cfg.get("model") or {}
+        assert not model_cfg.get("api_key"), "deleted endpoint's key still in config.yaml"
+        assert not model_cfg.get("base_url"), "deleted endpoint's host still routed to"
+        assert not model_cfg.get("provider")
+
+    def test_deleting_an_inactive_custom_endpoint_leaves_the_active_one_alone(self):
+        """Only the mirror of the DELETED provider is scrubbed."""
+        from hermes_cli.config import load_config
+
+        for name, key in (("acme", "sk-acme"), ("other", "sk-other")):
+            self.client.post(
+                "/api/providers/custom-endpoints",
+                json={
+                    "id": name,
+                    "name": name,
+                    "base_url": f"https://llm.{name}.corp/v1",
+                    "model": f"{name}/m",
+                    "api_key": key,
+                },
+            )
+
+        self.client.post("/api/providers/custom-endpoints/other/activate", json={})
+        self.client.request("DELETE", "/api/providers/custom-endpoints/acme")
+
+        model_cfg = load_config().get("model") or {}
+        assert model_cfg.get("provider") == "other"
+        assert model_cfg.get("api_key") == "sk-other"
+        assert model_cfg.get("base_url") == "https://llm.other.corp/v1"
+
+    def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
+        """Selecting a named custom endpoint from the Desktop model picker
+        should keep its endpoint URL attached to model config.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"provider": "nous", "default": "hermes-4"},
+            "providers": {
+                "axet-proxy": {
+                    "name": "Axet Proxy",
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "api_key": "sk-local",
+                    "model": "gpt-5.4",
+                    "models": {"gpt-5.4": {}},
+                }
+            },
+        })
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "axet-proxy", "model": "gpt-5.4"},
+        )
+
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["provider"] == "axet-proxy"
+        assert model_cfg["default"] == "gpt-5.4"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8081/v1"
+        assert model_cfg["api_key"] == "sk-local"
 
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
@@ -5504,6 +5812,26 @@ class TestNewEndpoints:
         by_name = {p["name"]: p for p in resp.json()["providers"]}
         assert by_name["ElevenLabs"]["status"] == "ready"
 
+    def test_get_toolset_config_tts_rows_carry_provider_key(self):
+        """TTS provider rows surface their tts_provider config key.
+
+        The desktop Capabilities panel renders the provider's voice/model
+        config fields (tts.<key>.*) inline; without the key it can only show
+        API keys. Every built-in TTS row declares one.
+        """
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        providers = resp.json()["providers"]
+        assert providers
+        for prov in providers:
+            assert prov.get("tts_provider"), f"row {prov['name']!r} missing tts_provider"
+        by_name = {p["name"]: p for p in providers}
+        assert by_name["OpenAI TTS"]["tts_provider"] == "openai"
+        assert by_name["Microsoft Edge TTS"]["tts_provider"] == "edge"
+        # Non-TTS toolsets must not grow the field.
+        web = self.client.get("/api/tools/toolsets/web/config").json()
+        assert all("tts_provider" not in p for p in web["providers"])
+
     def test_get_toolset_config_reflects_selected_provider(self):
         """Selecting a provider is reflected in the next /config read.
 
@@ -6524,6 +6852,26 @@ class TestProbeGatewayHealth:
         assert alive is False
         assert body is None
 
+    def test_probe_uses_configured_short_timeout(self, monkeypatch):
+        """The HTTP probe must not fall through to the OS TCP timeout."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 0.75)
+        timeouts = []
+
+        def mock_urlopen(req, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            raise TimeoutError("mock timeout")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+
+        alive, body = ws._probe_gateway_health()
+
+        assert alive is False
+        assert body is None
+        assert timeouts == [0.75, 0.75]
+
     def test_normalizes_url_with_health_suffix(self, monkeypatch):
         """If the user sets the URL to include /health, it's stripped to base."""
         import hermes_cli.web_server as ws
@@ -6645,6 +6993,29 @@ class TestStatusRemoteGateway:
         assert data["gateway_pid"] == 999
         assert data["gateway_state"] == "running"
         assert data["gateway_health_url"] == "http://gw:8642"
+
+    def test_status_bounds_the_complete_remote_probe(self, monkeypatch):
+        """Two serial HTTP attempts cannot consume more than the route budget."""
+        import hermes_cli.web_server as ws
+
+        probe_started = threading.Event()
+
+        def slow_probe():
+            probe_started.set()
+            threading.Event().wait(timeout=0.1)
+            return True, {"status": "ok", "pid": 999}
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_ROUTE_TIMEOUT", 0.02)
+        monkeypatch.setattr(ws, "_probe_gateway_health", slow_probe)
+
+        resp = self.client.get("/api/status")
+
+        assert probe_started.is_set()
+        assert resp.status_code == 200
+        assert resp.json()["gateway_running"] is False
 
     def test_status_remote_probe_not_attempted_when_local_pid_found(self, monkeypatch):
         """When local PID check succeeds, the remote probe is never called."""
@@ -6843,6 +7214,155 @@ class TestGatewayBusyReadout:
         data = self.client.get("/api/status").json()
         assert data["active_agents"] == 0
         assert data["gateway_busy"] is False
+
+
+class TestGatewayUpdatedAtContract:
+    """Contract tests for /api/status ``gateway_updated_at``.
+
+    The field is promised to consumers (web/src/lib/api.ts declares
+    ``string | null``) as an RFC3339 timestamp or null — NEVER a number.
+    Legacy gateways wrote epoch floats into gateway_state.json and the file
+    is hand-editable, so the endpoint must normalize whatever it reads.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    @staticmethod
+    def _assert_contract(value):
+        """gateway_updated_at is None or a tz-aware-parseable ISO string."""
+        from datetime import datetime
+
+        assert not isinstance(value, bool), f"bool leaked: {value!r}"
+        assert not isinstance(value, (int, float)), f"number leaked: {value!r}"
+        if value is not None:
+            assert isinstance(value, str)
+            parsed = datetime.fromisoformat(value)
+            assert parsed.tzinfo is not None, f"naive timestamp leaked: {value!r}"
+
+    @pytest.mark.parametrize("updated_at", [
+        1750000000.5,          # legacy epoch float
+        1750000000,            # legacy epoch int
+        "not-a-timestamp",     # garbage string
+        None,                  # explicit null
+        True,                  # bool (int subclass) garbage
+        {"nested": "junk"},    # structured garbage
+    ])
+    def test_local_runtime_updated_at_normalized(self, monkeypatch, updated_at):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+            "updated_at": updated_at,
+        })
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        self._assert_contract(resp.json()["gateway_updated_at"])
+
+    def test_local_runtime_updated_at_absent(self, monkeypatch):
+        """Key missing entirely from the status file → null, not a crash."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_updated_at"] is None
+
+    def test_local_runtime_valid_epoch_becomes_iso_string(self, monkeypatch):
+        """A plausible legacy epoch value is converted, not dropped."""
+        from datetime import datetime, timezone
+        import hermes_cli.web_server as ws
+
+        epoch = 1750000000
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+            "updated_at": epoch,
+        })
+
+        value = self.client.get("/api/status").json()["gateway_updated_at"]
+        assert isinstance(value, str)
+        parsed = datetime.fromisoformat(value)
+        assert parsed.tzinfo is not None
+        assert parsed == datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+    def test_local_runtime_valid_iso_passes_through_parseable(self, monkeypatch):
+        """The canonical writer format survives normalization round-trip."""
+        from datetime import datetime
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+            "updated_at": "2026-07-21T12:00:00+00:00",
+        })
+
+        value = self.client.get("/api/status").json()["gateway_updated_at"]
+        assert isinstance(value, str)
+        assert datetime.fromisoformat(value).tzinfo is not None
+
+    def test_remote_health_numeric_updated_at_normalized(self, monkeypatch):
+        """Cross-container path: the remote /health/detailed body is the
+        runtime source, and a numeric updated_at from an older gateway build
+        must still come out as string|null."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+            "gateway_state": "running",
+            "platforms": {},
+            "updated_at": 1750000000.25,
+            "pid": 999,
+        }))
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        self._assert_contract(data["gateway_updated_at"])
+        # A plausible epoch is converted, not nulled.
+        assert isinstance(data["gateway_updated_at"], str)
+
+    def test_remote_health_garbage_updated_at_nulled(self, monkeypatch):
+        """Remote body with unparseable updated_at → null, never verbatim."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+            "gateway_state": "running",
+            "platforms": {},
+            "updated_at": "yesterday-ish",
+        }))
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_updated_at"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -8103,7 +8623,9 @@ class TestPtyWebSocket:
         relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
         python_path = tmp_path / relative_python
         python_path.parent.mkdir(parents=True)
-        os.link(sys.executable, python_path)
+        # copy2, not os.link: tmp_path may sit on a different filesystem than
+        # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+        shutil.copy2(sys.executable, python_path)
         monkeypatch.setenv("HERMES_CWD", str(tmp_path))
         monkeypatch.setenv("HERMES_PYTHON", str(relative_python))
         monkeypatch.setattr(
@@ -8125,7 +8647,9 @@ class TestPtyWebSocket:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         executable = bin_dir / command
-        os.link(sys.executable, executable)
+        # copy2, not os.link: tmp_path may sit on a different filesystem than
+        # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+        shutil.copy2(sys.executable, executable)
         env = {
             "HERMES_CWD": str(tmp_path),
             "HERMES_PYTHON": command,
@@ -8848,3 +9372,246 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+class TestServeIndexMissingIndex:
+    """_serve_index must not raise per-request when index.html vanishes
+    (partial build, wiped dist) after mount_spa saw an existing dist dir.
+    It should return the same JSON 404 payload mount_spa emits for a
+    fully-missing dist."""
+
+    @staticmethod
+    def _client_with_dist(tmp_path, monkeypatch, *, write_index: bool):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        if write_index:
+            (dist / "index.html").write_text(
+                "<html><head></head><body>SPA</body></html>", encoding="utf-8"
+            )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app), dist
+
+    def test_missing_index_inside_existing_dist_returns_json_404(
+        self, tmp_path, monkeypatch
+    ):
+        client, _dist = self._client_with_dist(
+            tmp_path, monkeypatch, write_index=False
+        )
+        for route in ("/", "/chat"):
+            resp = client.get(route)
+            assert resp.status_code == 404
+            assert resp.json()["error"] == (
+                "Frontend not built. Run: cd web && npm run build"
+            )
+
+    def test_index_deleted_after_mount_returns_json_404(self, tmp_path, monkeypatch):
+        client, dist = self._client_with_dist(tmp_path, monkeypatch, write_index=True)
+        assert client.get("/chat").status_code == 200  # healthy first
+        (dist / "index.html").unlink()
+        resp = client.get("/chat")
+        assert resp.status_code == 404
+        assert "Frontend not built" in resp.json()["error"]
+        # And recovers once the index reappears (e.g. a rebuild finished).
+        (dist / "index.html").write_text(
+            "<html><head></head><body>SPA-rebuilt</body></html>", encoding="utf-8"
+        )
+        resp = client.get("/chat")
+        assert resp.status_code == 200
+        assert "SPA-rebuilt" in resp.text
+
+
+class TestDashboardComponentHealth:
+    """Component-health rollup: error middleware, /api/status components, self-test."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        # Fresh state holder per test so counters don't leak across tests.
+        monkeypatch.setattr(ws, "DASHBOARD_HEALTH", ws.DashboardHealth())
+        self.ws = ws
+        self.client = TestClient(ws.app, raise_server_exceptions=False)
+        self.client.headers[ws._SESSION_HEADER_NAME] = ws._SESSION_TOKEN
+
+    # -- middleware -------------------------------------------------------
+
+    def test_middleware_counts_unhandled_exception(self):
+        """An exception escaping a route must be recorded (and re-raised)."""
+        route_path = "/api/_test_boom"
+
+        async def _boom():
+            raise RuntimeError("kaboom")
+
+        from fastapi.routing import APIRoute
+
+        self.ws.app.router.routes.insert(
+            0, APIRoute(route_path, _boom, methods=["GET"])
+        )
+        try:
+            resp = self.client.get(route_path)
+            assert resp.status_code == 500
+            assert self.ws.DASHBOARD_HEALTH.recent_error_count() == 1
+            assert self.ws.DASHBOARD_HEALTH.last_error_type == "RuntimeError"
+            # Path is retained internally only — snapshot must not export it.
+            assert self.ws.DASHBOARD_HEALTH.last_error_path == route_path
+        finally:
+            self.ws.app.router.routes[:] = [
+                r for r in self.ws.app.router.routes
+                if getattr(r, "path", None) != route_path
+            ]
+
+    def test_middleware_counts_5xx_response(self):
+        route_path = "/api/_test_teapot_fire"
+
+        async def _fivehundred():
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=503, content={"detail": "down"})
+
+        from fastapi.routing import APIRoute
+
+        self.ws.app.router.routes.insert(
+            0, APIRoute(route_path, _fivehundred, methods=["GET"])
+        )
+        try:
+            resp = self.client.get(route_path)
+            assert resp.status_code == 503
+            assert self.ws.DASHBOARD_HEALTH.recent_error_count() == 1
+            assert self.ws.DASHBOARD_HEALTH.last_error_type == "http_503"
+        finally:
+            self.ws.app.router.routes[:] = [
+                r for r in self.ws.app.router.routes
+                if getattr(r, "path", None) != route_path
+            ]
+
+    def test_error_window_expires_old_entries(self, monkeypatch):
+        health = self.ws.DashboardHealth(window_seconds=300)
+        now = {"t": 1000.0}
+        monkeypatch.setattr(self.ws.time, "time", lambda: now["t"])
+        health.record_error("RuntimeError", "/api/x")
+        assert health.recent_error_count() == 1
+        now["t"] = 1000.0 + 301
+        assert health.recent_error_count() == 0
+
+    # -- /api/status components ------------------------------------------
+
+    def test_status_includes_components_and_overall(self):
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall"] in {"ok", "degraded"}
+        components = data["components"]
+        assert set(components) == {"gateway", "storage", "dashboard", "platforms"}
+        for comp in components.values():
+            assert comp["status"] in {"ok", "degraded"}
+        dashboard = components["dashboard"]
+        assert dashboard["recent_unhandled_errors"] == 0
+        assert "last_error_at" in dashboard
+        assert dashboard["selftest"] in {"unknown", "ok", "failing"}
+
+    def test_storage_degraded_when_state_db_probe_fails(self, monkeypatch):
+        import gateway.readiness as readiness
+
+        monkeypatch.setattr(
+            readiness, "_probe_state_db", lambda home: {"status": "degraded", "detail": "OperationalError"}
+        )
+        resp = self.client.get("/api/status")
+        data = resp.json()
+        assert data["components"]["storage"] == {"status": "degraded"}
+        assert data["overall"] == "degraded"
+
+    def test_dashboard_component_degraded_after_error(self):
+        self.ws.DASHBOARD_HEALTH.record_error("RuntimeError", "/api/x")
+        resp = self.client.get("/api/status")
+        data = resp.json()
+        dashboard = data["components"]["dashboard"]
+        assert dashboard["status"] == "degraded"
+        assert dashboard["recent_unhandled_errors"] == 1
+        assert data["overall"] == "degraded"
+
+    def test_public_component_payload_carries_no_secret_bearing_fields(self):
+        """PUBLIC_API_PATHS contract: counts/enums only — no paths/messages."""
+        self.ws.DASHBOARD_HEALTH.record_error("RuntimeError", "/api/secret-route?token=abc")
+        resp = self.client.get("/api/status")
+        payload = json.dumps(resp.json()["components"])
+        assert "secret-route" not in payload
+        assert "token=abc" not in payload
+        assert "last_error_path" not in payload
+        assert "last_error_type" not in payload
+        assert "kaboom" not in payload
+
+    # -- self-test ---------------------------------------------------------
+
+    def test_selftest_records_failure_on_500(self, monkeypatch):
+        httpx = pytest.importorskip("httpx")
+
+        class _FakeResponse:
+            status_code = 500
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return _FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        asyncio.run(self.ws._dashboard_selftest_once())
+        assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
+        assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
+        assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
+
+    def test_selftest_records_pass_on_200(self, monkeypatch):
+        httpx = pytest.importorskip("httpx")
+
+        class _FakeResponse:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.calls = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, headers=None, **kwargs):
+                # The probe must authenticate with the real session token.
+                assert headers[self.ws_header] == self.ws_token
+                return _FakeResponse()
+
+        _FakeClient.ws_header = self.ws._SESSION_HEADER_NAME
+        _FakeClient.ws_token = self.ws._SESSION_TOKEN
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        asyncio.run(self.ws._dashboard_selftest_once())
+        assert self.ws.DASHBOARD_HEALTH.selftest_status == "ok"
+        assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 200
+
+    def test_selftest_real_asgi_roundtrip(self):
+        """End-to-end: the in-process ASGI self-test hits the real route."""
+        pytest.importorskip("httpx")
+        asyncio.run(self.ws._dashboard_selftest_once())
+        assert self.ws.DASHBOARD_HEALTH.selftest_status in {"ok", "failing"}
+        assert self.ws.DASHBOARD_HEALTH.selftest_http_status is not None

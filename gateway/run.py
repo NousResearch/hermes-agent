@@ -359,6 +359,7 @@ def _format_exec_approval_fallback(
     command_prefix: str,
     *,
     allow_permanent: bool = True,
+    allow_session: bool = True,
     smart_denied: bool = False,
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
@@ -368,7 +369,7 @@ def _format_exec_approval_fallback(
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
 
     choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
-    if not smart_denied:
+    if not smart_denied and allow_session:
         choices.append(
             f"`{command_prefix}approve session` to approve this pattern for the session"
         )
@@ -2031,6 +2032,7 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
     "_pending_one_turn_model_restores",
     "_session_reasoning_overrides",
+    "_session_service_tier_overrides",
     "_pending_model_notes",
     "_last_resolved_model",
     "_queued_events",
@@ -2591,6 +2593,35 @@ def _load_gateway_config() -> dict:
     return raw
 
 
+def _checkpoint_agent_kwargs(config: dict | None) -> dict:
+    """Translate gateway checkpoint config into ``AIAgent`` constructor args.
+
+    The gateway reads raw YAML instead of ``load_config()``, so checkpoint
+    defaults must be supplied here.  Keep legacy ``checkpoints: true`` configs
+    working while giving every gateway-created agent the same limits.
+    """
+    cp_cfg = config.get("checkpoints", {}) if isinstance(config, dict) else {}
+    if isinstance(cp_cfg, bool):
+        cp_cfg = {"enabled": cp_cfg}
+    elif not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+
+    from hermes_cli.config import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG["checkpoints"]
+    return {
+        "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
+        "checkpoint_max_snapshots": cp_cfg.get(
+            "max_snapshots", defaults["max_snapshots"],
+        ),
+        "checkpoint_max_total_size_mb": cp_cfg.get(
+            "max_total_size_mb", defaults["max_total_size_mb"],
+        ),
+        "checkpoint_max_file_size_mb": cp_cfg.get(
+            "max_file_size_mb", defaults["max_file_size_mb"],
+        ),
+    }
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
@@ -3055,6 +3086,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _session_service_tier_overrides: Dict[str, Optional[str]] = {}
     _pending_turn_sidecar_notes: Dict[str, List[str]] = {}
     _session_ephemeral_pin: Dict[str, tuple] = {}
     _session_vc_last: Dict[str, str] = {}
@@ -3065,6 +3097,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _loop_heartbeat_task: Optional["asyncio.Task"] = None
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
+    _platform_lock_takeover_on_start: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -3224,6 +3257,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # with the synthetic resume turns for the same session.  The queued
         # events drain only after all startup resume tasks have finished.
         self._startup_restore_in_progress = False
+        # Set by start_gateway() only for an explicit ``--replace`` launch.
+        # _connect_initial_adapter_with_timeout scopes it to each adapter's
+        # cold-start connect and removes it before any reconnect can run.
+        self._platform_lock_takeover_on_start = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -3264,6 +3301,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session fast-mode overrides from /fast.
+        # Key: session_key, Value: "priority" or None (explicit normal).
+        self._session_service_tier_overrides: Dict[str, Optional[str]] = {}
         # Per-turn must-deliver notes relocated out of the ephemeral system
         # prompt (auto-reset note, first-contact intro, voice-channel change).
         # Staged by _handle_message_with_agent, consumed once by run_sync and
@@ -3805,6 +3845,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raise TimeoutError(
                 f"{platform.value} connect timed out after {timeout:g}s"
             ) from exc
+
+    async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
+        """Connect one cold-start adapter with tightly scoped replace intent.
+
+        The capability is visible only while this initial connect is awaited.
+        Reconnects call ``_connect_adapter_with_timeout`` directly and adapters
+        also default to deny, so a later network recovery can never evict a
+        healthy token holder.
+        """
+        adapter._platform_lock_takeover_allowed = bool(
+            self._platform_lock_takeover_on_start
+        )
+        try:
+            return await self._connect_adapter_with_timeout(adapter, platform)
+        finally:
+            adapter._platform_lock_takeover_allowed = False
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -5237,6 +5293,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._session_reasoning_overrides.pop(session_key, None)
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
+
+    def _resolve_session_service_tier(
+        self,
+        source=None,
+        session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the effective service tier for a session.
+
+        A session-scoped /fast override wins over the config default. The
+        override dict stores "priority" or None (explicit normal), so key
+        presence — not value truthiness — decides whether it applies.
+        """
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        overrides = getattr(self, "_session_service_tier_overrides", {}) or {}
+        if resolved_session_key and resolved_session_key in overrides:
+            return overrides[resolved_session_key]
+        return self._load_service_tier()
+
+    def _set_session_service_tier_override(
+        self,
+        session_key: str,
+        service_tier,
+        clear: bool = False,
+    ) -> None:
+        """Set or clear the session-scoped /fast override.
+
+        ``service_tier`` is "priority" or None (explicit normal). Pass
+        ``clear=True`` to remove the override entirely (fall back to config).
+        """
+        if not session_key:
+            return
+        if "_session_service_tier_overrides" not in self.__dict__:
+            # Force an instance-level dict: the class attribute is a shared
+            # default for partially-constructed test runners, and mutating it
+            # would leak overrides across runner instances.
+            self._session_service_tier_overrides = {}
+        if clear:
+            self._session_service_tier_overrides.pop(session_key, None)
+        else:
+            self._session_service_tier_overrides[session_key] = service_tier
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -6981,7 +7083,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not ledger_enabled():
                 return 0
-            claimed = await asyncio.to_thread(sweep_recoverable)
+            # Only claim rows we can actually send this boot: self.adapters
+            # holds a platform only after its connect() succeeded, and each
+            # claim spends one of the row's three redelivery attempts.
+            _deliverable = {
+                getattr(p, "value", str(p)) for p in self.adapters
+            }
+            claimed = await asyncio.to_thread(
+                sweep_recoverable, None, deliverable_platforms=_deliverable
+            )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
             return 0
@@ -7608,7 +7718,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 error_message=None,
             )
             try:
-                success = await self._connect_adapter_with_timeout(adapter, platform)
+                success = await self._connect_initial_adapter_with_timeout(
+                    adapter, platform
+                )
                 if await self._abort_startup_if_shutdown_requested(adapter, platform):
                     return True
                 if success:
@@ -7716,6 +7828,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         except Exception as e:
             logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
+        finally:
+            # Startup authority is one phase, not a persistent runner mode.
+            # From this point onward every adapter retry is non-evicting.
+            self._platform_lock_takeover_on_start = False
 
         # A platform we skipped on the primary for a missing credential was
         # supposed to be picked up by a secondary profile that owns the token.
@@ -7859,13 +7975,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
+        chat_restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
         # dedup marker only suppresses a /restart when we KNOW we just came out
         # of a restart cycle (see _is_stale_restart_redelivery).
-        if _restart_notification_pending() or planned_restart_notification_pending:
+        if chat_restart_notification_pending:
             self._booted_from_restart = True
         await self._send_restart_notification()
 
@@ -9413,7 +9530,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             try:
                 with _profile_runtime_scope(profile_home):
-                    success = await self._connect_adapter_with_timeout(adapter, platform)
+                    success = await self._connect_initial_adapter_with_timeout(
+                        adapter, platform
+                    )
                 if success:
                     profile_map[platform] = adapter
                     connected += 1
@@ -13807,8 +13926,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The previous gateway wrote ``.restart_last_processed.json`` with the
         triggering platform + update_id when it processed the /restart.  If
         we now see a /restart on the same platform with an update_id <= that
-        recorded value AND the marker is recent (< 5 minutes), it's a
-        redelivery and should be ignored.
+        recorded value, it is a redelivery when this process booted from that
+        restart. Otherwise the marker must still be recent (< 5 minutes).
 
         Only applies to Telegram today (the only platform that exposes a
         numeric cross-session update ordering); other platforms return False.
@@ -13860,6 +13979,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         recorded_uid = data.get("update_id")
         if not isinstance(recorded_uid, int):
             return False
+        if event.platform_update_id > recorded_uid:
+            return False
+
+        # A service-managed restart can legitimately take longer than the
+        # marker's normal five-minute trust window while adapters, cron, and
+        # in-flight deliveries drain. If this process booted from the recorded
+        # chat restart, the first same-or-older update is still that restart's
+        # redelivery regardless of elapsed wall time. Consume the boot signal
+        # one-shot so a later genuine command is evaluated normally.
+        if getattr(self, "_booted_from_restart", False):
+            self._booted_from_restart = False
+            return True
+
         # Staleness guard: ignore markers older than 5 minutes.  A legitimately
         # old marker (e.g. crash recovery where notify never fired) should not
         # swallow a fresh /restart from the user.
@@ -13867,7 +13999,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if isinstance(requested_at, (int, float)):
             if time.time() - requested_at > 300:
                 return False
-        return event.platform_update_id <= recorded_uid
+        return True
 
 
 
@@ -14680,7 +14812,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source, model=model
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -14704,6 +14836,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -17200,6 +17333,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        ("checkpoints", "enabled"),
+        ("checkpoints", "max_snapshots"),
+        ("checkpoints", "max_total_size_mb"),
+        ("checkpoints", "max_file_size_mb"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (
@@ -17263,7 +17400,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
             section_val = cfg.get(section)
-            if isinstance(section_val, dict):
+            if section == "checkpoints" and isinstance(section_val, bool):
+                # Preserve legacy ``checkpoints: true`` behavior.  A live
+                # toggle must still rebuild the cached agent.
+                out[f"{section}.{key}"] = section_val if key == "enabled" else None
+            elif isinstance(section_val, dict):
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
@@ -19895,7 +20036,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 model=model,
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._load_service_tier()
+            self._service_tier = self._resolve_session_service_tier(
+                source=source, session_key=session_key
+            )
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -20228,6 +20371,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -20592,6 +20736,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 description=desc,
                                 metadata=_status_thread_metadata,
                                 allow_permanent=approval_data.get("allow_permanent", True),
+                                allow_session=approval_data.get("allow_session", True),
                                 smart_denied=approval_data.get("smart_denied", False),
                             ),
                             _loop_for_step,
@@ -20622,6 +20767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     desc,
                     _p,
                     allow_permanent=approval_data.get("allow_permanent", True),
+                    allow_session=approval_data.get("allow_session", True),
                     smart_denied=approval_data.get("smart_denied", False),
                 )
                 try:
@@ -21744,14 +21890,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
-                    _previewed = bool(result.get("response_previewed"))
-                    first_response = result.get("final_response", "")
+                    # The queued branch needs raw ``result`` for interruption,
+                    # history, and recursion state, but delivery must use the
+                    # finalized task result. The latter contains empty/failure
+                    # normalization and any final response processing applied by
+                    # _run_agent_task; sending the raw copy bypasses those steps.
+                    _delivery_result = response if isinstance(response, dict) else (result or {})
+                    _previewed = bool(_delivery_result.get("response_previewed"))
+                    first_response = _delivery_result.get("final_response", "")
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
                         previewed=_previewed,
                     )
-                    if first_response and not _already_streamed:
+                    # Apply the same predicate as the normal completed-turn path.
+                    # This direct queued-send branch predates intentional-silence
+                    # filtering, so without this check it leaks the literal marker.
+                    try:
+                        from gateway.response_filters import is_intentional_silence_agent_result
+                        _intentional_silence = is_intentional_silence_agent_result(
+                            _delivery_result, first_response,
+                        )
+                    except Exception:
+                        _intentional_silence = False
+                    if _intentional_silence:
+                        logger.info(
+                            "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                            session_key or "?",
+                        )
+                    elif first_response and not _already_streamed:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
@@ -22345,6 +22512,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 write_takeover_marker(existing_pid)
             except Exception as e:
                 logger.debug("Could not write takeover marker: %s", e)
+            # Snapshot the old gateway's child processes BEFORE signalling it:
+            # once it exits, orphans are reparented and can no longer be found
+            # by a parent walk. On POSIX, adapter subprocesses that outlive
+            # the gateway keep holding scoped token locks and block the
+            # replacement (Windows terminate_pid(force=True) already
+            # tree-kills via taskkill /T). Best-effort — [] on any failure.
+            try:
+                from gateway.status import _snapshot_gateway_children
+                _old_gateway_children = _snapshot_gateway_children(existing_pid)
+            except Exception:
+                _old_gateway_children = []
             try:
                 terminate_pid(existing_pid, force=False)
             except ProcessLookupError:
@@ -22408,6 +22586,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     except Exception:
                         pass
                     return False
+            # Old gateway confirmed dead — reap any orphaned child processes
+            # it left behind (POSIX; mirrors Windows taskkill /T tree-kill).
+            # Orphaned adapter subprocesses would otherwise keep holding
+            # scoped token locks against us. Best-effort, never raises.
+            try:
+                from gateway.status import reap_gateway_children
+                reap_gateway_children(
+                    _old_gateway_children, parent_pid=existing_pid
+                )
+            except Exception:
+                logger.debug(
+                    "Child reap for replaced gateway PID %d failed",
+                    existing_pid,
+                    exc_info=True,
+                )
             remove_pid_file()
             # remove_pid_file() is a no-op when the PID doesn't match.
             # Force-unlink to cover the old-process-crashed case.
@@ -22499,6 +22692,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
+    # ``--replace`` is explicit startup authority, not a durable reconnect
+    # policy. GatewayRunner scopes this bit to cold adapter connects and clears
+    # it before the background reconnect watcher starts.
+    runner._platform_lock_takeover_on_start = bool(replace)
     
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service

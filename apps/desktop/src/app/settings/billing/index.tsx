@@ -5,19 +5,23 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import { BarChart3, ExternalLink, RefreshCw } from '@/lib/icons'
+import { BarChart3, ExternalLink, Lock, Package, Plus, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
 import { ListRow, Pill, SectionHeading, SettingsContent } from '../primitives'
 
 import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
 import { resolveRefusal } from './errors'
+import { BillingPlansView } from './plans-view'
+import { TierArt } from './tier-art'
 import type { BillingAutoReload, BillingStateResponse } from './types'
 import {
   type BillingAccountRowView,
   type BillingNoticeView,
+  type BillingPlanCardView,
   type BillingUsageRowView,
   deriveBillingView,
   EMPTY_BILLING_VALUE,
@@ -25,6 +29,11 @@ import {
   useBillingState,
   useSubscriptionState
 } from './use-billing-state'
+
+// `bview` mirrors the settings pview/kview sub-view pattern (deep-linkable, replace
+// navigation). `overview` is the default landing; `plans` is the in-app catalog.
+const BILLING_VIEWS = ['overview', 'plans'] as const
+type BillingSubView = (typeof BILLING_VIEWS)[number]
 import { useChargeFlow } from './use-charge-poller'
 import { useStepUpFlow } from './use-step-up'
 
@@ -147,6 +156,46 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
   )
 }
 
+function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
+  return (
+    <div className="@container">
+      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
+        <div className="flex min-w-0 items-center gap-3">
+          <TierArt name={plan.tierName} />
+          <div className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+              <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                {plan.tierName}
+              </span>
+              {plan.price && (
+                <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {plan.price}/mo
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {plan.caption}
+            </div>
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
+          {plan.action && (
+            <Button onClick={onViewPlans} size="sm" type="button" variant="outline">
+              {plan.action.label}
+            </Button>
+          )}
+          {plan.link && (
+            <Button onClick={() => openExternal(plan.link?.url)} size="sm" type="button" variant="outline">
+              {plan.link.label}
+              <ExternalLink className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AutoReloadRow({
   autoReload,
   bounds,
@@ -160,6 +209,10 @@ function AutoReloadRow({
   const queryClient = useQueryClient()
   const [confirmDisable, setConfirmDisable] = useState(false)
   const [editing, setEditing] = useState(false)
+  // Validation errors are silent until the user edits a field or attempts a
+  // save — opening Manage on a prefilled (possibly below-min) config must not
+  // flash an error (spec §9).
+  const [showErrors, setShowErrors] = useState(false)
   const [message, setMessage] = useState<null | { kind: 'error' | 'success'; text: string }>(null)
   const [refusal, setRefusal] = useState<BillingRefusal | null>(null)
 
@@ -178,10 +231,25 @@ function AutoReloadRow({
   const maxBound = bounds.max_usd ?? undefined
   const minBound = bounds.min_usd ?? undefined
 
+  // Only the canonical-card enabled state edits in place. Off / divergent-card
+  // rows have no Manage affordance (or a portal link) and render read-only.
+  const editable = row.action?.label === 'Manage' && !row.action.url
+
   const resetFeedback = () => {
     setConfirmDisable(false)
     setMessage(null)
     setRefusal(null)
+  }
+
+  const openEdit = () => {
+    resetFeedback()
+    setShowErrors(false)
+    setEditing(true)
+  }
+
+  const cancelEdit = () => {
+    resetFeedback()
+    setEditing(false)
   }
 
   const save = async () => {
@@ -234,115 +302,132 @@ function AutoReloadRow({
     setEditing(false)
   }
 
-  const below = editing ? (
-    <div className="mt-3 space-y-3">
-      <div className="grid gap-2 @2xl:grid-cols-2">
-        <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          Threshold
-          <Input
-            aria-label="Auto-refill threshold"
-            className="mt-1 h-8"
-            disabled={busy}
-            inputMode="decimal"
-            max={maxBound}
-            min={minBound}
-            onChange={event => {
-              resetFeedback()
-              setThreshold(event.target.value)
-            }}
-            step="0.01"
-            type="number"
-            value={threshold}
-          />
-        </label>
-        <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          Reload to
-          <Input
-            aria-label="Auto-refill reload-to amount"
-            className="mt-1 h-8"
-            disabled={busy}
-            inputMode="decimal"
-            max={maxBound}
-            min={minBound}
-            onChange={event => {
-              resetFeedback()
-              setReloadTo(event.target.value)
-            }}
-            step="0.01"
-            type="number"
-            value={reloadTo}
-          />
-        </label>
-      </div>
-      {validation.error && (
-        <div className="text-[length:var(--conversation-caption-font-size)] text-destructive">{validation.error}</div>
-      )}
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <Button disabled={busy || !validation.values} onClick={() => void save()} size="sm" type="button">
-          {busy ? 'Saving…' : 'Save'}
-        </Button>
-        <Button disabled={busy} onClick={() => setConfirmDisable(true)} size="sm" type="button" variant="outline">
-          Disable
-        </Button>
-        <Button
-          disabled={busy}
-          onClick={() => {
-            resetFeedback()
-            setEditing(false)
-          }}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          Cancel
-        </Button>
-      </div>
-      {confirmDisable && (
-        <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          <span>Turn off auto-refill?</span>
-          <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
-            Turn off
-          </Button>
-          <Button disabled={busy} onClick={() => setConfirmDisable(false)} size="sm" type="button" variant="ghost">
-            Cancel
-          </Button>
-        </div>
-      )}
-      <BillingRefusalInline refusal={refusal} />
-      {message && <InlineMessage kind={message.kind}>{message.text}</InlineMessage>}
-    </div>
-  ) : (
-    <>
-      {row.caption ? (
-        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          {row.caption}
-        </div>
-      ) : null}
-      <BillingRefusalInline refusal={refusal} />
-      {message && <InlineMessage kind={message.kind}>{message.text}</InlineMessage>}
-    </>
-  )
+  // Read-only states (off / divergent card) keep the original ListRow shape.
+  if (!editable) {
+    return (
+      <ListRow
+        action={<RowValue row={row} />}
+        below={
+          <>
+            {row.caption ? (
+              <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {row.caption}
+              </div>
+            ) : null}
+            <BillingRefusalInline refusal={refusal} />
+            {message && <InlineMessage kind={message.kind}>{message.text}</InlineMessage>}
+          </>
+        }
+        description={row.description}
+        key={row.id}
+        title={row.title}
+      />
+    )
+  }
 
+  const onField = (setter: (value: string) => void) => (event: { target: { value: string } }) => {
+    resetFeedback()
+    setShowErrors(true)
+    setter(event.target.value)
+  }
+
+  // Swap-in-place: the LEFT swap region reserves the tallest (editing) height so
+  // toggling Manage never moves the action buttons or the Usage section below.
   return (
-    <ListRow
-      action={
-        <RowValue
-          onAction={
-            row.action?.url
-              ? undefined
-              : () => {
-                  resetFeedback()
-                  setEditing(true)
-                }
-          }
-          row={row}
-        />
-      }
-      below={below}
-      description={row.description}
-      key={row.id}
-      title={row.title}
-    />
+    <div className="@container">
+      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-start">
+        <div className="min-w-0">
+          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            {row.title}
+          </div>
+          <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {row.description}
+          </div>
+          {/* Reserved height for the tallest (editing) state — held in every state. */}
+          <div className="mt-3 min-h-28">
+            {editing ? (
+              <div className="space-y-2">
+                <div className="grid gap-2 @2xl:grid-cols-2">
+                  <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    Threshold
+                    <Input
+                      aria-label="Auto-refill threshold"
+                      className="mt-1 h-8"
+                      disabled={busy}
+                      inputMode="decimal"
+                      max={maxBound}
+                      min={minBound}
+                      onChange={onField(setThreshold)}
+                      step="0.01"
+                      type="number"
+                      value={threshold}
+                    />
+                  </label>
+                  <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    Reload to
+                    <Input
+                      aria-label="Auto-refill reload-to amount"
+                      className="mt-1 h-8"
+                      disabled={busy}
+                      inputMode="decimal"
+                      max={maxBound}
+                      min={minBound}
+                      onChange={onField(setReloadTo)}
+                      step="0.01"
+                      type="number"
+                      value={reloadTo}
+                    />
+                  </label>
+                </div>
+                {/* Pre-allocated error line — occupies height whether or not shown. */}
+                <div className="min-h-4 text-[length:var(--conversation-caption-font-size)] text-destructive">
+                  {showErrors && validation.error ? validation.error : ''}
+                </div>
+                {confirmDisable ? (
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    <span>Turn off auto-refill?</span>
+                    <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
+                      Turn off
+                    </Button>
+                    <Button disabled={busy} onClick={() => setConfirmDisable(false)} size="sm" type="button" variant="ghost">
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button disabled={busy} onClick={() => setConfirmDisable(true)} size="sm" type="button" variant="outline">
+                    Disable
+                  </Button>
+                )}
+                <BillingRefusalInline refusal={refusal} />
+              </div>
+            ) : (
+              <>
+                <BillingRefusalInline refusal={refusal} />
+                {message && <InlineMessage kind={message.kind}>{message.text}</InlineMessage>}
+              </>
+            )}
+          </div>
+        </div>
+        {/* Action column swaps Manage ↔ Save/Cancel in place (top-aligned, no move). */}
+        <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
+          {row.pill && <Pill tone={row.pill.tone}>{row.pill.label}</Pill>}
+          {editing ? (
+            <>
+              <Button disabled={busy || !validation.values} onClick={() => void save()} size="sm" type="button">
+                {busy ? 'Saving…' : 'Save'}
+              </Button>
+              <Button disabled={busy} onClick={cancelEdit} size="sm" type="button" variant="outline">
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button onClick={openEdit} size="sm" type="button" variant="outline">
+              Manage
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -765,6 +850,8 @@ function BillingSettingsContent({
   const fixture =
     import.meta.env.DEV && fixtureName && fixtureName !== 'live' ? billingDevFixtures[fixtureName] : undefined
 
+  const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+
   const billingState = useBillingState(!fixture)
   const subscriptionState = useSubscriptionState(!fixture)
   const billingResult = fixture?.billing ?? billingState.data
@@ -776,6 +863,23 @@ function BillingSettingsContent({
 
   const refreshUsage = () => {
     void Promise.all([billingState.refetch(), subscriptionState.refetch()])
+  }
+
+  const paymentRow = view.accountRows.find(row => row.id === 'payment_method')
+  const topupRow = view.accountRows.find(row => row.id === 'buy_credits')
+  const refillRow = view.accountRows.find(row => row.id === 'auto_reload')
+
+  // The plans sub-view is only meaningful with a catalog; a stale/deep-linked
+  // `bview=plans` on an account without tiers falls back to the overview.
+  const showPlans = subView === 'plans' && view.status === 'normal' && view.tiers.length > 0
+
+  if (showPlans) {
+    return (
+      <SettingsContent>
+        <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
+        <BillingPlansView onBack={() => setSubView('overview')} tiers={view.tiers} />
+      </SettingsContent>
+    )
   }
 
   return (
@@ -792,13 +896,32 @@ function BillingSettingsContent({
 
       {view.notice && <NoticeCard notice={view.notice} />}
 
-      {view.accountRows.length > 0 && (
-        <>
-          <SectionHeading icon={BarChart3} title="Account" />
-          {view.accountRows.map(row => (
-            <AccountRow billing={billing} key={row.id} row={row} />
-          ))}
-        </>
+      {view.plan && (
+        <div className="mb-5">
+          <SectionHeading icon={Package} title="Plan" />
+          <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
+        </div>
+      )}
+
+      {paymentRow && (
+        <div className="mb-5">
+          <SectionHeading icon={Lock} title="Payment" />
+          <AccountRow billing={billing} row={paymentRow} />
+        </div>
+      )}
+
+      {topupRow && (
+        <div className="mb-5">
+          <SectionHeading icon={Plus} title="One-time top-up" />
+          <AccountRow billing={billing} row={topupRow} />
+        </div>
+      )}
+
+      {refillRow && (
+        <div className="mb-5">
+          <SectionHeading icon={RefreshCw} title="Automatic refill" />
+          <AccountRow billing={billing} row={refillRow} />
+        </div>
       )}
 
       {view.usageRows.length > 0 && (

@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -38,13 +39,15 @@ vi.mock('./api', () => ({
   })
 }))
 
-function renderBilling() {
+function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
-    <QueryClientProvider client={client}>
-      <BillingSettings />
-    </QueryClientProvider>
+    <MemoryRouter initialEntries={initialEntries}>
+      <QueryClientProvider client={client}>
+        <BillingSettings />
+      </QueryClientProvider>
+    </MemoryRouter>
   )
 
   return client
@@ -79,7 +82,7 @@ describe('BillingSettings', () => {
       )
     ).toBeTruthy()
     expect(screen.queryByRole('button', { name: '$100' })).toBeNull()
-    expect(screen.getByText('Refill $10 when balance falls below $5')).toBeTruthy()
+    expect(screen.getByText('Charges $10 automatically when your balance falls below $5.')).toBeTruthy()
     expect(screen.getByText('$120 of $220 left')).toBeTruthy()
     expect(screen.getByText('$876.47')).toBeTruthy()
     expect(screen.getByText('$10 of $100 used').classList.contains('tabular-nums')).toBe(true)
@@ -177,6 +180,54 @@ describe('BillingSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Turn off' }))
 
     await waitFor(() => expect(apiMocks.updateAutoReload).toHaveBeenCalledWith({ enabled: false }))
+  })
+
+  it('opens auto-refill edit without a validation error even when the saved config is below the minimum', async () => {
+    // todayBillingState: threshold $5 with min_usd $10 — invalid, but opening
+    // Manage must stay silent until the user edits or attempts to save (spec §9).
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+
+    expect(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' })).toBeTruthy()
+    expect(screen.queryByText('Threshold: minimum is $10.')).toBeNull()
+    // Save is disabled because the prefilled config is invalid — but no error yet.
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('navigates to the in-app plans grid from the plan card and back', async () => {
+    const fixture = billingDevFixtures['free-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View plans' }))
+
+    expect(await screen.findByText('Plans')).toBeTruthy()
+    // No current subscription → every tier is a "Choose ↗" upgrade.
+    expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(4)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to billing' }))
+
+    expect(await screen.findByRole('button', { name: 'View plans' })).toBeTruthy()
+  })
+
+  it('renders the current marker and disabled downgrade when deep-linked to the plans grid', async () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Current plan')).toBeTruthy()
+    // Free sits below Plus → disabled downgrade with the ticket-11 caption.
+    expect(screen.getByRole('button', { name: 'Downgrade' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('Downgrades are moving in-app — coming soon.')).toBeTruthy()
+    // Super + Ultra are upgrades.
+    expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(2)
   })
 
   it('renders auto-refill mutation refusals and step-up affordance', async () => {

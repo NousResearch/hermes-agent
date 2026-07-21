@@ -70,7 +70,7 @@ describe('deriveBillingView', () => {
     expect(buyCredits?.chips).toBeUndefined()
     expect(view.accountRows.find(row => row.id === 'auto_reload')).toMatchObject({
       action: { label: 'Manage' },
-      caption: 'Refill $10 when balance falls below $5',
+      description: 'Charges $10 automatically when your balance falls below $5.',
       pill: { label: 'Enabled', tone: 'primary' }
     })
     expect(view.usageRows.map(row => row.id)).toEqual(['subscription_credits', 'topup_credits', 'monthly_cap'])
@@ -86,9 +86,7 @@ describe('deriveBillingView', () => {
       '$50',
       '$100'
     ])
-    expect(view.accountRows.find(row => row.id === 'subscription')?.action?.url).toBe(
-      'https://portal.nousresearch.com/manage-subscription?org_id=org_123'
-    )
+    expect(view.plan?.link?.url).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123')
     expect(view.usageRows.find(row => row.id === 'subscription_credits')).toMatchObject({
       bar: { value: 0.4 },
       value: '$40 of $100 left'
@@ -173,112 +171,16 @@ describe('deriveBillingView', () => {
     expect(view.accountRows).toEqual([])
   })
 
-  it('keeps subscription unavailable as a row-level degradation when billing.state succeeds', () => {
+  it('keeps subscription unavailable as a plan-card degradation when billing.state succeeds', () => {
     const view = deriveBillingView(okBilling(todayBillingState), endpointUnavailableSubscription)
-    const subscription = view.accountRows.find(row => row.id === 'subscription')
 
     expect(view.status).toBe('normal')
-    expect(subscription).toMatchObject({
+    expect(view.plan).toMatchObject({
       caption: 'Subscription details are unavailable; opening the portal is still available.',
-      value: 'Ultra'
+      tierName: 'Ultra'
     })
-  })
-
-  it('free with catalog: tier chips render inline and open the portal', () => {
-    const view = deriveBillingView(
-      okBilling(todayBillingState),
-      okSubscription({
-        ...todaySubscriptionState,
-        context: 'personal',
-        current: null,
-        tiers: [
-          {
-            dollars_per_month_display: '$0',
-            is_current: false,
-            is_enabled: true,
-            monthly_credits: '0',
-            name: 'Free',
-            tier_id: 'free',
-            tier_order: 0
-          },
-          {
-            dollars_per_month_display: '$40',
-            is_current: false,
-            is_enabled: true,
-            monthly_credits: '3000',
-            name: 'Ultra',
-            tier_id: 'ultra',
-            tier_order: 2
-          },
-          {
-            dollars_per_month_display: '$20',
-            is_current: false,
-            is_enabled: true,
-            monthly_credits: '1000',
-            name: 'Plus',
-            tier_id: 'plus',
-            tier_order: 1
-          }
-        ]
-      })
-    )
-
-    const subscription = view.accountRows.find(row => row.id === 'subscription')
-
-    expect(subscription?.description).toBe('Paid models need a subscription — pick a plan to start it on the portal.')
-    expect(subscription?.chips).toEqual([
-      { disabled: false, label: 'Plus · $20/mo · $1,000 credits/mo', url: `${subscription?.action?.url}&plan=plus` },
-      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: `${subscription?.action?.url}&plan=ultra` }
-    ])
-  })
-
-  it('subscriber who can change plans: current tier marked inert, others open the portal', () => {
-    const view = deriveBillingView(
-      okBilling(todayBillingState),
-      okSubscription({
-        ...todaySubscriptionState,
-        context: 'personal',
-        tiers: [
-          {
-            dollars_per_month_display: '$20',
-            is_current: true,
-            is_enabled: true,
-            monthly_credits: '1000',
-            name: 'Plus',
-            tier_id: 'plus',
-            tier_order: 1
-          },
-          {
-            dollars_per_month_display: '$40',
-            is_current: false,
-            is_enabled: true,
-            monthly_credits: '3000',
-            name: 'Ultra',
-            tier_id: 'ultra',
-            tier_order: 2
-          }
-        ]
-      })
-    )
-
-    const subscription = view.accountRows.find(row => row.id === 'subscription')
-
-    expect(subscription?.chips).toEqual([
-      { disabled: true, label: '✓ Plus · $20/mo · $1,000 credits/mo' },
-      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: `${subscription?.action?.url}&plan=ultra` }
-    ])
-  })
-
-  it('members and team contexts get no tier chips', () => {
-    const member = deriveBillingView(
-      okBilling(todayBillingState),
-      okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
-    )
-
-    const team = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
-
-    expect(member.accountRows.find(row => row.id === 'subscription')?.chips).toBeUndefined()
-    expect(team.accountRows.find(row => row.id === 'subscription')?.chips).toBeUndefined()
+    expect(view.plan?.action).toBeUndefined()
+    expect(view.plan?.link).toBeUndefined()
   })
 
   it('clamps overdrawn subscription credits to $0 and names the overage', () => {
@@ -380,6 +282,134 @@ describe('deriveBillingView', () => {
   })
 })
 
+describe('derivePlanCard (current-plan card)', () => {
+  it('offers an in-app "View plans" button for a free personal account that can change plans', () => {
+    const fixture = billingDevFixtures['free-personal']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.plan).toMatchObject({ action: { label: 'View plans' }, tierName: 'Free' })
+    expect(view.plan?.link).toBeUndefined()
+  })
+
+  it('offers an in-app "Change plan" button for a personal subscriber', () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.plan).toMatchObject({ action: { label: 'Change plan' }, price: '$20', tierName: 'Plus' })
+    expect(view.plan?.link).toBeUndefined()
+  })
+
+  it('gives teams a portal escape hatch and no in-app button', () => {
+    // todaySubscriptionState is context: 'team'.
+    const view = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
+
+    expect(view.plan?.action).toBeUndefined()
+    expect(view.plan?.link).toMatchObject({
+      label: 'Adjust plan ↗',
+      url: 'https://portal.nousresearch.com/manage-subscription?org_id=sid-5'
+    })
+  })
+
+  it('gives non-changing members neither an in-app button nor a portal link', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
+    )
+
+    expect(view.plan?.action).toBeUndefined()
+    expect(view.plan?.link).toBeUndefined()
+  })
+})
+
+describe('derivePlanTiers (plans grid)', () => {
+  it('marks the current tier, upgrades, and disabled downgrades for a subscriber', () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+    const byName = Object.fromEntries(view.tiers.map(tier => [tier.name, tier]))
+
+    expect(view.tiers.map(tier => tier.name)).toEqual(['Free', 'Plus', 'Super', 'Ultra'])
+    expect(byName.Free.state).toBe('downgrade')
+    expect(byName.Free.disabledCaption).toBe('Downgrades are moving in-app — coming soon.')
+    expect(byName.Free.action).toBeUndefined()
+    expect(byName.Plus.state).toBe('current')
+    expect(byName.Plus.action).toBeUndefined()
+    expect(byName.Super.state).toBe('upgrade')
+    expect(byName.Super.creditsDisplay).toBe('$110 credits/mo')
+    expect(byName.Super.action?.url).toBe(
+      'https://portal.nousresearch.com/manage-subscription?org_id=org_personal_plus&plan=cltier222super222personal'
+    )
+    expect(byName.Ultra.state).toBe('upgrade')
+  })
+
+  it('treats every enabled tier as an upgrade when there is no current subscription', () => {
+    const fixture = billingDevFixtures['free-personal']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.tiers.map(tier => tier.state)).toEqual(['upgrade', 'upgrade', 'upgrade', 'upgrade'])
+    expect(view.tiers.find(tier => tier.name === 'Free')?.action?.url).toBe(
+      'https://portal.nousresearch.com/manage-subscription?org_id=org_personal_free&plan=cltier000free0000personal'
+    )
+  })
+
+  it('still lists a tier whose name has no art mapping (text-only card, no layout break)', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        context: 'personal',
+        current: null,
+        tiers: [
+          {
+            dollars_per_month_display: '$5',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '5',
+            name: 'Mystery',
+            tier_id: 'cltier_mystery_0000',
+            tier_order: 5
+          }
+        ]
+      })
+    )
+
+    expect(view.tiers.map(tier => tier.name)).toEqual(['Mystery'])
+    expect(view.tiers[0]?.state).toBe('upgrade')
+  })
+
+  it('drops grandfathered (is_enabled: false) tiers from the grid', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        context: 'personal',
+        current: null,
+        tiers: [
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 1
+          },
+          {
+            dollars_per_month_display: '$9',
+            is_current: false,
+            is_enabled: false,
+            monthly_credits: '9',
+            name: 'Legacy',
+            tier_id: 'legacy',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    expect(view.tiers.map(tier => tier.name)).toEqual(['Plus'])
+  })
+})
+
 describe('buildManageSubscriptionUrl', () => {
   it('mirrors the TUI manage-subscription URL construction', () => {
     expect(
@@ -390,26 +420,19 @@ describe('buildManageSubscriptionUrl', () => {
     ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123')
   })
 
-  it('appends the tier as a plan query param when provided', () => {
+  it('appends plan=<tierId> when a tier is chosen', () => {
     expect(
       buildManageSubscriptionUrl(
-        {
-          org_id: 'org_123',
-          portal_url: 'https://portal.nousresearch.com/billing'
-        },
-        undefined,
-        'ultra'
+        { org_id: 'org_123', portal_url: 'https://portal.nousresearch.com/billing' },
+        null,
+        'tier_abc'
       )
-    ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123&plan=ultra')
+    ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123&plan=tier_abc')
   })
 
-  it('omits the plan param when no tierId is given', () => {
+  it('omits the plan param when no tier is given', () => {
     expect(
-      buildManageSubscriptionUrl(
-        { org_id: null, portal_url: 'https://portal.nousresearch.com/billing' },
-        undefined,
-        undefined
-      )
-    ).toBe('https://portal.nousresearch.com/manage-subscription')
+      buildManageSubscriptionUrl({ org_id: 'org_123', portal_url: 'https://portal.nousresearch.com/billing' }, null)
+    ).toBe('https://portal.nousresearch.com/manage-subscription?org_id=org_123')
   })
 })

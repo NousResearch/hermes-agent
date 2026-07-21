@@ -2369,7 +2369,7 @@ class TestDispatchToolWithoutCliRef:
 
 
 class TestMainSetsCliRefForQueryMode:
-    """Regression for #67597.
+    """Regression for #67597 — behavioral, not source-shape.
 
     Single-query mode (`hermes chat -q "…"`) invokes ``cli.chat()`` directly
     and never enters ``HermesCLI.run()``, which is where the interactive path
@@ -2378,50 +2378,78 @@ class TestMainSetsCliRefForQueryMode:
     ``parent_agent`` in query mode and agent-context tools like
     ``delegate_task`` lose the active agent.
 
-    The fix wires ``_cli_ref`` in ``main()``'s top-level flow, right after the
-    ``HermesCLI`` instance is built and before the query/interactive branch, so
-    BOTH modes get it. These tests pin that structural invariant (driving all
-    of ``main()`` would require mocking credential + agent init).
+    This drives the real ``main(query=…)`` control flow with a fake
+    ``HermesCLI`` (so no credentials / agent init are needed) and asserts the
+    observable effect: by the time query mode dispatches to ``cli.chat()``,
+    ``get_plugin_manager()._cli_ref`` points at that CLI instance, and a real
+    ``PluginContext.dispatch_tool()`` therefore injects the instance's agent as
+    ``parent_agent``.
     """
 
-    @staticmethod
-    def _main_funcdef():
-        import ast
-        from pathlib import Path
+    def test_query_mode_wires_cli_ref_so_dispatch_injects_parent_agent(self, monkeypatch):
+        import cli as cli_mod
+        from hermes_cli.plugins import PluginManager
 
-        source = Path(__file__).resolve().parents[2] / "cli.py"
-        tree = ast.parse(source.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.name == "main":
-                return node
-        raise AssertionError("could not find top-level main() in cli.py")
+        # A controlled plugin-manager singleton so main()'s
+        # ``get_plugin_manager()._cli_ref = cli`` lands somewhere we can read
+        # and there is no cross-test global state to reset.
+        manager = PluginManager()
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
 
-    @staticmethod
-    def _assigns_cli_ref(stmt: "object") -> bool:
-        import ast
+        sentinel_agent = object()
+        captured: dict = {}
 
-        for assign in ast.walk(stmt):
-            if not isinstance(assign, ast.Assign):
-                continue
-            for target in assign.targets:
-                if isinstance(target, ast.Attribute) and target.attr == "_cli_ref":
-                    return True
-        return False
+        class _StopMain(Exception):
+            """Halt main() at the query dispatch — we only need the wiring."""
 
-    def test_cli_ref_assigned_at_main_top_level(self):
-        """The assignment must sit directly in main()'s body, not nested inside
-        the interactive/query branch — otherwise query mode never runs it."""
-        import ast
+        class _FakeCLI:
+            def __init__(self, **_kwargs):
+                self.agent = sentinel_agent
+                self.session_id = "test_session"
+                self.conversation_history = []
+                self.console = types.SimpleNamespace(print=lambda *a, **k: None)
 
-        main = self._main_funcdef()
+            def _claim_active_session(self, *_a, **_k):
+                return True
 
-        top_level_assign = any(
-            self._assigns_cli_ref(stmt)
-            for stmt in main.body
-            if not isinstance(stmt, (ast.If, ast.Try, ast.With, ast.For, ast.While))
-        )
-        assert top_level_assign, (
-            "main() must assign `_cli_ref` in its top-level flow (before the "
-            "query vs. interactive branch) so single-query mode wires it too "
-            "(#67597)."
-        )
+            def _show_security_advisories(self):
+                pass
+
+            def chat(self, _query, images=None):
+                # main() must have wired _cli_ref to this instance *before*
+                # reaching the query-mode chat dispatch.
+                captured["cli_ref_at_chat"] = manager._cli_ref
+                raise _StopMain
+
+        # Keep main()'s prefix cheap and side-effect free.
+        monkeypatch.setattr(cli_mod, "HermesCLI", _FakeCLI)
+        monkeypatch.setattr(cli_mod, "_collect_query_images", lambda q, img=None: (q, []))
+        monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda cli: None)
+        monkeypatch.setattr("signal.signal", lambda *a, **k: None)
+
+        with pytest.raises(_StopMain):
+            cli_mod.main(query="ping", toolsets="coding", quiet=False)
+
+        # (1) Query mode wired _cli_ref to the built CLI instance.
+        assert isinstance(captured.get("cli_ref_at_chat"), _FakeCLI)
+
+        # (2) dispatch_tool now injects that instance's agent as parent_agent.
+        ctx = PluginContext(PluginManifest(name="probe", source="user"), manager)
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = "{}"
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "x"})
+        assert mock_registry.dispatch.call_args[1].get("parent_agent") is sentinel_agent
+
+    def test_gateway_mode_leaves_cli_ref_unset_so_no_parent_agent(self):
+        """Guard the other side: with no CLI run (gateway mode), _cli_ref stays
+        None and dispatch_tool omits parent_agent entirely."""
+        manager = PluginManager()
+        manager._cli_ref = None
+
+        ctx = PluginContext(PluginManifest(name="probe", source="user"), manager)
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = "{}"
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "x"})
+        assert "parent_agent" not in mock_registry.dispatch.call_args[1]

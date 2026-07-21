@@ -2542,6 +2542,70 @@ class TestResponsesStreaming:
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
 
     @pytest.mark.asyncio
+    async def test_response_completed_omits_repeated_large_tool_outputs(self, adapter):
+        """The terminal response.completed SSE event must stay below client line limits.
+
+        Tool outputs are already sent as response.output_item events while the
+        stream is active. Repeating every large tool result again in the final
+        response.completed line can exceed Python http.client's 128 KiB line
+        cap used by Open WebUI.
+        """
+        app = _create_app(adapter)
+        large_result = "x" * 70_000
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                for idx in range(2):
+                    call_id = f"call_{idx}"
+                    if start_cb:
+                        start_cb(call_id, "read_file", {"path": f"/tmp/{idx}.txt"})
+                    if complete_cb:
+                        complete_cb(call_id, "read_file", {"path": f"/tmp/{idx}.txt"}, large_result)
+                if text_cb:
+                    text_cb("done")
+                return (
+                    {"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read big files", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        completed_payload = None
+        completed_line = None
+        for line in body.splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = json.loads(line[len("data: "):])
+            if payload.get("type") == "response.completed":
+                completed_payload = payload
+                completed_line = line
+                break
+
+        assert completed_payload is not None
+        assert completed_line is not None
+        assert len(completed_line.encode()) < 131_072
+        assert large_result in body
+        assert large_result not in json.dumps(completed_payload)
+        tool_outputs = [
+            item
+            for item in completed_payload["response"]["output"]
+            if item.get("type") == "function_call_output"
+        ]
+        assert tool_outputs
+        assert all(item["output"][0]["text"].startswith("[omitted") for item in tool_outputs)
+        stored = adapter._response_store.get(completed_payload["response"]["id"])
+        assert stored is not None
+        assert large_result in json.dumps(stored["response"])
+
+    @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2827,6 +2891,107 @@ class TestEndpointAuth:
 class TestConfigIntegration:
     def test_platform_enum_has_api_server(self):
         assert Platform.API_SERVER.value == "api_server"
+
+    async def test_response_completed_enforces_byte_budget_with_large_arbitrary_args(self, adapter):
+        """The terminal response.completed SSE event must stay below 128 KiB line limit.
+
+        Covers large arbitrary argument keys and multi-tool-call cases.
+        Asserts the encoded terminal data line is below 131,072 bytes and GET
+        still returns full output.
+        """
+        app = _create_app(adapter)
+
+        # Large arbitrary argument key
+        large_arbitrary_value = "x" * 200_000  # 200 KB
+
+        async def tool_calls_with_large_args(**kwargs):
+            tool_start_cb = kwargs.get("tool_start_callback")
+            tool_done_cb = kwargs.get("tool_done_callback")
+
+            if tool_start_cb:
+                tool_start_cb({"name": "terminal", "arguments": {"command": "echo", "content": "small"}})
+            if tool_done_cb:
+                tool_done_cb({"name": "terminal", "output": [{"type": "input_text", "text": "small output"}]})
+
+            if tool_start_cb:
+                tool_start_cb({"name": "browser", "arguments": {"url": "https://example.com", "action": "click", "selector": large_arbitrary_value}})
+            if tool_done_cb:
+                tool_done_cb({"name": "browser", "output": [{"type": "input_text", "text": "clicked"}]})
+
+            return {
+                "final_response": "Done",
+                "messages": [],
+            }
+
+        async with TestClient(TestServer(app)) as cli:
+            # Issue a request with mocked tool calls
+            async def mock_run_agent(*args, **kwargs):
+                return await tool_calls_with_large_args(**kwargs)
+
+            # Monkey-patch the agent runner
+            import unittest.mock
+            with unittest.mock.patch("gateway.platforms.api_server._run_agent_in_subprocess", new=mock_run_agent):
+                response = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": [{"role": "user", "content": "test"}],
+                        "stream": True,
+                    },
+                )
+                assert response.status == 200
+
+                # Collect SSE events
+                lines = []
+                async for line in response.content:
+                    if line:
+                        lines.append(line.decode("utf-8").strip())
+
+                # Find the response.completed line
+                completed_lines = [l for l in lines if 'event: response.completed' in l or l.startswith('{"type":"response.completed"')]
+                assert len(completed_lines) > 0, "No response.completed line found"
+
+                completed_line = completed_lines[0]
+                if 'event: response.completed' in completed_line:
+                    # Parse the JSON data line after the event line
+                    idx = lines.index(completed_line)
+                    data_line = lines[idx + 1] if idx + 1 < len(lines) else completed_line
+                    if data_line.startswith("data: "):
+                        completed_json = json.loads(data_line[6:])
+                    else:
+                        completed_json = json.loads(completed_line)
+                else:
+                    completed_json = json.loads(completed_line)
+
+                # Assert the encoded terminal data line is below 131,072 bytes
+                encoded_line = completed_line.encode("utf-8")
+                assert len(encoded_line) < 131_072, f"Encoded line is {len(encoded_line)} bytes, exceeds 131,072 byte limit"
+
+                # Assert arbitrary large argument was truncated
+                response_obj = completed_json.get("response", {})
+                output_items = response_obj.get("output", [])
+                for item in output_items:
+                    if item.get("type") == "function_call":
+                        args = json.loads(item.get("arguments", "{}"))
+                        # Arbitrary large key should be truncated
+                        for k, v in args.items():
+                            if k == "selector":
+                                assert len(v) < 1000, f"Arbitrary large argument {k} was not truncated: {len(v)} chars"
+
+                # Retrieve the response via GET
+                response_id = response_obj.get("id")
+                get_response = await cli.get(f"/v1/responses/{response_id}")
+                assert get_response.status == 200
+
+                get_data = await get_response.json()
+                # Assert GET still returns full output (from ResponseStore)
+                stored_output = get_data.get("output", [])
+                for item in stored_output:
+                    if item.get("type") == "function_call":
+                        args = json.loads(item.get("arguments", "{}"))
+                        # Arbitrary large key should be preserved in stored snapshot
+                        if "selector" in args:
+                            assert len(args["selector"]) == 200_000, f"Stored snapshot should preserve full output, got {len(args['selector'])} chars"
+
 
     def test_env_override_enables_api_server(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_ENABLED", "true")

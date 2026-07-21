@@ -1757,8 +1757,9 @@ def init_agent(
             )
             _config_context_length = None
 
-    # Resolve custom_providers list once for reuse below (startup
-    # context-length override and plugin context-engine init).
+    # Resolve custom_providers once before route-scoping a global context pin:
+    # a named custom provider may keep its base URL only in this list rather
+    # than repeating it under ``model``.
     try:
         from hermes_cli.config import get_compatible_custom_providers
         _custom_providers = get_compatible_custom_providers(_agent_cfg)
@@ -1766,6 +1767,79 @@ def init_agent(
         _custom_providers = _agent_cfg.get("custom_providers")
         if not isinstance(_custom_providers, list):
             _custom_providers = []
+
+    # ``model.context_length`` describes the configured default model. A
+    # process launched directly with ``--model`` / ``-m`` has already replaced
+    # ``agent.model`` before this initializer loads config, so carrying the
+    # default model's explicit window into that different runtime is stale. The
+    # live switch/fallback paths already clear this override; keep direct-start
+    # overrides consistent with them and let provider metadata resolve the
+    # active model's window instead.
+    if _config_context_length is not None and isinstance(_model_cfg, dict):
+        _configured_default_model = str(_model_cfg.get("default") or "").strip()
+        _configured_default_runtime_model = _configured_default_model
+        _active_runtime_model = agent.model
+        if _configured_default_model:
+            try:
+                from hermes_cli.model_normalize import normalize_model_for_provider
+
+                _configured_default_runtime_model = normalize_model_for_provider(
+                    _configured_default_model, agent.provider
+                )
+                _active_runtime_model = normalize_model_for_provider(
+                    agent.model, agent.provider
+                )
+            except Exception:
+                pass
+        _configured_provider = str(_model_cfg.get("provider") or "").strip()
+        _configured_base_url = str(_model_cfg.get("base_url") or "").rstrip("/")
+        if not _configured_base_url and _configured_provider.lower().startswith("custom:"):
+            _configured_custom_name = _configured_provider.split(":", 1)[1].lower()
+            for _provider_entry in _custom_providers:
+                if not isinstance(_provider_entry, dict):
+                    continue
+                if str(_provider_entry.get("name") or "").strip().lower() != _configured_custom_name:
+                    continue
+                _configured_base_url = str(
+                    _provider_entry.get("base_url") or ""
+                ).rstrip("/")
+                break
+        _active_base_url = str(agent.base_url or "").rstrip("/")
+        _route_mismatch = bool(
+            _configured_base_url
+            and _active_base_url
+            and _configured_base_url != _active_base_url
+        )
+        if not _configured_base_url:
+            _active_provider = str(agent.provider or "").strip()
+            try:
+                from hermes_cli.models import normalize_provider
+
+                _configured_provider = normalize_provider(_configured_provider)
+                _active_provider = normalize_provider(_active_provider)
+            except Exception:
+                _configured_provider = _configured_provider.lower()
+                _active_provider = _active_provider.lower()
+            _route_mismatch = bool(
+                _configured_provider
+                and _active_provider
+                and _configured_provider != _active_provider
+            )
+        _model_mismatch = bool(
+            _configured_default_runtime_model
+            and _configured_default_runtime_model != _active_runtime_model
+        )
+        if _model_mismatch or _route_mismatch:
+            _ra().logger.debug(
+                "Ignoring model.context_length=%s for startup runtime %s at %s "
+                "(configured default is %s at %s)",
+                _config_context_length,
+                agent.model,
+                _active_base_url or agent.provider,
+                _configured_default_model,
+                _configured_base_url or _model_cfg.get("provider"),
+            )
+            _config_context_length = None
 
     # Store for reuse by _check_compression_model_feasibility (auxiliary
     # compression model context-length detection needs the same list).

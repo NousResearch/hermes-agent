@@ -436,6 +436,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
             old_threshold = threshold
             new_threshold = aux_context
             agent.context_compressor.threshold_tokens = new_threshold
+            # ``tail_token_budget`` is derived from the trigger threshold, not
+            # directly from the model window. Keep it in lockstep with this
+            # just-in-time correction exactly as ContextCompressor.update_model()
+            # does. Leaving the old budget behind can make the tail's 1.5x soft
+            # ceiling wider than the lowered trigger, so compression preserves
+            # nearly the entire request and repeatedly re-fires.
+            summary_target_ratio = getattr(
+                agent.context_compressor, "summary_target_ratio", None
+            )
+            if isinstance(summary_target_ratio, (int, float)):
+                agent.context_compressor.tail_token_budget = int(
+                    new_threshold * summary_target_ratio
+                )
             # Keep threshold_percent in sync so future main-model
             # context_length changes (update_model) re-derive from a
             # sensible number rather than the original too-high value.

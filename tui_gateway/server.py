@@ -13102,6 +13102,281 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
 
+# ── Skills browser / editor RPCs ────────────────────────────────────────────
+_SKILL_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets"})
+_SKILL_TEXT_SUFFIXES = frozenset({".md", ".txt", ".yaml", ".yml", ".json", ".py", ".sh", ".bash", ".js", ".ts", ".rb", ".tex"})
+_SKILL_MAX_WRITE_BYTES = 1_000_000
+
+
+def _skill_frontmatter(content: str) -> tuple[dict, str]:
+    try:
+        from tools.skills_tool import _parse_frontmatter
+
+        return _parse_frontmatter(content)
+    except Exception:
+        return {}, content
+
+
+def _skill_hermes_meta(frontmatter: dict) -> dict:
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        hermes = metadata.get("hermes")
+        if isinstance(hermes, dict):
+            return hermes
+    return {}
+
+
+def _skill_list_value(value) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [p.strip() for p in value.split(",") if p.strip()]
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
+
+
+def _skill_roots() -> list[tuple[Path, str, bool]]:
+    from agent.skill_utils import get_external_skills_dirs
+    from tools.skills_tool import SKILLS_DIR
+
+    roots: list[tuple[Path, str, bool]] = [(Path(SKILLS_DIR), "local", True)]
+    for idx, root in enumerate(get_external_skills_dirs()):
+        roots.append((Path(root), f"external:{idx}", False))
+    return roots
+
+
+def _relative_skill_id(skill_dir: Path, root: Path) -> str:
+    return skill_dir.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _skill_summary(skill_md: Path, root: Path, source: str, writable: bool) -> dict | None:
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    frontmatter, body = _skill_frontmatter(content[:120_000])
+    name = str(frontmatter.get("name") or skill_md.parent.name)[:64]
+    description = str(frontmatter.get("description") or "")
+    if not description:
+        for line in body.strip().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                description = line
+                break
+    if len(description) > 1024:
+        description = description[:1021] + "..."
+    hermes_meta = _skill_hermes_meta(frontmatter)
+    try:
+        skill_id = _relative_skill_id(skill_md.parent, root)
+        rel_path = skill_md.resolve().relative_to(root.resolve()).as_posix()
+    except Exception:
+        skill_id = skill_md.parent.name
+        rel_path = skill_md.name
+    category = str(Path(skill_id).parent)
+    if category == ".":
+        category = ""
+    return {
+        "id": skill_id,
+        "name": name,
+        "category": category,
+        "description": description,
+        "path": rel_path,
+        "tags": _skill_list_value(hermes_meta.get("tags") or frontmatter.get("tags")),
+        "related_skills": _skill_list_value(hermes_meta.get("related_skills") or frontmatter.get("related_skills")),
+        "read_only": not writable,
+        "source": source,
+    }
+
+
+def _all_skill_summaries() -> list[dict]:
+    from agent.skill_utils import iter_skill_index_files
+    from tools.skills_tool import _EXCLUDED_SKILL_DIRS, _is_skill_disabled, skill_matches_platform
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for root, source, writable in _skill_roots():
+        if not root.exists():
+            continue
+        for skill_md in iter_skill_index_files(root, "SKILL.md"):
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            try:
+                raw = skill_md.read_text(encoding="utf-8")[:8000]
+                frontmatter, _ = _skill_frontmatter(raw)
+                if not skill_matches_platform(frontmatter):
+                    continue
+                name = str(frontmatter.get("name") or skill_md.parent.name)[:64]
+                if name in seen or _is_skill_disabled(name):
+                    continue
+                summary = _skill_summary(skill_md, root, source, writable)
+                if not summary:
+                    continue
+                seen.add(name)
+                out.append(summary)
+            except Exception:
+                continue
+    return sorted(out, key=lambda s: (s.get("category") or "", s.get("name") or ""))
+
+
+def _resolve_skill(skill_id: str) -> tuple[Path, Path, str, bool]:
+    raw = str(skill_id or "").strip().strip("/")
+    if not raw or raw.startswith("/") or ".." in Path(raw).parts:
+        raise ValueError("invalid skill id")
+    for root, source, writable in _skill_roots():
+        candidate = (root / raw).resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except ValueError:
+            continue
+        skill_md = candidate / "SKILL.md"
+        if skill_md.exists() and skill_md.is_file():
+            return candidate, root, source, writable
+    for summary in _all_skill_summaries():
+        if raw in {summary.get("id"), summary.get("name")}:
+            return _resolve_skill(str(summary["id"]))
+    raise FileNotFoundError(f"skill not found: {skill_id}")
+
+
+def _skill_file_path(skill_dir: Path, file_path: str | None) -> Path:
+    if not file_path or file_path == "SKILL.md":
+        return skill_dir / "SKILL.md"
+    raw = str(file_path).strip().strip("/")
+    p = Path(raw)
+    if not raw or raw.startswith("/") or ".." in p.parts:
+        raise ValueError("invalid file path")
+    if p.parts[0] not in _SKILL_SUPPORT_DIRS:
+        raise ValueError("support files must live under references/, templates/, scripts/, or assets/")
+    target = (skill_dir / p).resolve()
+    target.relative_to(skill_dir.resolve())
+    return target
+
+
+def _skill_tree_node(path: Path, root: Path, skill_id: str) -> dict | None:
+    if path.name in {".git", ".github", ".hub", "__pycache__"}:
+        return None
+    rel = path.resolve().relative_to(root.resolve()).as_posix()
+    if path.is_dir():
+        children = []
+        for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            node = _skill_tree_node(child, root, skill_id)
+            if node:
+                children.append(node)
+        return {"id": rel, "name": path.name, "kind": "directory", "path": rel, "skill_id": skill_id, "children": children}
+    if path.is_file() and (path.name == "SKILL.md" or path.suffix.lower() in _SKILL_TEXT_SUFFIXES):
+        return {"id": rel, "name": path.name, "kind": "file", "path": rel, "skill_id": skill_id, "children": []}
+    return None
+
+
+def _validate_skill_content(content: str) -> None:
+    if len(content.encode("utf-8")) > _SKILL_MAX_WRITE_BYTES:
+        raise ValueError("skill content is too large")
+    frontmatter, _ = _skill_frontmatter(content)
+    name = str(frontmatter.get("name") or "").strip()
+    description = str(frontmatter.get("description") or "").strip()
+    if not name or not description:
+        raise ValueError("SKILL.md must include frontmatter name and description")
+    if len(name) > 64:
+        raise ValueError("skill name must be <= 64 characters")
+    if len(description) > 1024:
+        raise ValueError("skill description must be <= 1024 characters")
+
+
+@method("skills.list")
+def _(rid, params: dict) -> dict:
+    try:
+        skills = _all_skill_summaries()
+        categories = sorted({s.get("category") for s in skills if s.get("category")})
+        return _ok(rid, {"skills": skills, "categories": categories, "count": len(skills)})
+    except Exception as e:
+        return _err(rid, 5040, str(e))
+
+
+@method("skills.tree")
+def _(rid, params: dict) -> dict:
+    try:
+        roots = []
+        for root, source, writable in _skill_roots():
+            if not root.exists():
+                continue
+            by_category: dict[str, list[dict]] = {}
+            for summary in _all_skill_summaries():
+                if summary.get("source") != source:
+                    continue
+                skill_dir, resolved_root, _, _ = _resolve_skill(summary["id"])
+                if resolved_root.resolve() != root.resolve():
+                    continue
+                node = _skill_tree_node(skill_dir, root, summary["id"])
+                if node:
+                    node["kind"] = "skill"
+                    node["read_only"] = not writable
+                    by_category.setdefault(summary.get("category") or "Uncategorized", []).append(node)
+            for cat, children in sorted(by_category.items()):
+                roots.append({"id": f"{source}:{cat}", "name": cat, "kind": "directory", "source": source, "children": children})
+        return _ok(rid, {"roots": roots})
+    except Exception as e:
+        return _err(rid, 5041, str(e))
+
+
+@method("skills.get")
+def _(rid, params: dict) -> dict:
+    try:
+        skill_id = params.get("skill_id") or params.get("id") or params.get("name")
+        file_path = params.get("file_path")
+        skill_dir, root, source, writable = _resolve_skill(str(skill_id))
+        target = _skill_file_path(skill_dir, file_path)
+        if not target.exists() or not target.is_file():
+            return _err(rid, 4040, f"file not found: {file_path or 'SKILL.md'}")
+        if target.name != "SKILL.md" and target.suffix.lower() not in _SKILL_TEXT_SUFFIXES:
+            return _err(rid, 4041, "binary or unsupported file type")
+        content = target.read_text(encoding="utf-8")
+        rel = target.resolve().relative_to(skill_dir.resolve()).as_posix()
+        summary = _skill_summary(skill_dir / "SKILL.md", root, source, writable) or {}
+        return _ok(rid, {"skill": summary, "file_path": rel, "content": content, "read_only": not writable})
+    except Exception as e:
+        return _err(rid, 5042, str(e))
+
+
+@method("skills.graph")
+def _(rid, params: dict) -> dict:
+    try:
+        skills = _all_skill_summaries()
+        names = {s["name"]: s for s in skills}
+        ids = {s["id"]: s for s in skills}
+        nodes = [{"id": s["id"], "label": s["name"], "category": s.get("category") or "", "tags": s.get("tags") or [], "description": s.get("description") or ""} for s in skills]
+        edges = []
+        for s in skills:
+            for related in s.get("related_skills") or []:
+                target = (names.get(related) or ids.get(related) or {}).get("id")
+                if target:
+                    edges.append({"source": s["id"], "target": target, "type": "related_skill"})
+        return _ok(rid, {"nodes": nodes, "edges": edges})
+    except Exception as e:
+        return _err(rid, 5043, str(e))
+
+
+@method("skills.update")
+def _(rid, params: dict) -> dict:
+    try:
+        skill_id = params.get("skill_id") or params.get("id")
+        content = params.get("content")
+        if not isinstance(content, str):
+            return _err(rid, 4004, "content must be a string")
+        skill_dir, root, source, writable = _resolve_skill(str(skill_id))
+        if not writable:
+            return _err(rid, 4030, "skill is read-only")
+        _validate_skill_content(content)
+        target = skill_dir / "SKILL.md"
+        tmp = target.with_suffix(".md.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(target)
+        summary = _skill_summary(target, root, source, writable) or {}
+        _emit("skills.changed", "", {"action": "updated", "skill_id": summary.get("id", skill_id)})
+        return _ok(rid, {"success": True, "skill": summary})
+    except Exception as e:
+        return _err(rid, 5044, str(e))
+
+
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""

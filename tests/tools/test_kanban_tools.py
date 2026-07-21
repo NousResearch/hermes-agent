@@ -1067,6 +1067,37 @@ def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_explicit_workspace_keeps_worker_branch(monkeypatch, worker_env):
+    """Native handoffs keep the branch even when they repeat the checkout."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    checkout = "/home/teknium/proj"
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="branch worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path=checkout,
+            branch_name="task/t_branch",
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({
+        "title": "explicit handoff", "assignee": "peer",
+        "workspace_kind": "dir", "workspace_path": checkout,
+    }))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.branch_name == "task/t_branch"
+    finally:
+        conn.close()
+
+
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
     """Orchestrator/CLI callers (no HERMES_KANBAN_TASK) still default to
     scratch — inheritance only applies to task-scoped workers."""
@@ -1493,6 +1524,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "never block a parent after creating its validation child" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
@@ -1516,7 +1548,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from agent.prompt_builder import KANBAN_GUIDANCE
-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
+    assert 1_500 < len(KANBAN_GUIDANCE) < 6_000, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
     )
 
@@ -2214,6 +2246,38 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     assert d["subscribed"] is False, d
 
     assert _list_subs_for_task(d["task_id"]) == []
+
+
+def test_create_inherits_parent_telegram_subscription(monkeypatch, worker_env):
+    """Detached workflow children retain the root Telegram recipient."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee="indexer")
+        kb.add_notify_sub(
+            conn, task_id=parent, platform="telegram", chat_id="chat-42",
+            thread_id="thread-7", user_id="user-9", notifier_profile="default",
+        )
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent)
+
+    result = json.loads(kt._handle_create({
+        "title": "planner", "assignee": "planner", "parents": [parent],
+    }))
+    assert result["ok"] is True
+    assert result["subscribed"] is True
+    subs = _sub_index(_list_subs_for_task(result["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat-42"
+    assert subs[0]["thread_id"] == "thread-7"
+    assert subs[0]["user_id"] == "user-9"
 
 
 def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):

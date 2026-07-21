@@ -137,6 +137,40 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
+# Workflow roles receive a small, fixed set of guidance at dispatch time.
+# Task-level skills remain supported for request-specific needs (for example,
+# ``test-driven-development`` on a narrowly testable feature).  Keeping this
+# policy here, rather than asking worker prompts to remember ``skills=`` when
+# creating children, makes every retry and every entry point deterministic.
+ROLE_DEFAULT_SKILLS: dict[str, tuple[str, ...]] = {
+    "indexer": ("codegraph-index",),
+    "pr-intake": ("codegraph-index", "github-pr-workflow"),
+    "planner": ("scope-contract", "ponytail:ponytail", "github-pr-workflow"),
+    "coder": ("codegraph-index", "scope-contract", "ponytail:ponytail"),
+    "coder-fast": ("codegraph-index", "scope-contract", "ponytail:ponytail"),
+    "reviewer": ("scope-contract", "ponytail:ponytail-review"),
+    "github": ("github-pr-workflow",),
+}
+
+
+def _apply_role_default_skills(task: "Task") -> None:
+    """Merge mandatory workflow skills into ``task`` without losing extras.
+
+    The database stores only skills explicitly requested by a task.  Role
+    defaults are intentionally applied to the in-memory claimed task just
+    before spawning: this avoids mutating historical task input while making
+    retries reproducible and preserving caller-supplied skills.
+    """
+    role = (task.assignee or "").strip().casefold()
+    merged: list[str] = []
+    seen: set[str] = set()
+    for skill in (*ROLE_DEFAULT_SKILLS.get(role, ()), *(task.skills or ())):
+        normalized = str(skill).strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            merged.append(normalized)
+    task.skills = merged or None
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -2384,6 +2418,586 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# The native delivery workflow is deliberately linear.  This is enforced in
+# the database layer because prompts alone cannot prevent a planner from
+# pre-creating a reviewer (or two concurrent remediation loops) when a worker
+# retries or misinterprets a handoff.
+_NATIVE_CODER_ROLES = frozenset({"coder", "coder-fast"})
+
+
+NATIVE_WORKFLOW_TRANSITIONS: dict[str, frozenset[str]] = {
+    "orchestrator": frozenset({"indexer", "pr-intake"}),
+    "indexer": frozenset({"planner"}),
+    "planner": _NATIVE_CODER_ROLES,
+    # An existing PR has already selected its repository and branch.  Its
+    # intake card prepares that exact revision, then hands it to the dedicated
+    # tester; authentication and browser evidence never belong to intake.
+    "pr-intake": frozenset({"tester"}),
+    "coder": frozenset({"tester"}),
+    "coder-fast": frozenset({"tester"}),
+    # Large delivery plans are validated in two bounded stages: technical
+    # checks first, then browser E2E.  A tester may therefore create one
+    # follow-up tester card before the reviewer is allowed to run.
+    "tester": frozenset({"tester", "reviewer"}),
+    "reviewer": frozenset({"coder", "github"}),
+    "github": frozenset(),
+}
+_BASE_SHA_RE = re.compile(
+    r"(?im)^\s*(?:[-*]\s*)?(?:base[ _-]*sha|sha[ _-]*de[ _-]*base)\s*[:：]\s*"
+    r"([0-9a-f]{7,64})\b"
+)
+_REPOSITORY_MANIFEST_RE = re.compile(
+    r"(?m)^\s*REPOSITORY_MANIFEST_JSON:\s*(\[[^\n]+\])\s*$"
+)
+_TEST_STAGE_RE = re.compile(r"(?im)^\s*TEST_STAGE\s*[:：]\s*([a-z0-9_-]+)\s*$")
+_TEST_SPLIT_REQUIRED_RE = re.compile(
+    r"(?im)^\s*TEST_SPLIT_REQUIRED\s*[:：]\s*(?:true|yes|oui|1)\s*$"
+)
+
+
+def _native_role(value: Optional[str]) -> Optional[str]:
+    """Return a native workflow role, or ``None`` for ordinary Kanban work."""
+    role = (value or "").strip().casefold()
+    return role if role in NATIVE_WORKFLOW_TRANSITIONS else None
+
+
+def _native_repository_manifest(body: Optional[str]) -> Optional[list[dict[str, Any]]]:
+    """Read the optional machine-readable multi-repository handoff manifest."""
+    match = _REPOSITORY_MANIFEST_RE.search(body or "")
+    if match is None:
+        return None
+    try:
+        manifest = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"native workflow: invalid REPOSITORY_MANIFEST_JSON: {exc}") from exc
+    if not isinstance(manifest, list) or not manifest:
+        raise ValueError("native workflow: REPOSITORY_MANIFEST_JSON must be a non-empty array")
+    entries: list[dict[str, Any]] = []
+    for entry in manifest:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise ValueError(
+                "native workflow: each repository manifest entry requires a string path"
+            )
+        entries.append(entry)
+    return entries
+
+
+def _native_repository_checkouts(
+    workspace_path: Optional[str], body: Optional[str],
+) -> list[tuple[Path, Optional[str]]]:
+    """Return all delivery checkouts, falling back to the card workspace."""
+    manifest = _native_repository_manifest(body)
+    if manifest is None:
+        return [(Path(workspace_path).expanduser(), None)] if workspace_path else []
+    checkouts: list[tuple[Path, Optional[str]]] = []
+    seen: set[Path] = set()
+    for entry in manifest:
+        checkout = Path(str(entry["path"])).expanduser()
+        if checkout in seen:
+            continue
+        seen.add(checkout)
+        base_sha = entry.get("base_sha")
+        checkouts.append((checkout, str(base_sha) if base_sha else None))
+    return checkouts
+
+
+def _native_test_stage(body: Optional[str]) -> Optional[str]:
+    """Return the explicit validation stage used by the native workflow."""
+    match = _TEST_STAGE_RE.search(body or "")
+    return match.group(1).casefold().replace("_", "-") if match else None
+
+
+def _requires_split_validation(body: Optional[str]) -> bool:
+    """Whether a plan requires technical validation followed by browser E2E."""
+    return _TEST_SPLIT_REQUIRED_RE.search(body or "") is not None
+
+
+def _validate_native_workflow_transition(
+    conn: sqlite3.Connection,
+    *,
+    created_by: Optional[str],
+    assignee: Optional[str],
+    parents: tuple[str, ...],
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    body: Optional[str],
+) -> None:
+    """Reject invalid agent-created edges in the native delivery workflow.
+
+    User-created and non-native Kanban tasks stay fully generic.  The rule is
+    only activated when a native role creates a child, which keeps the general
+    Kanban API and the swarm feature unconstrained.
+    """
+    creator = _native_role(created_by)
+    if creator is None:
+        return
+
+    child_role = _native_role(assignee)
+    allowed = NATIVE_WORKFLOW_TRANSITIONS[creator]
+    if child_role not in allowed:
+        expected = ", ".join(sorted(allowed)) or "aucun enfant"
+        raise ValueError(
+            f"native workflow: {creator} may create only {expected}; "
+            f"got {assignee!r}"
+        )
+    if len(parents) != 1:
+        raise ValueError(
+            f"native workflow: {creator} -> {child_role} requires exactly one parent"
+        )
+
+    parent = conn.execute(
+        "SELECT assignee, body FROM tasks WHERE id = ?", (parents[0],)
+    ).fetchone()
+    if parent is None:
+        # Preserve the existing, more specific unknown-parent validation.
+        return
+    parent_role = _native_role(parent["assignee"])
+    if parent_role != creator:
+        raise ValueError(
+            f"native workflow: parent {parents[0]} is assigned to "
+            f"{parent['assignee']!r}, not {creator!r}"
+        )
+
+    parent_base = _BASE_SHA_RE.search(parent["body"] or "")
+    child_base = _BASE_SHA_RE.search(body or "")
+    if parent_base and child_base and parent_base.group(1).lower() != child_base.group(1).lower():
+        raise ValueError(
+            "native workflow: child handoff must preserve its parent's Base SHA; "
+            "only a user-created root remediation may approve a rebaseline"
+        )
+
+    # Native delivery uses one durable branch.  The tester, reviewer and
+    # remediation cards reuse its checkout and branch, whether it is the
+    # primary checkout or a linked worktree created for the delivery.
+    if creator == "planner" and child_role in _NATIVE_CODER_ROLES:
+        if workspace_kind != "dir" or not workspace_path:
+            raise ValueError(
+                "native workflow: planner -> coder requires "
+                "workspace_kind='dir' on the primary repository checkout"
+            )
+        checkouts = _native_repository_checkouts(workspace_path, body)
+        if not checkouts or Path(workspace_path).expanduser() not in {p for p, _ in checkouts}:
+            raise ValueError("native workflow: manifest must include the card workspace_path")
+        for checkout, _base_sha in checkouts:
+            if _git_toplevel(checkout) is None or _is_linked_worktree_checkout(checkout):
+                raise ValueError(
+                    "native workflow: planner -> coder requires primary repository checkouts"
+                )
+    if creator in _NATIVE_CODER_ROLES and child_role == "tester":
+        # The approved plan, copied into the coder card, chooses the split.
+        # Do not let a wide plan skip directly to browser E2E: the technical
+        # card is its parent and provides the first bounded evidence set.
+        if _requires_split_validation(parent["body"]):
+            stage = _native_test_stage(body)
+            if stage != "technical":
+                raise ValueError(
+                    "native workflow: split validation requires coder -> tester "
+                    "with `TEST_STAGE: technical`"
+                )
+    if creator == "tester" and child_role == "tester":
+        parent_stage = _native_test_stage(parent["body"])
+        child_stage = _native_test_stage(body)
+        if parent_stage != "technical" or child_stage != "e2e":
+            raise ValueError(
+                "native workflow: tester -> tester is only technical -> e2e"
+            )
+    if creator == "tester" and child_role == "reviewer":
+        if _native_test_stage(parent["body"]) == "technical":
+            raise ValueError(
+                "native workflow: technical tester must create its `TEST_STAGE: e2e` "
+                "child before reviewer"
+            )
+    if creator == "reviewer" and child_role in _NATIVE_CODER_ROLES:
+        if workspace_kind != "dir" or not workspace_path:
+            raise ValueError(
+                f"native workflow: {creator} -> coder must reuse the existing "
+                "repository checkout"
+            )
+        for checkout, _base_sha in _native_repository_checkouts(workspace_path, body):
+            if _git_toplevel(checkout) is None:
+                raise ValueError(
+                    f"native workflow: {creator} -> coder requires Git repository checkouts"
+                )
+    if creator == "pr-intake" and child_role == "tester":
+        if workspace_kind != "dir" or not workspace_path:
+            raise ValueError(
+                "native workflow: pr-intake -> tester must reuse the primary repository checkout"
+            )
+        for checkout, _base_sha in _native_repository_checkouts(workspace_path, body):
+            if _git_toplevel(checkout) is None or _is_linked_worktree_checkout(checkout):
+                raise ValueError(
+                    "native workflow: pr-intake -> tester requires a primary repository checkout anchor"
+                )
+
+
+def _native_review_idempotency_key(
+    *, workspace_path: Optional[str], body: Optional[str]
+) -> str:
+    """Build a stable reviewer key for one concrete Git revision.
+
+    The key binds a reviewer to a checkout, its declared base SHA and the
+    complete binary diff (plus porcelain state).  A second tester result for
+    unchanged code therefore returns the existing reviewer card instead of
+    creating another review lane.  Archiving that card is the explicit escape
+    hatch for an operator who genuinely needs a fresh review of unchanged code.
+    """
+    if not workspace_path:
+        raise ValueError(
+            "native workflow: tester -> reviewer requires the repository checkout path"
+        )
+    manifest = _native_repository_manifest(body)
+    if manifest is None:
+        match = _BASE_SHA_RE.search(body or "")
+        if match is None:
+            raise ValueError(
+                "native workflow: tester -> reviewer requires `Base SHA: <sha>` in its handoff"
+            )
+        repositories = [(Path(workspace_path).expanduser().resolve(strict=False), match.group(1).lower())]
+    else:
+        repositories = []
+        for checkout, base_sha in _native_repository_checkouts(workspace_path, body):
+            if not base_sha or not re.fullmatch(r"[0-9a-fA-F]{7,64}", base_sha):
+                raise ValueError(
+                    "native workflow: each repository manifest entry requires base_sha"
+                )
+            repositories.append((checkout.resolve(strict=False), base_sha.lower()))
+    try:
+        fingerprints: list[bytes] = []
+        for checkout, base_sha in repositories:
+            if _git_toplevel(checkout) is None:
+                raise ValueError(
+                    "native workflow: tester -> reviewer requires Git repository checkouts"
+                )
+            diff = subprocess.run(
+                ["git", "-C", str(checkout), "diff", "--no-ext-diff", "--binary", base_sha, "--"],
+                capture_output=True, text=False, timeout=30, check=False,
+            )
+            status = subprocess.run(
+                ["git", "-C", str(checkout), "status", "--porcelain=v1", "--untracked-files=all"],
+                capture_output=True, text=False, timeout=30, check=False,
+            )
+            if diff.returncode != 0:
+                detail = (diff.stderr or diff.stdout).decode("utf-8", "replace").strip()
+                raise ValueError(
+                    f"native workflow: cannot diff declared Base SHA {base_sha}: {detail or 'git diff failed'}"
+                )
+            if status.returncode != 0:
+                detail = (status.stderr or status.stdout).decode("utf-8", "replace").strip()
+                raise ValueError(
+                    f"native workflow: cannot inspect reviewer checkout: {detail or 'git status failed'}"
+                )
+            fingerprints.append(str(checkout).encode() + b"\0" + diff.stdout + b"\0" + status.stdout)
+    except OSError as exc:
+        raise ValueError(f"native workflow: cannot fingerprint reviewer diff: {exc}") from exc
+    revision = hashlib.sha256(b"\0".join(fingerprints)).hexdigest()
+    roots = ",".join(str(checkout) for checkout, _base_sha in repositories)
+    return f"native-review:{roots}:{revision}"
+
+
+def _native_coder_workspace_error(task: "Task") -> Optional[str]:
+    """Return an actionable safety error for native branch-based coder cards."""
+    if _native_role(task.assignee) not in _NATIVE_CODER_ROLES:
+        return None
+    creator = _native_role(task.created_by)
+    if creator == "planner":
+        if task.workspace_kind != "dir" or not task.workspace_path:
+            return (
+                "BRANCH_WORKFLOW_INTEGRITY_FAILED: a planner-created coder must use "
+                "workspace_kind=dir on the repository checkout"
+            )
+        if any(
+            _git_toplevel(checkout) is None
+            for checkout, _ in _native_repository_checkouts(task.workspace_path, task.body)
+        ):
+            return "BRANCH_WORKFLOW_INTEGRITY_FAILED: coder workspace is not a Git repository"
+        return None
+    if creator == "reviewer":
+        if not task.workspace_path or task.workspace_kind != "dir":
+            return (
+                f"BRANCH_WORKFLOW_INTEGRITY_FAILED: {creator} coder task must reuse "
+                "the repository checkout"
+            )
+        if any(
+            _git_toplevel(checkout) is None
+            for checkout, _ in _native_repository_checkouts(task.workspace_path, task.body)
+        ):
+            return (
+                f"BRANCH_WORKFLOW_INTEGRITY_FAILED: {creator} coder task points at "
+                "a non-Git workspace"
+            )
+    return None
+
+
+def _is_quoraform_e2e_task(task: "Task") -> bool:
+    return (
+        _native_role(task.assignee) == "tester"
+        and _native_test_stage(task.body) == "e2e"
+        and "STACK_BASELINE_JSON:" in (task.body or "")
+    )
+
+
+def _prepare_quoraform_e2e_runtime(task: "Task", *, board: Optional[str]) -> None:
+    """Materialise the pinned local E2E runtime before an agent can inspect it."""
+    if not _is_quoraform_e2e_task(task):
+        return
+    executable = shutil.which("qf-integrate")
+    if not executable:
+        raise ValueError(
+            "E2E_RUNTIME_PRECHECK_FAILED: qf-integrate is unavailable; "
+            "run hermes-setup/bin/install-local.sh --install-native --yes"
+        )
+    environment = dict(os.environ)
+    environment["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    result = subprocess.run(
+        [executable, "create", "--kanban-task", task.id],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env=environment,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "qf-integrate failed").strip()
+        raise ValueError(f"E2E_RUNTIME_PRECHECK_FAILED: {detail[:1200]}")
+
+
+_NATIVE_BRANCH_EXCLUSIVE_ROLES = frozenset(
+    {"pr-intake", *_NATIVE_CODER_ROLES, "tester", "reviewer", "github"}
+)
+
+
+def _git_status_porcelain(repo_root: Path) -> str:
+    """Return the complete porcelain status or raise an actionable error."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain=v1", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: cannot inspect {repo_root}: "
+            f"{detail or 'git status failed'}"
+        )
+    return result.stdout or ""
+
+
+def _git_default_remote_ref(repo_root: Path) -> str:
+    """Resolve the configured default branch without guessing ``main``/``master``."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    ref = (result.stdout or "").strip() if result.returncode == 0 else ""
+    if not ref:
+        raise ValueError(
+            "BRANCH_WORKFLOW_INTEGRITY_FAILED: origin/HEAD is unavailable; "
+            "configure the repository default remote branch before starting a native task"
+        )
+    verify = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if verify.returncode != 0:
+        detail = (verify.stderr or verify.stdout or "").strip()
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: cannot resolve {ref} in {repo_root}: "
+            f"{detail or 'git rev-parse failed'}"
+        )
+    return ref
+
+
+def _switch_native_branch(repo_root: Path, branch_name: str, *, create_from: Optional[str] = None) -> str:
+    """Switch one primary checkout safely, optionally materialising a new task branch."""
+    command = ["git", "-C", str(repo_root), "switch"]
+    if create_from is not None:
+        command.extend(["-c", branch_name, create_from])
+    else:
+        command.append(branch_name)
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        action = f"create {branch_name} from {create_from}" if create_from else f"switch to {branch_name}"
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: cannot {action} in {repo_root}: "
+            f"{detail or 'git switch failed'}"
+        )
+    current = _git_current_branch(repo_root)
+    if current != branch_name:
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: expected branch {branch_name!r} "
+            f"in {repo_root}, got {current!r} after git switch"
+        )
+    head = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if head.returncode != 0:
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: cannot resolve HEAD for {repo_root}"
+        )
+    return (head.stdout or "").strip()
+
+
+def _native_branch_was_initialized(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'native_branch_initialized' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _prepare_native_branch_checkout(
+    conn: sqlite3.Connection, task: "Task", workspace: Path,
+) -> None:
+    """Make the shared native checkout deterministic before a worker starts.
+
+    The dispatcher owns the only mutable primary checkout.  Merely serialising
+    workers is insufficient: the next task would otherwise inherit whichever
+    branch the previous worker left checked out.  A planner-created coder gets
+    a fresh branch from the repository's configured remote default branch;
+    later cards switch a primary checkout to their declared branch.  Cards
+    inheriting a linked worktree instead verify its already-isolated branch and
+    must never switch it or require it to be clean.
+    """
+    role = _native_role(task.assignee)
+    if role not in _NATIVE_BRANCH_EXCLUSIVE_ROLES or task.workspace_kind != "dir":
+        return
+    branch_name = (task.branch_name or "").strip()
+    if not branch_name:
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: native {role} task {task.id} has no branch_name"
+        )
+    creator = _native_role(task.created_by)
+    is_new_delivery_branch = role in _NATIVE_CODER_ROLES and creator == "planner"
+    initialized = _native_branch_was_initialized(conn, task.id)
+    checkouts = _native_repository_checkouts(str(workspace), task.body)
+    if not checkouts:
+        raise ValueError(
+            f"BRANCH_WORKFLOW_INTEGRITY_FAILED: native task {task.id} has no Git checkout"
+        )
+
+    initialized_repositories: list[dict[str, str]] = []
+    for checkout, _base_sha in checkouts:
+        repo_root = _git_toplevel(checkout)
+        if repo_root is None:
+            raise ValueError(
+                f"BRANCH_WORKFLOW_INTEGRITY_FAILED: {checkout} is not a Git checkout"
+            )
+        if _is_linked_worktree_checkout(repo_root):
+            # A linked worktree is already isolated.  Native handoffs reuse
+            # it, and an operator may explicitly resume a blocked delivery on
+            # that same branch.  In both cases only verify the branch: never
+            # switch or clean a linked checkout.  A planner remains excluded,
+            # because its first coder card must still start from a primary
+            # checkout and a freshly created delivery branch.
+            if creator not in {None, *_NATIVE_CODER_ROLES, "tester", "reviewer"}:
+                raise ValueError(
+                    f"BRANCH_WORKFLOW_INTEGRITY_FAILED: {checkout} is not a primary Git checkout"
+                )
+            current_branch = _git_current_branch(repo_root)
+            if current_branch != branch_name:
+                raise ValueError(
+                    f"BRANCH_WORKFLOW_INTEGRITY_FAILED: expected branch {branch_name!r} "
+                    f"in linked worktree {repo_root}, got {current_branch!r}"
+                )
+            continue
+        dirty = _git_status_porcelain(repo_root)
+        if dirty:
+            raise ValueError(
+                f"BRANCH_WORKFLOW_INTEGRITY_FAILED: refusing to switch {repo_root}; "
+                f"working tree is not clean:\n{dirty[:1200]}"
+            )
+        if is_new_delivery_branch and not initialized:
+            if _git_branch_exists(repo_root, branch_name):
+                raise ValueError(
+                    f"BRANCH_WORKFLOW_INTEGRITY_FAILED: {branch_name} already exists in {repo_root} "
+                    "before Hermes initialized this delivery task; refusing to inherit its commits"
+                )
+            base_ref = _git_default_remote_ref(repo_root)
+            head = _switch_native_branch(repo_root, branch_name, create_from=base_ref)
+            initialized_repositories.append(
+                {"repository": str(repo_root), "base_ref": base_ref, "head": head}
+            )
+        else:
+            if not _git_branch_exists(repo_root, branch_name):
+                raise ValueError(
+                    f"BRANCH_WORKFLOW_INTEGRITY_FAILED: expected branch {branch_name} is absent in {repo_root}"
+                )
+            _switch_native_branch(repo_root, branch_name)
+
+    if is_new_delivery_branch and not initialized:
+        _append_event(
+            conn,
+            task.id,
+            "native_branch_initialized",
+            {"branch": branch_name, "repositories": initialized_repositories},
+        )
+
+
+def _native_checkout_conflict(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return the running native card that owns the same primary checkout.
+
+    Native delivery intentionally uses one mutable checkout per repository.
+    The dispatcher must consequently serialize its write/test/review lanes:
+    otherwise two unrelated task branches could be switched underneath one
+    another.  Planning and indexing remain concurrent because they do not
+    mutate that checkout.
+    """
+    task = get_task(conn, task_id)
+    if task is None or _native_role(task.assignee) not in _NATIVE_BRANCH_EXCLUSIVE_ROLES:
+        return None
+    if task.workspace_kind != "dir" or not task.workspace_path:
+        return None
+    task_checkouts = {
+        root for checkout, _ in _native_repository_checkouts(task.workspace_path, task.body)
+        if (root := _git_toplevel(checkout)) is not None
+    }
+    if not task_checkouts:
+        return None
+    rows = conn.execute(
+        "SELECT id, assignee, workspace_kind, workspace_path FROM tasks "
+        "WHERE status = 'running' AND id != ?",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        if _native_role(row["assignee"]) not in _NATIVE_BRANCH_EXCLUSIVE_ROLES:
+            continue
+        if row["workspace_kind"] != "dir" or not row["workspace_path"]:
+            continue
+        other_task = get_task(conn, str(row["id"]))
+        if other_task is None:
+            continue
+        other_checkouts = {
+            root for candidate, _ in _native_repository_checkouts(
+                other_task.workspace_path, other_task.body,
+            ) if (root := _git_toplevel(candidate)) is not None
+        }
+        if task_checkouts & other_checkouts:
+            return str(row["id"])
+    return None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2446,8 +3060,8 @@ def create_task(
         )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
-    if branch_name and workspace_kind != "worktree":
-        raise ValueError("branch_name is only valid for worktree workspaces")
+    if branch_name and workspace_kind not in {"worktree", "dir"}:
+        raise ValueError("branch_name is only valid for dir or worktree workspaces")
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch
@@ -2537,21 +3151,6 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
-
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -2574,11 +3173,63 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    _validate_native_workflow_transition(
+        conn,
+        created_by=created_by,
+        assignee=assignee,
+        parents=parents,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        body=body,
+    )
+
+    # Browser validation is deterministic only when its runtime preflight is
+    # ready. Bound this native follow-up card to one attempt and ten minutes so
+    # an unavailable local stack cannot consume an unbounded agent session.
+    if (
+        _native_role(created_by) == "tester"
+        and _native_role(assignee) == "tester"
+        and _native_test_stage(body) == "e2e"
+    ):
+        max_runtime_seconds = 600 if max_runtime_seconds is None else max_runtime_seconds
+        max_retries = 1 if max_retries is None else max_retries
+
+    # Native reviewers are a per-revision resource, not a per-test-run
+    # resource.  Make duplicate creation impossible even when two tester
+    # workers complete close together or a retry replays the handoff.
+    if _native_role(created_by) == "tester" and _native_role(assignee) == "reviewer":
+        idempotency_key = _native_review_idempotency_key(
+            workspace_path=workspace_path,
+            body=body,
+        )
+
+    # Idempotency check — return the existing task instead of creating a
+    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
+    # and to avoid holding a write lock during the lookup. Race is
+    # acceptable: two concurrent creators with the same key might both
+    # insert, at which point both rows exist but the next lookup stabilises.
+    if idempotency_key:
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        if row:
+            return row["id"]
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                if (
+                    not branch_name
+                    and _native_role(created_by) == "planner"
+                    and _native_role(assignee) in _NATIVE_CODER_ROLES
+                    and workspace_kind == "dir"
+                ):
+                    branch_name = f"task/{task_id}"
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -4589,8 +5240,9 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
 
     Called from :func:`complete_task` after the DB transaction commits.
     Best-effort — any error is swallowed so cleanup never blocks task completion.
-    Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
-    are intentionally preserved.
+    Scratch workspaces are removed when their children are terminal.  Managed
+    worktrees are also removed once their delivery graph is terminal *and* a
+    GitHub PR reference has been recorded; their branch is intentionally kept.
     """
     try:
         row = conn.execute(
@@ -4601,7 +5253,14 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
-        if kind != "scratch" or not path:
+        if not path:
+            _try_cleanup_parent_workspaces(conn, task_id)
+            return
+        if kind == "worktree":
+            _cleanup_completed_worktree(conn, task_id, Path(path))
+            _try_cleanup_parent_workspaces(conn, task_id)
+            return
+        if kind != "scratch":
             # This task's own workspace isn't a removable scratch dir, but its
             # completion may still unblock a deferred parent scratch cleanup
             # (e.g. a 'dir' child whose scratch parent was waiting on it). #33774
@@ -4653,6 +5312,45 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+def _cleanup_completed_worktree(conn: sqlite3.Connection, task_id: str, path: Path) -> None:
+    """Remove a managed, completed delivery worktree without deleting its branch."""
+    active_child = conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks t ON t.id = l.child_id "
+        "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if active_child or not path.exists() or not _is_linked_worktree_checkout(path):
+        return
+    pr_ref = conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ? AND (body LIKE '%github.com/%/pull/%' OR result LIKE '%github.com/%/pull/%') LIMIT 1",
+        (task_id,),
+    ).fetchone() or conn.execute(
+        "SELECT 1 FROM task_comments WHERE task_id = ? AND body LIKE '%github.com/%/pull/%' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if pr_ref is None:
+        return
+    if _git_status_porcelain(path):
+        _log.warning("Refusing to remove dirty completed worktree for task %s: %s", task_id, path)
+        return
+    common_dir = _git_common_dir(path)
+    if common_dir is None:
+        return
+    primary = common_dir.parent
+    result = subprocess.run(
+        ["git", "-C", str(primary), "worktree", "remove", str(path)],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if result.returncode != 0:
+        _log.warning("Could not remove completed worktree for task %s: %s", task_id, result.stderr.strip())
+        return
+    subprocess.run(
+        ["git", "-C", str(primary), "worktree", "prune"],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    _log.info("Removed completed worktree for task %s; branch was preserved: %s", task_id, path)
+
+
 def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
     """Clean up parent scratch workspaces now that *task_id* completed.
 
@@ -4671,7 +5369,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
                 (parent_id,),
             ).fetchone()
-            if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+            if not row or not row["workspace_path"]:
                 continue
             # Check if ALL children of this parent are terminal
             active = conn.execute(
@@ -4683,12 +5381,9 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             ).fetchone()
             if active:
                 continue  # still has active children
-            # All children done — safe to clean up parent workspace
-            import shutil
-            wp = Path(row["workspace_path"])
-            if wp.is_dir() and _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
-                _log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+            # All children done — let the standard cleanup preserve the same
+            # safety rules for scratch and managed worktree parents.
+            _cleanup_workspace(conn, parent_id)
     except Exception:
         pass  # best-effort
 
@@ -4873,6 +5568,38 @@ def edit_completed_task_result(
     return True
 
 
+def _block_reason_fingerprint(reason: Optional[str]) -> str:
+    """Return a stable fingerprint for one human-facing blocking reason.
+
+    Planner messages frequently embed a changing comment number. That detail
+    must not turn an identical question into a fresh blocker, while unrelated
+    text must reset the recurrence budget. The compact canonical form is kept
+    out of the schema because the full reason is already retained in events.
+    """
+    text = (reason or "").casefold()
+    text = re.sub(r"\b(commentaire|comment)\s+#?\d+\b", r"\1", text)
+    text = " ".join(text.split())
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _last_block_reason(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Read the reason of the most recent human-blocking event, if any."""
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind IN ('blocked', 'block_loop_detected') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return str(reason) if reason is not None else None
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4895,11 +5622,11 @@ def block_task(
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
-      is re-blocked for the SAME kind after having been unblocked, the
-      unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+      is re-blocked for the SAME kind **and reason** after having been
+      unblocked, the unblock-loop counter (``block_recurrences``) increments.
+      When it reaches :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to
+      ``triage`` instead of ``blocked`` — breaking a genuine cron-unblock ↔
+      worker-re-block loop without misclassifying a new prerequisite.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
@@ -4975,13 +5702,19 @@ def block_task(
             )
             return True
 
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
+        # Truly-blocked kinds. ``block_kind`` alone is too coarse: a planner can
+        # legitimately discover a new prerequisite after the user answers the
+        # first question. Compare the persisted prior reason as well, so only a
+        # genuine blocked → unblocked → blocked replay reaches triage.
+        # block_task only fires from running/ready (i.e. after an unblock
+        # returned the task to the pool), and legacy untyped blocks remain
+        # protected when their reason is unchanged.
+        previous_reason = _last_block_reason(conn, task_id)
+        same_cause = (
+            prev_kind == kind
+            and _block_reason_fingerprint(previous_reason)
+            == _block_reason_fingerprint(reason)
+        )
         recurrences = prev_recurrences + 1 if same_cause else 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
@@ -5096,13 +5829,17 @@ def promote_task(
     actor: str,
     reason: Optional[str] = None,
     force: bool = False,
+    recover_triage: bool = False,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Manually promote a `todo` or `blocked` task to `ready`.
+    """Manually promote a recoverable task to ``ready``.
 
     Mirrors the automatic promotion done by ``recompute_ready`` but
     drives it from a deliberate operator action with an audit-trail
-    entry. Refuses to promote if any parent dep is not in a terminal
+    entry. ``triage`` is accepted only with ``recover_triage=True`` and a
+    non-empty reason: this is the escape hatch for a loop-breaker task whose
+    original, fully specified work can safely be retried after its external
+    cause was fixed. Refuses to promote if any parent dep is not in a terminal
     state (`done`/`archived`) unless ``force=True``. Does NOT change
     assignee or claim state. Returns ``(True, None)`` on success and
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
@@ -5115,10 +5852,17 @@ def promote_task(
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
+    allowed_statuses = ("todo", "blocked")
+    if recover_triage:
+        allowed_statuses += ("triage",)
+        if not reason or not reason.strip():
+            return False, "triage recovery requires a non-empty audit reason"
+
+    if cur_status not in allowed_statuses:
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
             f"'todo' or 'blocked'"
+            + (" unless --recover-triage is explicitly requested" if cur_status == "triage" else "")
         )
 
     if not force:
@@ -5144,8 +5888,8 @@ def promote_task(
     with write_txn(conn):
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
-            (task_id,),
+            f"WHERE id = ? AND status IN ({','.join('?' for _ in allowed_statuses)})",
+            (task_id, *allowed_statuses),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
@@ -5153,7 +5897,12 @@ def promote_task(
             conn,
             task_id,
             "promoted_manual",
-            {"actor": actor, "reason": reason, "forced": force},
+            {
+                "actor": actor,
+                "reason": reason,
+                "forced": force,
+                "recovered_from_triage": cur_status == "triage",
+            },
         )
 
     return True, None
@@ -5314,6 +6063,70 @@ def specify_triage_task(
     # idling in 'todo' until the next sweep.
     recompute_ready(conn)
     return True
+
+
+APPROVABLE_PLAN_ROLES = frozenset({"planner", "pr-intake"})
+
+
+def approve_plan_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Resolve an explicit approval for a blocked implementation plan.
+
+    A planner can legitimately publish a revised plan after a clarification.
+    When that second approval request has the same ``needs_input`` kind, the
+    generic loop breaker routes it to ``triage``.  That protects unattended
+    tasks, but an explicit operator approval is precisely the human decision
+    that resolves the loop.  Resume only planner cards in the expected
+    approval states; never use this as a generic triage promotion.  ``pr-intake``
+    uses the same gate after inspecting an existing pull request: the operator
+    approves a concrete remediation plan before a coder receives that PR's
+    linked worktree.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, block_kind FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["assignee"] not in APPROVABLE_PLAN_ROLES:
+            return False
+        previous_status = row["status"]
+        if previous_status not in {"blocked", "scheduled", "triage"}:
+            return False
+        if previous_status == "triage" and row["block_kind"] != "needs_input":
+            return False
+
+        undone_parents = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        new_status = "todo" if undone_parents else "ready"
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = ?, current_run_id = NULL, claim_lock = NULL,
+                   claim_expires = NULL, worker_pid = NULL,
+                   consecutive_failures = 0, last_failure_error = NULL,
+                   block_kind = NULL, block_recurrences = 0
+             WHERE id = ? AND assignee IN ('planner', 'pr-intake')
+               AND status = ?
+            """,
+            (new_status, task_id, previous_status),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "approved",
+            {"from_status": previous_status, "status": new_status},
+        )
+    return True
+
+
+# Kept as a small compatibility alias for external integrations that used the
+# first, planner-only command name before existing-PR plans were supported.
+approve_planner_task = approve_plan_task
 
 
 def decompose_triage_task(
@@ -5736,17 +6549,201 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _provision_sibling_file_dependencies(repo_root: Path, worktree_root: Path) -> None:
+    """Expose sibling packages for Bun ``file:`` dependencies in a worktree.
+
+    A manifest such as ``frontend/package.json`` can legitimately refer to a
+    sibling package with a relative path when run from the primary checkout.
+    In a linked worktree below ``<repo>/.worktrees/<task>``, that same path may
+    instead resolve below the shared ``.worktrees`` directory.  When the
+    package exists beside the primary repository, create the missing shared
+    link before a worker installs its dependencies.
+
+    This deliberately handles only targets immediately under the worktree
+    parent and never replaces an existing file or symlink.
+    """
+    worktree_parent = worktree_root.parent
+    sibling_root = repo_root.parent
+
+    for manifest in worktree_root.rglob("package.json"):
+        try:
+            relative_parts = manifest.relative_to(worktree_root).parts
+        except ValueError:
+            continue
+        if "node_modules" in relative_parts or ".git" in relative_parts:
+            continue
+
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+            dependencies = data.get(section)
+            if not isinstance(dependencies, dict):
+                continue
+            for specifier in dependencies.values():
+                if not isinstance(specifier, str) or not specifier.startswith("file:"):
+                    continue
+                declared_target = (manifest.parent / specifier.removeprefix("file:")).resolve(strict=False)
+                if (
+                    declared_target.parent != worktree_parent
+                    or declared_target.exists()
+                    or declared_target.is_symlink()
+                ):
+                    continue
+
+                source = sibling_root / declared_target.name
+                if not source.is_dir() or not (source / "package.json").is_file():
+                    continue
+
+                declared_target.symlink_to(
+                    os.path.relpath(source, start=declared_target.parent),
+                    target_is_directory=True,
+                )
+
+
+def _iter_project_package_manifests(worktree_root: Path) -> Iterable[Path]:
+    """Yield first-party package manifests, never installed dependencies."""
+    for manifest in worktree_root.rglob("package.json"):
+        try:
+            relative_parts = manifest.relative_to(worktree_root).parts
+        except ValueError:
+            continue
+        if ".git" not in relative_parts and "node_modules" not in relative_parts:
+            yield manifest
+
+
+def _missing_go_embed_assets(worktree_root: Path) -> list[Path]:
+    """Return Go embed globs that currently have no matching file.
+
+    Generated front-end assets are commonly ignored by Git.  Their absence in
+    a new worktree is therefore discoverable from the repository itself,
+    without naming a particular application or sibling repository.
+    """
+    missing: list[Path] = []
+    embed_re = re.compile(r"(?m)^\s*//go:embed\s+(.+?)\s*$")
+    for source in worktree_root.rglob("*.go"):
+        try:
+            relative_parts = source.relative_to(worktree_root).parts
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if ".git" in relative_parts or "vendor" in relative_parts:
+            continue
+        for match in embed_re.finditer(text):
+            # Go embed patterns cannot contain whitespace, so splitting is
+            # sufficient and avoids interpreting shell syntax from source.
+            for pattern in match.group(1).split():
+                if not any(source.parent.glob(pattern)):
+                    missing.append(source.parent / pattern)
+    return missing
+
+
+def _bun_install_stamp(manifest: Path, lockfile: Path) -> Path:
+    digest = hashlib.sha256(
+        manifest.read_bytes() + b"\0" + lockfile.read_bytes()
+    ).hexdigest()
+    return manifest.parent / "node_modules" / f".hermes-bun-{digest}.stamp"
+
+
+def _run_worktree_bootstrap_command(command: list[str], *, cwd: Path) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"worktree bootstrap could not start {' '.join(command)!r} in {cwd}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"worktree bootstrap failed in {cwd}: {' '.join(command)}"
+            + (f": {detail}" if detail else "")
+        )
+
+
+def _provision_generated_build_dependencies(worktree_root: Path) -> None:
+    """Bootstrap only build packages required by missing generated Go assets.
+
+    This is deliberately deductive rather than repository-specific: a fresh
+    worktree is scanned for missing ``//go:embed`` assets, then only Bun
+    packages with a local Bun lockfile and a declared ``build`` script are
+    prepared.  Repositories with no such contract do not run Bun at all.
+    Local ``file:`` dependencies have already been made resolvable by
+    :func:`_provision_sibling_file_dependencies`.
+    """
+    missing_assets = _missing_go_embed_assets(worktree_root)
+    if not missing_assets:
+        return
+
+    packages: list[tuple[Path, Path]] = []
+    for manifest in _iter_project_package_manifests(worktree_root):
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        scripts = data.get("scripts")
+        if not isinstance(scripts, dict) or not isinstance(scripts.get("build"), str):
+            continue
+        lockfile = next(
+            (candidate for candidate in (manifest.parent / "bun.lock", manifest.parent / "bun.lockb")
+             if candidate.is_file()),
+            None,
+        )
+        if lockfile is not None:
+            packages.append((manifest, lockfile))
+
+    if not packages:
+        return
+    bun = shutil.which("bun")
+    if bun is None:
+        paths = ", ".join(str(manifest.parent) for manifest, _ in packages)
+        raise RuntimeError(
+            f"worktree bootstrap requires Bun for generated assets ({paths}), but bun is not on PATH"
+        )
+
+    for manifest, lockfile in packages:
+        stamp = _bun_install_stamp(manifest, lockfile)
+        if not stamp.is_file():
+            _run_worktree_bootstrap_command(
+                [bun, "install", "--frozen-lockfile"], cwd=manifest.parent,
+            )
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text("ok\n", encoding="utf-8")
+        _run_worktree_bootstrap_command([bun, "run", "build"], cwd=manifest.parent)
+
+    unresolved = _missing_go_embed_assets(worktree_root)
+    if unresolved:
+        rendered = ", ".join(str(path.relative_to(worktree_root)) for path in unresolved)
+        raise RuntimeError(
+            "worktree bootstrap completed declared Bun builds but generated Go assets are still missing: "
+            + rendered
+        )
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    """Materialize and bootstrap ``target`` as a linked Git worktree."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None:
         target_common = _git_common_dir(target)
         if target_common == repo_common:
+            _provision_sibling_file_dependencies(repo_root, target)
+            _provision_generated_build_dependencies(target)
             return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
-        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+        # Test/review cards may inspect the delivery branch while the coder
+        # still has that branch checked out in its own worktree.  A detached
+        # worktree pins the exact branch tip without competing for its checkout.
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(target), branch_name]
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
@@ -5764,6 +6761,29 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    _provision_sibling_file_dependencies(repo_root, target)
+    _provision_generated_build_dependencies(target)
+
+
+def _bootstrap_linked_worktree_workspace(workspace: Path) -> None:
+    """Refresh derived dependencies when any workflow role reuses a worktree.
+
+    Tester and reviewer cards use their own ``workspace_kind='worktree'``
+    checkout. Looking at the checkout itself, rather than the card kind,
+    keeps their environment valid without special-casing a role/repository.
+    """
+    if not _is_linked_worktree_checkout(workspace):
+        return
+    common_dir = _git_common_dir(workspace)
+    if common_dir is None:
+        return
+    # In a non-bare checkout the shared Git dir is <primary>/.git.  Confirm
+    # the inferred parent before using it to resolve sibling file dependencies.
+    primary_root = common_dir.parent
+    if _git_toplevel(primary_root) != primary_root.resolve(strict=False):
+        return
+    _provision_sibling_file_dependencies(primary_root, workspace)
+    _provision_generated_build_dependencies(workspace)
 
 
 def _resolve_worktree_workspace(
@@ -6053,6 +7073,9 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_checkout_busy: list[tuple[str, str]] = field(default_factory=list)
+    """Native delivery cards deferred because another card is using the same
+    primary repository checkout. Entries are ``(task_id, owner_task_id)``."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -6417,6 +7440,89 @@ def heartbeat_worker(
     return True
 
 
+def _recover_timed_out_indexer_handoff(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    worker_pid: int,
+    claim_lock: Optional[str],
+) -> Optional[str]:
+    """Finalize an indexer that already produced a complete planner handoff.
+
+    An indexer can exhaust its turn/runtime budget after ``kanban_create`` but
+    before its separate ``kanban_complete`` call.  Retrying it then re-indexes
+    the same repository even though a correctly linked planner is waiting in
+    ``todo``.  Recovery is intentionally narrow: it applies only to one
+    indexer -> planner edge with the minimum durable evidence the planner
+    needs.  Any ambiguous or incomplete handoff follows the ordinary retry
+    path instead of silently declaring work complete.
+    """
+    rows = conn.execute(
+        """
+        SELECT c.id, c.body
+          FROM task_links l
+          JOIN tasks c ON c.id = l.child_id
+         WHERE l.parent_id = ?
+           AND c.assignee = 'planner'
+           AND c.created_by = 'indexer'
+           AND c.status NOT IN ('archived')
+         ORDER BY c.created_at ASC
+        """,
+        (task_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    handoff = rows[0]["body"] or ""
+    if "REPOSITORY_GIT_ROOT:" not in handoff or "CODEGRAPH_EVIDENCE" not in handoff:
+        return None
+
+    child_id = rows[0]["id"]
+    summary = (
+        f"Handoff indexer récupéré après timeout : planner {child_id} "
+        "créé avec dépôt Git et preuve CodeGraph."
+    )
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'done', result = ?, completed_at = ?,
+                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL,
+                   last_heartbeat_at = NULL, block_kind = NULL,
+                   block_recurrences = 0
+             WHERE id = ? AND assignee = 'indexer' AND status = 'running'
+               AND worker_pid = ? AND claim_lock IS ?
+            """,
+            (summary, int(time.time()), task_id, worker_pid, claim_lock),
+        )
+        if cur.rowcount != 1:
+            return None
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="completed",
+            status="completed",
+            summary=summary,
+            metadata={
+                "recovered_from": "timed_out",
+                "handoff_child": child_id,
+                "reason": "valid_indexer_planner_handoff",
+            },
+        )
+        _append_event(
+            conn,
+            task_id,
+            "handoff_recovered",
+            {
+                "child_id": child_id,
+                "reason": "valid_indexer_planner_handoff",
+            },
+            run_id=run_id,
+        )
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    return child_id
+
+
 def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
@@ -6487,6 +7593,20 @@ def enforce_max_runtime(
                     killed = True
                 except (ProcessLookupError, OSError):
                     pass
+
+        recovered_child = _recover_timed_out_indexer_handoff(
+            conn,
+            task_id=tid,
+            worker_pid=pid,
+            claim_lock=row["claim_lock"],
+        )
+        if recovered_child is not None:
+            _log.info(
+                "kanban: recovered timed-out indexer %s via planner handoff %s",
+                tid,
+                recovered_child,
+            )
+            continue
 
         with write_txn(conn):
             cur = conn.execute(
@@ -7284,8 +8404,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) without a later explicit
+        re-queue. A prior worker may already have opened a PR; re-spawning
+        risks a duplicate PR on the same task. An operator's unblock/promote
+        after that comment is deliberately honored (for example after a
+        credential or workflow fix).
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -7367,13 +8490,28 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. GitHub PR URL in a recent comment — prior worker may already have
+    # opened a PR.  An explicit re-queue AFTER the latest such comment is a
+    # deliberate operator decision and must override this conservative guard;
+    # otherwise a task fixed after an auth/configuration change remains ready
+    # forever, exactly like the recent_success case above.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+    latest_pr_comment_at: Optional[int] = None
+    for comment in conn.execute(
+        "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if comment["body"] and _RESPAWN_GUARD_PR_URL_RE.search(comment["body"]):
+            latest_pr_comment_at = int(comment["created_at"] or 0)
+            break
+    if latest_pr_comment_at is not None:
+        requeued_after_pr = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') LIMIT 1",
+            (task_id, latest_pr_comment_at),
+        ).fetchone()
+        if not requeued_after_pr:
             return "active_pr"
 
     return None
@@ -7727,6 +8865,16 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        checkout_owner = _native_checkout_conflict(conn, row["id"])
+        if checkout_owner is not None:
+            result.skipped_checkout_busy.append((row["id"], checkout_owner))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "checkout_busy",
+                        {"owner_task_id": checkout_owner},
+                    )
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -7762,12 +8910,24 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        workspace_error = _native_coder_workspace_error(claimed)
+        if workspace_error is not None:
+            block_task(
+                conn,
+                claimed.id,
+                reason=workspace_error,
+                kind="capability",
+                expected_run_id=claimed.current_run_id,
+            )
+            result.auto_blocked.append(claimed.id)
+            continue
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+            _bootstrap_linked_worktree_workspace(workspace)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7780,7 +8940,32 @@ def _dispatch_once_locked(
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        try:
+            _prepare_native_branch_checkout(conn, claimed, workspace)
+        except ValueError as exc:
+            block_task(
+                conn,
+                claimed.id,
+                reason=str(exc),
+                kind="capability",
+                expected_run_id=claimed.current_run_id,
+            )
+            result.auto_blocked.append(claimed.id)
+            continue
+        try:
+            _prepare_quoraform_e2e_runtime(claimed, board=board)
+        except ValueError as exc:
+            block_task(
+                conn,
+                claimed.id,
+                reason=str(exc),
+                kind="capability",
+                expected_run_id=claimed.current_run_id,
+            )
+            result.auto_blocked.append(claimed.id)
+            continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        _apply_role_default_skills(claimed)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -7823,9 +9008,8 @@ def _dispatch_once_locked(
 
     # ---- review column dispatch ----
     # Review tasks are tasks that a worker moved to 'review' after
-    # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
+    # creating a PR. The assignee's role defaults are merged just before
+    # spawning, as for ready tasks above.
     #
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
@@ -7860,6 +9044,7 @@ def _dispatch_once_locked(
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+            _bootstrap_linked_worktree_workspace(workspace)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7872,13 +9057,20 @@ def _dispatch_once_locked(
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        try:
+            _prepare_native_branch_checkout(conn, claimed, workspace)
+        except ValueError as exc:
+            block_task(
+                conn,
+                claimed.id,
+                reason=str(exc),
+                kind="capability",
+                expected_run_id=claimed.current_run_id,
+            )
+            result.auto_blocked.append(claimed.id)
+            continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load the sdlc-review skill for review agents — it carries
-        # the review logic (AC verification, merge, etc.). The mandatory
-        # kanban lifecycle is already injected into every worker's system
-        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
-        # review agent needs.
-        claimed.skills = ["sdlc-review"]
+        _apply_role_default_skills(claimed)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect
@@ -8193,6 +9385,20 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
+    if _is_quoraform_e2e_task(task):
+        prompt += (
+            "\nMandatory E2E contract: run only `runtime_id=\"$(qf-integrate create "
+            f"--kanban-task {task.id})\"`, `qf-integrate up \"$runtime_id\"`, and "
+            "`qf-integrate test \"$runtime_id\" --e2e`. Do not retry or perform "
+            "manual environment diagnostics. If create or up fails, record "
+            "TESTER_DECISION: INCONCLUSIVE with the command output. If test reports "
+            "a failed assertion or spec, record TESTER_DECISION: FAILED; if it cannot "
+            "run because of the runtime, record TESTER_DECISION: INCONCLUSIVE. In "
+            "either case, create the required reviewer handoff and complete the tester "
+            "card. A nonzero test result alone must not call kanban_block. Do not start "
+            "services, alter Chromium, read credentials, query the database, or perform "
+            "manual environment diagnostics."
+        )
     env = dict(os.environ)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml

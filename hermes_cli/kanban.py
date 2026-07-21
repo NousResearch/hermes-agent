@@ -21,6 +21,7 @@ import os
 import shlex
 import sys
 import time
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -130,6 +131,44 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     if any(ch.isspace() for ch in branch):
         raise argparse.ArgumentTypeError("--branch must not contain whitespace")
     return branch
+
+
+_GITHUB_PR_URL_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/"
+    r"(?P<repo>[A-Za-z0-9_.-]+)/pull/(?P<number>[1-9][0-9]*)/?$"
+)
+
+
+def _parse_github_pr_url(value: str) -> tuple[str, str, int, str]:
+    """Validate and normalize the GitHub PR URL accepted by ``kanban pr``.
+
+    Keeping this deliberately strict prevents a chat message from turning into
+    an arbitrary URL passed to ``gh`` or shell commands in the PR worker.
+    """
+    url = (value or "").strip()
+    match = _GITHUB_PR_URL_RE.fullmatch(url)
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            "PR URL must be https://github.com/<owner>/<repo>/pull/<number>"
+        )
+    owner = match.group("owner")
+    repo = match.group("repo")
+    number = int(match.group("number"))
+    return owner, repo, number, f"https://github.com/{owner}/{repo}/pull/{number}"
+
+
+def _pr_intake_body(*, operation: str, url: str, request: str) -> str:
+    """Build the durable, machine-readable handoff for the PR intake role."""
+    return "\n".join((
+        "PR_WORKFLOW: existing-pull-request-v1",
+        f"PR_OPERATION: {operation}",
+        f"PR_URL: {url}",
+        "REQUEST:",
+        request.strip(),
+        "",
+        "The PR URL is the source of truth for repository, base and head. "
+        "Do not infer a repository from the board workspace.",
+    ))
 
 
 def _check_dispatcher_presence() -> tuple[bool, str]:
@@ -368,6 +407,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- existing pull request ---
+    # This is intentionally a narrow command instead of overloading generic
+    # task creation: the URL is validated before it reaches an agent, and the
+    # PR-specific worker can distinguish a read-only question from a change
+    # request that flows through the dedicated tester and reviewer before it
+    # can push.
+    p_pr = sub.add_parser(
+        "pr",
+        help="Inspect an existing GitHub PR or prepare a safe update workflow",
+    )
+    pr_sub = p_pr.add_subparsers(dest="pr_action", required=True)
+    for action, help_text in (
+        ("question", "Ask a read-only question about an existing PR"),
+        ("update", "Diagnose an existing PR and prepare a reviewed correction"),
+    ):
+        p_pr_action = pr_sub.add_parser(action, help=help_text)
+        p_pr_action.add_argument(
+            "url",
+            type=_parse_github_pr_url,
+            help="https://github.com/<owner>/<repo>/pull/<number>",
+        )
+        p_pr_action.add_argument(
+            "request",
+            nargs="+",
+            help="Question to answer, or description of the requested update",
+        )
+        p_pr_action.add_argument("--priority", type=int, default=0)
+        p_pr_action.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -396,6 +464,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--assignee", default=None)
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
+    p_list.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        choices=sorted(kb.VALID_STATUSES),
+        metavar="STATUS",
+        help="Exclude a status from the result (repeatable)",
+    )
     p_list.add_argument("--tenant", default=None)
     p_list.add_argument("--session", default=None,
                         help="Filter by originating chat/agent session id "
@@ -605,9 +681,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_approve = sub.add_parser(
+        "approve",
+        help="Approve a planner or existing-PR update plan and resume it",
+    )
+    p_approve.add_argument(
+        "task_id",
+        help="Planner or PR-intake task awaiting approval",
+    )
+
     p_promote = sub.add_parser(
         "promote",
-        help="Manually move one or more todo/blocked tasks to ready (recovery path)",
+        help="Manually move recoverable tasks to ready (recovery path)",
     )
     p_promote.add_argument("task_id")
     p_promote.add_argument(
@@ -625,6 +710,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--force",
         action="store_true",
         help="Promote even if parent dependencies are not yet done/archived",
+    )
+    p_promote.add_argument(
+        "--recover-triage",
+        action="store_true",
+        help=(
+            "Explicitly recover a loop-breaker triage task after its cause was "
+            "fixed; requires a non-empty audit reason"
+        ),
     )
     p_promote.add_argument(
         "--dry-run",
@@ -959,6 +1052,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "pr":       _cmd_pr,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -980,6 +1074,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "approve":  _cmd_approve,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
@@ -1333,8 +1428,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
-    if branch_name and ws_kind != "worktree":
-        print("kanban: --branch is only valid with --workspace worktree", file=sys.stderr)
+    if branch_name and ws_kind not in {"worktree", "dir"}:
+        print("kanban: --branch is only valid with --workspace worktree or dir", file=sys.stderr)
         return 2
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
@@ -1392,6 +1487,52 @@ def _cmd_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pr(args: argparse.Namespace) -> int:
+    """Create the controlled entry card for an existing GitHub pull request."""
+    action = getattr(args, "pr_action", None)
+    if action not in {"question", "update"}:
+        print("kanban pr: choose question or update", file=sys.stderr)
+        return 2
+    owner, repo, number, url = args.url
+    request = " ".join(args.request or ()).strip()
+    if not request:
+        print("kanban pr: a question or update description is required", file=sys.stderr)
+        return 2
+    title_prefix = "Question sur" if action == "question" else "Mise à jour de"
+    title = f"{title_prefix} la PR #{number} de {owner}/{repo}"
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title=title,
+            body=_pr_intake_body(operation=action, url=url, request=request),
+            assignee="pr-intake",
+            created_by="user",
+            workspace_kind="scratch",
+            priority=args.priority,
+            # Same request should not create two actors that may both try to
+            # update the same PR head.  Archiving is the explicit retry escape.
+            idempotency_key=f"existing-pr:{action}:{url}:{request}",
+        )
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+    if getattr(args, "json", False):
+        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Created {task_id}  ({task.status}, assignee=pr-intake)")
+        if action == "question":
+            print("Mode lecture seule : aucune branche, aucun commit ni push.")
+        else:
+            print(
+                "Mode mise à jour : préparation de la tête de PR, puis tests "
+                "E2E, revue et correction éventuelle sur cette même branche."
+            )
+        if task.status == "ready":
+            running, message = _check_dispatcher_presence()
+            if not running and message:
+                print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
 def _cmd_swarm(args: argparse.Namespace) -> int:
     try:
         workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
@@ -1442,6 +1583,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             workflow_template_id=args.workflow_template_id,
             current_step_key=args.current_step_key,
         )
+    excluded_statuses = set(getattr(args, "exclude", []) or [])
+    if excluded_statuses:
+        tasks = [task for task in tasks if task.status not in excluded_statuses]
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
         return 0
@@ -1485,6 +1629,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
+        child_tasks = [kb.get_task(conn, child_id) for child_id in children]
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via ``task_runs.summary``; ``tasks.result`` is left NULL unless the caller explicitly passed
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
@@ -1566,7 +1711,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
     # of show output so CLI users see them before scrolling through
     # comments / runs.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs)
+    diags = kd.compute_task_diagnostics(
+        task, events, runs, children=[child for child in child_tasks if child is not None],
+    )
     if diags:
         sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
         print(f"\n  Diagnostics ({len(diags)}):")
@@ -1705,11 +1852,16 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
             if task is None:
                 print(f"no such task: {args.task}", file=sys.stderr)
                 return 1
+            child_tasks = [
+                kb.get_task(conn, child_id)
+                for child_id in kb.child_ids(conn, args.task)
+            ]
             diags_by_task = {
                 args.task: kd.compute_task_diagnostics(
                     task,
                     kb.list_events(conn, args.task),
                     kb.list_runs(conn, args.task),
+                    children=[child for child in child_tasks if child is not None],
                     config=diag_config,
                 )
             }
@@ -1735,6 +1887,13 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     tuple(ids),
                 ):
                     run_by.setdefault(row["task_id"], []).append(row)
+                child_by_parent = {i: [] for i in ids}
+                for row in conn.execute(
+                    f"SELECT l.parent_id, t.* FROM task_links l JOIN tasks t ON t.id = l.child_id "
+                    f"WHERE l.parent_id IN ({placeholders})",
+                    tuple(ids),
+                ):
+                    child_by_parent.setdefault(row["parent_id"], []).append(row)
                 diags_by_task = {}
                 for r in rows:
                     tid = r["id"]
@@ -1742,6 +1901,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                         r,
                         ev_by.get(tid, []),
                         run_by.get(tid, []),
+                        children=child_by_parent.get(tid, []),
                         config=diag_config,
                     )
                     if dl:
@@ -2163,6 +2323,37 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_approve(args: argparse.Namespace) -> int:
+    """Record an implementation-plan approval and return it to the queue."""
+    task_id = args.task_id
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            print(f"cannot approve {task_id} (unknown task)", file=sys.stderr)
+            return 1
+        if task.assignee not in kb.APPROVABLE_PLAN_ROLES:
+            print(
+                f"cannot approve {task_id} (assigned to {task.assignee or 'nobody'}, "
+                "not planner or pr-intake)",
+                file=sys.stderr,
+            )
+            return 1
+        if task.status not in {"blocked", "scheduled", "triage"}:
+            print(
+                f"cannot approve {task_id} (status is {task.status}, expected blocked/scheduled/triage)",
+                file=sys.stderr,
+            )
+            return 1
+
+        kb.add_comment(conn, task_id, _profile_author(), "APPROUVER")
+        if not kb.approve_plan_task(conn, task_id):
+            print(f"cannot approve {task_id} (task was not resumed)", file=sys.stderr)
+            return 1
+
+    print(f"Approved {task_id}; {task.assignee} resumed")
+    return 0
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
@@ -2185,6 +2376,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 actor=author,
                 reason=reason,
                 force=bool(args.force),
+                recover_triage=bool(getattr(args, "recover_triage", False)),
                 dry_run=bool(args.dry_run),
             )
             results.append({
@@ -2192,6 +2384,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 "promoted": ok,
                 "dry_run": bool(args.dry_run),
                 "forced": bool(args.force),
+                "recovered_from_triage": bool(getattr(args, "recover_triage", False)),
                 "reason": reason,
                 "error": err,
             })

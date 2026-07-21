@@ -15680,6 +15680,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
         message: str,
         handler,
+        button_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Ask the user to confirm an expensive slash command.
 
@@ -15714,6 +15715,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         adapter = self._adapter_for_source(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        if button_labels:
+            metadata = dict(metadata or {})
+            metadata["slash_confirm_labels"] = button_labels
 
         used_buttons = False
         if adapter is not None:

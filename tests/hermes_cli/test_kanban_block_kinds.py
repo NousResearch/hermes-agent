@@ -79,13 +79,13 @@ def test_unblock_does_not_reset_recurrence_counter(kanban_home: Path) -> None:
 
 
 def test_same_cause_reblock_routes_to_triage(kanban_home: Path) -> None:
-    """Dale's loop: block → unblock → re-block same kind → triage."""
+    """A replay of the same blocker routes to triage."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="need creds", kind="needs_input")
+        kb.block_task(conn, tid, reason="need credentials (commentaire 12)", kind="needs_input")
         kb.unblock_task(conn, tid)
         _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="still need creds", kind="needs_input")
+        kb.block_task(conn, tid, reason="need credentials (commentaire 13)", kind="needs_input")
         t = kb.get_task(conn, tid)
         assert t.status == "triage"
         assert t.block_recurrences == 2
@@ -98,7 +98,7 @@ def test_untyped_block_loop_also_protected(kanban_home: Path) -> None:
         kb.block_task(conn, tid, reason="a")
         kb.unblock_task(conn, tid)
         _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="a again")
+        kb.block_task(conn, tid, reason="a")
         assert kb.get_task(conn, tid).status == "triage"
 
 
@@ -110,6 +110,25 @@ def test_different_kinds_do_not_compound(kanban_home: Path) -> None:
         kb.unblock_task(conn, tid)
         _make_running_again(conn, tid)
         kb.block_task(conn, tid, reason="b", kind="capability")
+        t = kb.get_task(conn, tid)
+        assert t.status == "blocked"
+        assert t.block_recurrences == 1
+
+
+def test_same_kind_with_new_reason_does_not_compound(kanban_home: Path) -> None:
+    """A new prerequisite is actionable, not a retry loop."""
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(
+            conn, tid, reason="approve the common-frontend-only scope",
+            kind="needs_input",
+        )
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(
+            conn, tid, reason="provide cfm_planning Git root and base SHA",
+            kind="needs_input",
+        )
         t = kb.get_task(conn, tid)
         assert t.status == "blocked"
         assert t.block_recurrences == 1

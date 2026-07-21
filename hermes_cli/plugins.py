@@ -212,6 +212,17 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Kanban notification render hook.  Fired by the kanban watcher before
+    # sending each notification to a subscribed chat.  A plugin may return
+    # a dict with:
+    #   {"message": "<replacement text>", "replace_default": True}
+    # to replace the generic Kanban notification.  Any other return value
+    # (None, empty dict, exception) keeps the default message.
+    # Kwargs: task, event_payload, board_slug, board_tag, subscription,
+    #         kind (str: blocked|completed|gave_up|...), kind_label.
+    # Note: this hook fires in the gateway process (the watcher), not in
+    # a worker.  Plugin state must be thread-safe.
+    "render_kanban_notification",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

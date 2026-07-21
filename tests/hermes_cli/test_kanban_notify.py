@@ -466,9 +466,22 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         source=source,
     )
 
+    confirmation = {}
+
+    async def confirm_once(**kwargs):
+        confirmation.update(kwargs)
+        return await kwargs["handler"]("once")
+
+    runner._request_slash_confirm = confirm_once
+
     out = await GatewayRunner._handle_kanban_command(runner, event)
 
     assert "subscribed" in out.lower()
+    assert confirmation["button_labels"] == {
+        "once": "✅ Oui",
+        "always": "✏️ Modifier",
+        "cancel": "❌ Non",
+    }
 
     conn = kb.connect(board="projx")
     try:
@@ -476,7 +489,6 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         tasks = kb.list_tasks(conn)
     finally:
         conn.close()
-
     assert [t.title for t in tasks] == ["hello"]
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
@@ -488,6 +500,112 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     finally:
         conn.close()
 
+
+@pytest.mark.asyncio
+async def test_gateway_telegram_create_can_be_cancelled_or_modified_before_creation(kanban_home, monkeypatch):
+    """A Telegram create remains inert until the user presses Oui."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from hermes_cli import kanban as kanban_cli
+
+    runner = object.__new__(GatewayRunner)
+    event = SimpleNamespace(
+        text='/kanban create "mistaken task"',
+        source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat1"),
+    )
+    captured = {}
+
+    async def request_confirm(**kwargs):
+        captured.update(kwargs)
+        return "confirmation pending"
+
+    runner._request_slash_confirm = request_confirm
+    monkeypatch.setattr(kanban_cli, "run_slash", lambda _text: pytest.fail("task was created before confirmation"))
+
+    assert await GatewayRunner._handle_kanban_command(runner, event) == "confirmation pending"
+    assert await captured["handler"]("cancel") == "Création annulée."
+    assert "Modification demandée" in await captured["handler"]("always")
+    assert "/kanban create \"mistaken task\"" in await captured["handler"]("always")
+
+@pytest.mark.asyncio
+async def test_gateway_subscribe_attaches_current_chat_to_existing_task(kanban_home):
+    """`/kanban subscribe` repairs an existing card without a chat id."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="plan", assignee="planner")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "default"
+    event = SimpleNamespace(
+        text=f"/kanban subscribe {task_id}",
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM, chat_id="chat1", thread_id="th1", user_id="u1",
+        ),
+    )
+
+    output = await GatewayRunner._handle_kanban_command(runner, event)
+    assert "Abonné" in output
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "th1"
+
+
+@pytest.mark.asyncio
+async def test_gateway_kanban_show_sends_long_output_in_continuations(monkeypatch):
+    """Long Telegram-visible Kanban output is never silently truncated."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from hermes_cli import kanban as kanban_cli
+
+    long_output = ("Plan ligne\n" * 900).strip()
+    monkeypatch.setattr(kanban_cli, "run_slash", lambda _text: long_output)
+
+    class FakeAdapter:
+        def __init__(self):
+            self._active_sessions = {}
+            self.callback = None
+            self.sent = []
+
+        def register_post_delivery_callback(self, _session_key, callback, *, generation=None):
+            self.callback = callback
+
+        async def send(self, chat_id, content, metadata=None):
+            self.sent.append((chat_id, content, metadata))
+
+    adapter = FakeAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._adapter_for_source = lambda _source: adapter
+    runner._thread_metadata_for_source = lambda _source: {"thread_id": "th1"}
+    runner._session_key_for_source = lambda _source: "telegram:chat1"
+    event = SimpleNamespace(
+        text="/kanban show t_1234abcd",
+        source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat1"),
+    )
+
+    first = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert first.startswith("Kanban — partie 1/")
+    assert len(first) <= 3800
+    assert adapter.callback is not None
+
+    await adapter.callback()
+
+    continuations = [content for _chat_id, content, _metadata in adapter.sent]
+    assert len(continuations) >= 1
+    assert all(part.startswith("Kanban — partie ") for part in continuations)
+    assert all(len(part) <= 3800 for part in [first, *continuations])
+    assert all(metadata == {"thread_id": "th1"} for _chat_id, _content, metadata in adapter.sent)
 
 @pytest.mark.asyncio
 async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
@@ -657,3 +775,87 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+@pytest.mark.asyncio
+async def test_notifier_renders_approval_buttons_for_explicit_planner_gate(kanban_home):
+    """A planner gate sends one rich decision card and never wakes chat AI."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="Plan à valider",
+            assignee="planner",
+            session_id="creator-session",
+        )
+        kb.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="chat1")
+        kb.add_comment(
+            conn,
+            task_id,
+            "planner",
+            "RÉSUMÉ_DÉCISION\n- Ajouter le filtre demandé.\n\nCONTRAT_DE_PÉRIMÈTRE\n- inclus: filtre.",
+        )
+        kb.block_task(
+            conn,
+            task_id,
+            reason="Répondre exactement APPROUVER pour créer la carte coder.",
+            kind="needs_input",
+        )
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    class DecisionAdapter:
+        async def send(self, *_args, **_kwargs):
+            raise AssertionError("plain notification should not be used")
+
+        async def send_kanban_decision(self, *_args, **_kwargs):
+            runner._running = False
+
+        async def handle_message(self, *_args, **_kwargs):
+            raise AssertionError("a structured plan gate must not wake the chat agent")
+
+    fake_adapter = DecisionAdapter()
+    fake_adapter.send_kanban_decision = AsyncMock(side_effect=fake_adapter.send_kanban_decision)
+    fake_adapter.send = AsyncMock(side_effect=fake_adapter.send)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    original_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await original_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(runner._kanban_notifier_watcher(interval=1), timeout=10.0)
+
+    fake_adapter.send_kanban_decision.assert_awaited_once()
+    fake_adapter.send.assert_not_awaited()
+    kwargs = fake_adapter.send_kanban_decision.call_args.kwargs
+    assert kwargs["task_id"] == task_id
+    assert "APPROUVER" in kwargs["prompt"]
+    assert "RÉSUMÉ_DÉCISION" in kwargs["plan"]
+
+
+def test_kanban_decision_pages_preserve_the_complete_planner_comment():
+    """Long planner comments are paged losslessly in one decision card."""
+    from plugins.platforms.telegram.adapter import _kanban_plan_decision_pages
+
+    plan = (
+        "RÉSUMÉ_DÉCISION\n- décision directement approuvable.\n\n"
+        + ("analyse détaillée\n" * 500)
+        + "\nCONTRAT_DE_PÉRIMÈTRE\n- exclus: aucune migration."
+    )
+
+    pages = _kanban_plan_decision_pages(plan)
+    reconstructed = "\n".join(pages)
+
+    assert len(pages) > 1
+    assert reconstructed.startswith("RÉSUMÉ_DÉCISION")
+    assert reconstructed.endswith("CONTRAT_DE_PÉRIMÈTRE\n- exclus: aucune migration.")
+    assert "[… extrait abrégé" not in reconstructed

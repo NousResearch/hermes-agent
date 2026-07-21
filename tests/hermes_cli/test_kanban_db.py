@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -260,14 +261,490 @@ def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     assert "Branch:   wt/t6-wire" in context
 
 
-def test_branch_name_requires_worktree_workspace(kanban_home):
-    with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
+def test_branch_name_requires_persistent_workspace(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="dir or worktree"):
         kb.create_task(
             conn,
             title="bad branch",
             workspace_kind="scratch",
             branch_name="wt/bad",
         )
+
+
+def test_native_workflow_refuses_planner_precreating_reviewer(kanban_home):
+    """A planner can create the coder, never a parallel reviewer lane."""
+    with kb.connect() as conn:
+        planner = kb.create_task(conn, title="plan", assignee="planner")
+        with pytest.raises(ValueError, match="planner may create only coder"):
+            kb.create_task(
+                conn,
+                title="premature review",
+                assignee="reviewer",
+                created_by="planner",
+                parents=[planner],
+                workspace_kind="worktree",
+                workspace_path="/tmp/revision",
+            )
+
+
+def test_native_workflow_requires_primary_checkout_for_fresh_coder(kanban_home, tmp_path):
+    """A first coding pass uses the repository checkout and a durable branch."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        planner = kb.create_task(conn, title="plan", assignee="planner")
+        with pytest.raises(ValueError, match="primary repository checkout"):
+            kb.create_task(
+                conn,
+                title="implementation",
+                assignee="coder",
+                created_by="planner",
+                parents=[planner],
+                workspace_kind="worktree",
+                workspace_path=str(tmp_path),
+            )
+        coder = kb.create_task(
+            conn,
+            title="implementation on task branch",
+            assignee="coder",
+            created_by="planner",
+            parents=[planner],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        task = kb.get_task(conn, coder)
+        assert task is not None
+        assert task.branch_name == f"task/{coder}"
+
+        coder_fast = kb.create_task(
+            conn,
+            title="independent implementation on task branch",
+            assignee="coder-fast",
+            created_by="planner",
+            parents=[planner],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        fast_task = kb.get_task(conn, coder_fast)
+        assert fast_task is not None
+        assert fast_task.branch_name == f"task/{coder_fast}"
+
+
+def test_native_workflow_accepts_a_multi_repository_manifest(kanban_home, tmp_path):
+    """One delivery branch can safely span several primary repositories."""
+    frontend = tmp_path / "common-frontend"
+    planning = tmp_path / "cfm_planning"
+    _init_git_repo(frontend)
+    _init_git_repo(planning)
+    manifest = [
+        {"path": str(frontend), "base_sha": "a" * 40},
+        {"path": str(planning), "base_sha": "b" * 40},
+    ]
+    with kb.connect() as conn:
+        planner = kb.create_task(conn, title="plan", assignee="planner")
+        coder = kb.create_task(
+            conn,
+            title="multi repository implementation",
+            body=f"REPOSITORY_MANIFEST_JSON: {json.dumps(manifest)}",
+            assignee="coder",
+            created_by="planner",
+            parents=[planner],
+            workspace_kind="dir",
+            workspace_path=str(frontend),
+        )
+        task = kb.get_task(conn, coder)
+    assert task is not None
+    assert task.branch_name == f"task/{coder}"
+
+
+def test_native_delivery_branch_starts_from_remote_default_and_rejects_inheritance(
+    kanban_home, tmp_path,
+):
+    """A new task never inherits the branch previously left in a shared checkout."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_git_repo(repo)
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(remote)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(remote), "symbolic-ref", "HEAD", "refs/heads/main"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "set-head", "origin", "-a"], check=True, capture_output=True, text=True)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "origin/main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with kb.connect() as conn:
+        planner = kb.create_task(conn, title="plan", assignee="planner")
+        coder = kb.create_task(
+            conn,
+            title="isolated delivery",
+            assignee="coder",
+            created_by="planner",
+            parents=[planner],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        task = kb.get_task(conn, coder)
+        assert task is not None
+        kb._prepare_native_branch_checkout(conn, task, repo)
+        assert subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip() == base_sha
+        assert subprocess.run(
+            ["git", "-C", str(repo), "branch", "--show-current"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip() == task.branch_name
+        assert kb._native_branch_was_initialized(conn, coder)
+
+        # A branch that predates its task is ambiguous: it may carry another
+        # task's commits, so the kernel must refuse it instead of switching.
+        subprocess.run(
+            ["git", "-C", str(repo), "switch", "main"], check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "branch", "task/preexisting"], check=True, capture_output=True, text=True,
+        )
+        conflicting = kb.create_task(
+            conn,
+            title="must not inherit",
+            assignee="coder",
+            created_by="planner",
+            parents=[planner],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name="task/preexisting",
+        )
+        conflicting_task = kb.get_task(conn, conflicting)
+        assert conflicting_task is not None
+        with pytest.raises(ValueError, match="already exists.*refusing to inherit"):
+            kb._prepare_native_branch_checkout(conn, conflicting_task, repo)
+
+
+def test_native_workflow_reuses_primary_checkout_for_reviewer_remediation(
+    kanban_home, tmp_path,
+):
+    """A remediation coder stays on the durable task branch checkout."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        reviewer = kb.create_task(conn, title="review", assignee="reviewer")
+        coder = kb.create_task(
+            conn,
+            title="remediate",
+            assignee="coder",
+            created_by="reviewer",
+            parents=[reviewer],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name="task/t_revision",
+        )
+        assert kb.get_task(conn, coder) is not None
+
+
+def test_native_workflow_reuses_linked_worktree_for_reviewer_remediation(
+    kanban_home, tmp_path,
+):
+    """A remediation coder may keep using the review worktree."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = repo / ".worktrees" / "revision"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "task/t_revision", str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with kb.connect() as conn:
+        reviewer = kb.create_task(conn, title="review", assignee="reviewer")
+        coder = kb.create_task(
+            conn,
+            title="remediate",
+            assignee="coder",
+            created_by="reviewer",
+            parents=[reviewer],
+            workspace_kind="dir",
+            workspace_path=str(worktree),
+            branch_name="task/t_revision",
+        )
+        assert kb.get_task(conn, coder) is not None
+
+
+def test_user_can_resume_native_coder_in_linked_worktree(kanban_home, tmp_path):
+    """An explicit operator retry may reuse the delivery worktree safely."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = repo / ".worktrees" / "revision"
+    branch_name = "task/t_revision"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch_name, str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        coder = kb.create_task(
+            conn,
+            title="operator retry",
+            assignee="coder",
+            created_by="user",
+            workspace_kind="dir",
+            workspace_path=str(worktree),
+            branch_name=branch_name,
+        )
+        task = kb.get_task(conn, coder)
+        assert task is not None
+        kb._prepare_native_branch_checkout(conn, task, worktree)
+
+    assert kb._git_current_branch(worktree) == branch_name
+
+
+def test_native_tester_reuses_linked_worktree_without_switching_or_cleaning(
+    kanban_home, tmp_path,
+):
+    """A tester validates the coder's worktree as-is, including uncommitted work."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = repo / ".worktrees" / "revision"
+    branch_name = "task/t_revision"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch_name, str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (worktree / "README.md").write_text("changed\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        coder = kb.create_task(conn, title="implementation", assignee="coder")
+        tester = kb.create_task(
+            conn,
+            title="technical validation",
+            assignee="tester",
+            created_by="coder",
+            parents=[coder],
+            workspace_kind="dir",
+            workspace_path=str(worktree),
+            branch_name=branch_name,
+        )
+        task = kb.get_task(conn, tester)
+        assert task is not None
+        kb._prepare_native_branch_checkout(conn, task, worktree)
+
+    assert kb._git_current_branch(worktree) == branch_name
+    assert kb._git_status_porcelain(worktree)
+
+
+def test_quoraform_e2e_preflight_blocks_before_worker_spawn(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn, title="technical", body="TEST_STAGE: technical", assignee="tester",
+        )
+        child = kb.create_task(
+            conn,
+            title="E2E",
+            body="TEST_STAGE: e2e\nSTACK_BASELINE_JSON: {}",
+            assignee="tester",
+            created_by="tester",
+            parents=[parent],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name="task/t_e2e",
+        )
+        task = kb.get_task(conn, child)
+        assert task is not None
+        monkeypatch.setattr(kb.shutil, "which", lambda name: "/fake/qf" if name == "qf-integrate" else None)
+        monkeypatch.setattr(
+            kb.subprocess,
+            "run",
+            lambda *_args, **_kwargs: types.SimpleNamespace(
+                returncode=1, stdout="", stderr="baseline missing",
+            ),
+        )
+        with pytest.raises(ValueError, match="E2E_RUNTIME_PRECHECK_FAILED: baseline missing"):
+            kb._prepare_quoraform_e2e_runtime(task, board=None)
+
+
+def test_native_split_validation_runs_technical_then_e2e_before_review(kanban_home, tmp_path):
+    """A broad plan cannot skip the bounded technical/E2E validation chain."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    with kb.connect() as conn:
+        planner = kb.create_task(conn, title="plan", assignee="planner")
+        coder = kb.create_task(
+            conn,
+            title="wide implementation",
+            body="TEST_SPLIT_REQUIRED: true",
+            assignee="coder",
+            created_by="planner",
+            parents=[planner],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+        )
+        with pytest.raises(ValueError, match="TEST_STAGE: technical"):
+            kb.create_task(
+                conn,
+                title="invalid direct E2E",
+                body="TEST_STAGE: e2e",
+                assignee="tester",
+                created_by="coder",
+                parents=[coder],
+                workspace_kind="dir",
+                workspace_path=str(repo),
+            )
+        technical = kb.create_task(
+            conn,
+            title="technical validation",
+            body="TEST_STAGE: technical\nBase SHA: " + base_sha,
+            assignee="tester",
+            created_by="coder",
+            parents=[coder],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name=f"task/{coder}",
+        )
+        with pytest.raises(ValueError, match="technical tester must create"):
+            kb.create_task(
+                conn,
+                title="premature review",
+                body="Base SHA: " + base_sha,
+                assignee="reviewer",
+                created_by="tester",
+                parents=[technical],
+                workspace_kind="dir",
+                workspace_path=str(repo),
+                branch_name=f"task/{coder}",
+            )
+        e2e = kb.create_task(
+            conn,
+            title="browser E2E validation",
+            body="TEST_STAGE: e2e\nBase SHA: " + base_sha,
+            assignee="tester",
+            created_by="tester",
+            parents=[technical],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name=f"task/{coder}",
+        )
+        reviewer = kb.create_task(
+            conn,
+            title="review",
+            body="TEST_STAGE: e2e\nBase SHA: " + base_sha,
+            assignee="reviewer",
+            created_by="tester",
+            parents=[e2e],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name=f"task/{coder}",
+        )
+    assert kb.get_task(conn, reviewer) is not None
+    e2e_task = kb.get_task(conn, e2e)
+    assert e2e_task is not None
+    assert e2e_task.max_runtime_seconds == 600
+    assert e2e_task.max_retries == 1
+
+
+def test_native_child_must_preserve_parent_base_sha(kanban_home):
+    with kb.connect() as conn:
+        coder = kb.create_task(
+            conn,
+            title="implementation",
+            body="Base SHA: aaaaaaa",
+            assignee="coder",
+        )
+        with pytest.raises(ValueError, match="must preserve its parent's Base SHA"):
+            kb.create_task(
+                conn,
+                title="validation",
+                body="TEST_STAGE: technical\nBase SHA: bbbbbbb",
+                assignee="tester",
+                created_by="coder",
+                parents=[coder],
+            )
+
+
+def test_native_pr_intake_reuses_primary_checkout_for_tester(
+    kanban_home, tmp_path,
+):
+    """An existing PR runs on its head branch in the primary checkout."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        intake = kb.create_task(conn, title="PR update", assignee="pr-intake")
+        with pytest.raises(ValueError, match="pr-intake may create only tester"):
+            kb.create_task(
+                conn,
+                title="premature correction",
+                assignee="coder",
+                created_by="pr-intake",
+                parents=[intake],
+                workspace_kind="dir",
+                workspace_path=str(repo),
+            )
+        tester = kb.create_task(
+            conn,
+            title="safe validation",
+            assignee="tester",
+            created_by="pr-intake",
+            parents=[intake],
+            workspace_kind="dir",
+            workspace_path=str(repo),
+            branch_name="feature/existing-pr",
+        )
+        assert kb.get_task(conn, tester) is not None
+
+
+def test_native_reviewer_is_idempotent_per_git_revision(kanban_home, tmp_path):
+    """Two tester handoffs for unchanged code reuse one reviewer task."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    worktree = repo / ".worktrees" / "revision"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "task/t_revision", str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (worktree / "README.md").write_text("changed\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tester = kb.create_task(conn, title="test", assignee="tester")
+        kwargs = {
+            "title": "review revision",
+            "body": f"Base SHA: {base_sha}\nTester verdict: PASS",
+            "assignee": "reviewer",
+            "created_by": "tester",
+            "parents": [tester],
+            "workspace_kind": "dir",
+            "workspace_path": str(worktree),
+            "branch_name": "task/t_revision",
+        }
+        first = kb.create_task(conn, **kwargs)
+        second = kb.create_task(conn, **kwargs)
+
+    assert second == first
 
 
 # ---------------------------------------------------------------------------
@@ -1111,6 +1588,104 @@ def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch
         assert kb.get_task(conn, t).status == "running"
 
 
+def test_timeout_recovers_indexer_with_complete_planner_handoff(
+    kanban_home, monkeypatch,
+):
+    """Avoid re-indexing when the planner handoff exists before timeout."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        indexer = kb.create_task(
+            conn,
+            title="index repository",
+            assignee="indexer",
+            max_runtime_seconds=10,
+        )
+        planner = kb.create_task(
+            conn,
+            title="plan implementation",
+            assignee="planner",
+            created_by="indexer",
+            parents=[indexer],
+            body=(
+                "REPOSITORY_GIT_ROOT: /tmp/repo\n"
+                "CODEGRAPH_EVIDENCE\n"
+                "- repo: /tmp/repo\n"
+                "- status: clean\n"
+            ),
+        )
+        claimed = kb.claim_task(conn, indexer, claimer=f"{host}:indexer")
+        assert claimed is not None
+        run = kb.latest_run(conn, indexer)
+        expired = int(time.time()) - 20
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (expired, 999999, indexer),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (expired, 999999, run.id),
+        )
+
+        assert kb.enforce_max_runtime(
+            conn, signal_fn=lambda _pid, _sig: None,
+        ) == []
+        recovered = kb.get_task(conn, indexer)
+        assert recovered is not None
+        assert recovered.status == "done"
+        assert recovered.consecutive_failures == 0
+        assert kb.get_task(conn, planner).status == "ready"
+        events = kb.list_events(conn, indexer)
+        assert any(
+            event.kind == "handoff_recovered"
+            and event.payload["child_id"] == planner
+            for event in events
+        )
+        assert kb.latest_run(conn, indexer).outcome == "completed"
+
+
+def test_timeout_does_not_recover_incomplete_indexer_handoff(
+    kanban_home, monkeypatch,
+):
+    """A planner without CodeGraph evidence must retain normal retry safety."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        indexer = kb.create_task(
+            conn,
+            title="index repository",
+            assignee="indexer",
+            max_runtime_seconds=10,
+        )
+        kb.create_task(
+            conn,
+            title="incomplete plan",
+            assignee="planner",
+            created_by="indexer",
+            parents=[indexer],
+            body="REPOSITORY_GIT_ROOT: /tmp/repo\n",
+        )
+        claimed = kb.claim_task(conn, indexer, claimer=f"{host}:indexer")
+        assert claimed is not None
+        run = kb.latest_run(conn, indexer)
+        expired = int(time.time()) - 20
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (expired, 999999, indexer),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ?, worker_pid = ? WHERE id = ?",
+            (expired, 999999, run.id),
+        )
+
+        assert kb.enforce_max_runtime(
+            conn, signal_fn=lambda _pid, _sig: None,
+        ) == [indexer]
+        assert kb.get_task(conn, indexer).status == "ready"
+
+
 def test_heartbeat_extends_claim(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -1677,6 +2252,27 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_serializes_native_cards_sharing_a_primary_checkout(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """Two native branches must never be switched in one checkout at once."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    with kb.connect() as conn:
+        owner = kb.create_task(
+            conn, title="current delivery", assignee="coder",
+            workspace_kind="dir", workspace_path=str(repo),
+        )
+        waiting = kb.create_task(
+            conn, title="other delivery", assignee="tester",
+            workspace_kind="dir", workspace_path=str(repo),
+        )
+        assert kb.claim_task(conn, owner) is not None
+        result = kb.dispatch_once(conn, dry_run=True)
+    assert (waiting, owner) in result.skipped_checkout_busy
+    assert not result.spawned
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers
@@ -1929,6 +2525,24 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_active_pr_is_bypassed_by_explicit_requeue(kanban_home):
+    """A manual unblock after a PR comment must restart the same card.
+
+    This is the recovery path for a corrected credential/workflow setup.  The
+    PR URL remains in the durable handoff, so treating it as an unconditional
+    guard would leave the task ready forever.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rerun existing PR", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR context: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+        kb._append_event(conn, t, "unblocked")
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:
@@ -2161,6 +2775,126 @@ def test_worktree_workspace_repo_root_anchor_materializes_linked_worktree(kanban
     ).stdout
     assert f"worktree {expected}" in listed
     assert f"branch refs/heads/wt/{t}" in listed
+
+
+def test_worktree_provisions_sibling_bun_file_dependency(kanban_home, tmp_path):
+    stack = tmp_path / "stack"
+    repo = stack / "cfm_planning"
+    frontend = repo / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text(
+        '{"dependencies":{"@frontend-common/core":"file:../../common-frontend"}}',
+        encoding="utf-8",
+    )
+    _init_git_repo(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "frontend/package.json"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "add frontend dependency"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    shared_package = stack / "common-frontend"
+    shared_package.mkdir()
+    (shared_package / "package.json").write_text('{"name":"@frontend-common/core"}', encoding="utf-8")
+
+    target = repo / ".worktrees" / "task"
+    kb._ensure_git_worktree(repo, target, "wt/task")
+
+    provisioned_link = repo / ".worktrees" / "common-frontend"
+    assert provisioned_link.is_symlink()
+    assert provisioned_link.resolve() == shared_package.resolve()
+    assert (target / "frontend" / "../../common-frontend").resolve() == shared_package.resolve()
+
+
+def test_worktree_bootstrap_deduces_bun_build_from_missing_go_embed_assets(tmp_path, monkeypatch):
+    """A fresh checkout builds only what its own Go embed contract requires."""
+    worktree = tmp_path / "repo"
+    frontend = worktree / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text(
+        '{"scripts":{"build":"bun run build.ts"}}', encoding="utf-8",
+    )
+    (frontend / "bun.lock").write_text("lock\n", encoding="utf-8")
+    source = worktree / "src" / "mux.go"
+    source.parent.mkdir()
+    source.write_text("package src\n//go:embed static/*\nvar assets string\n", encoding="utf-8")
+
+    commands: list[tuple[list[str], Path]] = []
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/fake/bun" if name == "bun" else None)
+
+    def fake_run(command, *, cwd, **_kwargs):
+        commands.append((command, Path(cwd)))
+        if command[-2:] == ["run", "build"]:
+            assets = worktree / "src" / "static"
+            assets.mkdir()
+            (assets / "main-min.js").write_text("built", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    kb._provision_generated_build_dependencies(worktree)
+
+    assert commands == [
+        (["/fake/bun", "install", "--frozen-lockfile"], frontend),
+        (["/fake/bun", "run", "build"], frontend),
+    ]
+    assert list((worktree / "src" / "static").iterdir())
+
+
+def test_worktree_bootstrap_skips_bun_without_missing_generated_assets(tmp_path, monkeypatch):
+    """A repository manifest alone never triggers an unrelated Bun install."""
+    worktree = tmp_path / "repo"
+    frontend = worktree / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "package.json").write_text(
+        '{"scripts":{"build":"bun run build.ts"}}', encoding="utf-8",
+    )
+    (frontend / "bun.lock").write_text("lock\n", encoding="utf-8")
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("Bun must not run without a derived need"),
+    )
+
+    kb._provision_generated_build_dependencies(worktree)
+
+
+def test_linked_worktree_bootstrap_applies_to_dir_reusers(tmp_path, monkeypatch):
+    """Tester/reviewer cards reuse the checkout as dirs but still get setup."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = repo / ".worktrees" / "revision"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "wt/revision", str(worktree)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    calls: list[tuple[str, Path, Path]] = []
+    monkeypatch.setattr(
+        kb,
+        "_provision_sibling_file_dependencies",
+        lambda primary, target: calls.append(("links", primary, target)),
+    )
+    monkeypatch.setattr(
+        kb,
+        "_provision_generated_build_dependencies",
+        lambda target: calls.append(("build", target, target)),
+    )
+
+    kb._bootstrap_linked_worktree_workspace(worktree)
+
+    assert calls == [
+        ("links", repo, worktree),
+        ("build", worktree, worktree),
+    ]
 
 
 def test_worktree_no_path_anchors_on_board_default_workdir(kanban_home, tmp_path):
@@ -3145,6 +3879,47 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
+    def test_dispatcher_e2e_prompt_routes_test_failures_to_reviewer(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        task = kb.Task(
+            id="t_dispatch_e2e",
+            title="e2e",
+            body="TEST_STAGE: e2e\nSTACK_BASELINE_JSON: {}",
+            assignee="tester",
+            status="ready",
+            priority=0,
+            created_by="tester",
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name="task/t_dispatch_e2e",
+        )
+
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        prompt = captured["cmd"][-1]
+        assert "TESTER_DECISION: FAILED" in prompt
+        assert "create the required reviewer handoff" in prompt
+        assert "must not call kanban_block" in prompt
+        assert "If one fails, call kanban_block" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs
@@ -3911,7 +4686,7 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
 def test_dispatch_review_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """Reviewer tasks receive the workflow review skills before spawning."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -3919,12 +4694,66 @@ def test_dispatch_review_spawns_with_correct_skills(
         return 42  # fake PID
 
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
+        t = kb.create_task(conn, title="review me", assignee="reviewer")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert spawned_tasks[0].skills == ["scope-contract", "ponytail:ponytail-review"]
+
+
+def test_role_default_skills_preserve_task_specific_skills(kanban_home):
+    """Role policy is additive and preserves an explicit task specialization."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="plan with an explicit specialization",
+            assignee="planner",
+            skills=["test-driven-development"],
+        )
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+
+    kb._apply_role_default_skills(task)
+
+    assert task.skills == [
+        "scope-contract",
+        "ponytail:ponytail",
+        "github-pr-workflow",
+        "test-driven-development",
+    ]
+
+
+def test_role_default_skills_cover_specialized_workflow_roles(kanban_home):
+    """Every specialized workflow role gets its intended preloaded skill."""
+    with kb.connect() as conn:
+        indexer_id = kb.create_task(conn, title="index", assignee="indexer")
+        pr_intake_id = kb.create_task(conn, title="PR intake", assignee="pr-intake")
+        coder_id = kb.create_task(conn, title="implementation", assignee="coder")
+        coder_fast_id = kb.create_task(conn, title="small implementation", assignee="coder-fast")
+        github_id = kb.create_task(conn, title="publish", assignee="github")
+        indexer = kb.get_task(conn, indexer_id)
+        pr_intake = kb.get_task(conn, pr_intake_id)
+        coder = kb.get_task(conn, coder_id)
+        coder_fast = kb.get_task(conn, coder_fast_id)
+        github = kb.get_task(conn, github_id)
+    assert indexer is not None
+    assert pr_intake is not None
+    assert coder is not None
+    assert coder_fast is not None
+    assert github is not None
+
+    kb._apply_role_default_skills(indexer)
+    kb._apply_role_default_skills(pr_intake)
+    kb._apply_role_default_skills(coder)
+    kb._apply_role_default_skills(coder_fast)
+    kb._apply_role_default_skills(github)
+
+    assert indexer.skills == ["codegraph-index"]
+    assert pr_intake.skills == ["codegraph-index", "github-pr-workflow"]
+    assert coder.skills == ["codegraph-index", "scope-contract", "ponytail:ponytail"]
+    assert coder_fast.skills == ["codegraph-index", "scope-contract", "ponytail:ponytail"]
+    assert github.skills == ["github-pr-workflow"]
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):

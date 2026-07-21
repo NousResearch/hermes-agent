@@ -11,6 +11,7 @@ import os
 import pytest
 
 from tools import browser_tool as bt
+from tools.environments import local as local_environment
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +50,18 @@ class TestChromiumInstalled:
         )
 
         assert bt._chromium_installed() is True
+
+
+def test_browser_subprocess_prefers_system_chromium(monkeypatch):
+    monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(local_environment, "hermes_subprocess_env", lambda **_: {"PATH": "/test/bin"})
+    monkeypatch.setattr(
+        bt.shutil,
+        "which",
+        lambda name, path=None: "/test/bin/chromium" if name == "chromium" and path == "/test/bin" else None,
+    )
+
+    assert bt._build_browser_env()["AGENT_BROWSER_EXECUTABLE_PATH"] == "/test/bin/chromium"
 
     def test_true_when_chromium_dir_present(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
@@ -132,5 +145,4 @@ class TestRunBrowserCommandChromiumGuard:
     """Verify _run_browser_command fails fast (no timeout hang) when
     Chromium is missing in local mode.
     """
-
 

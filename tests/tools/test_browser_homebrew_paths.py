@@ -51,6 +51,18 @@ class TestSanePath:
         assert "/bin" in path_parts
 
 
+def test_profile_worker_searches_shared_hermes_browser_bin(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "tester"
+    shared_home = tmp_path
+    monkeypatch.setattr(_bt, "get_hermes_home", lambda: profile_home)
+    monkeypatch.setattr(_bt, "get_default_hermes_root", lambda: shared_home)
+
+    candidates = _bt._browser_candidate_path_dirs()
+
+    assert str(profile_home / "node_modules" / ".bin") in candidates
+    assert str(shared_home / "node_modules" / ".bin") in candidates
+
+
 class TestDiscoverHomebrewNodeDirs:
     """Tests for _discover_homebrew_node_dirs()."""
 

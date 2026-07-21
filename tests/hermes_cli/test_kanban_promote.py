@@ -159,6 +159,35 @@ def test_promote_blocked_task_works(conn):
     assert kb.get_task(conn, tid).status == "ready"
 
 
+def test_promote_triage_requires_explicit_recovery_and_reason(conn):
+    tid = kb.create_task(conn, title="loop breaker")
+    conn.execute("UPDATE tasks SET status='triage' WHERE id=?", (tid,))
+
+    ok, err = kb.promote_task(conn, tid, actor="tester")
+    assert ok is False
+    assert "--recover-triage" in err
+
+    ok, err = kb.promote_task(conn, tid, actor="tester", recover_triage=True)
+    assert ok is False
+    assert err == "triage recovery requires a non-empty audit reason"
+
+    ok, err = kb.promote_task(
+        conn,
+        tid,
+        actor="tester",
+        recover_triage=True,
+        reason="working tree cleaned; retry once",
+    )
+    assert ok and err is None
+    assert kb.get_task(conn, tid).status == "ready"
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'promoted_manual' ORDER BY id DESC LIMIT 1",
+        (tid,),
+    ).fetchone()
+    assert json.loads(event["payload"])["recovered_from_triage"] is True
+
+
 # ---------------------------------------------------------------------------
 # CLI `_cmd_promote` — bulk via `--ids` (the issue's anti-respawn use case:
 # promote all children of a closed parent in one command).

@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import faulthandler
 import inspect
+import itertools
 import json
 import logging
 import os
@@ -23,6 +24,65 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
+
+
+# Leave room for the title, page indicator and decision buttons around a
+# planner-comment page. Telegram itself caps messages at 4,096 UTF-16 units.
+_KANBAN_DECISION_PAGE_MAX_UTF16 = 3_000
+
+
+def _kanban_plan_decision_pages(plan: str) -> list[str]:
+    """Split a planner comment into lossless Telegram-safe pages.
+
+    The approval card is edited in place when navigating pages, so the user
+    reads the complete original comment without receiving duplicate messages.
+    Account for HTML escaping and UTF-16 rather than Python character length.
+    """
+    remaining = str(plan or "").strip()
+    if not remaining:
+        return ["Le planner n’a pas publié de commentaire exploitable."]
+
+    pages: list[str] = []
+    while remaining:
+        if utf16_len(_html.escape(remaining)) <= _KANBAN_DECISION_PAGE_MAX_UTF16:
+            pages.append(remaining)
+            break
+        end = min(len(remaining), _KANBAN_DECISION_PAGE_MAX_UTF16)
+        while end > 1 and utf16_len(_html.escape(remaining[:end])) > _KANBAN_DECISION_PAGE_MAX_UTF16:
+            end -= 1
+        boundary = remaining.rfind("\n", 1, end + 1)
+        if boundary < end // 2:
+            boundary = remaining.rfind(" ", 1, end + 1)
+        if boundary > 0:
+            end = boundary
+        pages.append(remaining[:end].rstrip())
+        remaining = remaining[end:].lstrip()
+    return pages
+
+
+def _kanban_decision_text(*, task_id: str, title: str, pages: list[str], page: int) -> str:
+    return (
+        f"⏸ <b>Plan à valider — {_html.escape(task_id)}</b>\n"
+        f"<b>{_html.escape(title)}</b>\n\n"
+        f"<b>Commentaire complet du planner — page {page + 1}/{len(pages)}</b>\n"
+        f"{_html.escape(pages[page])}\n\n"
+        "Choisis une action :"
+    )
+
+
+def _kanban_decision_keyboard(*, decision_id: str, page: int, page_count: int):
+    rows = []
+    if page_count > 1:
+        rows.append([
+            InlineKeyboardButton("◀️", callback_data=f"kd:{decision_id}:page:{max(0, page - 1)}"),
+            InlineKeyboardButton(f"{page + 1}/{page_count}", callback_data=f"kd:{decision_id}:page:{page}"),
+            InlineKeyboardButton("▶️", callback_data=f"kd:{decision_id}:page:{min(page_count - 1, page + 1)}"),
+        ])
+    rows.extend([
+        [InlineKeyboardButton("✅ Approuver le plan", callback_data=f"kd:{decision_id}:approve")],
+        [InlineKeyboardButton("✏️ Demander des ajustements", callback_data=f"kd:{decision_id}:adjust")],
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -803,9 +863,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        self._slash_confirm_labels: Dict[str, Dict[str, str]] = {}
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Kanban decision prompts are local to this live adapter. The Kanban DB
+        # stays the durable source of truth and still accepts /kanban commands.
+        self._kanban_decision_counter = itertools.count(1)
+        self._kanban_decision_state: Dict[str, Dict[str, Any]] = {}
+        self._kanban_adjustment_state: Dict[tuple[str, str], Dict[str, Any]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -5089,13 +5155,21 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
 
+            labels = (metadata or {}).get("slash_confirm_labels")
+            if not isinstance(labels, dict):
+                labels = {}
+            labels = {
+                "once": str(labels.get("once") or "✅ Approve Once"),
+                "always": str(labels.get("always") or "🔒 Always Approve"),
+                "cancel": str(labels.get("cancel") or "❌ Cancel"),
+            }
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                    InlineKeyboardButton(labels["once"], callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton(labels["always"], callback_data=f"sc:always:{confirm_id}"),
                 ],
                 [
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    InlineKeyboardButton(labels["cancel"], callback_data=f"sc:cancel:{confirm_id}"),
                 ],
             ])
 
@@ -5121,10 +5195,73 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
             self._slash_confirm_state[confirm_id] = session_key
+            self._slash_confirm_labels[confirm_id] = labels
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, _redact_telegram_error_text(e))
             return SendResult(success=False, error=_redact_telegram_error_text(e))
+
+    async def send_kanban_decision(
+        self,
+        chat_id: str,
+        *,
+        task_id: str,
+        board_slug: Optional[str],
+        title: str,
+        prompt: str,
+        plan: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render an explicit Kanban plan-decision gate as Telegram buttons.
+
+        The notifier calls this only for a planner's ``APPROUVER`` gate. A
+        reviewer blocked on missing proof must not receive a misleading
+        approval button: it needs the requested evidence instead.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            decision_id = str(next(self._kanban_decision_counter))
+            self._kanban_decision_state[decision_id] = {
+                "task_id": task_id,
+                "board_slug": board_slug,
+                "chat_id": str(chat_id),
+                "thread_id": str((metadata or {}).get("thread_id") or ""),
+                "title": title,
+                "pages": _kanban_plan_decision_pages(plan or prompt),
+                "page": 0,
+            }
+            state = self._kanban_decision_state[decision_id]
+            text = _kanban_decision_text(
+                task_id=task_id,
+                title=title,
+                pages=state["pages"],
+                page=0,
+            )
+            keyboard = _kanban_decision_keyboard(
+                decision_id=decision_id, page=0, page_count=len(state["pages"]),
+            )
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(
+                None, metadata, reply_to_mode=self._reply_to_mode,
+            )
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id, thread_id, metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_kanban_decision failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def send_clarify(
         self,
@@ -5918,6 +6055,121 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Kanban planner decisions (kd:id:approve | kd:id:adjust | kd:id:page:n) ---
+        if data.startswith("kd:"):
+            parts = data.split(":")
+            if len(parts) not in {3, 4}:
+                await query.answer(text="Décision Kanban invalide.")
+                return
+            decision_id, choice = parts[1], parts[2]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ Vous n’êtes pas autorisé à décider ce plan.")
+                return
+            state = self._kanban_decision_state.get(decision_id)
+            if not state:
+                await query.answer(text="Cette décision a expiré ou a déjà été traitée.")
+                return
+            if choice == "page":
+                if len(parts) != 4:
+                    await query.answer(text="Page de plan invalide.")
+                    return
+                try:
+                    page = int(parts[3])
+                except ValueError:
+                    await query.answer(text="Page de plan invalide.")
+                    return
+                pages = state.get("pages") or []
+                if not 0 <= page < len(pages):
+                    await query.answer(text="Cette page n’existe plus.")
+                    return
+                state["page"] = page
+                await query.answer()
+                try:
+                    await query.edit_message_text(
+                        text=_kanban_decision_text(
+                            task_id=str(state["task_id"]),
+                            title=str(state.get("title") or "Plan"),
+                            pages=pages,
+                            page=page,
+                        ),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=_kanban_decision_keyboard(
+                            decision_id=decision_id, page=page, page_count=len(pages),
+                        ),
+                    )
+                except Exception:
+                    logger.debug("[%s] Kanban decision page update failed", self.name, exc_info=True)
+                return
+            if choice == "adjust":
+                state["awaiting_adjustments"] = True
+                adjustment_key = (
+                    str(query_chat_id or state["chat_id"]),
+                    str(query_thread_id or state.get("thread_id") or ""),
+                )
+                self._kanban_adjustment_state[adjustment_key] = state
+                await query.answer(text="Écris maintenant les ajustements souhaités.")
+                try:
+                    await query.edit_message_text(
+                        text=(
+                            "✏️ <b>Ajustements demandés</b>\n\n"
+                            "Envoie maintenant le détail des ajustements. Il sera ajouté à la carte et le planificateur sera relancé."
+                        ),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+            if choice != "approve":
+                await query.answer(text="Décision Kanban inconnue.")
+                return
+
+            task_id = str(state["task_id"])
+            board_slug = state.get("board_slug")
+            author = f"telegram:{caller_id or 'user'}"
+
+            def _approve_plan() -> tuple[bool, str]:
+                from hermes_cli import kanban_db as _kb
+                conn = _kb.connect(board=board_slug)
+                try:
+                    task = _kb.get_task(conn, task_id)
+                    if not task or task.status != "blocked" or task.block_kind != "needs_input":
+                        return False, "La carte n’attend plus cette décision."
+                    _kb.add_comment(conn, task_id, author, "APPROUVER")
+                    if not _kb.unblock_task(conn, task_id):
+                        return False, "La carte n’a pas pu être relancée."
+                    return True, "Plan approuvé ; le planificateur est relancé."
+                finally:
+                    conn.close()
+
+            try:
+                approved, result = await asyncio.to_thread(_approve_plan)
+            except Exception as exc:
+                logger.warning("[%s] Kanban approval failed: %s", self.name, exc)
+                approved, result = False, "Impossible d’enregistrer cette approbation."
+            if not approved:
+                await query.answer(text=result)
+                return
+            self._kanban_decision_state.pop(decision_id, None)
+            await query.answer(text="✅ Plan approuvé")
+            try:
+                user_display = _html.escape(getattr(query.from_user, "first_name", "Utilisateur"))
+                await query.edit_message_text(
+                    text=f"✅ <b>Plan approuvé</b> par {user_display}.\n\n{_html.escape(result)}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -6008,6 +6260,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 session_key = self._slash_confirm_state.pop(confirm_id, None)
+                labels = getattr(self, "_slash_confirm_labels", {}).pop(confirm_id, {})
                 if not session_key:
                     await query.answer(text="This prompt has already been resolved.")
                     return
@@ -6018,7 +6271,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "cancel": "❌ Cancelled",
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
+                label = labels.get(choice, label_map.get(choice, "Resolved"))
 
                 await query.answer(text=label)
 
@@ -8140,7 +8393,57 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        if await self._capture_kanban_adjustments(event):
+            return
         self._enqueue_text_event(event)
+
+    async def _capture_kanban_adjustments(self, event: MessageEvent) -> bool:
+        """Store the next typed adjustment after a Kanban button is tapped."""
+        source = getattr(event, "source", None)
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        state = self._kanban_adjustment_state.get((chat_id, thread_id))
+        body = str(getattr(event, "text", "") or "").strip()
+        if not state or not body:
+            return False
+        task_id = str(state["task_id"])
+        board_slug = state.get("board_slug")
+        author = f"telegram:{getattr(source, 'user_id', None) or 'user'}"
+
+        def _record_adjustments() -> tuple[bool, str]:
+            from hermes_cli import kanban_db as _kb
+            conn = _kb.connect(board=board_slug)
+            try:
+                task = _kb.get_task(conn, task_id)
+                if not task or task.status != "blocked" or task.block_kind != "needs_input":
+                    return False, "La carte n’attend plus d’ajustements."
+                _kb.add_comment(conn, task_id, author, f"AJUSTEMENTS DEMANDÉS :\n{body}")
+                if not _kb.unblock_task(conn, task_id):
+                    return False, "La carte n’a pas pu être relancée."
+                return True, "Ajustements enregistrés ; le planificateur est relancé."
+            finally:
+                conn.close()
+
+        try:
+            recorded, result = await asyncio.to_thread(_record_adjustments)
+        except Exception as exc:
+            logger.warning("[%s] Kanban adjustment capture failed: %s", self.name, exc)
+            return False
+        if not recorded:
+            await self.send(
+                chat_id, f"⏸ {result}",
+                metadata={"thread_id": thread_id} if thread_id else None,
+            )
+            return True
+        self._kanban_adjustment_state.pop((chat_id, thread_id), None)
+        for decision_id, candidate in list(self._kanban_decision_state.items()):
+            if candidate is state:
+                self._kanban_decision_state.pop(decision_id, None)
+        await self.send(
+            chat_id, f"✅ {result}",
+            metadata={"thread_id": thread_id} if thread_id else None,
+        )
+        return True
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""

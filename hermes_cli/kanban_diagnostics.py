@@ -1000,6 +1000,61 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _review_required_child_deadlock(task: Any, events: list[Any], children: list[Any]) -> list[Diagnostic]:
+    """Detect a review-required parent that is preventing its child from running.
+
+    A worker that creates a tester/reviewer child must complete afterwards: a
+    child with a parent dependency cannot leave ``todo`` while that parent is
+    deliberately sticky-blocked for review. This rule is read-only and only
+    emits a recovery hint; it never auto-completes code on the operator's
+    behalf.
+    """
+    if _task_field(task, "status") != "blocked" or not children:
+        return []
+    latest_reason = ""
+    latest_ts = 0
+    for event in events:
+        if _event_kind(event) == "blocked":
+            latest_reason = str(_parse_payload(event).get("reason") or "")
+            latest_ts = _event_ts(event)
+    if not latest_reason.lower().startswith("review-required:"):
+        return []
+    waiting_children = [
+        child for child in children
+        if _task_field(child, "status") == "todo"
+        and str(_task_field(child, "assignee", "")).lower() in {"tester", "reviewer"}
+    ]
+    if not waiting_children:
+        return []
+    task_id = str(_task_field(task, "id", "<task>"))
+    child_ids = [str(_task_field(child, "id")) for child in waiting_children]
+    command = (
+        f"hermes kanban complete {task_id} "
+        "--summary 'Implementation completed; downstream validation card created.'"
+    )
+    return [Diagnostic(
+        kind="review_required_child_deadlock",
+        severity="error",
+        title="Blocked review is preventing downstream validation",
+        detail=(
+            f"{task_id} is blocked with review-required while dependent "
+            f"validation card(s) {', '.join(child_ids)} remain in todo. "
+            "Complete the parent after verifying its handoff; do not unblock "
+            "it, or the coder may run again and repeat the block."
+        ),
+        actions=[DiagnosticAction(
+            kind="cli_hint",
+            label="Complete the blocked parent to release validation",
+            payload={"command": command, "child_ids": child_ids},
+            suggested=True,
+        )],
+        first_seen_at=latest_ts,
+        last_seen_at=latest_ts,
+        count=1,
+        data={"child_ids": child_ids, "block_reason": latest_reason},
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
@@ -1025,6 +1080,7 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "review_required_child_deadlock",
 )
 
 
@@ -1093,6 +1149,7 @@ def compute_task_diagnostics(
     events: list,
     runs: list,
     *,
+    children: Optional[list] = None,
     now: Optional[int] = None,
     config: Optional[dict] = None,
 ) -> list[Diagnostic]:
@@ -1123,6 +1180,10 @@ def compute_task_diagnostics(
             # get caught in tests; in production we'd rather drop the
             # diagnostic than 500 a whole /board request.
             continue
+    try:
+        out.extend(_review_required_child_deadlock(task, events, children or []))
+    except Exception:
+        pass
     severity_idx = {s: i for i, s in enumerate(SEVERITY_ORDER)}
     out.sort(
         key=lambda d: (

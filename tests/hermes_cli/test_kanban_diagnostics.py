@@ -407,6 +407,32 @@ def test_diagnostics_sorted_critical_first():
     assert "prose_phantom_refs" in kinds
 
 
+def test_review_required_parent_with_todo_tester_is_actionable_deadlock():
+    """A reviewer/tester child cannot start while its parent is sticky-blocked."""
+    task = _task(id="t_parent", status="blocked")
+    events = [_event("blocked", ts=200, reason="review-required: code is ready")]
+    children = [_task(id="t_tester", status="todo", assignee="tester")]
+
+    diags = kd.compute_task_diagnostics(task, events, [], children=children, now=300)
+
+    deadlocks = [d for d in diags if d.kind == "review_required_child_deadlock"]
+    assert len(deadlocks) == 1
+    diagnostic = deadlocks[0]
+    assert diagnostic.severity == "error"
+    assert diagnostic.data["child_ids"] == ["t_tester"]
+    assert diagnostic.actions[0].payload["command"].startswith("hermes kanban complete t_parent")
+
+
+def test_review_required_parent_without_validation_child_is_not_deadlock():
+    task = _task(status="blocked")
+    events = [_event("blocked", reason="review-required: code is ready")]
+    children = [_task(id="t_docs", status="todo", assignee="docs")]
+
+    diags = kd.compute_task_diagnostics(task, events, [], children=children)
+
+    assert not [d for d in diags if d.kind == "review_required_child_deadlock"]
+
+
 # ---------------------------------------------------------------------------
 # Integration — runs through real kanban_db so sqlite.Row fields work
 # ---------------------------------------------------------------------------

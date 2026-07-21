@@ -54,6 +54,35 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+_KANBAN_MESSAGE_CHUNK_CHARS = 3600
+
+
+def _split_kanban_output(output: str, *, max_chars: int = _KANBAN_MESSAGE_CHUNK_CHARS) -> list[str]:
+    """Split a long Kanban response into chat-safe, numbered messages.
+
+    Prefer paragraph and word boundaries so a long planner comment remains
+    readable on Telegram and other chat adapters.  The modest 3,600-character
+    payload leaves room for the part marker and platform-specific formatting.
+    """
+    if len(output) <= max_chars:
+        return [output]
+
+    chunks: list[str] = []
+    remaining = output
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, max_chars + 1)
+        if cut < max_chars // 2:
+            cut = remaining.rfind(" ", 0, max_chars + 1)
+        if cut <= 0:
+            cut = max_chars
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:]
+
+    total = len(chunks)
+    return [f"Kanban — partie {index}/{total}\n{chunk}" for index, chunk in enumerate(chunks, start=1)]
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -89,6 +118,52 @@ class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
+
+    async def _defer_kanban_continuations_after_delivery(
+        self, source: Any, continuations: list[str]
+    ) -> None:
+        """Send long ``/kanban`` output after its first response is delivered."""
+        if not continuations:
+            return
+        adapter = self._adapter_for_source(source)
+        if not adapter:
+            logger.debug("kanban continuation: no adapter for %s", getattr(source, "platform", None))
+            return
+
+        try:
+            metadata = self._thread_metadata_for_source(source)
+        except Exception:
+            metadata = None
+
+        async def _deliver() -> None:
+            for message in continuations:
+                result = await adapter.send(source.chat_id, message, metadata=metadata)
+                if result is not None and not getattr(result, "success", True):
+                    logger.warning(
+                        "kanban continuation: send failed: %s",
+                        getattr(result, "error", "unknown error"),
+                    )
+                    return
+
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            session_key = None
+
+        if session_key and hasattr(adapter, "register_post_delivery_callback"):
+            try:
+                generation = None
+                active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                if active is not None:
+                    generation = getattr(active, "_hermes_run_generation", None)
+                adapter.register_post_delivery_callback(
+                    session_key, _deliver, generation=generation
+                )
+                return
+            except Exception:
+                logger.debug("kanban continuation: post-delivery registration failed", exc_info=True)
+
+        await _deliver()
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
@@ -458,56 +533,138 @@ class GatewaySlashCommandsMixin:
 
         is_create = action == "create"
 
-        try:
-            output = await asyncio.to_thread(run_slash, text)
-        except Exception as exc:  # pragma: no cover - defensive
-            return t("gateway.kanban.error_prefix", error=exc)
+        # A workflow child is normally subscribed automatically from its
+        # parent. This explicit self-service form also repairs cards created
+        # before that inheritance existed, without making the user discover
+        # Telegram's internal chat id:
+        #   /kanban subscribe t_deadbeef
+        if action == "subscribe":
+            if i + 1 >= len(tokens) or not re.fullmatch(r"t_[0-9a-f]+", tokens[i + 1]):
+                return "Usage: /kanban subscribe <task_id>"
+            task_id = tokens[i + 1]
+            source = event.source
+            platform = getattr(source, "platform", None)
+            platform_str = (
+                platform.value if hasattr(platform, "value") else str(platform or "")
+            ).lower()
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = str(getattr(source, "thread_id", "") or "")
+            user_id = str(getattr(source, "user_id", "") or "") or None
+            if not platform_str or not chat_id:
+                return "Impossible d’identifier ce chat pour l’abonnement."
 
-        # Auto-subscribe on create. Parse the task id from the CLI's standard
-        # success line ("Created t_abcd  (ready, assignee=...)"). If the user
-        # passed --json we don't subscribe; they're clearly scripting and
-        # can call /kanban notify-subscribe explicitly.
-        if is_create and output:
-            m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output)
-            if m:
-                task_id = m.group(1)
+            def _subscribe_current_chat() -> bool:
+                from hermes_cli import kanban_db as _kb
+                conn = _kb.connect(board=requested_board)
                 try:
-                    source = event.source
-                    platform = getattr(source, "platform", None)
-                    platform_str = (
-                        platform.value if hasattr(platform, "value") else str(platform or "")
-                    ).lower()
-                    chat_id = str(getattr(source, "chat_id", "") or "")
-                    thread_id = str(getattr(source, "thread_id", "") or "")
-                    user_id = str(getattr(source, "user_id", "") or "") or None
-                    if platform_str and chat_id:
-                        def _sub():
-                            from hermes_cli import kanban_db as _kb
-                            conn = _kb.connect(board=requested_board)
-                            try:
-                                _kb.add_notify_sub(
-                                    conn, task_id=task_id,
-                                    platform=platform_str, chat_id=chat_id,
-                                    thread_id=thread_id or None,
-                                    user_id=user_id,
-                                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                                )
-                            finally:
-                                conn.close()
-                        await asyncio.to_thread(_sub)
-                        output = (
-                            output.rstrip()
-                            + "\n"
-                            + t("gateway.kanban.subscribed_suffix", task_id=task_id)
-                        )
-                except Exception as exc:
-                    logger.warning("kanban create auto-subscribe failed: %s", exc)
+                    if _kb.get_task(conn, task_id) is None:
+                        return False
+                    _kb.add_notify_sub(
+                        conn, task_id=task_id,
+                        platform=platform_str, chat_id=chat_id,
+                        thread_id=thread_id or None, user_id=user_id,
+                        notifier_profile=(
+                            getattr(self, "_kanban_notifier_profile", None)
+                            or self._active_profile_name()
+                        ),
+                    )
+                    return True
+                finally:
+                    conn.close()
 
-        # Gateway messages have practical length caps; truncate long
-        # listings to keep the UX reasonable.
-        if len(output) > 3800:
-            output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
-        return output or t("gateway.kanban.no_output")
+            try:
+                exists = await asyncio.to_thread(_subscribe_current_chat)
+            except Exception as exc:
+                logger.warning("kanban subscribe failed for %s: %s", task_id, exc)
+                return f"Impossible de s’abonner à {task_id}: {exc}"
+            if not exists:
+                return f"Carte inconnue : {task_id}"
+            return (
+                f"Abonné à {task_id}. Tu recevras les blocages, dont les "
+                "demandes de validation de plan."
+            )
+
+        async def execute() -> str:
+            try:
+                output = await asyncio.to_thread(run_slash, text)
+            except Exception as exc:  # pragma: no cover - defensive
+                return t("gateway.kanban.error_prefix", error=exc)
+
+            # Auto-subscribe on create. Parse the task id from the CLI's standard
+            # success line ("Created t_abcd  (ready, assignee=...)"). If the user
+            # passed --json we don't subscribe; they're clearly scripting and
+            # can call /kanban notify-subscribe explicitly.
+            if is_create and output:
+                m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output)
+                if m:
+                    task_id = m.group(1)
+                    try:
+                        source = event.source
+                        platform = getattr(source, "platform", None)
+                        platform_str = (
+                            platform.value if hasattr(platform, "value") else str(platform or "")
+                        ).lower()
+                        chat_id = str(getattr(source, "chat_id", "") or "")
+                        thread_id = str(getattr(source, "thread_id", "") or "")
+                        user_id = str(getattr(source, "user_id", "") or "") or None
+                        if platform_str and chat_id:
+                            def _sub():
+                                from hermes_cli import kanban_db as _kb
+                                conn = _kb.connect(board=requested_board)
+                                try:
+                                    _kb.add_notify_sub(
+                                        conn, task_id=task_id,
+                                        platform=platform_str, chat_id=chat_id,
+                                        thread_id=thread_id or None,
+                                        user_id=user_id,
+                                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    )
+                                finally:
+                                    conn.close()
+                            await asyncio.to_thread(_sub)
+                            output = (
+                                output.rstrip()
+                                + "\n"
+                                + t("gateway.kanban.subscribed_suffix", task_id=task_id)
+                            )
+                    except Exception as exc:
+                        logger.warning("kanban create auto-subscribe failed: %s", exc)
+
+            chunks = _split_kanban_output(output)
+            if len(chunks) > 1:
+                await self._defer_kanban_continuations_after_delivery(
+                    event.source, chunks[1:]
+                )
+            return chunks[0] or t("gateway.kanban.no_output")
+
+        if is_create and getattr(event.source, "platform", None) == Platform.TELEGRAM:
+            command = f"/kanban {text}"
+
+            async def confirm_create(choice: str) -> str:
+                if choice == "cancel":
+                    return "Création annulée."
+                if choice == "always":
+                    return f"Modification demandée. Corrige puis renvoie :\n{command}"
+                return await execute()
+
+            return await self._request_slash_confirm(
+                event=event,
+                command="kanban-create",
+                title="Créer cette tâche ?",
+                message=(
+                    f"Créer cette tâche ?\n\n{command}\n\n"
+                    "Oui lance la tâche. Modifier annule cette demande pour te laisser "
+                    "renvoyer la commande corrigée."
+                ),
+                handler=confirm_create,
+                button_labels={
+                    "once": "✅ Oui",
+                    "always": "✏️ Modifier",
+                    "cancel": "❌ Non",
+                },
+            )
+
+        return await execute()
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

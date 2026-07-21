@@ -91,6 +91,22 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_list_excludes_statuses(kanban_home):
+    with kb.connect_closing() as conn:
+        ready = kb.create_task(conn, title="active task")
+        done = kb.create_task(conn, title="finished task")
+        assert kb.complete_task(conn, done)
+
+    out = kc.run_slash("list --exclude=done")
+    assert ready in out
+    assert "active task" in out
+    assert done not in out
+    assert "finished task" not in out
+
+    out = kc.run_slash("list --exclude=ready --exclude=done --json")
+    assert json.loads(out) == []
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()
@@ -157,6 +173,111 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     kc.run_slash(f"claim {tid}")
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_run_slash_approve_resumes_a_blocked_planner_task(kanban_home):
+    out = kc.run_slash("create 'review plan' --assignee planner")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block --kind needs_input {tid} 'Plan published; approval required'")
+
+    assert f"Approved {tid}; planner resumed" in kc.run_slash(f"approve {tid}")
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert [comment.body for comment in kb.list_comments(conn, tid)][-1] == "APPROUVER"
+
+
+def test_run_slash_approve_resumes_a_triaged_planner_after_explicit_approval(kanban_home):
+    """The loop breaker must not make an already-approved plan unrecoverable."""
+    out = kc.run_slash("create 'review revised plan' --assignee planner")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    # Reproduce a clarification followed by a revised plan that again awaits
+    # approval: the second needs_input block is deliberately routed to triage.
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'Plan published; approval required'")
+    kc.run_slash(f"unblock {tid}")
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block --kind needs_input {tid} 'Revised plan published; approval required'")
+
+    assert f"Approved {tid}; planner resumed" in kc.run_slash(f"approve {tid}")
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.block_recurrences == 0
+        assert [comment.body for comment in kb.list_comments(conn, tid)][-1] == "APPROUVER"
+
+
+def test_run_slash_approve_rejects_a_non_planner_task(kanban_home):
+    out = kc.run_slash("create 'need credentials' --assignee coder")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'Need credentials'")
+
+    assert "not planner" in kc.run_slash(f"approve {tid}")
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert not any(comment.body == "APPROUVER" for comment in kb.list_comments(conn, tid))
+
+
+def test_run_slash_pr_question_creates_a_read_only_intake_card(kanban_home):
+    out = kc.run_slash(
+        "pr question https://github.com/acme/widgets/pull/42 "
+        "'Le test e2e est-il couvert ?'"
+    )
+    import re
+    task_id = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    assert "lecture seule" in out
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.assignee == "pr-intake"
+    assert task.workspace_kind == "scratch"
+    assert "PR_OPERATION: question" in (task.body or "")
+    assert "PR_URL: https://github.com/acme/widgets/pull/42" in (task.body or "")
+
+
+def test_run_slash_pr_update_starts_the_tester_reviewer_correction_flow(kanban_home):
+    out = kc.run_slash(
+        "pr update https://github.com/acme/widgets/pull/42 "
+        "'Relancer les e2e et corriger si nécessaire'"
+    )
+    import re
+    task_id = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    assert "tests E2E" in out
+    assert "/kanban approve" not in out
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+        assert "PR_OPERATION: update" in (task.body or "")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/acme/widgets/pull/42",
+        "https://github.com/acme/widgets/issues/42",
+        "https://example.test/acme/widgets/pull/42",
+        "https://github.com/acme/widgets/pull/0",
+    ],
+)
+def test_run_slash_pr_rejects_non_pr_urls(kanban_home, url):
+    out = kc.run_slash(f"pr question {url} 'question'")
+    assert "PR URL must be" in out
 
 
 def test_run_slash_json_output(kanban_home):

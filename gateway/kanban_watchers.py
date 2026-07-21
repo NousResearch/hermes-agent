@@ -279,6 +279,23 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                # The blocking event only carries a short
+                                # operational reason.  A plan approval is a
+                                # decision about the planner's analysis, which
+                                # lives in the latest planner comment.  Fetch
+                                # it while this board connection is open so
+                                # the Telegram decision card can be useful on
+                                # its own instead of asking the conversation
+                                # agent to summarise it in a second message.
+                                plan_comment = ""
+                                approvable_roles = getattr(
+                                    _kb, "APPROVABLE_PLAN_ROLES", frozenset({"planner"})
+                                )
+                                if task and getattr(task, "assignee", None) in approvable_roles:
+                                    for comment in reversed(_kb.list_comments(conn, sub["task_id"])):
+                                        if comment.author == task.assignee:
+                                            plan_comment = comment.body
+                                            break
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -289,6 +306,7 @@ class GatewayKanbanWatchersMixin:
                                     "cursor": cursor,
                                     "events": events,
                                     "task": task,
+                                    "plan_comment": plan_comment,
                                     "board": slug,
                                 })
                         finally:
@@ -336,6 +354,9 @@ class GatewayKanbanWatchersMixin:
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
+                    approvable_roles = getattr(
+                        _kb, "APPROVABLE_PLAN_ROLES", frozenset({"planner"})
+                    )
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -408,14 +429,65 @@ class GatewayKanbanWatchersMixin:
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        # A planner that explicitly asks for ``APPROUVER``
+                        # is a structured human decision, not an invitation
+                        # for a free-form conversation turn. Telegram can
+                        # render that decision as buttons; other platforms
+                        # retain the portable text notification and /kanban
+                        # command fallback.
+                        approval_prompt = (
+                            kind == "blocked"
+                            and getattr(task, "assignee", None) in approvable_roles
+                            and getattr(task, "block_kind", None) == "needs_input"
+                            and "APPROUVER" in str((ev.payload or {}).get("reason") or "").upper()
+                        )
                         sub_key = (
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
+                        # Plugin render hook: allow a plugin to replace the
+                        # generic Kanban notification with a richer message
+                        # (e.g. Quoraform actions).  Runs in a thread to avoid
+                        # blocking the async watcher loop on synchronous I/O.
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
+                            from hermes_cli.plugins import invoke_hook as _render_hook
+                            _render_results = await asyncio.to_thread(
+                                _render_hook,
+                                "render_kanban_notification",
+                                task=task, event_payload=ev.payload,
+                                board_slug=board_slug, board_tag=board_tag,
+                                subscription=sub, kind=kind,
+                                kind_label=kind,
                             )
+                            for _rr in _render_results:
+                                if isinstance(_rr, dict) and _rr.get("replace_default") and _rr.get("message"):
+                                    msg = str(_rr["message"])
+                                    break
+                        except Exception:
+                            logger.warning(
+                                "render_kanban_notification hook failed for "
+                                "task=%s board=%s kind=%s",
+                                sub["task_id"], board_slug, kind,
+                                exc_info=True,
+                            )
+                        try:
+                            send_kanban_decision = getattr(
+                                type(adapter), "send_kanban_decision", None
+                            )
+                            if approval_prompt and callable(send_kanban_decision):
+                                await adapter.send_kanban_decision(
+                                    sub["chat_id"],
+                                    task_id=sub["task_id"],
+                                    board_slug=board_slug,
+                                    title=title,
+                                    prompt=msg,
+                                    plan=d.get("plan_comment") or None,
+                                    metadata=metadata,
+                                )
+                            else:
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -490,7 +562,29 @@ class GatewayKanbanWatchersMixin:
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+
+                        def _is_structured_plan_approval(event: Any) -> bool:
+                            """True when Telegram already rendered the only needed decision UI.
+
+                            Waking the conversation agent for this event used
+                            to make it call ``clarify`` and emit a second,
+                            competing "Plan minimal" question.  A plan gate
+                            has its own durable buttons and must not enter the
+                            free-form conversation path.
+                            """
+                            return (
+                                event.kind == "blocked"
+                                and getattr(task, "assignee", None) in approvable_roles
+                                and getattr(task, "block_kind", None) == "needs_input"
+                                and "APPROUVER" in str(
+                                    (getattr(event, "payload", None) or {}).get("reason") or ""
+                                ).upper()
+                            )
+
+                        _wake_kinds = {
+                            ev.kind for ev in d["events"]
+                            if ev.kind in _WAKE_KINDS and not _is_structured_plan_approval(ev)
+                        }
                         if _wake_kinds:
                             try:
                                 _session_key = getattr(task, "session_id", None) or ""

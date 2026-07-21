@@ -64,9 +64,10 @@ import time
 import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
+from urllib.parse import urlparse
 from agent.auxiliary_client import call_llm
 from agent.redact import redact_cdp_url
-from hermes_constants import agent_browser_runnable, get_hermes_home
+from hermes_constants import agent_browser_runnable, get_default_hermes_root, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -86,6 +87,11 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_BROWSER_TTL",
 )
 
+# Deliberately fixed, local-only development credential source.  The browser
+# helper below has no arbitrary file-path or credential arguments, so an agent
+# cannot repurpose it to read a different secret and submit it to another site.
+_QUORAFORM_DEV_AUTH_ENV = Path("/home/tba/projects/quoraform/main/auth-app/.env.development")
+
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
@@ -102,6 +108,18 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    # agent-browser otherwise prioritises its bundled Chrome download.  On
+    # Guix and similarly non-FHS systems that download may target a missing
+    # /lib64 loader even though a usable Chromium is already on PATH.  Passing
+    # the system executable is the CLI's supported override and also makes
+    # browser workers independent from a user's interactive shell config.
+    if not env.get("AGENT_BROWSER_EXECUTABLE_PATH"):
+        browser_path = env.get("PATH", "")
+        for _name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
+            _candidate = shutil.which(_name, path=browser_path)
+            if _candidate:
+                env["AGENT_BROWSER_EXECUTABLE_PATH"] = _candidate
+                break
     return env
 
 try:
@@ -193,11 +211,20 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
 
 def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
-    hermes_home = get_hermes_home()
-    hermes_node_bin = str(hermes_home / "node" / "bin")
-    hermes_node_root = str(hermes_home / "node")
-    hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
-    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    # A Kanban worker sets HERMES_HOME to ~/.hermes/profiles/<role>.  Browser
+    # dependencies are installed once at the shared Hermes root, not copied in
+    # every profile, so search both homes.  On non-profile installs they are
+    # identical and the stable de-duplication below keeps the PATH compact.
+    homes = (get_hermes_home(), get_default_hermes_root())
+    candidates: list[str] = []
+    for hermes_home in homes:
+        candidates.extend((
+            str(hermes_home / "node" / "bin"),
+            str(hermes_home / "node"),
+            str(hermes_home / "node_modules" / ".bin"),
+        ))
+    candidates.extend((*list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS))
+    return list(dict.fromkeys(candidates))
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -1922,6 +1949,19 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_login_quoraform_dev",
+        "description": "Fill the local Quoraform development login form using the fixed auth-app development account without exposing its email or password. Use only after navigating to a localhost login page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "email_ref": {"type": "string", "description": "Email input ref from the current snapshot."},
+                "password_ref": {"type": "string", "description": "Password input ref from the current snapshot."},
+                "submit_ref": {"type": "string", "description": "Optional submit button ref from the current snapshot."}
+            },
+            "required": ["email_ref", "password_ref"]
+        }
+    },
+    {
         "name": "browser_scroll",
         "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
         "parameters": {
@@ -3226,6 +3266,53 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return json.dumps(response, ensure_ascii=False)
 
 
+def browser_login_quoraform_dev(
+    email_ref: str,
+    password_ref: str,
+    submit_ref: str = "",
+    task_id: Optional[str] = None,
+) -> str:
+    """Fill the local Quoraform development login without exposing credentials.
+
+    This intentionally accepts only element refs.  Email and password are read
+    from the fixed development-only auth-app dotenv file and are never included
+    in a tool result, a command argument, or an agent-visible error message.
+    """
+    effective_task_id = _last_session_key(task_id or "default")
+    current = _run_browser_command(
+        effective_task_id, "eval", ["window.location.href"], timeout=5,
+    )
+    current_url = str(current.get("data", {}).get("result", "")).strip().strip('"\'')
+    parsed = urlparse(current_url)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return json.dumps({"success": False, "error": "Development login is permitted only on local HTTP pages."})
+    if not _QUORAFORM_DEV_AUTH_ENV.is_file():
+        return json.dumps({"success": False, "error": "Quoraform development credentials are unavailable."})
+
+    try:
+        from dotenv import dotenv_values
+
+        values = dotenv_values(_QUORAFORM_DEV_AUTH_ENV)
+        email = str(values.get("ROOT_USER_EMAIL") or "")
+        password = str(values.get("ROOT_USER_PASSWORD") or "")
+    except Exception:
+        return json.dumps({"success": False, "error": "Quoraform development credentials could not be loaded."})
+    if not email or not password:
+        return json.dumps({"success": False, "error": "Quoraform development credentials are incomplete."})
+
+    def fill(ref: str, value: str) -> bool:
+        normalized_ref = ref if ref.startswith("@") else f"@{ref}"
+        return bool(_run_browser_command(effective_task_id, "fill", [normalized_ref, value]).get("success"))
+
+    if not fill(email_ref, email) or not fill(password_ref, password):
+        return json.dumps({"success": False, "error": "Development login form could not be filled."})
+    if submit_ref:
+        normalized_submit = submit_ref if submit_ref.startswith("@") else f"@{submit_ref}"
+        if not _run_browser_command(effective_task_id, "click", [normalized_submit]).get("success"):
+            return json.dumps({"success": False, "error": "Development login form could not be submitted."})
+    return json.dumps({"success": True, "authenticated_with": "local_development_account"})
+
+
 def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     """
     Scroll the page.
@@ -3395,7 +3482,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     """
     # --- JS evaluation mode ---
     if expression is not None:
-        policy_error = _enforce_browser_eval_policy(expression)
+        policy_error = _enforce_browser_eval_policy(expression, task_id)
         if policy_error:
             return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
         return _browser_eval(expression, task_id)
@@ -3650,7 +3737,24 @@ def _risky_browser_eval_reason(expression: str) -> Optional[str]:
     return _sensitive_browser_eval_token_reason(expression)
 
 
-def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
+def _allow_local_tester_unsafe_evaluate(task_id: Optional[str]) -> bool:
+    """Allow deep DOM inspection only for an active local Kanban tester run."""
+    if os.environ.get("HERMES_PROFILE", "").strip().lower() != "tester":
+        return False
+    if not os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        return False
+    effective_task_id = _last_session_key(task_id or "default")
+    try:
+        result = _run_browser_command(
+            effective_task_id, "eval", ["window.location.href"], timeout=5,
+        )
+        current_url = str(result.get("data", {}).get("result", "")).strip().strip('"\'')
+        return urlparse(current_url).hostname in {"localhost", "127.0.0.1", "::1"}
+    except Exception:
+        return False
+
+
+def _enforce_browser_eval_policy(expression: str, task_id: Optional[str] = None) -> Optional[str]:
     """Block sensitive browser JS evaluation when the opt-in denylist is on.
 
     The denylist is opt-in (``browser.restrict_evaluate: true``) because it
@@ -3659,9 +3763,9 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
     addresses is enforced separately in ``_browser_eval`` and does not depend
     on this policy.
     """
-    if not _restrict_browser_evaluate():
+    if not _restrict_browser_evaluate() or _allow_unsafe_browser_evaluate():
         return None
-    if _allow_unsafe_browser_evaluate():
+    if _allow_local_tester_unsafe_evaluate(task_id):
         return None
     reason = _risky_browser_eval_reason(expression)
     if not reason:
@@ -4893,6 +4997,19 @@ registry.register(
     handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+)
+registry.register(
+    name="browser_login_quoraform_dev",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_login_quoraform_dev"],
+    handler=lambda args, **kw: browser_login_quoraform_dev(
+        email_ref=args.get("email_ref", ""),
+        password_ref=args.get("password_ref", ""),
+        submit_ref=args.get("submit_ref", ""),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🔐",
 )
 registry.register(
     name="browser_scroll",

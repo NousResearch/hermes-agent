@@ -94,6 +94,28 @@ class TestSendSlashConfirm:
         assert adapter._slash_confirm_state["cid2"] == "my-session"
 
     @pytest.mark.asyncio
+    async def test_accepts_custom_button_labels(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=9)
+        )
+
+        await adapter.send_slash_confirm(
+            chat_id="100",
+            title="Créer cette tâche ?",
+            message="create demo",
+            session_key="my-session",
+            confirm_id="cid-custom",
+            metadata={"slash_confirm_labels": {"once": "✅ Oui", "always": "✏️ Modifier", "cancel": "❌ Non"}},
+        )
+
+        assert adapter._slash_confirm_labels["cid-custom"] == {
+            "once": "✅ Oui",
+            "always": "✏️ Modifier",
+            "cancel": "❌ Non",
+        }
+
+    @pytest.mark.asyncio
     async def test_not_connected_returns_failure(self):
         adapter = _make_adapter()
         adapter._bot = None

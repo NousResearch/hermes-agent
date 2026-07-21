@@ -1094,6 +1094,7 @@ def _handle_create(args: dict, **kw) -> str:
     # fall back to scratch as before. Explicit None path stays None.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    branch_name = args.get("branch_name")
     project_id = args.get("project") or args.get("project_id")
     _inherit_workspace = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
@@ -1135,10 +1136,34 @@ def _handle_create(args: dict, **kw) -> str:
                     if _self_task is not None and _self_task.workspace_kind:
                         workspace_kind = _self_task.workspace_kind
                         workspace_path = _self_task.workspace_path
+                        # Native validation must not reuse the coder's linked
+                        # checkout: a tester/reviewer gets its own ephemeral
+                        # worktree anchored at the shared primary repository.
+                        if (
+                            workspace_kind == "worktree"
+                            and str(assignee) in {"tester", "reviewer"}
+                            and workspace_path
+                        ):
+                            try:
+                                from pathlib import Path
+                                common_dir = kb._git_common_dir(Path(workspace_path))
+                                if common_dir is not None:
+                                    workspace_path = str(common_dir.parent)
+                            except Exception:
+                                pass
                         # Keep follow-up children inside the same project so the
                         # whole subtree shares one repo + branch convention.
                         if project_id is None and _self_task.project_id:
                             project_id = _self_task.project_id
+            # A native child may supply its repository path explicitly while
+            # still needing the same durable task branch. Preserve it even
+            # when workspace inheritance itself was not used.
+            if branch_name is None:
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None:
+                        branch_name = _self_task.branch_name
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -1149,6 +1174,7 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                branch_name=branch_name,
                 project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
@@ -1166,7 +1192,16 @@ def _handle_create(args: dict, **kw) -> str:
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
-            subscribed = _maybe_auto_subscribe(conn, new_tid)
+            # A task started from Telegram is usually only the root of a
+            # workflow. Its planner, coder, tester and reviewer children are
+            # created by detached workers, which have no Telegram session
+            # ContextVars of their own. Carry the parent subscription forward
+            # before considering the current session, otherwise the requester
+            # never receives a planner's approval gate.
+            inherited_subscription = _inherit_parent_notify_subscriptions(
+                conn, new_tid, parents,
+            )
+            subscribed = _maybe_auto_subscribe(conn, new_tid) or inherited_subscription
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
@@ -1179,6 +1214,46 @@ def _handle_create(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
+
+
+def _inherit_parent_notify_subscriptions(
+    conn: Any, task_id: str, parents: list[str] | tuple[str, ...],
+) -> bool:
+    """Copy persistent delivery subscriptions from parent cards.
+
+    Workers do not retain the originating Telegram session context. Inheriting
+    the subscription makes the human-facing workflow follow its Kanban tree,
+    including a planner waiting for approval. ``add_notify_sub`` is
+    idempotent, so a fan-in child or a concurrently auto-subscribed gateway
+    request cannot create duplicate deliveries.
+    """
+    if not parents:
+        return False
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        inherited = False
+        for parent_id in parents:
+            for sub in _kb.list_notify_subs(conn, str(parent_id)):
+                _kb.add_notify_sub(
+                    conn,
+                    task_id=task_id,
+                    platform=str(sub["platform"]),
+                    chat_id=str(sub["chat_id"]),
+                    thread_id=sub.get("thread_id") or None,
+                    user_id=sub.get("user_id") or None,
+                    notifier_profile=sub.get("notifier_profile") or None,
+                )
+                inherited = True
+        return inherited
+    except Exception as exc:
+        # Subscription delivery is best-effort bookkeeping. It must never
+        # invalidate a real work handoff.
+        logger.warning(
+            "kanban_create could not inherit parent subscriptions for %s: %r",
+            task_id, exc,
+        )
+        return False
 
 
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
@@ -1790,6 +1865,13 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Absolute path for 'dir' or 'worktree' workspace. "
                     "Relative paths are rejected at dispatch."
+                ),
+            },
+            "branch_name": {
+                "type": "string",
+                "description": (
+                    "Git branch for a persistent dir/worktree checkout. Native "
+                    "delivery cards inherit their parent's branch when omitted."
                 ),
             },
             "project": {

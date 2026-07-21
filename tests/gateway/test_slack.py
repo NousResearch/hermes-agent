@@ -1772,6 +1772,33 @@ class TestIncomingDocumentHandling:
         assert os.path.exists(msg_event.media_urls[0])
         assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
+    @pytest.mark.asyncio
+    async def test_file_shared_explicit_unknown_team_cannot_fallback_files_info(
+        self, adapter
+    ):
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "FVIDEO",
+                    "mimetype": "video/mp4",
+                },
+            }
+        )
+
+        await adapter._handle_slack_file_shared(
+            {
+                "type": "file_shared",
+                "channel_id": "D123",
+                "file_id": "FVIDEO",
+                "user_id": "U_USER",
+            },
+            body={"team_id": "T_NOT_REGISTERED"},
+        )
+
+        adapter._app.client.files_info.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()
+
     def test_bare_file_id_parser_deduplicates_and_hard_caps_at_three(self):
         text = "F00000001 F00000002 F00000001 F00000003 F00000004"
         assert _parse_slack_file_ids(text, limit=99) == [
@@ -1779,6 +1806,14 @@ class TestIncomingDocumentHandling:
             "F00000002",
             "F00000003",
         ]
+
+    def test_bare_file_id_parser_requires_bare_token_boundaries(self):
+        assert _parse_slack_file_ids("prefixF0BJC2W86G0suffix") == []
+        assert _parse_slack_file_ids("prefix_F0BJC2W86G0_suffix") == []
+        assert _parse_slack_file_ids("(F0BJC2W86G0)") == ["F0BJC2W86G0"]
+
+    def test_bare_file_id_parser_zero_limit_returns_no_ids(self):
+        assert _parse_slack_file_ids("F0BJC2W86G0", limit=0) == []
 
     @pytest.mark.asyncio
     async def test_bare_file_id_from_same_message_is_hydrated_as_document(self, adapter):
@@ -2292,6 +2327,88 @@ class TestIncomingDocumentHandling:
         assert "Treat as quoted reference" in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_permalink_author_name_uses_event_workspace_client(self, adapter):
+        channel_id = "C9999999999"
+        adapter.config.extra.update(
+            {
+                "resolve_permalinks": True,
+                "allowed_channels": [channel_id],
+            }
+        )
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: True
+        )
+
+        event_client = AsyncMock()
+        event_client.conversations_history = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1783954894.392819",
+                        "user": "U_AUTHOR",
+                        "text": "event workspace body",
+                    }
+                ]
+            }
+        )
+        event_client.users_info = AsyncMock(
+            return_value={
+                "user": {"profile": {"display_name": "Event Workspace Author"}}
+            }
+        )
+        channel_client = AsyncMock()
+        channel_client.users_info = AsyncMock(
+            return_value={
+                "user": {"profile": {"display_name": "Wrong Workspace Author"}}
+            }
+        )
+        adapter._team_clients["T_EVENT"] = event_client
+        adapter._team_clients["T_CHANNEL_CACHE"] = channel_client
+        adapter._channel_team[channel_id] = "T_CHANNEL_CACHE"
+
+        context = await adapter._fetch_permalink_context(
+            "https://5minlab.slack.com/archives/"
+            f"{channel_id}/p1783954894392819",
+            current_channel_id=channel_id,
+            current_ts="1783957000.000001",
+            team_id="T_EVENT",
+            requesting_user_id="U_REQUESTER",
+        )
+
+        event_client.conversations_history.assert_awaited_once()
+        event_client.users_info.assert_awaited_once_with(user="U_AUTHOR")
+        channel_client.users_info.assert_not_awaited()
+        assert "Event Workspace Author" in context
+        assert "Wrong Workspace Author" not in context
+
+    @pytest.mark.asyncio
+    async def test_explicit_unknown_team_cannot_fallback_for_user_name(self, adapter):
+        channel_id = "C9999999999"
+        channel_client = AsyncMock()
+        channel_client.users_info = AsyncMock(
+            return_value={
+                "user": {"profile": {"display_name": "Wrong Workspace Author"}}
+            }
+        )
+        adapter._team_clients["T_CHANNEL_CACHE"] = channel_client
+        adapter._channel_team[channel_id] = "T_CHANNEL_CACHE"
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {"profile": {"display_name": "Primary Workspace Author"}}
+            }
+        )
+
+        name = await adapter._resolve_user_name(
+            "U_AUTHOR",
+            chat_id=channel_id,
+            team_id="T_NOT_REGISTERED",
+        )
+
+        assert name == "U_AUTHOR"
+        channel_client.users_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_permalink_known_team_without_client_fails_closed(self, adapter):
         adapter.config.extra.update(
             {
@@ -2442,7 +2559,7 @@ class TestIncomingDocumentHandling:
         assert len(malformed_thread) == 1
         assert malformed_thread[0].thread_ts is None
 
-    def test_permalink_parser_deduplicates_and_caps_at_three(self):
+    def test_permalink_parser_deduplicates_and_hard_caps_at_three(self):
         base = "https://5minlab.slack.com/archives/C9999999999/p"
         urls = [
             base + "1783954894392819",
@@ -2452,13 +2569,21 @@ class TestIncomingDocumentHandling:
             base + "1783954894392822",  # fourth unique target is ignored
         ]
 
-        targets = _parse_slack_permalinks(" ".join(urls))
+        targets = _parse_slack_permalinks(" ".join(urls), limit=99)
 
         assert [target.message_ts for target in targets] == [
             "1783954894.392819",
             "1783954894.392820",
             "1783954894.392821",
         ]
+
+    def test_permalink_parser_zero_limit_returns_no_targets(self):
+        url = (
+            "https://5minlab.slack.com/archives/"
+            "C9999999999/p1783954894392819"
+        )
+
+        assert _parse_slack_permalinks(url, limit=0) == []
 
     @pytest.mark.asyncio
     async def test_permalink_resolution_is_disabled_by_default(self, adapter):
@@ -4230,6 +4355,7 @@ class TestAssistantThreadLifecycle:
         a._app = MagicMock()
         a._app.client = AsyncMock()
         a._bot_user_id = "U_BOT"
+        a._team_clients = {"T_TEAM": a._app.client}
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
         a.handle_message = AsyncMock()

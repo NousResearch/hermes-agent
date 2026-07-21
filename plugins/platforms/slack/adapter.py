@@ -104,7 +104,7 @@ _SLACK_PERMALINK_RE = re.compile(
 )
 
 _SLACK_FILE_ID_RE = re.compile(
-    r"(?<![A-Z0-9])F[A-Z0-9]{8,}(?![A-Z0-9])"
+    r"(?<![A-Za-z0-9_])F[A-Z0-9]{8,}(?![A-Za-z0-9_])"
 )
 
 
@@ -119,6 +119,9 @@ def _parse_slack_permalinks(text: str, *, limit: int = 3) -> List[_SlackPermalin
     decoded = html.unescape(text or "")
     targets: List[_SlackPermalinkTarget] = []
     seen: set[Tuple[str, str]] = set()
+    hard_limit = min(max(int(limit), 0), 3)
+    if hard_limit == 0:
+        return targets
 
     for match in _SLACK_PERMALINK_RE.finditer(decoded):
         packed_ts = match.group("packed_ts")
@@ -144,7 +147,7 @@ def _parse_slack_permalinks(text: str, *, limit: int = 3) -> List[_SlackPermalin
             )
         )
         seen.add(dedupe_key)
-        if len(targets) >= limit:
+        if len(targets) >= hard_limit:
             break
 
     return targets
@@ -155,6 +158,8 @@ def _parse_slack_file_ids(text: str, *, limit: int = 3) -> List[str]:
     file_ids: List[str] = []
     seen: set[str] = set()
     hard_limit = min(max(int(limit), 0), 3)
+    if hard_limit == 0:
+        return file_ids
     for match in _SLACK_FILE_ID_RE.finditer(text or ""):
         file_id = match.group(0)
         if file_id in seen:
@@ -2396,7 +2401,8 @@ class SlackAdapter(BasePlatformAdapter):
         """Resolve a workspace-local Slack user ID to a display name."""
         if not user_id:
             return ""
-        team_id = str(team_id or self._channel_team.get(chat_id, ""))
+        explicit_team_id = str(team_id or "")
+        team_id = explicit_team_id or str(self._channel_team.get(chat_id, ""))
         cache_key = (team_id, str(user_id))
         cached_name = self._user_name_cache.get(cache_key)
         if cached_name is not None:
@@ -2406,11 +2412,16 @@ class SlackAdapter(BasePlatformAdapter):
             return user_id
 
         try:
-            client = (
-                self._get_client(chat_id, team_id=team_id or None)
-                if chat_id
-                else self._app.client
-            )
+            if explicit_team_id:
+                client = self._team_clients.get(explicit_team_id)
+                if client is None:
+                    logger.warning(
+                        "[Slack] Refusing user-name resolution: "
+                        "workspace client is unavailable"
+                    )
+                    return user_id
+            else:
+                client = self._get_client(chat_id) if chat_id else self._app.client
             result = await client.users_info(user=user_id)
             user = result.get("user", {})
             # Prefer display_name → real_name → user_id
@@ -3174,10 +3185,17 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id(event, body)
         try:
-            client = self._team_clients.get(team_id) if team_id else None
-            info_resp = await (client or self._get_client(channel_id)).files_info(
-                file=file_id
-            )
+            if team_id:
+                client = self._team_clients.get(team_id)
+                if client is None:
+                    logger.warning(
+                        "[Slack] Refusing file_shared metadata read: "
+                        "workspace client is unavailable"
+                    )
+                    return
+            else:
+                client = self._get_client(channel_id)
+            info_resp = await client.files_info(file=file_id)
         except Exception as exc:
             response = getattr(exc, "response", None)
             detail = self._describe_slack_api_error(response, file_obj={"id": file_id})
@@ -4707,7 +4725,9 @@ class SlackAdapter(BasePlatformAdapter):
                     linked.get("username", "") or "unknown"
                 )
                 name = await self._resolve_user_name(
-                    display_user, chat_id=target.channel_id
+                    display_user,
+                    chat_id=target.channel_id,
+                    team_id=team_id,
                 )
                 name = _sanitize_permalink_context_text(
                     " ".join(str(name or display_user).split())

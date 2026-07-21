@@ -62,6 +62,14 @@ const config: Config = {
           /^user-guide\/skills\/bundled\//,
           /^user-guide\/skills\/optional\//,
         ],
+        // Exact-or-prefix matching only (default is edit distance 1).
+        // With fuzzy distance 1, "keet" matched "meetings"/"keep" (one
+        // edit away after stemming), and multi-word typo queries against
+        // our ~14 MB index could stall the single-threaded search worker
+        // for 25s+, backing up every subsequent keystroke's search until
+        // the bar appeared dead. Distance 0 keeps "word or its extension"
+        // semantics (keet -> keet*) and removes the pathological scans.
+        fuzzyMatchingDistance: 0,
       }),
     ],
   ],
@@ -77,6 +85,12 @@ const config: Config = {
             // Renamed in #44470 (Automation Blueprints terminology rebrand)
             from: '/guides/automation-templates',
             to: '/guides/automation-blueprints',
+          },
+          {
+            // Moved when the Plugins subcategory was created under
+            // Developer Guide > Extending (docs restructure, July 2026)
+            from: '/guides/build-a-hermes-plugin',
+            to: '/developer-guide/plugins',
           },
         ],
       },
@@ -131,7 +145,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com/desktop',
+          href: 'https://hermes-agent.nousresearch.com/',
           label: 'Download',
           position: 'left',
         },
@@ -179,7 +193,7 @@ const config: Config = {
         {
           title: 'More',
           items: [
-            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/desktop' },
+            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/' },
             { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],

@@ -2,8 +2,44 @@ import asyncio
 import threading
 import time
 
+from hermes_cli import mcp_startup
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+
+
+def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
+    """The desktop app and dashboard chat reach the agent through this WS
+    sidecar, not through tui_gateway.entry.main() (which spawns the discovery
+    thread for the stdio TUI). handle_ws must start discovery itself, otherwise
+    _make_agent's wait_for_mcp_discovery no-ops and the agent snapshots an
+    MCP-less tool list. Regression test for #38945."""
+    calls = []
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **kw: calls.append(kw),
+    )
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            pass
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    server._sessions.clear()
+    try:
+        asyncio.run(ws_mod.handle_ws(FakeWS()))
+    finally:
+        server._sessions.clear()
+
+    assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
 
 
 def _run_disconnect(monkeypatch, seed):

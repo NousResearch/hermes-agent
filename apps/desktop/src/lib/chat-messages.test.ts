@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  appendReasoningPart,
   chatMessageText,
+  mergeFinalAssistantText,
   preserveLocalAssistantErrors,
+  reasoningPart,
   renderMediaTags,
   toChatMessages,
   upsertToolPart
@@ -172,6 +175,52 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+})
+
+describe('interleaved reasoning/text coalescing', () => {
+  it('keeps narration contiguous when reasoning interrupts mid-sentence', () => {
+    // Models that interleave reasoning_content + content deltas emit
+    // text → reasoning → text within one tool-bounded segment. The two text
+    // fragments are really one sentence and must not be split by the
+    // "Thinking" block between them.
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me ')
+    parts = appendReasoningPart(parts, 'checking the file...')
+    parts = appendAssistantTextPart(parts, 'verify the full file is correct:')
+
+    expect(parts.map(p => p.type)).toEqual(['text', 'reasoning'])
+    expect((parts[0] as { text: string }).text).toBe('Let me verify the full file is correct:')
+    expect((parts[1] as { text: string }).text).toBe('checking the file...')
+  })
+
+  it('merges reasoning bursts that straddle a narration fragment', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'first thought ')
+    parts = appendAssistantTextPart(parts, 'Working on it.')
+    parts = appendReasoningPart(parts, 'second thought')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'text'])
+    expect((parts[0] as { text: string }).text).toBe('first thought second thought')
+    expect((parts[1] as { text: string }).text).toBe('Working on it.')
+  })
+
+  it('starts a fresh text part after a tool call (segment boundary)', () => {
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
+    parts = appendAssistantTextPart(parts, 'Now editing.')
+
+    expect(parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+    expect((parts[0] as { text: string }).text).toBe('Let me check.')
+    expect((parts[2] as { text: string }).text).toBe('Now editing.')
+  })
+
+  it('does not merge reasoning across a tool call', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'before tool')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
+    parts = appendReasoningPart(parts, 'after tool')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
+    expect((parts[0] as { text: string }).text).toBe('before tool')
+    expect((parts[2] as { text: string }).text).toBe('after tool')
   })
 })
 
@@ -736,5 +785,67 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+describe('mergeFinalAssistantText', () => {
+  it('removes all text parts and appends the final text', () => {
+    const parts = [
+      { type: 'text' as const, text: 'streamed delta 1' },
+      { type: 'text' as const, text: 'streamed delta 2' },
+      { type: 'tool-call' as const, toolCallId: 'tc1', toolName: 'terminal', args: {} as never, argsText: '{}' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'final answer')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.some(p => p.type === 'tool-call')).toBe(true)
+  })
+
+  it('drops reasoning that the final text fully covers (reasoning ⊆ final)', () => {
+    const parts = [reasoningPart('Let me check the files.'), { type: 'text' as const, text: 'streamed' }]
+
+    const result = mergeFinalAssistantText(parts, 'Let me check the files. Everything looks good.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+  })
+
+  it('keeps a longer reasoning block when the final text is only a short prefix', () => {
+    // #61447: a short final ("Done.") must NOT swallow a longer reasoning block
+    // that merely starts with it.
+    const parts = [
+      reasoningPart(
+        'Done. The root cause was a bare catch block swallowing Stripe errors. The fix adds proper error logging.'
+      ),
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Done.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'Done.' })
+  })
+
+  it('keeps non-restating reasoning', () => {
+    const parts = [
+      reasoningPart('I analyzed the issue and found a race condition in the event loop.'),
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Fixed the race condition.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+  })
+
+  it('handles empty final text', () => {
+    const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
+
+    const result = mergeFinalAssistantText(parts, '')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
   })
 })

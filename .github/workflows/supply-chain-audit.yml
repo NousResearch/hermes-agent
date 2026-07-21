@@ -1,16 +1,5 @@
 name: Supply Chain Audit
 
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-  # No paths filter — the jobs must always run so required checks
-  # report a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-
-permissions:
-  pull-requests: write
-  contents: read
-
 # Narrow, high-signal scanner. Only fires on critical indicators of supply
 # chain attacks (e.g. the litellm-style payloads). Low-signal heuristics
 # (plain base64, plain exec/eval, dependency/Dockerfile/workflow edits,
@@ -19,57 +8,69 @@ permissions:
 # the scanner. Keep this file's checks ruthlessly narrow: if you find
 # yourself adding WARNING-tier patterns here again, make a separate
 # advisory-only workflow instead.
+#
+# Path-gating is handled centrally by the ``ci.yml`` orchestrator's
+# ``detect`` job. The orchestrator passes ``scan`` / ``deps`` booleans as
+# inputs; this workflow's jobs gate on those inputs instead of re-computing
+# the diff. MCP catalog review was previously here but has moved to
+# ``review-labels.yml`` so it can be rerun independently.
+#
+# Outputs:
+#   review_status  — JSON array of status objects consumed by the review
+#                    comment assembler (scripts/ci/assemble_review_comment.py).
+#                    Each job (``scan``, ``dep-bounds``) emits its own
+#                    array; an ``aggregate`` job merges them into the
+#                    workflow-level output.
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator.
+        type: string
+        required: true
+      scan:
+        description: Whether supply-chain-relevant files changed.
+        type: boolean
+        required: true
+      deps:
+        description: Whether pyproject.toml changed.
+        type: boolean
+        required: true
+    outputs:
+      review_status:
+        description: JSON array of review status objects for the review comment assembler.
+        value: ${{ jobs.aggregate.outputs.review_status }}
+
+permissions:
+  pull-requests: write
+  contents: read
 
 jobs:
-  # ── Path filter (shared by both scan and dep-bounds) ───────────────
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      # True when any file the scanner cares about changed in this PR
-      scan: ${{ steps.filter.outputs.scan }}
-      # True when pyproject.toml changed in this PR
-      deps: ${{ steps.filter.outputs.deps }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          fetch-depth: 0
-      - name: Check for relevant file changes
-        id: filter
-        run: |
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
-          SCAN_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- \
-            '*.py' '**/*.py' '*.pth' '**/*.pth' \
-            'setup.py' 'setup.cfg' \
-            'sitecustomize.py' 'usercustomize.py' '__init__.pth' \
-            'pyproject.toml' || true)
-          if [ -n "$SCAN_FILES" ]; then
-            echo "scan=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "scan=false" >> "$GITHUB_OUTPUT"
-          fi
-          DEPS_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- 'pyproject.toml' || true)
-          if [ -n "$DEPS_FILES" ]; then
-            echo "deps=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deps=false" >> "$GITHUB_OUTPUT"
-          fi
-
   scan:
     name: Scan PR for critical supply chain risks
-    needs: changes
-    if: needs.changes.outputs.scan == 'true'
+    if: inputs.scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Scan diff for critical patterns
         id: scan
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -77,7 +78,7 @@ jobs:
           HEAD="${{ github.event.pull_request.head.sha }}"
 
           # Added lines only, excluding lockfiles.
-          # Three-dot diff (base...head) diffs from the merge base to HEAD,
+          # Three-point diff (base...head) diffs from the merge base to HEAD,
           # so only changes introduced by this PR are included — not changes
           # that landed on main after the PR branched off.
           DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
@@ -101,7 +102,7 @@ jobs:
           fi
 
           # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
           if [ -n "$B64_EXEC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: base64 decode + exec/eval combo
@@ -115,7 +116,7 @@ jobs:
           fi
 
           # --- subprocess with encoded/obfuscated command argument ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
           if [ -n "$PROC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
@@ -155,49 +156,53 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Post critical finding comment
-        if: steps.scan.outputs.found == 'true'
+      - name: Emit review_status
+        id: emit-status
+        if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FOUND: ${{ steps.scan.outputs.found }}
         run: |
-          BODY="## 🚨 CRITICAL Supply Chain Risk Detected
+          python3 - <<'PYEOF'
+          import json, os
 
-          This PR contains a pattern that has been used in real supply chain attacks. A maintainer must review the flagged code carefully before merging.
+          found = os.environ.get("FOUND", "") == "true"
 
-          $(cat /tmp/findings.md)
+          if found:
+              with open("/tmp/findings.md", encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "error",
+                      "title": "Critical supply chain risk",
+                      "summary": "Critical supply chain risk patterns detected in this PR.",
+                      "detail": detail,
+                      "how_to_fix": "Review the flagged code carefully. If intentional, add the `ci-reviewed` label."
+                  }]
+              }]
+          else:
+              status = []
 
-          ---
-          *Scanner only fires on high-signal indicators: .pth files, base64+exec/eval combos, subprocess with encoded commands, or install-hook files. Low-signal warnings were removed intentionally — if you're seeing this comment, the finding is worth inspecting.*"
-
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
 
       - name: Fail on critical findings
         if: steps.scan.outputs.found == 'true'
         run: |
-          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
           exit 1
-
-  # Gate: reports success when scan was skipped (no relevant files changed).
-  # This ensures the required check always gets a status.
-  scan-gate:
-    name: Scan PR for critical supply chain risks
-    needs: changes
-    # always() so the gate still reports SUCCESS even if `changes` fails/is
-    # skipped — without it, a failed dependency would leave the required
-    # check unreported (i.e. "pending"), the exact failure mode this fixes.
-    if: always() && needs.changes.outputs.scan != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No supply-chain-relevant files changed, skipping scan."
 
   dep-bounds:
     name: Check PyPI dependency upper bounds
-    needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    if: inputs.deps
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -217,7 +222,7 @@ jobs:
             exit 0
           fi
 
-          # Match PyPI dep specs that have >= but no < ceiling.
+          # Match PyPI dep specs that have >= and no < ceiling.
           # Pattern: "package>=version" without a following ",<" bound.
           # Excludes git+ URLs (which use commit SHAs) and comments.
           UNBOUNDED=$(echo "$ADDED" | grep -oE '"[a-zA-Z0-9_-]+(\[[^\]]*\])?>=[ 0-9.]+"' | grep -v ',<' || true)
@@ -229,26 +234,36 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Post unbounded dep warning
-        if: steps.bounds.outputs.found == 'true'
+      - name: Emit review_status
+        id: emit-status
+        if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FOUND: ${{ steps.bounds.outputs.found }}
         run: |
-          BODY="## ⚠️ Unbounded PyPI Dependency Detected
+          python3 - <<'PYEOF'
+          import json, os
 
-          This PR adds PyPI dependencies without a \`<next_major\` upper bound. Per our [supply chain policy](../blob/main/CONTRIBUTING.md#dependency-pinning-policy-supply-chain-hardening), all PyPI deps must be pinned as \`>=floor,<next_major\`.
+          found = os.environ.get("FOUND", "") == "true"
 
-          **Unbounded specs found:**
-          \`\`\`
-          $(cat /tmp/unbounded.txt)
-          \`\`\`
+          if found:
+              with open("/tmp/unbounded.txt", encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "Unbounded PyPI dependencies",
+                      "summary": "This PR adds PyPI dependencies without upper bounds.",
+                      "detail": detail,
+                      "how_to_fix": 'Add a `<next_major` upper bound, e.g. `"package>=1.2.0,<2"`. See CONTRIBUTING.md dependency pinning policy.'
+                  }]
+              }]
+          else:
+              status = []
 
-          **Fix:** Add an upper bound, e.g. \`\"package>=1.2.0,<2\"\`
-
-          ---
-          *See PR #2810 and CONTRIBUTING.md for the full policy rationale.*"
-
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
 
       - name: Fail on unbounded deps
         if: steps.bounds.outputs.found == 'true'
@@ -256,15 +271,36 @@ jobs:
           echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
           exit 1
 
-  # Gate: reports success when dep-bounds was skipped (no pyproject.toml changed).
-  # This ensures the required check always gets a status.
-  dep-bounds-gate:
-    name: Check PyPI dependency upper bounds
-    needs: changes
-    # always() so the gate still reports SUCCESS even if `changes` fails/is
-    # skipped — without it, a failed dependency would leave the required
-    # check unreported (i.e. "pending"), the exact failure mode this fixes.
-    if: always() && needs.changes.outputs.deps != 'true'
+  aggregate:
+    name: Aggregate review statuses
+    needs: [scan, dep-bounds]
+    if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.merge.outputs.review_status }}
     steps:
-      - run: echo "No pyproject.toml changes, skipping dependency bounds check."
+      - name: Merge review statuses
+        id: merge
+        env:
+          SCAN_STATUS: ${{ needs.scan.outputs.review_status }}
+          DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          merged = []
+          for key in ("SCAN_STATUS", "DEP_STATUS"):
+              raw = os.environ.get(key, "")
+              if not raw:
+                  continue
+              try:
+                  data = json.loads(raw)
+              except (json.JSONDecodeError, TypeError):
+                  continue
+              if isinstance(data, list):
+                  merged.extend(data)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(merged)}\n")
+          PYEOF

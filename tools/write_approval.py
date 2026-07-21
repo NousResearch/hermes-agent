@@ -15,10 +15,11 @@ Both stores are written from two origins:
     turn and autonomously decides what to save (the source of the
     "wrong assumptions" users complained about)
 
-This module lets the user gate those writes per-subsystem with a boolean
-``write_approval``:
+This module lets the user gate **foreground** writes per-subsystem with a
+boolean ``write_approval``. Background-review-origin writes always stage for
+approval regardless of that foreground setting:
 
-  * ``false`` (default) — write freely (the pre-gate behaviour)
+  * ``false`` (default) — foreground writes freely (the pre-gate behaviour)
   * ``true``            — require approval: do not commit the write; either
     prompt inline (memory, interactive CLI only) or **stage** it to a pending
     store and surface it for the user to approve or reject out-of-band
@@ -59,11 +60,12 @@ MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Config key (per subsystem). A single boolean: the approval gate is OFF by
-# default (writes flow freely, the pre-gate behaviour), and ON means stage /
-# prompt every write for the user's approval. There is intentionally no third
-# "block all writes" state — to disable a subsystem entirely use its own
-# enable flag (e.g. ``memory.memory_enabled: false``).
+# Config key (per subsystem). The boolean gates foreground writes: OFF by
+# default preserves foreground pre-gate behaviour, and ON means stage / prompt
+# foreground writes for the user's approval. Background-review-origin writes
+# always stage. There is intentionally no third "block all writes" state — to
+# disable a subsystem entirely use its own enable flag (e.g.
+# ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
 
 
@@ -75,8 +77,10 @@ def write_approval_enabled(subsystem: str) -> bool:
     """Return whether the approval gate is enabled for ``subsystem``.
 
     Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
-    ``False`` (gate off — writes flow freely) for any unset / invalid value so
-    existing installs keep their current behaviour until the user opts in.
+    ``False`` (foreground gate off — foreground writes flow freely) for any
+    unset / invalid value so existing installs keep their foreground behaviour
+    until the user opts in. Background-review-origin writes are staged before
+    this config is consulted.
     """
     if subsystem not in _SUBSYSTEMS:
         return False
@@ -262,23 +266,38 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             are small; skills never take the inline path).
 
     Decision matrix:
-        gate off (default)                    → allow (writes flow freely)
+        background-review origin (any config) → stage
+        gate off (foreground default)         → allow (writes flow freely)
         gate on, memory + interactive CLI     → inline approve/deny prompt
-        gate on, memory + gateway/script/bg   → stage
+        gate on, memory + gateway/script      → stage
         gate on, skills (any origin)          → stage (too big to review inline)
 
     Note: there is no config-driven "blocked" outcome — the gate only ever
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
+    background = is_background()
+
+    # Autonomous review forks (including the curator) must never persist a
+    # model-proposed memory or skill change merely because the optional
+    # foreground approval gate is off.  The origin comes from the host-owned
+    # ContextVar, not tool arguments, so it is a trustworthy boundary shared
+    # by both background actors.
+    if background:
+        where = "/skills pending" if subsystem == SKILLS else "/memory pending"
+        return GateDecision(
+            stage=True,
+            message=(
+                "Staged for approval (background review writes require approval). "
+                f"Not yet saved — review with {where}."
+            ),
+        )
+
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
-    background = is_background()
-
-    # Skills always stage — a SKILL.md is too large to review inline, and a
-    # background skill write happens in a daemon thread with no user present.
-    if subsystem == SKILLS or background:
+    # Skills always stage — a SKILL.md is too large to review inline.
+    if subsystem == SKILLS:
         where = "/skills pending" if subsystem == SKILLS else "/memory pending"
         return GateDecision(
             stage=True,

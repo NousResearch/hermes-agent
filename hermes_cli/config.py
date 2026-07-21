@@ -2303,10 +2303,11 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
-        # Approval gate for memory writes (add/replace/remove), applied to BOTH
-        # foreground agent turns and the background self-improvement review fork
-        # (the source of unprompted "wrong assumption" saves users reported).
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        # Approval gate for foreground memory writes (add/replace/remove).
+        # Background self-improvement review proposals always stage for
+        # approval, regardless of this value, so they cannot save unprompted
+        # "wrong assumptions".
+        #   false (default) — foreground writes freely (pre-gate behaviour)
         #   true            — require approval: foreground writes prompt inline
         #                     (entries are small enough to review in a chat
         #                     bubble); background-review writes are staged
@@ -2469,10 +2470,11 @@ DEFAULT_CONFIG = {
         # scanned regardless of this setting.
         "guard_agent_created": False,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
-        # remove_file), applied to BOTH foreground agent turns and the
-        # background self-improvement review fork.
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
-        #   true            — require approval: stage the write for review
+        # remove_file), applied to foreground agent turns. Background review
+        # and curator skill proposals always stage for approval, regardless of
+        # this value.
+        #   false (default) — foreground writes freely (pre-gate behaviour)
+        #   true            — require approval: stage the foreground write for review
         #                     instead of committing (a SKILL.md is too large to
         #                     review inline, so skills always stage rather than
         #                     prompt). List with /skills pending, inspect with
@@ -6278,8 +6280,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
     # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
-    # write_approval (default false = gate off, writes flow freely; true =
-    # require approval). Only an explicit "approve" carried gating intent, so
+    # write_approval (default false = foreground gate off, foreground writes
+    # freely; true = require approval). Background-review-origin writes stage
+    # independently. Only an explicit "approve" carried gating intent, so
     # it maps to true; everything else (on/off/unset) → false. The old
     # "off = block all writes" mode is dropped — memory_enabled: false disables
     # memory entirely. Only rewrite a key the user actually persisted; never

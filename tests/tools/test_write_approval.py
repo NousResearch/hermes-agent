@@ -78,6 +78,30 @@ def test_memory_gate_off_allows_write(hermes_home):
     assert wa.pending_count("memory") == 0
 
 
+def test_background_memory_stages_even_when_gate_is_off(hermes_home):
+    """Autonomous review memory proposals need approval regardless of config."""
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    store = MemoryStore(); store.load_from_disk()
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        result = json.loads(memory_tool("add", "memory", "review proposal", store=store))
+    finally:
+        reset_current_write_origin(token)
+
+    assert result.get("staged") is True
+    assert "require approval" in result["message"]
+    assert store.memory_entries == []
+    pending = wa.get_pending("memory", result["pending_id"])
+    assert pending["origin"] == BACKGROUND_REVIEW
+
+
 def test_memory_gate_on_no_interactive_stages(hermes_home):
     # Gate on, no approval callback / not a gateway context → stage.
     from tools.memory_tool import memory_tool, MemoryStore
@@ -183,6 +207,31 @@ def test_skill_gate_off_allows_create(hermes_home):
     r = json.loads(smt.skill_manage("create", "free-skill", content=_SKILL))
     assert r.get("success") is True
     assert wa.pending_count("skills") == 0
+
+
+def test_background_skill_stages_even_when_gate_is_off(hermes_home):
+    """The shared background origin protects curator and review skill writes."""
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        result = json.loads(smt.skill_manage("create", "background-skill", content=_SKILL))
+    finally:
+        reset_current_write_origin(token)
+
+    assert result.get("staged") is True
+    assert "require approval" in result["message"]
+    assert smt._find_skill("background-skill") is None
+    pending = wa.get_pending("skills", result["pending_id"])
+    assert pending["origin"] == BACKGROUND_REVIEW
 
 
 def test_skill_gate_on_always_stages(hermes_home):

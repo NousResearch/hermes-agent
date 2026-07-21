@@ -2230,6 +2230,55 @@ class TestWebServerEndpoints:
         assert resp.status_code == 400
         assert "base64" in resp.json()["detail"]
 
+    def test_audio_transcription_redacts_provider_error_detail(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        raw_key = "sk-proj-audio-transcribe-secret1234567890"
+
+        def fake_transcribe_audio(_path):
+            return {
+                "success": False,
+                "error": f"provider rejected request with key {raw_key}",
+            }
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert raw_key not in detail
+        assert "..." in detail
+
+    def test_audio_transcription_redacts_provider_exception_detail(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        raw_key = "sk-proj-audio-exception-secret1234567890"
+
+        def fake_transcribe_audio(_path):
+            raise RuntimeError(f"provider rejected request with key {raw_key}")
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 500
+        detail = resp.json()["detail"]
+        assert raw_key not in detail
+        assert "..." in detail
+
     def test_desktop_audio_routes_registered(self):
         """All three desktop voice endpoints must exist.
 
@@ -2279,6 +2328,43 @@ class TestWebServerEndpoints:
         assert body["provider"] == "test"
         # The handler streams the bytes back and removes the temp file.
         assert not audio_file.exists()
+
+    def test_speak_text_redacts_provider_error_detail(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        raw_key = "sk-proj-tts-secret1234567890abcdef"
+
+        def fake_tts(_text):
+            return json.dumps({
+                "success": False,
+                "error": f"provider failed with api_key={raw_key}",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post("/api/audio/speak", json={"text": "hello there"})
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert raw_key not in detail
+        assert "..." in detail
+
+    def test_speak_text_redacts_provider_exception_detail(self, monkeypatch):
+        import tools.tts_tool as tts_tool
+
+        raw_key = "sk-proj-tts-exception-secret1234567890"
+
+        def fake_tts(_text):
+            raise RuntimeError(f"provider failed with api_key={raw_key}")
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post("/api/audio/speak", json={"text": "hello there"})
+
+        assert resp.status_code == 500
+        detail = resp.json()["detail"]
+        assert raw_key not in detail
+        assert "..." in detail
 
     def test_speak_text_requires_nonempty_text(self):
         resp = self.client.post("/api/audio/speak", json={"text": "   "})

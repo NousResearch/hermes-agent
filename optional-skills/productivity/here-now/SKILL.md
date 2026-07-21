@@ -1,7 +1,7 @@
 ---
 name: here.now
-description: Publish static sites to {slug}.here.now and store private files in cloud Drives for agent-to-agent handoff.
-version: 1.15.3
+description: Publish sites to live URLs, team workspaces, and Drives.
+version: 1.18.0
 author: here.now
 license: MIT
 prerequisites:
@@ -9,19 +9,24 @@ prerequisites:
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [here.now, herenow, publish, deploy, hosting, static-site, web, share, URL, drive, storage]
+    tags: [here.now, herenow, publish, deploy, hosting, static-site, web, share, URL, drive, storage, access-control, password]
     homepage: https://here.now
     requires_toolsets: [terminal]
 ---
 
 # here.now
 
-here.now lets agents publish websites and store private files in cloud Drives.
+**Skill version: 1.18.0**
 
-Use here.now for two jobs:
+here.now lets agents publish websites and files to live URLs in seconds.
 
-- **Sites**: publish websites and files at `{slug}.here.now`.
-- **Drives**: store private agent files in cloud folders.
+The core primitive is a **Site**: publish a file or folder and get a live URL at `{slug}.here.now` or a custom domain. Every Site has access control: public link (default), password, or restricted invite-only access.
+
+here.now also includes **workspaces** — shared team accounts where Sites belong to the team and serve at `{label}.{workspace}.here.now` (see "Publish to a workspace" below).
+
+## When to use
+
+Use this skill when asked to "publish this", "host this", "deploy this", "share this on the web", "make a website", "put this online", "create a webpage", "generate a URL", "build a chatbot", "password protect this site", "make this site private", or "share this site with only certain people". For team workspaces, use it when asked to "publish this to our team workspace", "share this with my team", or "put this in our company workspace". For Drives, use it when asked to "save this to my Drive", "store this for later", "write this to cloud storage", or "share a folder with another agent".
 
 ## Current docs
 
@@ -38,14 +43,17 @@ Read the docs:
 
 Topics that require current docs (do not rely on local skill text alone):
 
+- Site access control (passwords and restricted access)
+- workspaces (team accounts, membership, label URLs)
 - Drives and Drive sharing
 - custom domains
-- payments and payment gating
-- forking
+- Site Data
+- public profiles
 - proxy routes and service variables
-- handles and links
 - limits and quotas
 - SPA routing
+- owner Site search
+- Site analytics
 - error handling and remediation
 - feature availability
 
@@ -92,6 +100,37 @@ The script auto-loads the `claimToken` from `.herenow/state.json` when updating 
 
 Authenticated updates require a saved API key.
 
+Signed-in users also have public profiles. Agents can help users show or hide Sites on their profile and manage profile settings through the API documented at https://here.now/docs#profile.
+
+## Publish to a workspace
+
+Workspaces are shared team accounts: Sites published into one belong to the team, not the publishing member, and get a memorable URL at `{label}.{workspace}.here.now`.
+
+```bash
+PUBLISH="${HERMES_SKILL_DIR}/scripts/publish.sh"
+bash "$PUBLISH" {file-or-dir} --workspace {subdomain} --client hermes
+```
+
+Requires a saved API key and membership in the workspace. List the user's workspaces (and valid subdomains) with `GET /api/v1/accounts`. Workspace Sites default to member-only access; the script reports the team URL as `publish_result.account_url`.
+
+For everything else — creating workspaces, invites and auto-join, workspace domains and variables, label renames — read the current docs:
+
+→ **https://here.now/docs#workspaces**
+
+## Site access control
+
+A Site uses one access mode at a time:
+
+- **anyone_with_link** (default): anyone with the URL can view.
+- **password**: visitors must enter a shared password.
+- **restricted**: invite-only; only verified email addresses or email domains the owner allows can view.
+
+Workspace-owned Sites use a different set of modes: **account_members** (the default — visitors sign in and must be workspace members) or public, optionally with a password. `restricted` allowlists are personal-Site-only and return `409 workspace_access_mode_unsupported` on workspace Sites. See https://here.now/docs#workspace-access.
+
+Manage access with `GET`/`PATCH /api/v1/publish/{slug}/access` (passwords via the metadata endpoint). Restricted access requires a claimed Site. The PATCH replaces the full allowlists — read, merge, then write. Before working with access control, read the current docs:
+
+→ **https://here.now/docs#access-control**
+
 ## Use a Drive
 
 Use a Drive when the user wants private cloud storage for agent files: documents, context, memory, plans, assets, media, research, code, and anything else that should persist without being published as a website.
@@ -108,6 +147,18 @@ bash "$DRIVE" share "My Drive" --perms write --prefix notes/ --ttl 7d
 ```
 
 Use scoped Drive tokens for agent-to-agent handoff. If you receive a `herenow_drive` share block, use its `token` as `Authorization: Bearer <token>` against `api_base`, respect `pathPrefix` when present, and preserve ETags on writes. A `pathPrefix` of `null` means full-Drive access. If the skill is available, prefer `drive.sh`; otherwise call the listed API operations directly.
+
+## Client attribution
+
+Pass `--client` so here.now can track reliability by agent:
+
+```bash
+PUBLISH="${HERMES_SKILL_DIR}/scripts/publish.sh"
+bash "$PUBLISH" {file-or-dir} --client hermes
+```
+
+This sends `X-HereNow-Client: hermes/publish-sh` on publish API calls.
+If omitted, the script sends a fallback value.
 
 ## API key storage
 
@@ -182,6 +233,7 @@ For published sites:
 
 - Always share the `siteUrl` from the current script run.
 - Read and follow `publish_result.*` lines from script stderr to determine auth mode.
+- When `publish_result.account_url` is non-empty (workspace publishes), share it as the primary team URL alongside `siteUrl`.
 - When `publish_result.auth_mode=authenticated`: tell the user the site is **permanent** and saved to their account. No claim URL is needed.
 - When `publish_result.auth_mode=anonymous`: tell the user the site **expires in 24 hours**. Share the claim URL (if `publish_result.claim_url` is non-empty and starts with `https://`) so they can keep it permanently. Warn that claim tokens are only returned once and cannot be recovered.
 - Never tell the user to inspect `.herenow/state.json` for claim URLs or auth status.
@@ -197,20 +249,20 @@ For Drives:
 | Flag                   | Description                                  |
 | ---------------------- | -------------------------------------------- |
 | `--slug {slug}`        | Update an existing site instead of creating |
+| `--workspace {subdomain}` | Publish into a workspace (team account) you belong to |
 | `--claim-token {token}`| Override claim token for anonymous updates    |
 | `--title {text}`       | Viewer title (non-HTML sites)             |
 | `--description {text}` | Viewer description                            |
 | `--ttl {seconds}`      | Set expiry (authenticated only)               |
-| `--client {name}`      | Agent name for attribution (e.g. `hermes`)    |
+| `--client {name}`      | Agent name for attribution (e.g. `cursor`)    |
 | `--base-url {url}`     | API base URL (default: `https://here.now`)    |
 | `--allow-nonherenow-base-url` | Allow sending auth to non-default `--base-url` |
 | `--api-key {key}`      | API key override (prefer credentials file)    |
 | `--spa`                | Enable SPA routing (serve index.html for unknown paths) |
-| `--forkable`           | Allow others to fork this site                           |
 
 ## Beyond publish.sh
 
-For Drive operations, use `drive.sh` or the Drive API. For broader account and site management — delete, metadata, passwords, payments, domains, handles, links, variables, proxy routes, forking, duplication, and more — see the current docs:
+For Drive operations, use `drive.sh` or the Drive API. For broader account and Site management — Site Data, search, analytics, profiles, delete, metadata, access control, domains, variables, proxy routes, duplication, and more — see the current docs:
 
 → **https://here.now/docs**
 

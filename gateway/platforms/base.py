@@ -3552,11 +3552,12 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
-
-        Default strips markdown formatting and truncates to 4000 chars.
+        """Prepare text for TTS. Delegates to gateway.tts_summary for
+        summarization when ``voice.tts_summary_enabled`` is set, otherwise
+        falls back to the previous strip-and-truncate behavior.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        from gateway.tts_summary import prepare_tts_text as _helper
+        return _helper(text)
 
     async def play_tts(
         self,

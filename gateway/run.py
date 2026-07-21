@@ -14543,9 +14543,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from gateway.tts_summary import prepare_tts_text as _prepare_tts_text
+            from tools.tts_tool import text_to_speech_tool
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = await asyncio.to_thread(_prepare_tts_text, text)
             if not tts_text:
                 return
 

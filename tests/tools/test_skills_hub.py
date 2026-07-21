@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
@@ -1401,6 +1402,72 @@ class TestHubLockFile:
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
 
+    def test_load_survives_non_utf8_locale_default(self, tmp_path, monkeypatch):
+        """#68369: bare locale read_text fails; HubLockFile forces UTF-8."""
+        lock_file = tmp_path / "lock.json"
+        payload = json.dumps(
+            {
+                "version": 1,
+                "installed": {
+                    "my-skill": {
+                        "source": "github",
+                        "identifier": "owner/repo/—skill",
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8") + b"\n"
+        lock_file.write_bytes(payload)
+
+        real_read_text = Path.read_text
+
+        def locale_default_read_text(self, *args, encoding=None, errors=None, **kwargs):
+            # Simulate Chinese Windows / non-UTF-8 preferred encoding:
+            # bare Path.read_text() (encoding=None) must not succeed on this file.
+            if encoding is None:
+                raise UnicodeDecodeError(
+                    "gbk", self.read_bytes(), 0, 1, "simulated non-utf8 locale"
+                )
+            return real_read_text(self, *args, encoding=encoding, errors=errors, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", locale_default_read_text)
+        with pytest.raises(UnicodeDecodeError):
+            lock_file.read_text()
+        data = HubLockFile(path=lock_file).load()
+        assert data["installed"]["my-skill"]["identifier"] == "owner/repo/—skill"
+
+    def test_load_passes_utf8_encoding(self, tmp_path, monkeypatch):
+        lock_file = tmp_path / "lock.json"
+        lock_file.write_text('{"version": 1, "installed": {}}', encoding="utf-8")
+        calls = []
+        real_read_text = Path.read_text
+
+        def spy_read_text(self, *args, **kwargs):
+            calls.append(kwargs)
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", spy_read_text)
+        HubLockFile(path=lock_file).load()
+        assert calls, "expected Path.read_text to be called"
+        assert any(c.get("encoding") == "utf-8" for c in calls)
+
+    def test_save_roundtrip_non_ascii_utf8(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="demo-skill",
+            source="github",
+            identifier="owner/repo/—skill",
+            trust_level="community",
+            scan_verdict="pass",
+            skill_hash="h",
+            install_path="demo-skill",
+            files=["SKILL.md"],
+        )
+        raw = (tmp_path / "lock.json").read_bytes()
+        assert "—".encode("utf-8") in raw
+        reloaded = HubLockFile(path=tmp_path / "lock.json").load()
+        assert reloaded["installed"]["demo-skill"]["identifier"] == "owner/repo/—skill"
 
 # ---------------------------------------------------------------------------
 # TapsManager
@@ -1425,6 +1492,29 @@ class TestTapsManager:
         taps_file.write_text("bad json")
         mgr = TapsManager(path=taps_file)
         assert mgr.load() == []
+
+    def test_load_survives_non_utf8_locale_default(self, tmp_path, monkeypatch):
+        taps_file = tmp_path / "taps.json"
+        payload = json.dumps(
+            {"taps": [{"repo": "owner/—repo", "path": "skills/"}]},
+            ensure_ascii=False,
+        ).encode("utf-8") + b"\n"
+        taps_file.write_bytes(payload)
+
+        real_read_text = Path.read_text
+
+        def locale_default_read_text(self, *args, encoding=None, errors=None, **kwargs):
+            if encoding is None:
+                raise UnicodeDecodeError(
+                    "gbk", self.read_bytes(), 0, 1, "simulated non-utf8 locale"
+                )
+            return real_read_text(self, *args, encoding=encoding, errors=errors, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", locale_default_read_text)
+        with pytest.raises(UnicodeDecodeError):
+            taps_file.read_text()
+        taps = TapsManager(path=taps_file).load()
+        assert taps[0]["repo"] == "owner/—repo"
 
     def test_add_new_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")

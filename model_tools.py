@@ -512,6 +512,24 @@ def _compute_tool_definitions(
                     }
                     break
 
+    # Strip vision_analyze cross-reference from read_file description when
+    # vision_analyze is not available.  The static schema's trailing NOTE says
+    # "use vision_analyze for images" which causes the model to hallucinate a
+    # call to a tool it doesn't have when the vision toolset is disabled.
+    if "read_file" in available_tool_names and "vision_analyze" not in available_tool_names:
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "read_file":
+                desc = td["function"].get("description", "")
+                desc = desc.replace(
+                    "NOTE: Cannot read images or binary files — use vision_analyze for images.",
+                    "NOTE: Cannot read images or binary files.",
+                )
+                filtered_tools[i] = {
+                    "type": "function",
+                    "function": {**td["function"], "description": desc},
+                }
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]

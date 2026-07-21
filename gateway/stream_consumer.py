@@ -1112,6 +1112,16 @@ class GatewayStreamConsumer:
                 # reopen-pending state with native still live and no stream open;
                 # request_reopen_seed() already gates on that, and we re-check
                 # here because state may have advanced between put and dequeue.
+                #
+                # TRADE-OFF: this moves the start of WeCom's ~6-minute stream
+                # session limit (STREAM_EXPIRED_ERRCODE 846608, counted from the
+                # FIRST frame, not renewed by intermediate frames) forward from
+                # the first post-answer delta to the user-reply instant — the
+                # effective window shrinks by however long the LLM takes to
+                # produce its first token. A first token >5min is very rare, and
+                # if the stream does expire send_stream_frame returns False and
+                # the else branch below degrades to send(), so the answer still
+                # lands (only the streaming animation is lost). Acceptable.
                 if got_reopen_seed:
                     if (
                         self._use_native_streaming
@@ -1414,6 +1424,11 @@ class GatewayStreamConsumer:
                             )
                         self._native_stream_opened = False
                         self._native_last_pushed_len = 0
+                        # Reset for symmetry with _suppress_silence_marker; the
+                        # consumer is per-turn today so this is defensive, but it
+                        # keeps the flag from leaking if a consumer is ever reused
+                        # across turns.
+                        self._reopen_seeded_eagerly = False
                         logger.debug(
                             "Eager reopen seed but no post-answer content — "
                             "closed empty typing bubble (turn=%s)",

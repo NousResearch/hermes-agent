@@ -90,10 +90,7 @@ if (
 // Inverse: persisted/default active id is still the live-preview tab, but that
 // target isn't open and file tabs are. Point at the first file tab so ⌘W and
 // the strip agree before React's fallback sync runs.
-if (
-  $rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID &&
-  $filePreviewTabs.get().length > 0
-) {
+if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID && $filePreviewTabs.get().length > 0) {
   selectRightRailTab($filePreviewTabs.get()[0]!.id)
 }
 

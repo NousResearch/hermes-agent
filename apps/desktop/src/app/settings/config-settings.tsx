@@ -137,19 +137,23 @@ export function ConfigSettings({
       void (async () => {
         try {
           const result = await saveHermesConfig(config)
+
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
           }
+
           // Mirror the saved record into the shared cache so MCP/model surfaces
           // reflect the edit without their own refetch.
           setHermesConfigCache(config)
 
           if (saveVersionRef.current === v) {
             const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(config))
+
             if (savedDiscoverySignatureRef.current !== discoverySignature) {
               savedDiscoverySignatureRef.current = discoverySignature
               await scanAndRecordRepos(true)
             }
+
             onConfigSaved?.()
           }
         } catch (err) {

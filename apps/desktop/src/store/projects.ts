@@ -282,12 +282,15 @@ interface ActiveProjectsContext {
 async function activeProjectsContext(): Promise<ActiveProjectsContext> {
   const profile = $activeGatewayProfile.get() || 'default'
   let gateway = activeGateway()
+
   if (!gateway || gateway.connectionState !== 'open') {
     gateway = await ensureActiveGatewayOpen()
   }
+
   if (!gateway || gateway !== activeGateway() || profile !== ($activeGatewayProfile.get() || 'default')) {
     throw new Error('Active Hermes profile changed while connecting')
   }
+
   return { gateway, profile }
 }
 
@@ -318,13 +321,16 @@ let projectTreeRefreshGeneration = 0
 
 async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
   const generation = ++projectTreeRefreshGeneration
+
   if (activeGateway() === gateway) {
     $projectTreeLoading.set(true)
   }
+
   try {
     const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
       preview_limit: 3
     })
+
     if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
       return
     }
@@ -333,12 +339,15 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
     $projectTree.set(res.projects ?? [])
     $activeProjectId.set(res.active_id ?? null)
     const tombstones = $removedSessionIds.get()
+
     if (tombstones.size) {
       const pending = new Set([...tombstones].filter(id => scoped.has(id)))
+
       if (pending.size !== tombstones.size) {
         $removedSessionIds.set(pending)
       }
     }
+
     markProjectsRpcSuccess()
   } catch (err) {
     if (activeGateway() === gateway) {
@@ -386,6 +395,7 @@ export interface RepoDiscoveryPolicy {
 
 export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPolicy {
   const desktopValue = config && typeof config === 'object' ? (config as { desktop?: unknown }).desktop : undefined
+
   const desktop =
     desktopValue && typeof desktopValue === 'object'
       ? (desktopValue as {
@@ -394,6 +404,7 @@ export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPol
           repo_scan_roots?: unknown
         })
       : {}
+
   return {
     enabled: desktop.repo_scan_enabled !== false,
     roots: Array.isArray(desktop.repo_scan_roots)
@@ -431,6 +442,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   }
 
   let context: ActiveProjectsContext
+
   try {
     context = await activeProjectsContext()
   } catch {
@@ -438,6 +450,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   }
 
   const scan = desktopGit()?.scanRepos
+
   if (!scan) {
     return
   }
@@ -449,12 +462,14 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   try {
     const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
     const signature = repoDiscoveryPolicySignature(policy)
+
     if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
       return
     }
 
     generation = ++state.generation
     state.runningSignature = signature
+
     if (!policy.enabled) {
       await gatewayRequestOn(context.gateway, 'projects.record_repos', {
         discovery_policy: policy,
@@ -463,13 +478,16 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     } else {
       scanningGatewayGenerations.set(context.gateway, generation)
       syncReposScanning()
+
       const repos = await scan(policy.roots, {
         enabled: true,
         excludePaths: policy.exclude_paths
       })
+
       if (state.generation !== generation) {
         return
       }
+
       await gatewayRequestOn(context.gateway, 'projects.record_repos', {
         discovery_policy: policy,
         repos
@@ -479,15 +497,18 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     if (state.generation !== generation) {
       return
     }
+
     state.completedSignature = signature
     await refreshProjectTreeOn(context.gateway)
   } catch {
     state.completedSignature = undefined
   } finally {
     state.runningSignature = undefined
+
     if (scanningGatewayGenerations.get(context.gateway) === generation) {
       scanningGatewayGenerations.delete(context.gateway)
     }
+
     syncReposScanning()
   }
 }

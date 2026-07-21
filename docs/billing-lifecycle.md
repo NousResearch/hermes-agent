@@ -30,7 +30,7 @@ Source: `ui-tui/src/components/billingOverlay.tsx` (`OverviewScreen`,
 | `monthly_cap` present, `limit_usd != null` | `{spent_display} of {limit_display} used this month` (+ ` (default ceiling)` iff `is_default_ceiling`). |
 | `monthly_cap` absent or `limit_usd == null` | `No monthly cap visible (managed on the portal).` |
 | Role without billing capability (`!is_admin`, menu collapses) | Note: `Billing actions need someone with billing permissions (owner, admin, or finance admin).` Menu collapses to `Manage on portal` / `Cancel`. |
-| Org kill-switch off (`is_admin` but `!cli_billing_enabled`) | Note: `Terminal billing is off for this org — manage it on the portal.` Same collapsed menu. |
+| Org kill-switch off (`is_admin` but `!cli_billing_enabled`) | Note: `Remote spending is off for this org — a billing admin can turn it on from the portal's Hermes Agent page.` Same collapsed menu. |
 
 Note: `full = s.is_admin && s.cli_billing_enabled` gates the **org-level**
 switch, not the per-terminal `billing:manage` scope — that's discovered
@@ -44,10 +44,10 @@ Source: `renderBillingError` in `ui-tui/src/app/slash/commands/topup.ts:37-149`.
 
 | `error` code | Copy | Portal URL | `retry_after` |
 |---|---|:-:|:-:|
-| `insufficient_scope` | `This needs terminal billing enabled. Start a top-up to enable it, then retry.` | if present | — |
-| `remote_spending_revoked` (CF-4) | `{An admin turned off terminal billing for this terminal. \| You turned off terminal billing for this terminal.}` (by `actor`) `Reconnect to restore — run /portal to re-authorize this terminal.` Also clears `billing` overlay state immediately (doesn't wait for token refresh). | if present | — |
+| `insufficient_scope` | `This needs Remote Spending allowed. Start a top-up to allow it, then retry.` | if present | — |
+| `remote_spending_revoked` (CF-4) | `{An admin stopped remote spending for this terminal. \| You stopped remote spending for this terminal.}` (by `actor`) `Reconnect to restore — run /portal to re-authorize this terminal.` Also clears `billing` overlay state immediately (doesn't wait for token refresh). | if present | — |
 | `session_revoked` | `Your session was logged out. Run /portal to log in again.` Also clears `billing` overlay state. | if present | — |
-| `cli_billing_disabled` / `remote_spending_disabled` (dual-emitted) | `Terminal billing is off for this account — an admin must enable it on the portal.` | if present | — |
+| `cli_billing_disabled` / `remote_spending_disabled` (dual-emitted) | `Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page.` | if present | — |
 | `role_required` | `Adding funds needs someone with billing permissions (owner, admin, or finance admin), or manage this on the portal.` | if present | — |
 | `consent_required` | `This action needs a one-time card confirmation and consent step on the portal before it can proceed.` | if present | — |
 | `org_access_denied` | `This token isn't bound to an org you can manage. Sign in with the right org, or manage this on the portal.` | if present | — |
@@ -136,14 +136,15 @@ just because NAS hasn't caught up yet.
 | `error` | Copy |
 |---|---|
 | `session_revoked` | `Your session expired — run /portal to log in again, then retry the change.` |
-| `remote_spending_revoked` | `{message}` or `Terminal spending was turned off for this session — reconnect from the portal, then retry.` |
+| `remote_spending_revoked` | `{message}` or `Remote spending was stopped for this terminal — reconnect from the portal, then retry.` |
 | `rate_limited` | `Too many attempts — wait a moment, then try again.` |
-| other/unknown | `{message}` or `Terminal billing was not enabled — someone with billing permissions (owner, admin, or finance admin) must allow it for this org. You can also make this change on the portal.` |
+| other/unknown | `{message}` or `Remote Spending was not allowed — someone with billing permissions (owner, admin, or finance admin) must approve it. You can also make this change on the portal.` |
 
 A **repeat** scope denial during a post-grant replay never re-enters the
 step-up screen (it's already mounted there — re-patching would freeze it);
-`allowStepUp=false` instead surfaces a terminal result: `Terminal billing
-still isn't enabled for this org — enable it on the portal, then retry.`
+`allowStepUp=false` instead surfaces a terminal result: `Remote Spending still
+isn’t active for this terminal — the authorization didn’t take. Retry, or make
+this change on the portal.`
 
 ## Text-mode (CLI) parity
 

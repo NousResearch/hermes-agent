@@ -6450,6 +6450,71 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
     assert resp["error"]["code"] == 4010
 
 
+def test_prompt_submit_delivers_leftover_steer_as_next_turn(monkeypatch):
+    """Desktop parity: leftover pending_steer must not be silently dropped.
+
+    When /steer lands after the last tool batch (or during a hard API fail with
+    no further tool window), run_conversation returns result['pending_steer'].
+    CLI and messaging gateway re-queue it; TUI/Desktop must too.
+    """
+    prompts: list[str] = []
+
+    class _Agent:
+        def __init__(self):
+            self._calls = 0
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **kwargs
+        ):
+            prompts.append(prompt)
+            self._calls += 1
+            if self._calls == 1:
+                return {
+                    "final_response": "done without more tools",
+                    "messages": [{"role": "assistant", "content": "done without more tools"}],
+                    "pending_steer": "why did the model swap?",
+                }
+            return {
+                "final_response": "handled steer",
+                "messages": [{"role": "assistant", "content": "handled steer"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+        # Do NOT stub _drain_queued_prompt — leftover steer is delivered through
+        # the real enqueue+drain path (parity with CLI leftover handling).
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+        assert resp.get("result")
+        assert prompts == ["hi", "why did the model swap?"]
+        status_texts = [
+            a[2].get("text", "")
+            for a in emits
+            if a[0] == "status.update" and isinstance(a[2], dict)
+        ]
+        assert any("Steer delivered as next turn" in t for t in status_texts)
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_info_includes_mcp_servers(monkeypatch):
     fake_status = [
         {"name": "github", "transport": "http", "tools": 12, "connected": True},

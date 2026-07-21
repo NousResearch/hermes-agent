@@ -9932,6 +9932,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        steer_followup = None  # leftover /steer after last tool batch
         one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
             from tools.approval import (
@@ -10190,6 +10191,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
+                # Leftover /steer: if a steer arrived after the last tool batch
+                # (or during a hard API failure with no further tool window),
+                # the agent cannot inject it into a tool result. Hand it back
+                # so we deliver it as the next user turn (parity with CLI and
+                # messaging gateway). Without this, Desktop shows "Steer queued"
+                # while the text is silently dropped.
+                _leftover_steer = result.get("pending_steer")
+                if isinstance(_leftover_steer, str) and _leftover_steer.strip():
+                    steer_followup = _leftover_steer.strip()
             else:
                 raw = str(result)
                 status = "complete"
@@ -10396,6 +10406,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
         # the goal judge / notifications re-evaluate at the end of that turn.
+        # Leftover steer must not be dropped when a user queue wins: stash it
+        # behind that queue so it still runs (CLI puts leftover steer on
+        # _pending_input instead of discarding).
+        if steer_followup:
+            _emit(
+                "status.update",
+                sid,
+                {
+                    "kind": "steer",
+                    "text": "Steer delivered as next turn (no tool window left on prior turn).",
+                },
+            )
+            _enqueue_prompt(session, steer_followup, session.get("transport"))
         if _drain_queued_prompt(rid, sid, session):
             return
 

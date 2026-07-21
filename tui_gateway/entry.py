@@ -115,7 +115,10 @@ def _log_signal(signum: int, frame) -> None:
                 f.write("".join(traceback.format_stack(sys._current_frames().get(tid))))
     except Exception:
         pass
-    print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
+    try:
+        print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
+    except OSError:
+        pass  # stderr pipe already closed — nothing to do
 
     import threading as _threading
 
@@ -203,7 +206,10 @@ def _log_exit(reason: str) -> None:
             )
     except Exception:
         pass
-    print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
+    try:
+        print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
+    except OSError:
+        pass
 
 
 def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:

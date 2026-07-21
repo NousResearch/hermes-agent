@@ -16405,6 +16405,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
+            chat_type=context.source.chat_type or "",
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",

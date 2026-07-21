@@ -15,6 +15,15 @@ class RecordingAdapter:
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
 
 
+class WakeRecordingAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.wake_events = []
+
+    async def handle_message(self, event):
+        self.wake_events.append(event)
+
+
 class DisconnectedAdapters(dict):
     """Expose a platform during collection, then simulate disconnect on get()."""
 
@@ -171,6 +180,68 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     # still returns the event for retry on the next tick.
     assert adapter.attempts >= 1, "send should have been attempted at least once"
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_preserves_dm_session_scope_for_wake(tmp_path, monkeypatch):
+    """A DM subscription must wake the DM session, not a same-id group session."""
+    db_path = tmp_path / "dm-wake.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="wake in the original DM",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = WakeRecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.wake_events) == 1
+    assert adapter.wake_events[0].source.chat_type == "dm"
+
+
+def test_kanban_subscription_chat_type_is_normalized_and_not_overwritten(tmp_path, monkeypatch):
+    db_path = tmp_path / "chat-type-roundtrip.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="scope metadata", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type=" DM ",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="group",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["chat_type"] == "dm"
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):

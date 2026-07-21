@@ -19635,24 +19635,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             _is_matrix_progress = str(getattr(adapter, "name", "") or "").lower() == "matrix" or str(platform_key or "").lower() == "matrix"
 
-            def _html_escape_progress(text: str) -> str:
-                return (
-                    str(text)
-                    .replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;")
-                    .replace('"', "&quot;")
-                )
-
             def _matrix_tool_activity_bodies(lines: list) -> tuple[str, str]:
                 """Delegate to importable production helper (single source of truth)."""
                 return matrix_tool_activity_bodies(lines)
-                items = "".join(f"<li>{_html.escape(item)}</li>" for item in cleaned)
-                html_body = (
-                    f"<p><strong>{_html.escape(body)}</strong></p>"
-                    f"<ol>{items}</ol>"
-                )
-                return body, html_body
 
 
             def _progress_metadata_with_matrix_html(lines: list):

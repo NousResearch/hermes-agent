@@ -950,6 +950,11 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
+        # Diagnostics is the one command that must remain available while the
+        # DB circuit is open; it reads the persisted sidecar without opening
+        # the quarantined database.
+        if action in {"diagnostics", "diag"} and kb.get_db_health() is not None:
+            return int(_cmd_diagnostics(args) or 0)
         try:
             kb.init_db()
         except Exception as exc:
@@ -1695,6 +1700,24 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     """
     from hermes_cli import kanban_diagnostics as kd
     from hermes_cli.config import load_config
+
+    board_health = kb.get_db_health()
+    if board_health is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"board_health": board_health}, indent=2, ensure_ascii=False))
+        else:
+            print("Kanban database circuit is OPEN (board quarantined).")
+            print(f"  Incident: {board_health['incident_id']}")
+            print(f"  Class:    {board_health['classification']}")
+            sqlite_code = (
+                board_health.get("sqlite_errorname")
+                or board_health.get("sqlite_errorcode")
+                or "unknown"
+            )
+            print(f"  SQLite:   {sqlite_code}")
+            print(f"  Manifest: {board_health['manifest_path']}")
+            print(f"  Action:   {board_health['recovery_command']}")
+        return 2
 
     diag_config = kd.config_from_runtime_config(load_config())
 

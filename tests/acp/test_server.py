@@ -1,6 +1,7 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import builtins
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -36,7 +37,7 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import HermesACPAgent, HERMES_VERSION, resolve_hermes_version
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -101,6 +102,44 @@ class TestInitialize:
         assert isinstance(resp.agent_info, Implementation)
         assert resp.agent_info.name == "hermes-agent"
         assert resp.agent_info.version == HERMES_VERSION
+
+
+    def test_resolve_hermes_version_uses_package_metadata_when_cli_import_fails(self, monkeypatch):
+        import acp_adapter.server as server_mod
+
+        original_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "hermes_cli":
+                raise RuntimeError("hermes_cli import unavailable")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setattr(
+            server_mod.importlib_metadata,
+            "version",
+            lambda package_name: "9.8.7" if package_name == "hermes-agent" else "0.0.0",
+        )
+
+        assert resolve_hermes_version() == "9.8.7"
+
+    def test_resolve_hermes_version_falls_back_when_sources_unavailable(self, monkeypatch):
+        import acp_adapter.server as server_mod
+
+        original_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "hermes_cli":
+                raise RuntimeError("hermes_cli import unavailable")
+            return original_import(name, *args, **kwargs)
+
+        def missing_package(_package_name):
+            raise server_mod.importlib_metadata.PackageNotFoundError
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setattr(server_mod.importlib_metadata, "version", missing_package)
+
+        assert resolve_hermes_version() == "0.0.0"
 
     @pytest.mark.asyncio
     async def test_initialize_returns_capabilities(self, agent):

@@ -222,6 +222,29 @@ class TestOllamaCloudMergedDiscovery:
 
         assert result == ["glm-5"]
 
+    def test_adds_curated_nemotron_ultra_when_registry_omits_it(self, tmp_path, monkeypatch):
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "nemotron-3-nano:30b": {"tool_call": True},
+                    "nemotron-3-super": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == [
+            "nemotron-3-nano:30b",
+            "nemotron-3-super",
+            "nemotron-3-ultra",
+        ]
+
     def test_uses_disk_cache(self, tmp_path, monkeypatch):
         """Second call returns cached results without hitting APIs."""
         from hermes_cli.models import fetch_ollama_cloud_models

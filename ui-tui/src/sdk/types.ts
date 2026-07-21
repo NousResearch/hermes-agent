@@ -43,11 +43,34 @@ export interface WidgetApp<S = unknown> {
    * the same id again toggles it closed.
    */
   mode?: 'ambient' | 'modal'
+  /** Ambient placement — see AmbientZone. Default `dock-bottom`. */
+  zone?: AmbientZone
+  /** Card width in cells (ambient). Floats RESERVE this as a transcript
+   *  rail, so match your Dialog width. Default 44. */
+  width?: number
   init(arg: string): null | S
   reduce(state: S, input: WidgetInput): null | S
   render(ctx: WidgetRenderCtx<S>): ReactNode
   usage?: string
 }
+
+/**
+ * Where an ambient widget lives. Two placement families:
+ *
+ * DOCKS are in-FLOW chrome rows (they reserve real rows, never cover
+ * content): `dock-top` under the top status bar, `dock-bottom` above the
+ * bottom one. Each dock is a right-aligned row of cards.
+ *
+ * FLOATS overlay the transcript margins without reserving layout
+ * (position:absolute against the viewport, GUI-corner style):
+ * `top-left` | `top-right` | `bottom-left` | `bottom-right`. Floats in the
+ * same corner stack vertically. Content under a float stays live — floats
+ * suit sparse corners; prefer docks for anything tall.
+ *
+ * Users phrase placement loosely ("top right", "pin it above the status
+ * bar") — map words to the nearest zone; corners mean floats.
+ */
+export type AmbientZone = 'bottom-left' | 'bottom-right' | 'dock-bottom' | 'dock-top' | 'top-left' | 'top-right'
 
 /** The host's serializable record of the active app. */
 export interface ActiveWidget {

@@ -98,9 +98,19 @@ and render `sparkRows` for dashboard panels, `sparkline` for one-liners.
 
 Contract essentials:
 
-- `mode: 'ambient'` — docks above the status bar, captures no input, the
-  command toggles it; `render` returns a CARD (usually `Dialog`), never
-  `Overlay`.
+- `mode: 'ambient'` — captures no input, the command toggles it; `render`
+  returns a CARD (usually `Dialog`), never `Overlay`.   Placement via `zone` — every zone RESERVES real space (nothing ever
+  paints over the transcript):
+  - Docks (chrome rows): `dock-top` (under the top status bar),
+    `dock-bottom` (default — above the bottom one).
+  - Rails (side columns beside the transcript; text reflows around them):
+    `top-left`, `top-right`, `bottom-left`, `bottom-right` — corner names
+    pick the rail side and its top/bottom anchor. Set `width` on the app
+    to the card's width (match your Dialog width; default 44) — the rail
+    reserves exactly that many columns.
+  Map the user's words to the nearest zone: "top right" → `top-right`,
+  "above/next to the status bar" → a dock. Rails suit narrow cards
+  (~30-46 cols); full-width or short-and-wide content belongs in a dock.
 - `mode: 'modal'` (default) — owns every keypress; `reduce` returns next
   state, the same reference to swallow a key, or `null` to close; `render`
   wraps content in `Overlay` for placement.

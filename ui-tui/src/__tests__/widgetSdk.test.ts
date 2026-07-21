@@ -52,6 +52,29 @@ describe('widget SDK host', () => {
     expect(getOverlayState().widget).toBeNull()
   })
 
+  it('a widget that throws in render shows an error chip, not a dead TUI', async () => {
+    const { defineWidgetApp } = await import('../sdk/registry.js')
+    const { AmbientDock } = await import('../sdk/host.js')
+    const { renderToScreen } = await import('../../packages/hermes-ink/src/ink/render-to-screen.js')
+    const { createElement } = await import('react')
+
+    defineWidgetApp({
+      help: 'crash test',
+      id: 'crash-test',
+      mode: 'ambient',
+      init: () => ({}),
+      reduce: state => state,
+      render: () => {
+        throw new Error('boom')
+      }
+    })
+
+    launchWidget('crash-test', 'x')
+
+    // Renders the boundary chip instead of propagating the throw.
+    expect(() => renderToScreen(createElement(AmbientDock, { placement: 'dock-bottom' }), 60)).not.toThrow()
+  })
+
   it('openWidget is a typed direct launch', () => {
     openWidget(dialogTestApp, { body: 'hi', zone: 'top-right' })
     expect(getOverlayState().widget).toMatchObject({ appId: 'dialog-test', state: { zone: 'top-right' } })
@@ -67,6 +90,58 @@ describe('widget SDK host', () => {
     expect($isBlocked.get()).toBe(false)
     launchWidget('dialog-test', 'center')
     expect($isBlocked.get()).toBe(true)
+  })
+
+  it('ambient zones route by the app contract (docks + floats)', async () => {
+    const { defineWidgetApp } = await import('../sdk/registry.js')
+    const { Text } = await import('@hermes/ink')
+    const { createElement } = await import('react')
+
+    defineWidgetApp({
+      help: 'corner test app',
+      id: 'corner-test',
+      mode: 'ambient',
+      zone: 'top-right',
+      init: () => ({}),
+      reduce: state => state,
+      render: () => createElement(Text, null, 'corner')
+    })
+
+    launchWidget('corner-test', 'x')
+    launchWidget('ticker', 'x')
+
+    const zoneOf = (id: string) => getWidgetApp(id)?.zone ?? 'dock-bottom'
+
+    expect(getOverlayState().ambient.map(a => [a.appId, zoneOf(a.appId)])).toEqual([
+      ['corner-test', 'top-right'],
+      ['ticker', 'dock-bottom']
+    ])
+  })
+
+  it('rails reserve the widest railed app; docks reserve nothing sideways', async () => {
+    const { ambientRailWidth } = await import('../sdk/host.js')
+    const { defineWidgetApp } = await import('../sdk/registry.js')
+    const { Text } = await import('@hermes/ink')
+    const { createElement } = await import('react')
+
+    defineWidgetApp({
+      help: 'wide rail app',
+      id: 'rail-wide',
+      mode: 'ambient',
+      width: 52,
+      zone: 'top-right',
+      init: () => ({}),
+      reduce: state => state,
+      render: () => createElement(Text, null, 'wide')
+    })
+
+    expect(ambientRailWidth('right')).toBe(0)
+    launchWidget('corner-test', 'x') // top-right, default width 44
+    launchWidget('rail-wide', 'x')
+    launchWidget('ticker', 'x') // dock-bottom — no rail contribution
+
+    expect(ambientRailWidth('right')).toBe(52)
+    expect(ambientRailWidth('left')).toBe(0)
   })
 
   it('ambient apps dock together and toggle independently', () => {

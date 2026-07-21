@@ -885,6 +885,40 @@ def _get_browser_engine() -> str:
     return _cached_browser_engine
 
 
+_cached_headed_mode: Optional[bool] = None
+_headed_mode_resolved = False
+
+
+def _is_headed_mode() -> bool:
+    """Return True when the browser should launch in headed (visible) mode.
+
+    Reads ``config["browser"]["headed"]`` with ``AGENT_BROWSER_HEADED`` env
+    var as fallback.  Result is cached after the first call.
+    """
+    global _cached_headed_mode, _headed_mode_resolved
+    if _headed_mode_resolved:
+        return _cached_headed_mode  # type: ignore[return-value]
+
+    _headed_mode_resolved = True
+    _cached_headed_mode = False
+
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("headed")
+        if val is not None:
+            _cached_headed_mode = str(val).strip().lower() in ("true", "1", "yes")
+    except Exception as e:
+        logger.debug("Could not read browser.headed from config: %s", e)
+
+    if not _cached_headed_mode:
+        env_val = os.environ.get("AGENT_BROWSER_HEADED", "").strip()
+        if env_val and env_val.lower() in ("true", "1", "yes"):
+            _cached_headed_mode = True
+
+    return _cached_headed_mode
+
+
 def _should_inject_engine(engine: str) -> bool:
     """Return True when the engine flag should be added to agent-browser commands.
 
@@ -2347,8 +2381,10 @@ def _run_browser_command(
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
-        # Local mode — launch a headless Chromium instance
+        # Local mode — launch Chromium (headless by default, headed when configured)
         backend_args = ["--session", session_info["session_name"]]
+        if _is_headed_mode():
+            backend_args.append("--headed")
 
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:

@@ -1,3 +1,5 @@
+import type { UsageModelData } from '@hermes/shared/billing'
+
 import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
 
 export interface GatewaySkin {
@@ -43,104 +45,25 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Credits / top-up ─────────────────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
-export interface CreditsViewResponse {
-  balance_lines: string[]
-  depleted: boolean
-  identity_line: string | null
-  logged_in: boolean
-  topup_url: string | null
-}
-
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
-
-export interface BillingCardInfo {
-  brand: string
-  last4: string
-  masked: string
-}
-
-export interface BillingMonthlyCap {
-  is_default_ceiling: boolean
-  limit_display: string
-  limit_usd: string | null
-  spent_display: string
-  spent_this_month_usd: string | null
-}
-
-export interface BillingAutoReload {
-  enabled: boolean
-  reload_to_display: string
-  reload_to_usd: string | null
-  threshold_display: string
-  threshold_usd: string | null
-}
-
-export interface BillingStateResponse {
-  auto_reload: BillingAutoReload | null
-  balance_display: string
-  balance_usd: string | null
-  can_charge: boolean
-  card: BillingCardInfo | null
-  charge_presets: string[]
-  charge_presets_display: string[]
-  cli_billing_enabled: boolean
-  error?: string | null
-  is_admin: boolean
-  logged_in: boolean
-  max_usd: string | null
-  min_usd: string | null
-  monthly_cap: BillingMonthlyCap | null
-  ok: boolean
-  org_name: string | null
-  portal_url: string | null
-  role: string | null
-}
-
-/**
- * Raw error payload echoed from the server (`_serialize_billing_error`). Carries
- * the extra fields a few error codes attach — notably `remainingUsd` on
- * `monthly_cap_exceeded` — so the client can render the same detail the CLI does.
- */
-export interface BillingErrorPayload {
-  isDefaultCeiling?: boolean
-  remainingUsd?: string
-}
-
-export interface BillingChargeResponse {
-  charge_id?: string
-  error?: string
-  idempotency_key?: string
-  message?: string
-  ok: boolean
-  payload?: BillingErrorPayload
-  portal_url?: string | null
-  retry_after?: number | null
-}
-
-export interface BillingChargeStatusResponse {
-  amount_usd?: string | null
-  error?: string
-  message?: string
-  ok: boolean
-  payload?: BillingErrorPayload
-  portal_url?: string | null
-  reason?: string | null
-  retry_after?: number | null
-  settled_at?: string | null
-  status?: string
-}
-
-export interface BillingMutationResponse {
-  error?: string
-  granted?: boolean
-  message?: string
-  ok: boolean
-  payload?: BillingErrorPayload
-  portal_url?: string | null
-  retry_after?: number | null
-}
+// Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
+export type {
+  BillingAutoReload,
+  BillingCardInfo,
+  BillingChargeResponse,
+  BillingChargeStatusResponse,
+  BillingErrorPayload,
+  BillingMonthlyCap,
+  BillingMutationResponse,
+  BillingStateResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionStateResponse,
+  SubscriptionTierOption,
+  SubscriptionUpgradeResponse,
+  UsageBarData,
+  UsageModelData
+} from '@hermes/shared/billing'
 
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
@@ -330,6 +253,9 @@ export interface SessionUsageResponse {
   model?: string
   output?: number
   total?: number
+  // Shared dollar usage model (two-bar view) so /usage renders the same bars
+  // as /subscription. Dollars only — never "credits".
+  usage?: UsageModelData
 }
 
 export interface SessionStatusResponse {
@@ -715,7 +641,12 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload: { already_streamed?: boolean; text: string }
+      session_id?: string
+      type: 'message.interim'
+    }
+  | {
+      payload?: { reasoning?: string; rendered?: string; response_previewed?: boolean; text?: string; usage?: Usage }
       session_id?: string
       type: 'message.complete'
     }

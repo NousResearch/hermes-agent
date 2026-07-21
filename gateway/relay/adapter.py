@@ -234,16 +234,23 @@ class RelayAdapter(BasePlatformAdapter):
         outbound (the agent's reply) can re-assert it for the connector's egress
         tenant resolution. Never raises — scope tracking must not break inbound.
 
-        Two cases, matching the connector's two tenant-resolution paths:
-          - SCOPED message: remember chat_id -> scope_id. The connector resolves
-            the tenant from metadata.scope_id (routing table).
-          - DM (no scope): remember chat_id -> the authentic author user_id.
-            A DM carries no scope discriminator, so the connector instead resolves
-            the tenant from the recipient's author binding (resolveByUser); it
-            needs the user_id on the OUTBOUND action to do that. Without this, a
-            DM reply has no resolvable discriminator and the connector's egress
-            guard declines it as "target not routed to an onboarded tenant".
-            See gateway-gateway routedEgressGuard.ts / the tenant resolvers.
+        Two discriminators, captured independently (a scoped message has BOTH):
+          - scope_id: for a scoped (guild/channel) message. The connector's
+            primary path resolves the tenant from metadata.scope_id (routing
+            table).
+          - user_id: the authentic author id, captured for EVERY message (DM
+            and scoped alike). The connector resolves the tenant from the
+            recipient's author binding (resolveByUser) when a route lookup
+            misses. This is the sole discriminator for a DM (no scope), AND the
+            author-first FALLBACK for a scoped reply whose guild has no route
+            row — a managed agent joins guilds dynamically, so a provision-time
+            guild route is not guaranteed. Re-attaching user_id on scoped
+            replies too lets the connector's guild-route-miss fallback resolve
+            the tenant the same way inbound already does (SharedSocketRouter
+            targets()). Without a resolvable discriminator the connector's
+            egress guard declines the reply as 'target not routed to an
+            onboarded tenant'. See gateway-gateway routedEgressGuard.ts /
+            discordTenant.ts (makeDiscordTenantOf).
         """
         try:
             src = getattr(event, "source", None)
@@ -263,28 +270,36 @@ class RelayAdapter(BasePlatformAdapter):
             platform_value = getattr(platform, "value", platform)
             if platform_value and platform_value != "relay":
                 self._platform_by_chat[str(chat)] = str(platform_value)
-            scope = getattr(src, "scope_id", None)
-            if scope:
-                self._scope_by_chat[str(chat)] = str(scope)
-                return
-            # DM: no scope. Remember the authentic author id for outbound
-            # author-binding resolution (the user we're replying to in this DM).
+            # Author id for outbound author-binding resolution. Captured for BOTH
+            # DM and scoped messages: it's the sole discriminator for a DM and
+            # the guild-route-miss fallback for a scoped reply. (Formerly captured
+            # for DMs only, which left managed-agent guild replies with no
+            # resolvable tenant when the guild had no route row.)
             user_id = getattr(src, "user_id", None)
             if user_id:
                 self._dm_user_by_chat[str(chat)] = str(user_id)
+            scope = getattr(src, "scope_id", None)
+            if scope:
+                self._scope_by_chat[str(chat)] = str(scope)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Ensure the outbound metadata carries the discriminator the connector's
-        egress guard needs to resolve the owning tenant. Two cases:
+        """Ensure the outbound metadata carries the discriminator(s) the connector's
+        egress guard needs to resolve the owning tenant.
 
-          - SCOPED reply: re-attach metadata.scope_id (routing-table resolution).
-          - DM reply: there is no scope, so re-attach metadata.user_id — the
-            authentic author id we saw inbound — which the connector resolves to
-            the tenant via the recipient's author binding (resolveByUser). Without
-            one of these, egress is declined as 'target not routed to an onboarded
-            tenant'. See gateway-gateway routedEgressGuard.ts / the tenant resolvers.
+          - scope_id: re-attached for a scoped reply (guild/channel) →
+            routing-table resolution (the primary path).
+          - user_id: the authentic author id we saw inbound, re-attached for
+            EVERY reply we know it for. It is the sole discriminator for a DM
+            (no scope), AND the author-first FALLBACK the connector uses when a
+            scoped reply's guild has no route row (a managed agent joins guilds
+            dynamically — the guild route may not be provisioned). Carrying both
+            on a scoped reply is harmless: the connector tries scope_id first and
+            only falls back to user_id on a route miss. Without a resolvable
+            discriminator egress is declined as 'target not routed to an
+            onboarded tenant'. See gateway-gateway routedEgressGuard.ts /
+            discordTenant.ts.
 
         No-op when the relevant value is already present or unknown for this chat.
         """
@@ -293,13 +308,15 @@ class RelayAdapter(BasePlatformAdapter):
             scope = self._scope_by_chat.get(str(chat_id))
             if scope:
                 meta["scope_id"] = scope
-        # DM author-binding discriminator. Only meaningful when there's no scope
-        # (a scoped reply resolves by scope_id); harmless to carry otherwise, but
-        # we only set it when this chat is a known DM and the field is absent.
-        if not meta.get("scope_id") and not meta.get("user_id"):
-            dm_user = self._dm_user_by_chat.get(str(chat_id))
-            if dm_user:
-                meta["user_id"] = dm_user
+        # Author-binding discriminator. Attached whenever we know the author for
+        # this chat and it isn't already set — for DMs (the sole discriminator)
+        # AND scoped replies (the connector's guild-route-miss fallback). It is
+        # only consulted by the connector when the scope/route lookup misses, so
+        # carrying it alongside scope_id never overrides routing-table resolution.
+        if not meta.get("user_id"):
+            author = self._dm_user_by_chat.get(str(chat_id))
+            if author:
+                meta["user_id"] = author
         return meta
 
     def _platform_is_fronted(self, platform: str) -> bool:

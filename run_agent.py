@@ -65,6 +65,81 @@ from types import SimpleNamespace
 from hermes_constants import get_hermes_home
 
 
+# ---------------------------------------------------------------------------
+# Code-skew detection for the desktop/serve backend (#68178).
+#
+# The agent core is imported once at startup.  If an auto-update (``git pull``
+# / ``hermes update``) rewrites the source tree underneath a running process,
+# any lazy import that resolves a newly-added symbol from a freshly-updated
+# file will load new code against a stale in-memory ``AIAgent`` class —
+# producing an ``AttributeError`` that the conversation loop would otherwise
+# retry indefinitely, burning provider API calls.
+#
+# We snapshot the checkout revision at module import time and expose a cheap
+# check that the outer loop can use to refuse new work with a clear message.
+# ---------------------------------------------------------------------------
+_agent_boot_fingerprint: str | None = None
+
+
+def _record_agent_boot_fingerprint() -> None:
+    """Snapshot the checkout revision when ``run_agent`` is first imported.
+
+    Idempotent — subsequent calls are no-ops.  Safe on non-git installs
+    (falls back to ``None`` and the skew check becomes a no-op).
+    """
+    global _agent_boot_fingerprint
+    if _agent_boot_fingerprint is not None:
+        return
+    try:
+        from hermes_cli.main import _read_git_revision_fingerprint
+
+        _agent_boot_fingerprint = _read_git_revision_fingerprint(
+            Path(__file__).resolve().parent
+        )
+    except Exception:
+        _agent_boot_fingerprint = None
+
+
+_record_agent_boot_fingerprint()
+
+# Cached result of the first confirmed skew detection.  Once skew is found
+# it is irreversible without external intervention (git reset/checkout), so
+# we avoid repeated disk I/O on every turn.
+_agent_code_skew_confirmed: bool = False
+_agent_code_skew_labels: tuple[str, str] | None = None
+
+
+def _detect_agent_code_skew() -> tuple[str, str] | None:
+    """Check whether the checkout revision has drifted since this process
+    started.  Returns ``(boot_rev, disk_rev)`` short labels if skew is
+    detected, else ``None``.  Once confirmed, the result is cached.
+
+    See #68178.
+    """
+    global _agent_code_skew_confirmed, _agent_code_skew_labels
+    if _agent_code_skew_confirmed:
+        return _agent_code_skew_labels
+    if _agent_boot_fingerprint is None:
+        return None
+    try:
+        from hermes_cli.main import _read_git_revision_fingerprint
+
+        current = _read_git_revision_fingerprint(Path(__file__).resolve().parent)
+    except Exception:
+        return None
+    if current is None or current == _agent_boot_fingerprint:
+        return None
+    # Skew confirmed — cache permanently for this process.
+    def _short(fp: str) -> str:
+        sha = fp.rsplit(":", 1)[-1]
+        if sha and sha != "unresolved" and len(sha) > 10:
+            return sha[:10]
+        return sha or fp
+    _agent_code_skew_confirmed = True
+    _agent_code_skew_labels = (_short(_agent_boot_fingerprint), _short(current))
+    return _agent_code_skew_labels
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
@@ -148,13 +223,17 @@ from tools.browser_tool import cleanup_browser
 from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
+from agent.message_content import flatten_message_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
 )
 from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
-from agent.context_compressor import ContextCompressor  # noqa: F401
+from agent.context_compressor import (  # noqa: F401
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+)
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
     DEFAULT_AGENT_IDENTITY,
@@ -225,11 +304,12 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
-    # verify-on-stop and pre_verify nudges append a synthetic assistant
-    # "done" plus a synthetic user nudge to keep the agent going one more
-    # turn before it can claim completion. Those messages exist only to
-    # drive the verification loop; persisting them poisons the resumed
-    # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
+    # verify-on-stop and pre_verify nudges append a synthetic user nudge to
+    # keep the agent going one more turn before it can claim completion.
+    # The nudge exists only to drive the verification loop; persisting it
+    # poisons the resumed transcript and breaks prompt-prefix cache reuse
+    # on later turns. The assistant candidate is NOT synthetic — it is
+    # persisted and emitted as an interim message (#65919).
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
     # kanban worker stop-guard: narrated exit without kanban_complete/block
@@ -1199,6 +1279,7 @@ class AIAgent:
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "auth_mode": getattr(self, "auth_mode", "") or "",
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -1926,6 +2007,13 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # api_content sidecar: the exact bytes sent to the API when
+                # they differ from the clean content (stamped by the turn
+                # prologue for prefetch/plugin injections). Written verbatim
+                # so replay can reproduce the sent prefix byte-for-byte.
+                _row_api_content = msg.get("api_content")
+                if not isinstance(_row_api_content, str):
+                    _row_api_content = None
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). A multimodal override is a complete
@@ -1941,12 +2029,55 @@ class AIAgent:
                     _ov_idx == _msg_idx or msg is pending_cli_message
                 )
                 if is_current_turn_user and msg.get("role") == "user":
-                    if _ov_content is not None and (
-                        not isinstance(content, list) or isinstance(_ov_content, list)
+                    # Preflight compaction can re-anchor the override index at
+                    # a message whose content was MERGED with the compaction
+                    # summary (merge-summary-into-tail). Overwriting that with
+                    # the clean gateway text would silently drop the summary
+                    # from the durable transcript. The wire is already
+                    # consistent — the merge popped the sidecar and the merged
+                    # content is what gets sent — so keep it.
+                    if (
+                        _ov_content is not None
+                        and (not isinstance(content, list) or isinstance(_ov_content, list))
+                        and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
                     ):
+                        # The live content is what the API call sends; the
+                        # override is the cleaned transcript value. If they
+                        # differ and no injection already stamped the sidecar,
+                        # keep the sent bytes in api_content so replay matches
+                        # the wire (#48677 divergence, closed for the cache
+                        # prefix too).
+                        if (
+                            _row_api_content is None
+                            and isinstance(content, str)
+                            and content != _ov_content
+                        ):
+                            _row_api_content = content
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
+                # Store the sidecar only when it actually differs.
+                if _row_api_content == content:
+                    _row_api_content = None
+                # Load-time sanitize divergence: get_messages_as_conversation
+                # replays user/assistant rows through
+                # ``sanitize_context(content).strip()``, so content that
+                # sanitize would rewrite (echoed/pasted <memory-context>
+                # fences or system notes) replays different bytes after a
+                # session reload even though THIS turn sent it verbatim.
+                # Capture the sent bytes in the sidecar so a reloaded session
+                # replays what was actually on the wire. Compared in wire form
+                # (both sides .strip()-ed — the api_messages build strips
+                # every outgoing content string) so plain surrounding
+                # whitespace doesn't grow redundant sidecars.
+                if (
+                    _row_api_content is None
+                    and role in ("user", "assistant")
+                    and isinstance(content, str)
+                    and content
+                    and sanitize_context(content).strip() != content.strip()
+                ):
+                    _row_api_content = content
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -1983,6 +2114,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
+                    api_content=_row_api_content,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
@@ -4257,6 +4389,103 @@ class AIAgent:
                 exc,
             )
 
+    def _create_request_anthropic_client(self, *, reason: str) -> Any:
+        """Build a request-local Anthropic client for one in-flight call.
+
+        The shared ``_anthropic_client`` stays the long-lived primary, but the
+        stale/interrupt watchdog runs on the poll thread and must never call
+        ``close()`` on the client whose TLS socket a worker thread is still
+        reading: releasing that FD from a stranger thread lets the kernel
+        recycle it under a still-live SSL BIO, which then writes a TLS record
+        into an unrelated SQLite header (#29507 / #67142). A per-request client
+        lets the stranger thread ``shutdown()`` the socket while the owning
+        worker performs the SDK-level close from its own context — the same
+        ownership contract the OpenAI-wire path already uses.
+
+        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
+        1M-beta drop) but returns a fresh client instead of swapping the shared
+        one.
+        """
+        if self.api_mode == "anthropic_messages":
+            self._try_refresh_anthropic_client_credentials()
+        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
+        if getattr(self, "provider", None) == "bedrock":
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            client = build_anthropic_bedrock_client(region)
+        else:
+            from agent.anthropic_adapter import build_anthropic_client
+            client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=_drop_1m,
+            )
+        logger.debug(
+            "Anthropic request client created (%s, shared=False) provider=%s model=%s",
+            reason,
+            getattr(self, "provider", None),
+            getattr(self, "model", None),
+        )
+        return client
+
+    def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
+        """Owner-thread full close of a request-local Anthropic client.
+
+        Force-closes the pool's TCP sockets first (CLOSE-WAIT hygiene, parity
+        with ``_close_openai_client``), then does the graceful SDK close. Safe
+        because the caller owns the connection.
+        """
+        if client is None:
+            return
+        try:
+            self._force_close_tcp_sockets(client)
+            client.close()
+            logger.info(
+                "Anthropic client closed (%s, shared=False) provider=%s model=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client close failed (%s, shared=False) provider=%s model=%s error=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+                exc,
+            )
+
+    def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort for request-local Anthropic clients.
+
+        Stranger threads (the interrupt-check / stale-stream detector loop)
+        must not call the SDK ``close()`` — that races the owning worker's live
+        SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
+        #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
+        unblocks and releases the FD from its own thread.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "Anthropic client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) provider=%s model=%s",
+                reason,
+                shutdown_count,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+                exc,
+            )
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream
@@ -4642,15 +4871,18 @@ class AIAgent:
             return False
         return pool.has_available()
 
-    def _anthropic_messages_create(self, api_kwargs: dict):
-        if self.api_mode == "anthropic_messages":
+    def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
+        # When a request-local client is supplied it was already credential-
+        # refreshed in ``_create_request_anthropic_client``; only the shared
+        # fallback path refreshes here.
+        if client is None and self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         # Defensive: strip Responses-only kwargs that can leak in under an
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
         from agent.anthropic_adapter import create_anthropic_message
         return create_anthropic_message(
-            self._anthropic_client,
+            client or self._anthropic_client,
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
@@ -4758,7 +4990,16 @@ class AIAgent:
         streamed = self._normalize_interim_visible_text(
             self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
         )
-        return bool(streamed) and streamed == visible_content
+        # Prefix match (not exact equality): the final response may be the
+        # streamed text plus a trailing delta, or the stream may have been
+        # partial when the verify nudge fired.  In both cases the streamed
+        # content is a prefix of the final — that's enough to mark it
+        # previewed (fails safe to a benign duplicate, never loses text).
+        # The reverse direction (streamed longer than final) is NOT matched:
+        # that could suppress a needed resend in the gateway path where
+        # already_streamed=True calls on_segment_break() instead of
+        # on_commentary() (#65919 review).
+        return bool(streamed) and visible_content.startswith(streamed)
 
     def _extract_codex_interim_visible_parts(
         self,
@@ -4822,12 +5063,15 @@ class AIAgent:
         response can contain both commentary and a partial/final-answer message
         while tools are still pending; treating top-level content as progress
         in that shape leaks the answer before the tool call runs.
+
+        Content may be a string or a structured parts list (e.g. after vision
+        turns or context compaction), so flatten it before stripping reasoning.
         """
         visible = self._extract_codex_interim_visible_text(assistant_msg)
         if visible:
             return visible
         content = assistant_msg.get("content")
-        return self._strip_think_blocks(content or "").strip()
+        return self._strip_think_blocks(flatten_message_text(content)).strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:
         normalized = self._normalize_interim_visible_text(text)
@@ -4860,8 +5104,19 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer."""
+    def _emit_interim_assistant_message(
+        self, assistant_msg: Dict[str, Any]
+    ) -> None:
+        """Surface a real mid-turn assistant commentary message to the UI layer.
+
+        Does NOT set ``_response_was_previewed`` — that flag means "the final
+        response was already shown to the user," but this helper is called for
+        ordinary tool-call narration, intermediate acknowledgements, and
+        verification candidates alike. Setting it here would cause the CLI to
+        suppress a *different* final summary (e.g. from ``_handle_max_iterations``)
+        when the only streamed text was unrelated mid-turn commentary. (#65919
+        review: response-loss blocker)
+        """
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return
@@ -6201,21 +6456,28 @@ class AIAgent:
         acct_token = set_accounting_context(
             getattr(self, "_session_db", None), getattr(self, "session_id", None)
         )
-        try:
-            return run_conversation(
-                self,
-                user_message,
-                system_message,
-                conversation_history,
-                task_id,
-                stream_callback,
-                persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                moa_config=moa_config,
-            )
-        finally:
-            reset_accounting_context(acct_token)
-            reset_conversation_context(token)
+        from agent.auxiliary_client import scoped_runtime_main
+
+        # The outer token restores the caller's Context even though turn setup
+        # replaces the value with the live runtime after fallback restoration.
+        # Keep the scope local instead of storing ContextVar tokens on the agent,
+        # which may be observed from another thread.
+        with scoped_runtime_main({}):
+            try:
+                return run_conversation(
+                    self,
+                    user_message,
+                    system_message,
+                    conversation_history,
+                    task_id,
+                    stream_callback,
+                    persist_user_message,
+                    persist_user_timestamp=persist_user_timestamp,
+                    moa_config=moa_config,
+                )
+            finally:
+                reset_accounting_context(acct_token)
+                reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """
@@ -6230,6 +6492,30 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
+
+    def _check_code_skew_before_turn(self) -> str | None:
+        """Return a warning string if the source tree has been updated
+        underneath this process (code skew), else ``None``.
+
+        Long-lived desktop/serve backend processes can have their source
+        rewritten by an auto-update while still running.  If a lazy import
+        (e.g. ``agent/conversation_loop.py``) resolves newly-added symbols
+        against the stale in-memory ``AIAgent`` class, it produces an
+        ``AttributeError`` that would otherwise retry indefinitely.
+
+        When skew is detected, the caller should refuse new work with a
+        clear message.  See #68178.
+        """
+        skew = _detect_agent_code_skew()
+        if skew is None:
+            return None
+        boot_rev, disk_rev = skew
+        return (
+            f"Code skew detected: this process was loaded at revision {boot_rev} "
+            f"but the source tree is now at {disk_rev}. A lazy import could resolve "
+            f"new symbols against the stale in-memory class (AttributeError). "
+            f"Please restart the application to apply the update safely."
+        )
 
     def _run_codex_app_server_turn(
         self,

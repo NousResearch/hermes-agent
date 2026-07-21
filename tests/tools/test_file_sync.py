@@ -225,6 +225,42 @@ class TestRateLimiting:
             mgr.sync()
         assert upload.call_count == 1
 
+    def test_failed_sync_does_not_suppress_next_retry(self, tmp_files, monkeypatch):
+        """A failed sync must not advance the rate-limit clock.
+
+        Regression: the failure path used to set ``_last_sync_time`` on
+        rollback, so the next non-forced ``sync()`` within ``sync_interval``
+        hit the rate-limit guard and returned early — silently suppressing the
+        retry the rollback had just prepared and leaving the remote stale.
+        """
+        from tools.environments import file_sync
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(file_sync, "_monotonic", lambda: clock["t"])
+
+        upload = MagicMock(side_effect=RuntimeError("transport down"))
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            sync_interval=10.0,
+        )
+
+        # First sync fails (forced bypasses the guard); state rolls back.
+        mgr.sync(force=True)
+        assert upload.call_count >= 1
+
+        # Transport recovers; advance the clock by LESS than the interval.
+        upload.reset_mock()
+        upload.side_effect = None
+        clock["t"] = 1002.0  # 2s later, < 10s interval
+
+        # The next non-forced cycle must retry, not be rate-limited away.
+        mgr.sync()
+        assert upload.call_count == 3, (
+            "a failed sync must not rate-limit the next retry"
+        )
+
 
 class TestEdgeCases:
     def test_empty_file_list(self):

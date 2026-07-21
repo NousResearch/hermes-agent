@@ -672,10 +672,9 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
 def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
     """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
 
-    See ``tools/mcp_stdio_watchdog.py`` module docstring for the full
-    rationale. Returns the (command, args) unchanged on any platform/failure
-    where the wrap can't safely apply, so this can never be the reason a
-    previously-working MCP server stops starting.
+    On POSIX, the watchdog records this process's PID and later detects parent
+    death directly through ``getppid()``. Returns the (command, args) unchanged
+    on non-POSIX platforms or if the PID cannot be read.
     """
     if os.name != "posix":
         # Relies on process groups (os.getpgid/os.killpg); no POSIX
@@ -685,18 +684,12 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         return command, args
     try:
         my_pid = os.getpid()
-        try:
-            import psutil
-            create_time = psutil.Process(my_pid).create_time()
-        except ImportError:
-            create_time = time.time()
     except Exception:
         # Never let watchdog bookkeeping failure block a real MCP connection.
         return command, args
     watchdog_args = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
         "--ppid", str(my_pid),
-        "--create-time", repr(create_time),
         "--",
         command,
         *args,
@@ -3916,6 +3909,13 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         try:
             return future.result(timeout=wait_timeout)
         except concurrent.futures.TimeoutError:
+            # On supported Python versions, concurrent.futures.TimeoutError
+            # aliases the built-in TimeoutError, so result(timeout=...) also
+            # raises it for a coroutine's own timeout.
+            # Resolve a done future without a timeout to propagate its stored
+            # outcome, including completion racing with this polling timeout.
+            if future.done():
+                return future.result()
             continue
 
 

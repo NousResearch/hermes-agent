@@ -23,6 +23,8 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+
 logger = logging.getLogger(__name__)
 
 
@@ -454,6 +456,27 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     # even when codex doesn't report durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
 
+    def _stable_call_id(item: dict, name: str) -> str:
+        """Deterministic tool_call id mirroring CodexEventProjector, so a
+        live TUI tool card correlates with the same tool call after the
+        session is resumed and history is projected."""
+        from agent.transports.codex_event_projector import _deterministic_call_id
+
+        item_id = item.get("id") or ""
+        item_type = item.get("type") or ""
+        if item_type == "commandExecution":
+            return _deterministic_call_id("exec", item_id)
+        if item_type == "fileChange":
+            return _deterministic_call_id("apply_patch", item_id)
+        if item_type == "mcpToolCall":
+            server = item.get("server") or "mcp"
+            tool = item.get("tool") or "unknown"
+            return _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
+        if item_type == "dynamicToolCall":
+            tool = item.get("tool") or "unknown"
+            return _deterministic_call_id(f"dyn_{tool}", item_id)
+        return _deterministic_call_id(name, item_id)
+
     def _fire_tool_started(item: dict) -> None:
         item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
@@ -461,15 +484,26 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if item_id:
             started[item_id] = (name, args, time.monotonic())
         cb = getattr(agent, "tool_progress_callback", None)
-        if cb is None:
-            return
-        try:
-            cb("tool.started", name, _codex_item_to_preview(item), args)
-        except Exception:
-            logger.debug(
-                "tool_progress_callback raised on tool.started for %s",
-                name, exc_info=True,
-            )
+        if cb is not None:
+            try:
+                cb("tool.started", name, _codex_item_to_preview(item), args)
+            except Exception:
+                logger.debug(
+                    "tool_progress_callback raised on tool.started for %s",
+                    name, exc_info=True,
+                )
+        # Authoritative stable-ID tool card (TUI / desktop). Fires
+        # alongside tool_progress so surfaces that render structured tool
+        # cards (not just progress bubbles) stay correlated with the
+        # projected history entry after a resume.
+        start_cb = getattr(agent, "tool_start_callback", None)
+        if start_cb is not None:
+            try:
+                start_cb(_stable_call_id(item, name), name, args)
+            except Exception:
+                logger.debug(
+                    "tool_start_callback raised for %s", name, exc_info=True,
+                )
 
     def _fire_tool_completed(item: dict) -> None:
         item_id = item.get("id") or ""
@@ -487,16 +521,24 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
             duration = time.monotonic() - prior[2]
         result, is_error = _codex_item_completion_payload(item)
         cb = getattr(agent, "tool_progress_callback", None)
-        if cb is None:
-            return
-        try:
-            cb("tool.completed", name, None, None,
-               duration=duration, is_error=is_error, result=result)
-        except Exception:
-            logger.debug(
-                "tool_progress_callback raised on tool.completed for %s",
-                name, exc_info=True,
-            )
+        if cb is not None:
+            try:
+                cb("tool.completed", name, None, None,
+                   duration=duration, is_error=is_error, result=result)
+            except Exception:
+                logger.debug(
+                    "tool_progress_callback raised on tool.completed for %s",
+                    name, exc_info=True,
+                )
+        complete_cb = getattr(agent, "tool_complete_callback", None)
+        if complete_cb is not None:
+            args = prior[1] if prior is not None else _codex_item_to_args(item)
+            try:
+                complete_cb(_stable_call_id(item, name), name, args, result)
+            except Exception:
+                logger.debug(
+                    "tool_complete_callback raised for %s", name, exc_info=True,
+                )
 
     def _fire_text_delta(params: dict) -> None:
         text = params.get("delta") or params.get("text") or ""
@@ -551,7 +593,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if method == "item/agentMessage/delta":
             _fire_text_delta(params)
             return
-        if method == "item/reasoning/delta":
+        if method in {"item/reasoning/delta", "item/reasoning/summaryDelta"}:
             _fire_reasoning_delta(params)
             return
         item = params.get("item")
@@ -1190,12 +1232,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # late deltas are fenced out of the turn; conversely, a newer
         # attempt supersedes us and the interrupt_check below stops our
         # consumption immediately.
-        _writer_token = agent._claim_stream_writer()
+        _writer_token = claim_stream_writer(agent)
 
         def _interrupt_or_superseded(_tok=_writer_token) -> bool:
             if agent._interrupt_requested:
                 return True
-            if not agent._stream_writer_is_current(_tok):
+            if not stream_writer_is_current(agent, _tok):
                 logger.warning(
                     "Codex streaming attempt superseded by a newer stream; "
                     "stopping consumption to preserve the single-writer "

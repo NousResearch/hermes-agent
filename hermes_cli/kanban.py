@@ -594,7 +594,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock = sub.add_parser(
+        "unblock",
+        help="Return blocked/scheduled tasks to ready, or todo while parents remain open",
+    )
     p_unblock.add_argument(
         "--reason",
         default=None,
@@ -1993,6 +1996,50 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            # Goal-mode pre-completion judge gate (mirrors the gate in
+            # tools/kanban_tools.py:_handle_complete — Issue #38367).
+            # Without this, a goal_mode worker can call
+            # `hermes kanban complete <id>` from the terminal tool and
+            # bypass the auxiliary judge that the tool-call path enforces.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode:
+                judge_available = False
+                try:
+                    from agent.auxiliary_client import get_text_auxiliary_client
+                    _client, _model = get_text_auxiliary_client("goal_judge")
+                    judge_available = _client is not None and bool(_model)
+                except Exception:
+                    pass
+                if judge_available:
+                    from hermes_cli.goals import judge_goal
+                    verdict = "done"
+                    reason = ""
+                    try:
+                        # judge_goal returns (verdict, reason, parse_failed,
+                        # wait_directive, transport_failed) — see
+                        # hermes_cli/goals.py. Unpacking fewer raises
+                        # ValueError into the fail-open handler below,
+                        # silently disabling the gate.
+                        verdict, reason, _, _, _ = judge_goal(
+                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                            last_response=(summary or args.result or "").strip(),
+                        )
+                    except Exception as judge_exc:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "goal judge check failed, allowing completion: %s",
+                            judge_exc,
+                            exc_info=True,
+                        )
+                    if verdict != "done":
+                        print(
+                            f"kanban: goal completion of {tid} rejected by judge: {reason}. "
+                            f"Provide evidence matching the task's acceptance criteria.",
+                            file=sys.stderr,
+                        )
+                        failed.append(tid)
+                        continue
+
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,

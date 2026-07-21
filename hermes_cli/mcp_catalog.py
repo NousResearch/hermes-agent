@@ -112,6 +112,14 @@ class ToolsSpec:
     # pre-checked (or no filter is written when probe fails).
     default_enabled: Optional[List[str]] = None
 
+    # Exclude-mode counterpart: tool names/glob patterns written to
+    # ``mcp_servers.<name>.tools.exclude`` at install time. Everything NOT
+    # matching stays enabled — including tools the server adds later. Use for
+    # huge auto-generated surfaces (OpenAPI-derived MCPs) where an include
+    # list would be thousands of lines and freeze out new endpoints.
+    # Mutually exclusive with ``default_enabled``.
+    default_excluded: Optional[List[str]] = None
+
 
 @dataclass
 class CatalogEntry:
@@ -241,7 +249,22 @@ def _parse_manifest(path: Path) -> CatalogEntry:
             raise CatalogError(
                 f"{path}: tools.default_enabled must be a list of strings"
             )
-    tools_spec = ToolsSpec(default_enabled=default_enabled)
+    default_excluded = tools_raw.get("default_excluded")
+    if default_excluded is not None:
+        if not isinstance(default_excluded, list) or not all(
+            isinstance(t, str) for t in default_excluded
+        ):
+            raise CatalogError(
+                f"{path}: tools.default_excluded must be a list of strings"
+            )
+    if default_enabled is not None and default_excluded is not None:
+        raise CatalogError(
+            f"{path}: tools.default_enabled and tools.default_excluded are "
+            "mutually exclusive"
+        )
+    tools_spec = ToolsSpec(
+        default_enabled=default_enabled, default_excluded=default_excluded
+    )
 
     install: Optional[InstallSpec] = None
     install_raw = data.get("install")
@@ -555,6 +578,22 @@ def _write_tools_include(name: str, include: Optional[List[str]]) -> None:
     save_config(cfg)
 
 
+def _write_tools_exclude(name: str, exclude: List[str]) -> None:
+    """Persist ``mcp_servers.<name>.tools.exclude`` (names or glob patterns)."""
+    cfg = load_config()
+    servers = cfg.setdefault("mcp_servers", {})
+    server_entry = servers.get(name) or {}
+    tools_block = server_entry.get("tools") or {}
+    if not isinstance(tools_block, dict):
+        tools_block = {}
+    tools_block["exclude"] = list(exclude)
+    tools_block.pop("include", None)
+    server_entry["tools"] = tools_block
+    servers[name] = server_entry
+    cfg["mcp_servers"] = servers
+    save_config(cfg)
+
+
 def _apply_tool_selection(
     entry: CatalogEntry, *, prior_selection: Optional[List[str]]
 ) -> None:
@@ -576,6 +615,23 @@ def _apply_tool_selection(
     """
     print()
     print(color(f"  Probing '{entry.name}' for available tools...", Colors.CYAN))
+
+    # Exclude-mode manifests short-circuit the checklist entirely: the curated
+    # exclude list (names or glob patterns) is written as-is, everything else
+    # stays enabled — including tools the server adds later. A reinstall with
+    # a prior include selection still honours the user's own choice below.
+    if entry.tools.default_excluded and prior_selection is None:
+        _write_tools_exclude(entry.name, entry.tools.default_excluded)
+        print(color(
+            f"  Applied manifest exclude list "
+            f"({len(entry.tools.default_excluded)} entries); everything else "
+            f"stays enabled. Edit mcp_servers.{entry.name}.tools.exclude in "
+            "config.yaml or run "
+            f"`hermes mcp configure {entry.name}` to change.",
+            Colors.GREEN,
+        ))
+        return
+
     probed = _probe_tools(entry.name)
 
     # Probe failure path

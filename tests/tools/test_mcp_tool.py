@@ -3832,6 +3832,59 @@ class TestMCPSelectiveToolLoading:
             "mcp__ink_exclude__list_services",
         ]
 
+    def test_exclude_filter_supports_glob_patterns(self):
+        """Glob entries in tools.exclude match families of tool names."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"exclude": ["*_radar_*", "docs"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_glob",
+            [
+                "get_radar_http_summary",
+                "post_radar_scans",
+                "docs",
+                "get_zones_dns_records",
+            ],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == ["mcp__ink_glob__get_zones_dns_records"]
+
+    def test_include_filter_supports_glob_patterns(self):
+        """Glob entries in tools.include whitelist families of tool names."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"include": ["*_dns_*"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_glob_inc",
+            ["get_zones_dns_records", "post_zones_dns_records", "docs"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == [
+            "mcp__ink_glob_inc__get_zones_dns_records",
+            "mcp__ink_glob_inc__post_zones_dns_records",
+        ]
+
+    def test_plain_exclude_names_do_not_glob_match(self):
+        """Entries without metacharacters stay exact-match (no surprise hits)."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"exclude": ["docs"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_exact",
+            ["docs", "docs_search", "get_docs"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == [
+            "mcp__ink_exact__docs_search",
+            "mcp__ink_exact__get_docs",
+        ]
+
     def test_include_filter_skips_utility_tools_without_capabilities(self):
         config = {
             "url": "https://mcp.example.com",

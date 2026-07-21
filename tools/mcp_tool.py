@@ -92,6 +92,7 @@ Thread safety:
 import asyncio
 import contextvars
 import concurrent.futures
+import fnmatch
 import inspect
 import json
 import logging
@@ -4862,7 +4863,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
 
 
 def _normalize_name_filter(value: Any, label: str) -> set[str]:
-    """Normalize include/exclude config to a set of tool names."""
+    """Normalize include/exclude config to a set of tool names/patterns."""
     if value is None:
         return set()
     if isinstance(value, str):
@@ -4871,6 +4872,23 @@ def _normalize_name_filter(value: Any, label: str) -> set[str]:
         return {str(item) for item in value}
     logger.warning("MCP config %s must be a string or list of strings; ignoring %r", label, value)
     return set()
+
+
+def _name_filter_matches(name: str, filter_set: set) -> bool:
+    """True if *name* matches any entry in a normalized include/exclude set.
+
+    Entries containing a glob metacharacter (``*``, ``?``, ``[``) are matched
+    with :func:`fnmatch.fnmatchcase`; plain entries are exact names. Globs let
+    huge auto-generated surfaces (e.g. an OpenAPI-derived MCP exposing
+    thousands of endpoint tools) be filtered by product family
+    (``*_accounts_magic_*``) instead of thousand-line literal lists.
+    """
+    if name in filter_set:
+        return True
+    for pat in filter_set:
+        if ("*" in pat or "?" in pat or "[" in pat) and fnmatch.fnmatchcase(name, pat):
+            return True
+    return False
 
 
 def _parse_boolish(value: Any, default: bool = True) -> bool:
@@ -5047,9 +5065,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     def _should_register(tool_name: str) -> bool:
         if include_set:
-            return tool_name in include_set
+            return _name_filter_matches(tool_name, include_set)
         if exclude_set:
-            return tool_name not in exclude_set
+            return not _name_filter_matches(tool_name, exclude_set)
         return True
 
     for mcp_tool in server._tools:

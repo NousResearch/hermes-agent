@@ -224,6 +224,31 @@ class TestManifestParsing:
 
         assert list_catalog() == []
 
+    def test_tools_default_excluded_parsed(self, catalog_dir):
+        body = _basic_manifest(
+            tools={"default_excluded": ["docs", "*_radar_*"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        e = _entry("demo")
+        assert e.tools.default_excluded == ["docs", "*_radar_*"]
+        assert e.tools.default_enabled is None
+
+    def test_tools_default_excluded_bad_shape_rejected(self, catalog_dir):
+        body = _basic_manifest(tools={"default_excluded": "docs"})  # str, not list
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
+
+    def test_tools_enabled_and_excluded_mutually_exclusive(self, catalog_dir):
+        body = _basic_manifest(
+            tools={"default_enabled": ["a"], "default_excluded": ["b"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
+
 
 # ---------------------------------------------------------------------------
 # Install flow
@@ -244,6 +269,60 @@ class TestInstall:
         assert servers["demo"]["command"] == "npx"
         assert servers["demo"]["args"] == ["-y", "demo-mcp"]
         assert servers["demo"]["enabled"] is True
+
+    def test_install_default_excluded_writes_exclude_without_probe(
+        self, catalog_dir, monkeypatch
+    ):
+        """Exclude-mode manifests skip the probe/checklist and write
+        tools.exclude verbatim (names + glob patterns)."""
+        body = _basic_manifest(
+            tools={"default_excluded": ["docs", "*_radar_*"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config
+
+        def _fail_probe(name):
+            raise AssertionError("probe must not run for exclude-mode manifests")
+
+        monkeypatch.setattr(mc, "_probe_tools", _fail_probe)
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["exclude"] == ["docs", "*_radar_*"]
+        assert "include" not in server["tools"]
+
+    def test_reinstall_prior_include_wins_over_default_excluded(
+        self, catalog_dir, monkeypatch
+    ):
+        """A user's prior include selection survives reinstall of an
+        exclude-mode manifest (prior selection > manifest default)."""
+        body = _basic_manifest(
+            tools={"default_excluded": ["*_radar_*"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "npx",
+            "args": ["-y", "demo-mcp"],
+            "enabled": True,
+            "tools": {"include": ["tool_a"]},
+        }
+        save_config(cfg)
+
+        import sys as _sys
+        probed = [("tool_a", "a"), ("tool_b", "b")]
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["include"] == ["tool_a"]
+        assert "exclude" not in server["tools"]
 
     def test_install_rejects_exfil_shaped_stdio_manifest(self, catalog_dir):
         body = _basic_manifest(

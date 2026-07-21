@@ -5811,7 +5811,15 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # #9399: a quote-reply without an explicit @mention continues inline
+            # (preserves free-response channel semantics — replying to a bot
+            # cron post in a free-response channel shouldn't spin off a thread).
+            # An explicit @mention in a reply is a fresh task trigger: thread
+            # it normally so the response doesn't flood the parent channel.
+            # Quote context is preserved upstream via reply_to_text injection
+            # in gateway/run.py (~L10063), so threading loses no context.
+            skip_for_reply = is_reply_message and not mention_prefix
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not skip_for_reply:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

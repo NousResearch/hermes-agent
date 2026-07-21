@@ -107,6 +107,55 @@ class TestAutoThreadingPreservesCommand:
         assert "/new" in response
 
 
+class TestAutoThreadingReplyMention:
+    """Regression for #9399 vs. explicit-mention replies.
+
+    A quote-reply without an explicit @mention should NOT spin off a thread
+    (preserves free-response channel semantics from #9399). A quote-reply
+    that DOES explicitly @mention the bot is a fresh task trigger and
+    SHOULD be auto-threaded so the response doesn't flood the parent channel.
+    """
+
+    async def test_reply_with_explicit_mention_threads(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        fake_thread = make_fake_thread(thread_id=90002, name="reply-task")
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> review this triad",
+            mentions=[bot_user],
+        )
+        msg.type = 19  # MessageType.reply
+
+        async def clobber_content(**kwargs):
+            return fake_thread
+
+        msg.create_thread = AsyncMock(side_effect=clobber_content)
+        await dispatch(discord_adapter, msg)
+
+        msg.create_thread.assert_awaited_once(), (
+            "reply with explicit @mention must still auto-thread"
+        )
+
+    async def test_reply_without_mention_does_not_thread(
+        self, discord_adapter, monkeypatch
+    ):
+        from tests.e2e.conftest import CHANNEL_ID
+
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        # Put the channel in free_response_channels so the mention gate
+        # doesn't drop the message before auto-threading logic runs.
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", str(CHANNEL_ID))
+        msg = make_discord_message(content="following up on this", mentions=[])
+        msg.type = 19  # MessageType.reply
+
+        await dispatch(discord_adapter, msg)
+
+        msg.create_thread.assert_not_awaited(), (
+            "quote-reply without explicit @mention must not spin off a thread (#9399)"
+        )
+
+
 class TestRepliedToMediaDispatch:
     async def test_reply_to_image_message_caches_referenced_attachment(
         self, discord_adapter, bot_user, monkeypatch

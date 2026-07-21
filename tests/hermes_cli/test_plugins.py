@@ -1036,7 +1036,9 @@ class TestPluginApiServerHooks:
         ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
 
         with pytest.raises(TypeError, match="handler must be callable"):
-            ctx.register_api_server_route("GET", "/v1/plugins/bad", "not-callable")
+            ctx.register_api_server_route(
+                "GET", "/v1/plugins/api-plugin/bad", "not-callable"
+            )
 
         assert mgr.get_api_server_routes() == []
 
@@ -1069,12 +1071,17 @@ class TestPluginApiServerHooks:
         async def _handler(request):
             return None
 
-        ctx.register_api_server_route("GET", "/v1/plugins/ping", _handler, name="plugin_ping")
+        ctx.register_api_server_route(
+            "GET",
+            "/v1/plugins/api-plugin/ping",
+            _handler,
+            name="plugin_ping",
+        )
 
         routes = mgr.get_api_server_routes()
         assert len(routes) == 1
         assert routes[0]["method"] == "GET"
-        assert routes[0]["path"] == "/v1/plugins/ping"
+        assert routes[0]["path"] == "/v1/plugins/api-plugin/ping"
         assert routes[0]["handler"] is _handler
         assert routes[0]["name"] == "plugin_ping"
         assert routes[0]["plugin"] == "api-plugin"
@@ -1082,10 +1089,16 @@ class TestPluginApiServerHooks:
     @pytest.mark.parametrize(
         ("method", "path", "name", "message"),
         [
-            ("NOPE", "/v1/plugins/ping", None, "unsupported method"),
+            ("NOPE", "/v1/plugins/api-plugin/ping", None, "unsupported method"),
             ("GET", "/v1/models", None, "under /v1/plugins/"),
             ("GET", "/v1/plugins/", None, "include a route name"),
-            ("GET", "/v1/plugins/ping", "", "name must be"),
+            ("GET", "/v1/plugins/api-plugin/ping", "", "name must be"),
+            (
+                "GET",
+                "/v1/plugins/api-plugin/ping",
+                "invalid/name",
+                "Python identifiers",
+            ),
         ],
     )
     def test_register_api_server_route_rejects_invalid_definition(
@@ -1104,10 +1117,10 @@ class TestPluginApiServerHooks:
         ctx = PluginContext(PluginManifest(name="api-plugin", source="user"), mgr)
         handler = lambda request: None
 
-        ctx.register_api_server_route("GET", "/v1/plugins/ping", handler)
+        ctx.register_api_server_route("GET", "/v1/plugins/api-plugin/ping", handler)
 
         with pytest.raises(ValueError, match="already registered"):
-            ctx.register_api_server_route("get", "/v1/plugins/ping", handler)
+            ctx.register_api_server_route("get", "/v1/plugins/api-plugin/ping", handler)
 
         assert len(mgr.get_api_server_routes()) == 1
 
@@ -1117,19 +1130,49 @@ class TestPluginApiServerHooks:
         handler = lambda request: None
 
         ctx.register_api_server_route(
-            "GET", "/v1/plugins/one", handler, name="api_plugin_route"
+            "GET", "/v1/plugins/api-plugin/one", handler, name="api_plugin_route"
         )
 
         with pytest.raises(ValueError, match="name already registered"):
             ctx.register_api_server_route(
-                "POST", "/v1/plugins/two", handler, name="api_plugin_route"
+                "POST",
+                "/v1/plugins/api-plugin/two",
+                handler,
+                name="api_plugin_route",
             )
 
         assert len(mgr.get_api_server_routes()) == 1
 
+    def test_register_api_server_route_rejects_another_plugin_namespace(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="display-name",
+            key="category/api-plugin",
+            source="user",
+        )
+        ctx = PluginContext(manifest, mgr)
+
+        with pytest.raises(ValueError, match="own namespace"):
+            ctx.register_api_server_route(
+                "GET",
+                "/v1/plugins/other-plugin/status",
+                lambda request: None,
+            )
+
+        ctx.register_api_server_route(
+            "GET",
+            "/v1/plugins/category/api-plugin/status",
+            lambda request: None,
+        )
+        assert mgr.get_api_server_routes()[0]["plugin"] == "category/api-plugin"
+
     def test_register_api_server_capability_provider_is_invoked_with_context(self):
         mgr = PluginManager()
-        manifest = PluginManifest(name="api-plugin", source="user")
+        manifest = PluginManifest(
+            name="display-name",
+            key="category/api-plugin",
+            source="user",
+        )
         ctx = PluginContext(manifest, mgr)
 
         seen = {}
@@ -1142,7 +1185,12 @@ class TestPluginApiServerHooks:
         ctx.register_api_server_capability(_provider)
 
         capabilities = mgr.get_api_server_capabilities(adapter="adapter-x", request="request-y")
-        assert capabilities == [{"plugin": "api-plugin", "capabilities": {"feature_flag": True}}]
+        assert capabilities == [
+            {
+                "plugin": "category/api-plugin",
+                "capabilities": {"feature_flag": True},
+            }
+        ]
         assert seen == {"adapter": "adapter-x", "request": "request-y"}
 
     def test_plugin_capability_provider_failure_isolated(self, caplog):

@@ -153,8 +153,9 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "the documentation at https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date "
     "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
+    "for additional guidance and proven workflows. If that same skill is already "
+    "loaded for the current task or thread, reuse its instructions instead of "
+    "loading it again. Treat the docs as the source of truth when the two differ."
 )
 
 MEMORY_GUIDANCE = (
@@ -1726,6 +1727,8 @@ def build_skills_system_prompt(
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
             "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "If that same relevant skill is already loaded for the current task or thread, reuse "
+            "its instructions instead of loading it again. "
             "Err on the side of loading — it is always better to have context you don't need "
             "than to miss critical steps, pitfalls, or established workflows. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "

@@ -425,6 +425,42 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skills_prompt_requires_relevant_skill_loading(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "## Skills (mandatory)" in result
+        assert "matches or is even partially relevant" in result
+        assert "MUST load it with skill_view(name)" in result
+        assert "Err on the side of loading" in result
+        assert "If that same relevant skill is already loaded" in result
+        assert "load the `hermes-agent` skill first" in result
+        assert "Only proceed without loading a skill if genuinely none are relevant" in result
+
+    def test_skills_prompt_preserves_index_and_hermes_hint(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "core" / "hermes-agent"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Hermes Agent workflow help\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "<available_skills>" in result
+        assert "- hermes-agent: Hermes Agent workflow help" in result
+        assert "load the `hermes-agent` skill first" in result
+        assert "If that same relevant skill is already loaded" in result
+        assert "Only proceed without loading a skill if genuinely none are relevant" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -1704,5 +1740,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

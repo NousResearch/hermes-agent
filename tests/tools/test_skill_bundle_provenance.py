@@ -244,6 +244,75 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     assert "Scan provenance: fresh" in sink.getvalue()
 
 
+SKILL_MD_MISSING_REF = """---
+name: partial-bundle
+description: References a support file that is unreachable.
+---
+# Partial
+Read [the guide](references/present.md#usage) and the appendix at
+`references/absent.md`, then run `scripts/run.py`.
+"""
+
+
+@pytest.fixture
+def served_repo_missing_support(tmp_path):
+    """Serve a skill whose SKILL.md references a support file that is not
+    present on the server, so fetching it returns 404."""
+    repo = tmp_path / "upstream-missing"
+    repo.mkdir()
+    (repo / "SKILL.md").write_text(SKILL_MD_MISSING_REF)
+    # references/absent.md is deliberately NOT created, so the server 404s it.
+    for rel, content in {
+        "references/present.md": "present guide\n",
+        "scripts/run.py": "print('ok')\n",
+    }.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(_QuietHandler, directory=str(repo))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield repo, f"http://127.0.0.1:{server.server_port}/SKILL.md"
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support, monkeypatch, tmp_path):
+    """A referenced support file that 404s is skipped rather than aborting the
+    whole URL install: the bundle still installs end-to-end through quarantine,
+    scan, install, and lock provenance, with only the reachable files landing
+    on disk and recorded in the lock file (#66760)."""
+    from hermes_cli.skills_hub import do_install
+    import tools.skills_hub as hub
+
+    _repo, url = served_repo_missing_support
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+
+    sink = StringIO()
+    do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
+
+    installed = home / "skills" / "partial-bundle"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "references" / "present.md").read_text() == "present guide\n"
+    assert (installed / "scripts" / "run.py").is_file()
+    # The unreachable reference neither blocked the install nor was written.
+    assert not (installed / "references" / "absent.md").exists()
+
+    entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["partial-bundle"]
+    assert entry["scan_provenance"]["source_url"] == url
+    assert "references/present.md" in entry["files"]
+    assert "references/absent.md" not in entry["files"]
+
+
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):
     from tools.skills_hub import OptionalSkillSource
 

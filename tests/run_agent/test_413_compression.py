@@ -1072,3 +1072,89 @@ class TestOverflowWithCompactionDisabled:
         mock_compress.assert_called_once()
         assert result["completed"] is True
         assert result.get("compaction_disabled") is not True
+
+
+def test_context_overflow_stops_after_nonshrinking_compression(agent, capsys):
+    """A same-count, larger compression result must not restart recovery.
+
+    A provider-reported lower context limit used to count as compression
+    progress even when the attempted pass returned an equal/larger request.
+    That re-entered the context-error loop with the same impossible payload.
+    """
+    err_400 = Exception(
+        "Error code: 400 - This endpoint's maximum context length is 128000 tokens. "
+        "However, you requested about 270460 tokens."
+    )
+    setattr(err_400, "status_code", 400)
+    agent.client.chat.completions.create.side_effect = err_400
+
+    prefill = [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": "previous answer"},
+    ]
+
+    def _non_shrinking_compression(messages, *_args, **_kwargs):
+        return (
+            [
+                {
+                    **message,
+                    "content": f"{message.get('content', '')} " + ("expanded " * 400),
+                }
+                for message in messages
+            ],
+            "compressed prompt",
+        )
+
+    with (
+        patch.object(agent, "_compress_context", side_effect=_non_shrinking_compression) as mock_compress,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("hello", conversation_history=prefill)
+
+    mock_compress.assert_called_once()
+    assert result["failed"] is True
+    assert result["compression_exhausted"] is True
+    output = capsys.readouterr().out
+    assert "/new" in output
+    assert "/compress" not in output
+
+
+def test_context_overflow_retries_after_same_count_token_reduction(agent):
+    """A same-count compression with materially fewer request tokens retries."""
+    err_400 = Exception(
+        "Error code: 400 - This endpoint's maximum context length is 128000 tokens. "
+        "However, you requested about 270460 tokens."
+    )
+    setattr(err_400, "status_code", 400)
+    agent.client.chat.completions.create.side_effect = [
+        err_400,
+        _mock_response(content="Recovered after compression", finish_reason="stop"),
+    ]
+
+    prefill = [
+        {"role": "user", "content": "previous question " + ("detail " * 200)},
+        {"role": "assistant", "content": "previous answer " + ("detail " * 200)},
+    ]
+
+    def _shrinking_compression(messages, *_args, **_kwargs):
+        return (
+            [
+                {**message, "content": "summary"}
+                for message in messages
+            ],
+            "compressed prompt",
+        )
+
+    with (
+        patch.object(agent, "_compress_context", side_effect=_shrinking_compression) as mock_compress,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("hello", conversation_history=prefill)
+
+    mock_compress.assert_called_once()
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after compression"

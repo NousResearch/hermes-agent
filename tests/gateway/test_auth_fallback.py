@@ -113,3 +113,111 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         assert calls == ["openrouter", "nous"]
         assert result["provider"] == "nous"
         assert result["model"] == "Hermes-4"
+
+
+class TestGatewayFallbackEnvExpansion:
+    def test_load_fallback_model_expands_legacy_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway fallback loader should expand ${VAR} refs in legacy fallback_model."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_model:\n"
+            "  provider: custom\n"
+            "  model: deepseek-chat\n"
+            "  api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-123")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+
+        fb = GatewayRunner._load_fallback_model()
+
+        assert fb[0]["api_key"] == "secret-123"
+
+    def test_try_resolve_fallback_provider_expands_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway runtime fallback resolution should expand ${VAR} refs before provider lookup."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: deepseek-chat\n"
+            "    base_url: https://example.invalid/v1\n"
+            "    api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-456")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        seen = {}
+
+        def _mock_resolve(**kwargs):
+            seen["explicit_api_key"] = kwargs.get("explicit_api_key")
+            return {
+                "api_key": kwargs.get("explicit_api_key"),
+                "base_url": kwargs.get("explicit_base_url"),
+                "provider": kwargs.get("requested"),
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _try_resolve_fallback_provider
+
+            fb = _try_resolve_fallback_provider()
+
+        assert seen["explicit_api_key"] == "secret-456"
+        assert fb["api_key"] == "secret-456"
+
+    def test_refresh_fallback_model_expands_legacy_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway refresh path should expand ${VAR} refs in legacy fallback_model."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_model:\n"
+            "  provider: custom\n"
+            "  model: deepseek-chat\n"
+            "  api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-refresh-legacy")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._fallback_model = None
+
+        fb = runner._refresh_fallback_model()
+
+        assert fb[0]["api_key"] == "secret-refresh-legacy"
+        assert runner._fallback_model == fb
+
+    def test_refresh_fallback_model_expands_list_env_api_key(self, tmp_path, monkeypatch):
+        """Gateway refresh path should expand ${VAR} refs in fallback_providers."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: deepseek-chat\n"
+            "    base_url: https://example.invalid/v1\n"
+            "    api_key: ${HERMES_TEST_FB_KEY}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_TEST_FB_KEY", "secret-refresh-list")
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._fallback_model = None
+
+        fb = runner._refresh_fallback_model()
+
+        assert fb[0]["api_key"] == "secret-refresh-list"
+        assert fb[0]["base_url"] == "https://example.invalid/v1"
+        assert runner._fallback_model == fb

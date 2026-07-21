@@ -2156,6 +2156,7 @@ def _credential_pool_for_provider(provider: Optional[str]):
 
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
+    from hermes_cli.config import _expand_env_vars
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         import yaml as _y
@@ -2164,6 +2165,7 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         with open(cfg_path, encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
+        cfg = _expand_env_vars(cfg)
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -5475,11 +5477,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         when both keys are present.
         """
         try:
+            from hermes_cli.config import _expand_env_vars
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
+                cfg = _expand_env_vars(cfg)
                 fb = get_fallback_chain(cfg)
                 if fb:
                     return fb
@@ -5502,6 +5506,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         that genuinely lacks the key clears the chain.
         """
         try:
+            from hermes_cli.config import _expand_env_vars
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if not cfg_path.exists():
@@ -5509,6 +5514,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._fallback_model
             with open(cfg_path, encoding="utf-8") as _f:
                 cfg = _y.safe_load(_f) or {}
+            cfg = _expand_env_vars(cfg)
         except Exception:
             # Transient failure — keep last known-good chain.
             logger.debug(

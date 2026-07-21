@@ -109,6 +109,7 @@ def _run_finalize(
     interrupted: bool = False,
     failed: bool = False,
     api_call_count: int = 1,
+    turn_exit_reason: str = "text_response(finish_reason=stop)",
 ):
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "final"}]
     return finalize_turn(
@@ -124,7 +125,7 @@ def _run_finalize(
         user_message="hi",
         original_user_message="hi",
         _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
+        _turn_exit_reason=turn_exit_reason,
     )
 
 
@@ -227,7 +228,12 @@ def test_post_llm_call_not_emitted_for_interrupted_turn(captured_hooks):
 def test_post_llm_call_marks_iteration_limit_as_not_completed(captured_hooks):
     agent = _StubAgent()
 
-    _run_finalize(agent, final_response=None, api_call_count=agent.max_iterations)
+    _run_finalize(
+        agent,
+        final_response=None,
+        api_call_count=agent.max_iterations,
+        turn_exit_reason="budget_exhausted",
+    )
 
     payload = captured_hooks[0]
     assert payload["completed"] is False

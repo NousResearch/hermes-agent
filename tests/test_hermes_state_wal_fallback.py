@@ -183,6 +183,97 @@ class TestApplyWalWithFallback:
         finally:
             check.close()
 
+    def test_treats_set_wal_race_as_success_when_disk_says_wal(self, tmp_path):
+        """If the set-WAL path races but disk is already WAL, keep using WAL."""
+        target = tmp_path / "already-wal-race.db"
+        primer = sqlite3.connect(str(target), isolation_level=None)
+        try:
+            primer.execute("PRAGMA journal_mode=WAL")
+            primer.execute("CREATE TABLE t (x INTEGER)")
+            assert primer.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        finally:
+            primer.close()
+
+        calls = {"probe": 0, "set_wal": 0, "checkpoint_fullfsync": 0}
+
+        class _WalRaceConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                normalized = sql.lower().replace(" ", "")
+                if normalized == "pragmajournal_mode":
+                    calls["probe"] += 1
+                    if calls["probe"] == 1:
+                        raise sqlite3.OperationalError("locking protocol")
+                if "journal_mode=wal" in normalized:
+                    calls["set_wal"] += 1
+                    raise sqlite3.OperationalError("locking protocol")
+                if normalized == "pragmacheckpoint_fullfsync=1":
+                    calls["checkpoint_fullfsync"] += 1
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(
+            str(target), factory=_WalRaceConnection, isolation_level=None
+        )
+        try:
+            with patch.object(hermes_state.sys, "platform", "darwin"):
+                assert (
+                    apply_wal_with_fallback(conn, db_label="already-wal-race.db")
+                    == "wal"
+                )
+            assert calls["set_wal"] == 1
+            assert calls["checkpoint_fullfsync"] == 1
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        finally:
+            conn.close()
+
+    def test_treats_delete_fallback_race_as_success_when_disk_says_wal(self):
+        """If DELETE also races, a final WAL probe keeps the connection usable."""
+        calls = {
+            "probe": 0,
+            "set_wal": 0,
+            "set_delete": 0,
+            "checkpoint_fullfsync": 0,
+        }
+
+        class _ModeCursor:
+            def __init__(self, mode):
+                self._mode = mode
+
+            def fetchone(self):
+                return (self._mode,)
+
+        class _DeleteRaceConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                normalized = sql.lower().replace(" ", "")
+                if normalized == "pragmajournal_mode":
+                    calls["probe"] += 1
+                    if calls["probe"] == 1:
+                        raise sqlite3.OperationalError("locking protocol")
+                    if calls["probe"] == 2:
+                        return _ModeCursor("delete")
+                    return _ModeCursor("wal")
+                if normalized == "pragmajournal_mode=wal":
+                    calls["set_wal"] += 1
+                    raise sqlite3.OperationalError("locking protocol")
+                if normalized == "pragmajournal_mode=delete":
+                    calls["set_delete"] += 1
+                    raise sqlite3.OperationalError("database is locked")
+                if normalized == "pragmacheckpoint_fullfsync=1":
+                    calls["checkpoint_fullfsync"] += 1
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(":memory:", factory=_DeleteRaceConnection)
+        try:
+            with patch.object(hermes_state.sys, "platform", "darwin"):
+                assert apply_wal_with_fallback(conn, db_label="delete-race.db") == "wal"
+            assert calls == {
+                "probe": 3,
+                "set_wal": 1,
+                "set_delete": 1,
+                "checkpoint_fullfsync": 1,
+            }
+        finally:
+            conn.close()
+
     def test_reraises_unrelated_operational_error(self, tmp_path):
         """Non-WAL-compat errors must NOT be silently swallowed by the fallback."""
         conn, _ = _open_blocking(

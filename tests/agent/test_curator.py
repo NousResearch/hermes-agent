@@ -628,6 +628,65 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
     assert "DO NOT" in captured["prompt"]
 
 
+def test_curator_prompt_requires_skill_compounding_gate_before_new_skills(curator_env, monkeypatch):
+    """New umbrella skills must pass the anti-skill-sprawl pre-save gate.
+
+    This prevents the curator from creating another narrow skill when an
+    existing umbrella can be patched instead.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "workflow-a")
+    u.mark_agent_created("workflow-a")
+
+    captured = {}
+    monkeypatch.setattr(
+        c,
+        "_run_llm_review",
+        lambda prompt: captured.setdefault("prompt", prompt) or {
+            "final": "", "summary": "s", "model": "", "provider": "",
+            "tool_calls": [], "error": None,
+        },
+    )
+
+    c.run_curator_review(synchronous=True)
+    prompt = captured["prompt"]
+    assert "PRE-SAVE GATE" in prompt
+    assert "Trigger" in prompt
+    assert "Reusability" in prompt
+    assert "Artifact" in prompt
+    assert "Guardrail" in prompt
+    assert "Verification" in prompt
+    assert "Dedup-check" in prompt
+    assert "patch the existing skill instead" in prompt
+
+
+def test_curator_prompt_requires_negative_examples_in_created_skills(curator_env, monkeypatch):
+    """Curator-created skills should include a do_not_use_when frontmatter field."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "workflow-a")
+    u.mark_agent_created("workflow-a")
+
+    captured = {}
+    monkeypatch.setattr(
+        c,
+        "_run_llm_review",
+        lambda prompt: captured.setdefault("prompt", prompt) or {
+            "final": "", "summary": "s", "model": "", "provider": "",
+            "tool_calls": [], "error": None,
+        },
+    )
+
+    c.run_curator_review(synchronous=True)
+    prompt = captured["prompt"]
+    assert "do_not_use_when:" in prompt
+    assert "When NOT to use" in prompt
+    assert "negative examples" in prompt
+
+
 def test_dry_run_skips_automatic_transitions(curator_env, monkeypatch):
     """Dry-run must not call apply_automatic_transitions — the auto pass
     archives skills deterministically, and a preview must not touch the

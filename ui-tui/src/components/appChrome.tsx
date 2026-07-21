@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -184,6 +184,33 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
 
 function statusSessionCountLabel(count: number) {
   return `${count} ${count === 1 ? 'session' : 'sessions'}`
+}
+
+// Colour the battery read-out by its (Python-computed) category. Inverted vs
+// the context bar — a full battery is "good", an empty one "critical".
+function batteryColor(info: BatteryInfo, t: Theme): string {
+  if (info.category === 'good') {
+    return t.color.statusGood
+  }
+
+  if (info.category === 'warn') {
+    return t.color.statusWarn
+  }
+
+  if (info.category === 'bad') {
+    return t.color.statusBad
+  }
+
+  if (info.category === 'critical') {
+    return t.color.statusCritical
+  }
+
+  return t.color.muted
+}
+
+// Compact battery label: a bolt while charging, else a battery glyph.
+function batteryLabel(info: BatteryInfo): string {
+  return `${info.plugged ? '⚡' : '🔋'} ${info.percent}%`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -403,6 +430,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  battery,
   cwdLabel,
   cols,
   busy,
@@ -440,6 +468,12 @@ export function StatusRule({
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
+  // Battery read-out — the first (pinned) status-bar element when enabled.
+  const showBattery = !!battery && battery.available && battery.percent != null
+  const batteryText = showBattery ? batteryLabel(battery!) : ''
+  const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
+  const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
   // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
@@ -465,6 +499,7 @@ export function StatusRule({
 
   const essentialWidth =
     stringWidth('─ ') +
+    batteryWidth +
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
@@ -554,6 +589,12 @@ export function StatusRule({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
+          {showBattery ? (
+            <Text color={batteryColorVal}>
+              {batteryText}
+              <Text color={t.color.muted}>{' │ '}</Text>
+            </Text>
+          ) : null}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
@@ -770,6 +811,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  battery?: BatteryInfo | null
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number

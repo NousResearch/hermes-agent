@@ -946,14 +946,26 @@ export default function ModelsPage() {
   }, [refreshAux]);
 
   const applyAssignment = async ({
-    scope, task, provider, model,
+    scope, task, provider, model, confirmExpensiveModel,
   }: {
     scope: "main" | "auxiliary";
     task: string;
     provider: string;
     model: string;
+    confirmExpensiveModel?: boolean;
   }) => {
-    await api.setModelAssignment({ scope, task, provider, model });
+    // /api/model/set answers `confirm_required` for expensive models instead
+    // of writing. Hand that back to the picker so it can prompt, and only
+    // refresh once the assignment actually persisted.
+    const result = await api.setModelAssignment({
+      confirm_expensive_model: confirmExpensiveModel,
+      scope,
+      task,
+      provider,
+      model,
+    });
+    if (!result.confirm_required) onAssigned();
+    return result;
   };
 
   return (
@@ -998,7 +1010,7 @@ export default function ModelsPage() {
                     {picker && picker.kind === "main" && (
                       <ModelPickerDialog
                         key={`picker-${saveKey}`} loader={api.getModelOptions} alwaysGlobal title="Set Main Model"
-                        onApply={async ({ provider, model }) => { await applyAssignment({ scope: "main", task: "", provider, model }); }}
+                        onApply={async ({ provider, model, confirmExpensiveModel }) => await applyAssignment({ scope: "main", task: "", provider, model, confirmExpensiveModel })}
                         onClose={() => setPicker(null)}
                       />
                     )}

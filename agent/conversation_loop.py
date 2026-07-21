@@ -1432,11 +1432,19 @@ def run_conversation(
                 elif agent.provider == "moa" and not agent._has_stream_consumers():
                     _use_streaming = False
                 elif not agent._has_stream_consumers():
+                    # Quiet oneshot-style runs against custom OpenAI-
+                    # compatible endpoints are more reliable via the
+                    # non-streaming path. Some local providers keep the
+                    # stream open or emit empty deltas, which can stall a
+                    # quiet session that has no stream consumers.
+                    if agent.quiet_mode and agent.provider == "custom":
+                        _use_streaming = False
                     # No display/TTS consumer. Still prefer streaming for
-                    # health checking, but skip for Mock clients in tests
-                    # (mocks return SimpleNamespace, not stream iterators).
+                    # health checking otherwise, but skip for Mock clients
+                    # in tests (mocks return SimpleNamespace, not stream
+                    # iterators).
                     from unittest.mock import Mock
-                    if isinstance(getattr(agent, "client", None), Mock):
+                    if _use_streaming and isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):

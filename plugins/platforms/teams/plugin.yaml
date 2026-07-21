@@ -21,11 +21,17 @@ requires_env:
     prompt: "Teams / Azure AD client secret"
     url: "https://portal.azure.com/"
     password: true
-  - name: TEAMS_TENANT_ID
-    description: "Azure AD tenant ID hosting the bot application"
-    prompt: "Teams / Azure AD tenant ID"
-    password: false
 optional_env:
+  - name: TEAMS_TENANT_ID
+    description: >
+      Azure AD tenant ID for single-tenant bots
+      (signInAudience=AzureADMyOrg). Leave unset/blank for multi-tenant bots
+      (signInAudience=AzureADMultipleOrgs); the SDK builds a multi-tenant JWT
+      validator when no tenant ID is supplied. Do not set to "common" — the SDK
+      treats any non-empty value as a single-tenant constraint and will 401
+      cross-tenant tokens.
+    prompt: "Teams / Azure AD tenant ID (blank for multi-tenant)"
+    password: false
   - name: TEAMS_PORT
     description: "Webhook listen port (Bot Framework default: 3978)"
     prompt: "Webhook port"

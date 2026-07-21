@@ -265,10 +265,24 @@ class TestTeamsRequirements:
         monkeypatch.delenv("TEAMS_TENANT_ID", raising=False)
         assert validate_config(_make_config()) is False
 
-    def test_validate_config_missing_tenant(self, monkeypatch):
+    def test_validate_config_missing_tenant_is_valid_for_multi_tenant(self, monkeypatch):
+        # Empty TEAMS_TENANT_ID is the correct shape for multi-tenant bots — the SDK
+        # builds a multi-tenant JWT validator when tenant_id is falsy.
         monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
         monkeypatch.setenv("TEAMS_CLIENT_SECRET", "test-secret")
         monkeypatch.delenv("TEAMS_TENANT_ID", raising=False)
+        assert validate_config(_make_config()) is True
+
+    def test_validate_config_missing_client_id_is_invalid(self, monkeypatch):
+        monkeypatch.delenv("TEAMS_CLIENT_ID", raising=False)
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "test-secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "test-tenant")
+        assert validate_config(_make_config()) is False
+
+    def test_validate_config_missing_client_secret_is_invalid(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
+        monkeypatch.delenv("TEAMS_CLIENT_SECRET", raising=False)
+        monkeypatch.setenv("TEAMS_TENANT_ID", "test-tenant")
         assert validate_config(_make_config()) is False
 
 
@@ -422,6 +436,151 @@ class TestTeamsConnect:
         adapter._tenant_id = ""
         result = await adapter.connect()
         assert result is False
+
+    @pytest.mark.anyio
+    async def test_connect_succeeds_without_tenant_id_for_multi_tenant(self, monkeypatch):
+        # Multi-tenant deployments leave TEAMS_TENANT_ID empty; that's the only
+        # input shape the SDK's TokenValidator.for_entra() accepts to issue a
+        # multi-tenant validator. The adapter must NOT fail-fast on empty tenant_id.
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret",
+        ))
+        assert adapter._tenant_id == ""
+
+        # Stub out the bits we don't want to actually run during connect.
+        async def _noop(*_a, **_kw):
+            return None
+
+        with patch.object(_teams_mod.web, "AppRunner") as mock_runner_cls, \
+                patch.object(_teams_mod.web, "TCPSite") as mock_site_cls:
+            mock_runner = MagicMock()
+            mock_runner.setup = AsyncMock()
+            mock_runner.cleanup = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+            mock_site = MagicMock()
+            mock_site.start = AsyncMock()
+            mock_site_cls.return_value = mock_site
+            result = await adapter.connect()
+        assert result is True, (
+            "connect() must succeed when tenant_id is empty so the SDK can "
+            "build a multi-tenant JWT validator"
+        )
+
+    @pytest.mark.anyio
+    async def test_connect_omits_tenant_id_kwarg_when_empty(self, monkeypatch, caplog):
+        # The SDK switches between single- and multi-tenant validators based on
+        # the *truthiness* of the tenant_id kwarg passed to App(). The adapter
+        # MUST omit the kwarg entirely (not pass tenant_id="") when running in
+        # multi-tenant mode — otherwise an empty string would still be treated
+        # as a single-tenant constraint.
+        captured: dict = {}
+
+        class _CapturingApp:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.server = MagicMock()
+                self.server.handle_request = AsyncMock(return_value={"status": 200, "body": None})
+                self.credentials = MagicMock()
+                self.credentials.client_id = kwargs.get("client_id")
+
+            @property
+            def id(self):
+                return captured.get("client_id")
+
+            def on_message(self, fn):
+                return fn
+
+            def on_card_action(self, fn):
+                return fn
+
+            async def initialize(self):
+                pass
+
+            async def start(self, port=3978):
+                pass
+
+            async def stop(self):
+                pass
+
+        monkeypatch.setattr(_teams_mod, "App", _CapturingApp)
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="",
+        ))
+        with patch.object(_teams_mod.web, "AppRunner") as mock_runner_cls, \
+                patch.object(_teams_mod.web, "TCPSite") as mock_site_cls, \
+                caplog.at_level("INFO", logger=_teams_mod.logger.name):
+            mock_runner = MagicMock()
+            mock_runner.setup = AsyncMock()
+            mock_runner.cleanup = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+            mock_site = MagicMock()
+            mock_site.start = AsyncMock()
+            mock_site_cls.return_value = mock_site
+            result = await adapter.connect()
+        assert result is True
+        assert "tenant_id" not in captured, (
+            "tenant_id must not be passed to App() when empty; the SDK relies on "
+            "an absent/None tenant_id to build a multi-tenant validator"
+        )
+        assert any("multi-tenant mode" in rec.message for rec in caplog.records), (
+            "expected an INFO log line announcing multi-tenant mode startup"
+        )
+
+    @pytest.mark.anyio
+    async def test_connect_passes_tenant_id_kwarg_when_set(self, monkeypatch, caplog):
+        # Single-tenant deployments must forward the tenant_id to App() so the
+        # SDK builds a single-tenant validator scoped to that tenant.
+        captured: dict = {}
+
+        class _CapturingApp:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.server = MagicMock()
+                self.server.handle_request = AsyncMock(return_value={"status": 200, "body": None})
+                self.credentials = MagicMock()
+                self.credentials.client_id = kwargs.get("client_id")
+
+            @property
+            def id(self):
+                return captured.get("client_id")
+
+            def on_message(self, fn):
+                return fn
+
+            def on_card_action(self, fn):
+                return fn
+
+            async def initialize(self):
+                pass
+
+            async def start(self, port=3978):
+                pass
+
+            async def stop(self):
+                pass
+
+        monkeypatch.setattr(_teams_mod, "App", _CapturingApp)
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="my-tenant-guid",
+        ))
+        with patch.object(_teams_mod.web, "AppRunner") as mock_runner_cls, \
+                patch.object(_teams_mod.web, "TCPSite") as mock_site_cls, \
+                caplog.at_level("INFO", logger=_teams_mod.logger.name):
+            mock_runner = MagicMock()
+            mock_runner.setup = AsyncMock()
+            mock_runner.cleanup = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+            mock_site = MagicMock()
+            mock_site.start = AsyncMock()
+            mock_site_cls.return_value = mock_site
+            result = await adapter.connect()
+        assert result is True
+        assert captured.get("tenant_id") == "my-tenant-guid"
+        assert any("single-tenant mode" in rec.message for rec in caplog.records), (
+            "expected an INFO log line announcing single-tenant mode startup"
+        )
 
     @pytest.mark.anyio
     async def test_disconnect_cleans_up(self):

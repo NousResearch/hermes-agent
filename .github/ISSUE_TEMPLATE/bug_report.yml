@@ -82,6 +82,7 @@ body:
         - Discord
         - Slack
         - WhatsApp
+        - Microsoft Teams
 
   - type: textarea
     id: debug-report

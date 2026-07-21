@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 
 import pytest
 
@@ -352,6 +353,46 @@ class TestAsyncExtractDispatch:
         p = get_provider("firecrawl")
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is True
+
+    def test_firecrawl_extract_scrapes_multiple_urls_concurrently(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
+
+        class DummyClient:
+            def scrape(self, *, url, formats):
+                time.sleep(0.20)
+                return {
+                    "metadata": {
+                        "title": f"title:{url}",
+                        "sourceURL": url,
+                    },
+                    "markdown": f"markdown:{url}",
+                }
+
+        monkeypatch.setattr(
+            "plugins.web.firecrawl.provider._get_firecrawl_client",
+            lambda: DummyClient(),
+        )
+        monkeypatch.setattr(
+            "plugins.web.firecrawl.provider.check_website_access",
+            lambda url: None,
+        )
+
+        provider = FirecrawlWebSearchProvider()
+        urls = ["https://example.com/one", "https://example.com/two"]
+
+        started = time.monotonic()
+        results = asyncio.run(provider.extract(urls, format="markdown"))
+        elapsed = time.monotonic() - started
+
+        assert [result["url"] for result in results] == urls
+        assert [result["content"] for result in results] == [
+            "markdown:https://example.com/one",
+            "markdown:https://example.com/two",
+        ]
+        assert elapsed < 0.32
 
     def test_exa_extract_is_sync(self) -> None:
         _ensure_plugins_loaded()

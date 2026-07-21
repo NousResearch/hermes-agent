@@ -5,9 +5,11 @@ Diagnoses issues with Hermes Agent setup.
 """
 
 import os
+import stat
 import sys
 import subprocess
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -57,6 +59,21 @@ _PROVIDER_ENV_HINTS = (
 )
 
 
+@dataclass(frozen=True)
+class SecretFilePermissionCheck:
+    """Result for a local secret-file permission check.
+
+    The doctor output must never read or print file contents; this structure
+    carries only path metadata and POSIX mode bits.
+    """
+
+    label: str
+    path: Path
+    mode: int
+    recommended_mode: int
+    secure: bool
+
+
 from hermes_constants import is_termux as _is_termux
 
 
@@ -103,6 +120,92 @@ def _termux_install_all_fallback_notes() -> list[str]:
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
+def _collect_secret_file_permission_checks(
+    *,
+    hermes_home: Path | None = None,
+    home: Path | None = None,
+) -> list[SecretFilePermissionCheck]:
+    """Return POSIX permission checks for known local secret files.
+
+    Missing files are ignored. A file is considered safe when it has no group
+    or other permission bits. We deliberately do not inspect contents here.
+    """
+
+    hermes_home = Path(hermes_home) if hermes_home is not None else HERMES_HOME
+    home = Path(home) if home is not None else Path.home()
+    candidates = (
+        ("Hermes .env", hermes_home / ".env", 0o600),
+        ("Hermes auth store", hermes_home / "auth.json", 0o600),
+        ("GitHub CLI hosts.yml", home / ".config" / "gh" / "hosts.yml", 0o600),
+    )
+
+    results: list[SecretFilePermissionCheck] = []
+    for label, path, recommended_mode in candidates:
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+
+        mode = stat.S_IMODE(st.st_mode)
+        results.append(
+            SecretFilePermissionCheck(
+                label=label,
+                path=path,
+                mode=mode,
+                recommended_mode=recommended_mode,
+                secure=(mode & 0o077) == 0,
+            )
+        )
+    return results
+
+
+def _render_secret_file_permission_checks(
+    manual_issues: list[str],
+    *,
+    hermes_home: Path | None = None,
+    home: Path | None = None,
+    display_home: str | None = None,
+) -> None:
+    """Render doctor diagnostics for local files that may contain secrets."""
+
+    _section("Secret File Permissions")
+    if sys.platform.startswith("win"):
+        check_info("Skipped on Windows — POSIX mode bits are not reliably enforced")
+        return
+
+    hermes_home = Path(hermes_home) if hermes_home is not None else HERMES_HOME
+    display_home = display_home or _DHH
+    results = _collect_secret_file_permission_checks(hermes_home=hermes_home, home=home)
+    if not results:
+        check_info("No known local secret files found yet")
+        return
+
+    for result in results:
+        detail = f"(mode 0o{result.mode:o})"
+        if result.secure:
+            check_ok(result.label, detail)
+            continue
+
+        check_warn(
+            result.label,
+            f"{detail} — restrict to 0o{result.recommended_mode:o}",
+        )
+        if result.path == hermes_home / ".env":
+            display_path = f"{display_home}/.env"
+        elif result.path == hermes_home / "auth.json":
+            display_path = f"{display_home}/auth.json"
+        else:
+            display_path = str(result.path)
+        check_info(f"Run: chmod {result.recommended_mode:o} {display_path}")
+        manual_issues.append(
+            f"Restrict {result.label} permissions: chmod {result.recommended_mode:o} {result.path}"
+        )
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -1288,6 +1391,8 @@ def run_doctor(args):
                 check_info(xai_oauth_status["error"])
     except Exception:
         pass
+
+    _render_secret_file_permission_checks(manual_issues)
 
     _section("Directory Structure")
     hermes_home = HERMES_HOME

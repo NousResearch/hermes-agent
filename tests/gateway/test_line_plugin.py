@@ -674,3 +674,137 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Inbound media cache routing
+# ---------------------------------------------------------------------------
+
+class TestMediaCacheRouting:
+    """Each LINE media type must use its matching gateway cache helper."""
+
+    @pytest.fixture
+    def adapter(self):
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True))
+        adapter._client = MagicMock()
+        adapter._client.fetch_content = AsyncMock(return_value=b"media bytes")
+        return adapter
+
+    @pytest.mark.parametrize(
+        ("msg_type", "cache_name"),
+        [
+            ("image", "cache_image_from_bytes"),
+            ("audio", "cache_audio_from_bytes"),
+            ("video", "cache_video_from_bytes"),
+            ("file", "cache_document_from_bytes"),
+        ],
+    )
+    def test_download_media_uses_matching_cache_helper(self, adapter, monkeypatch, msg_type, cache_name):
+        cache_helpers = {
+            name: MagicMock(return_value=f"/{name}")
+            for name in (
+                "cache_image_from_bytes",
+                "cache_audio_from_bytes",
+                "cache_video_from_bytes",
+                "cache_document_from_bytes",
+            )
+        }
+        for name, helper in cache_helpers.items():
+            monkeypatch.setattr(_line, name, helper, raising=False)
+
+        result = asyncio.run(adapter._download_media("message-id", msg_type))
+
+        assert result == f"/{cache_name}"
+        cache_helpers[cache_name].assert_called_once()
+        for name, helper in cache_helpers.items():
+            if name != cache_name:
+                helper.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 11. Standalone media -> follow-up text bridging
+# ---------------------------------------------------------------------------
+
+class TestRecentMediaBridge:
+    """LINE delivers images as standalone events with no caption or reply
+    linkage, so a follow-up text turn must be able to pick up an image that
+    arrived in a preceding message. Covers the 'image first, @mention after'
+    ordering that the group mention gate would otherwise drop silently.
+    """
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.loading = AsyncMock()
+        ad.handle_message = AsyncMock()
+        ad._download_media = AsyncMock(return_value="/cache/img.jpg")
+        return ad
+
+    @staticmethod
+    def _image_event(group_id="Cgrp", user_id="Ualice"):
+        return {
+            "replyToken": "rt",
+            "source": {"type": "group", "groupId": group_id, "userId": user_id},
+            "message": {"type": "image", "id": "m-img"},
+        }
+
+    @staticmethod
+    def _mention_event(group_id="Cgrp", user_id="Ualice", bot_id="Ubot"):
+        return {
+            "replyToken": "rt2",
+            "source": {"type": "group", "groupId": group_id, "userId": user_id},
+            "message": {
+                "type": "text",
+                "id": "m-txt",
+                "text": "@Hermes who is this?",
+                "mention": {"mentionees": [{"userId": bot_id, "type": "user"}]},
+            },
+        }
+
+    def test_buffer_helpers_roundtrip_and_ttl(self, adapter):
+        adapter._remember_recent_media("Cgrp", "/cache/a.jpg", "image")
+        assert adapter._consume_recent_media("Cgrp") == [("/cache/a.jpg", "image")]
+        # Consumed once — buffer is now empty.
+        assert adapter._consume_recent_media("Cgrp") == []
+
+    def test_expired_media_not_returned(self, adapter):
+        adapter._media_context_ttl = -1  # everything instantly stale
+        adapter._remember_recent_media("Cgrp", "/cache/a.jpg", "image")
+        assert adapter._consume_recent_media("Cgrp") == []
+
+    def test_buffer_capped_per_chat(self, adapter):
+        adapter._recent_media_max = 3
+        for i in range(5):
+            adapter._remember_recent_media("Cgrp", f"/cache/{i}.jpg", "image")
+        kept = [p for p, _ in adapter._consume_recent_media("Cgrp")]
+        assert kept == ["/cache/2.jpg", "/cache/3.jpg", "/cache/4.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_image_before_mention_is_bridged(self, adapter):
+        adapter.require_mention = True
+        adapter._bot_user_id = "Ubot"
+
+        # 1) Image arrives with no @mention -> dropped by the gate, not dispatched...
+        await adapter._handle_message_event(self._image_event())
+        adapter.handle_message.assert_not_called()
+        # ...but buffered for the chat.
+        assert adapter._recent_media.get("Cgrp")
+
+        # 2) Follow-up @mention text -> dispatched WITH the buffered image.
+        await adapter._handle_message_event(self._mention_event())
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args.args[0]
+        assert "/cache/img.jpg" in event.media_urls
+        assert "image" in event.media_types
+        # Buffer is consumed so a later turn won't re-attach the same image.
+        assert not adapter._recent_media.get("Cgrp")

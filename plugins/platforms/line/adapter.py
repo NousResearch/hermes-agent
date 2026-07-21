@@ -92,7 +92,10 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 
@@ -700,6 +703,31 @@ class LineAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             self.slow_response_threshold = DEFAULT_SLOW_RESPONSE_THRESHOLD
 
+        # @mention gate for groups
+        raw = os.getenv("LINE_REQUIRE_MENTION") or extra.get("require_mention", "")
+        self.require_mention = raw if isinstance(raw, bool) else raw.lower() in ("true", "1", "yes") if isinstance(raw, str) else bool(raw)
+
+        # Recently-mentioned cache: {(chat_id, user_id): timestamp}
+        # Lets users follow up with images right after @mentioning the bot
+        self._recently_mentioned: Dict[Tuple[str, str], float] = {}
+        self._mention_ttl = float(
+            os.getenv("LINE_MENTION_TTL") or extra.get("mention_ttl", "30")
+        )
+
+        # Recent inbound media buffer: {chat_id: [(path, msg_type, expiry), ...]}
+        # Unlike Telegram, LINE delivers images/files as standalone events with
+        # no caption and no reply-to content, so a follow-up text turn
+        # ("what is this?") arrives separately with no handle to the image. We
+        # buffer recently-received media per chat and re-attach it to the next
+        # text turn so the model can actually see it — this also covers the
+        # "image first, @mention after" ordering that the mention gate would
+        # otherwise drop.
+        self._recent_media: Dict[str, List[Tuple[str, str, float]]] = {}
+        self._media_context_ttl = float(
+            os.getenv("LINE_MEDIA_CONTEXT_TTL") or extra.get("media_context_ttl", "300")
+        )
+        self._recent_media_max = 8  # cap buffered items per chat to bound memory
+
         # User-overridable copy
         self.pending_text = (
             os.getenv("LINE_PENDING_TEXT")
@@ -960,6 +988,10 @@ class LineAdapter(BasePlatformAdapter):
             if local_path:
                 media_urls.append(local_path)
                 media_types.append(msg_type)
+                # Buffer for follow-up text turns. Done here (before the mention
+                # gate below) so a media message dropped by the gate is still
+                # recoverable by the next @mention that references it.
+                self._remember_recent_media(chat_id, local_path, msg_type)
             text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
@@ -971,9 +1003,85 @@ class LineAdapter(BasePlatformAdapter):
         else:
             text = f"[unsupported message type: {msg_type}]"
 
+        # Group @mention gate: skip messages that don't @mention the bot
+        if chat_type != "dm" and self.require_mention:
+            if msg_type == "text":
+                mention = msg.get("mention") or {}
+                mentionees = mention.get("mentionees") or []
+                bot_mentioned = any(
+                    m.get("type") == "bot" or m.get("userId") == self._bot_user_id
+                    for m in mentionees
+                )
+                if bot_mentioned:
+                    # Cache this user as recently-mentioned for follow-up media
+                    self._recently_mentioned[(chat_id, user_id)] = time.time()
+                else:
+                    logger.debug(
+                        "LINE: ignoring non-mentioned text in group %s", chat_id
+                    )
+                    return
+            else:
+                # Non-text (stickers, images, files, etc.) — allow only when the
+                # same user just @mentioned the bot within the TTL window.
+                now = time.time()
+                last_mention = self._recently_mentioned.get((chat_id, user_id))
+                if last_mention is None or (now - last_mention) > self._mention_ttl:
+                    logger.debug(
+                        "LINE: ignoring non-text %s in group (no recent @mention)",
+                        msg_type,
+                    )
+                    return
+                # Stale entry cleanup
+                self._recently_mentioned.pop((chat_id, user_id), None)
+
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:
             asyncio.create_task(self._client.loading(chat_id))
+
+        # Inject group-specific note reference (per-session, persistent)
+        if chat_type != "dm" and msg_type == "text":
+            notes_dir = os.path.expanduser("~/.hermes/line-notes")
+            notes_path = os.path.join(notes_dir, f"{chat_id}.md")
+            try:
+                os.makedirs(notes_dir, exist_ok=True)
+                content = ""
+                if os.path.exists(notes_path):
+                    with open(notes_path, encoding="utf-8") as f:
+                        content = f.read().strip()
+                import datetime
+                tz = datetime.timezone(datetime.timedelta(hours=8))
+                now = datetime.datetime.now(tz)
+                text = (
+                    f"📒 Group note file: {notes_path}\n"
+                    f"   Current time for timestamps: {now.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"   HOW TO USE: When told to remember something, LOAD then APPEND"
+                    f" to this file\n"
+                    f"   using write_file. Each entry MUST follow this format:\n"
+                    f"     - YYYY-MM-DD HH:MM | <user> | <note text>\n"
+                    f"   When asked what was remembered, READ the file and summarise.\n"
+                    f"   Current contents:\n"
+                    f"{content if content else '   (empty)'}\n"
+                    f"───\n"
+                    f"{text}"
+                )
+            except Exception:
+                pass
+
+        # Re-attach media from immediately preceding standalone messages so a
+        # follow-up text turn ("what is this?") can see the image. LINE gives no
+        # caption or reply linkage, so this buffer is the only bridge.
+        if msg_type == "text":
+            buffered = self._consume_recent_media(chat_id)
+            for path, mtype in buffered:
+                if path not in media_urls:
+                    media_urls.append(path)
+                    media_types.append(mtype)
+            if buffered:
+                note = (
+                    f"[Attached {len(buffered)} media item(s) from the "
+                    f"immediately preceding message(s) in this chat.]"
+                )
+                text = f"{text}\n{note}" if text else note
 
         source_obj = self.build_source(
             chat_id=chat_id,
@@ -1054,6 +1162,32 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+    def _remember_recent_media(self, chat_id: str, path: str, msg_type: str) -> None:
+        """Buffer a just-downloaded inbound media path for follow-up text turns.
+
+        LINE sends media as standalone events with no caption or reply linkage,
+        so the next text message ("what is this?") arrives as a separate turn
+        with no handle to the image. Buffering lets that turn re-attach it.
+        Expired entries are pruned and the buffer is capped per chat.
+        """
+        if not chat_id or not path:
+            return
+        now = time.time()
+        bucket = self._recent_media.get(chat_id, [])
+        bucket = [(p, t, e) for (p, t, e) in bucket if e > now]
+        bucket.append((path, msg_type, now + self._media_context_ttl))
+        if len(bucket) > self._recent_media_max:
+            bucket = bucket[-self._recent_media_max:]
+        self._recent_media[chat_id] = bucket
+
+    def _consume_recent_media(self, chat_id: str) -> List[Tuple[str, str]]:
+        """Return and clear un-expired buffered media (path, msg_type) for a chat."""
+        if not chat_id:
+            return []
+        now = time.time()
+        bucket = self._recent_media.pop(chat_id, [])
+        return [(p, t) for (p, t, e) in bucket if e > now]
+
     async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
         if not self._client or not message_id:
             return None
@@ -1069,7 +1203,14 @@ class LineAdapter(BasePlatformAdapter):
             "file": ".bin",
         }.get(msg_type, ".bin")
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "audio":
+                return cache_audio_from_bytes(data, ext=ext)
+            elif msg_type == "video":
+                return cache_video_from_bytes(data, ext=ext)
+            elif msg_type == "file":
+                return cache_document_from_bytes(data, filename="document.bin")
+            else:
+                return cache_image_from_bytes(data, ext=ext)
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None

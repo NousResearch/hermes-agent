@@ -12778,10 +12778,25 @@ def cmd_dashboard(args):
             else PROJECT_ROOT / "hermes_cli" / "web_dist"
         )
         if not (_dist_root / "index.html").exists():
-            print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
-            print("  Or drop --skip-build to build automatically.")
-            sys.exit(1)
+            # The caller promised a pre-built dist but there isn't one.
+            # Instead of hard-failing (issue #59288 — desktop launches with
+            # --build-mode skip after a wipe of web_dist), warn and attempt
+            # ONE recovery build through the normal build path. Only the
+            # default dist location is recoverable: a custom HERMES_WEB_DIST
+            # points at a caller-managed directory the build cannot populate.
+            _recoverable = "HERMES_WEB_DIST" not in os.environ
+            if _recoverable:
+                print(f"⚠ --skip-build was passed but no web dist found at: {_dist_root}")
+                print("  Attempting one recovery build of the web UI...")
+                _build_web_ui(PROJECT_ROOT / "web", fatal=True)
+            if not (_dist_root / "index.html").exists():
+                print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
+                if _recoverable:
+                    print("  The recovery build did not produce a usable dist.")
+                print("  Pre-build first:  npm install --workspace web && npm run build -w web")
+                print("  Or drop --skip-build to build automatically.")
+                sys.exit(1)
+            print("  ✓ Recovery build produced a web dist")
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
     else:
         # HERMES_WEB_DIST is set without --skip-build: the build is skipped

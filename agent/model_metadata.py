@@ -113,6 +113,27 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+
+
+def _endpoint_metadata_cache_key(normalized: str, api_key: str) -> str:
+    """Cache key for the endpoint ``/models`` metadata cache.
+
+    The probe is authenticated, and an OpenAI-compatible ``/models`` returns
+    what THAT credential is entitled to — model availability and context
+    windows vary by account (the same reason the Codex catalogue cache is
+    scoped by token fingerprint). Keying on the base URL alone lets one
+    credential's catalogue answer another credential's probe, which in a
+    multiplexed gateway means one profile's context window and pricing
+    metadata are served to a different profile.
+
+    The raw key is never retained in the cache key — only a short digest.
+    """
+    if not api_key:
+        return normalized
+    digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+    return f"{normalized}#{digest}"
+
+
 # Bounded-lifetime cache: after the first successful probe we remember the
 # server type so subsequent refreshes skip the full waterfall (no more 404
 # spam every 5 minutes on non-matching endpoints like /api/v1/models on vllm).
@@ -982,9 +1003,13 @@ def fetch_endpoint_model_metadata(
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
 
+    # Scoped by credential: the probe below is authenticated, so the catalogue
+    # it returns belongs to THIS key, not to the base URL.
+    cache_key = _endpoint_metadata_cache_key(normalized, api_key)
+
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
+        cached = _endpoint_model_metadata_cache.get(cache_key)
+        cached_at = _endpoint_model_metadata_cache_time.get(cache_key, 0)
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
 
@@ -1045,8 +1070,8 @@ def fetch_endpoint_model_metadata(
                     if isinstance(alt_id, str) and alt_id and alt_id != model_id:
                         _add_model_aliases(cache, alt_id, entry)
 
-                _endpoint_model_metadata_cache[normalized] = cache
-                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                _endpoint_model_metadata_cache[cache_key] = cache
+                _endpoint_model_metadata_cache_time[cache_key] = time.time()
                 return cache
         except Exception as exc:
             last_error = exc
@@ -1099,16 +1124,16 @@ def fetch_endpoint_model_metadata(
                 except Exception:
                     pass
 
-            _endpoint_model_metadata_cache[normalized] = cache
-            _endpoint_model_metadata_cache_time[normalized] = time.time()
+            _endpoint_model_metadata_cache[cache_key] = cache
+            _endpoint_model_metadata_cache_time[cache_key] = time.time()
             return cache
         except Exception as exc:
             last_error = exc
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    _endpoint_model_metadata_cache[normalized] = {}
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+    _endpoint_model_metadata_cache[cache_key] = {}
+    _endpoint_model_metadata_cache_time[cache_key] = time.time()
     return {}
 
 

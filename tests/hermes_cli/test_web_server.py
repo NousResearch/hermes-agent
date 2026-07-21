@@ -7172,6 +7172,155 @@ class TestGatewayBusyReadout:
         assert data["gateway_busy"] is False
 
 
+class TestGatewayUpdatedAtContract:
+    """Contract tests for /api/status ``gateway_updated_at``.
+
+    The field is promised to consumers (web/src/lib/api.ts declares
+    ``string | null``) as an RFC3339 timestamp or null — NEVER a number.
+    Legacy gateways wrote epoch floats into gateway_state.json and the file
+    is hand-editable, so the endpoint must normalize whatever it reads.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    @staticmethod
+    def _assert_contract(value):
+        """gateway_updated_at is None or a tz-aware-parseable ISO string."""
+        from datetime import datetime
+
+        assert not isinstance(value, bool), f"bool leaked: {value!r}"
+        assert not isinstance(value, (int, float)), f"number leaked: {value!r}"
+        if value is not None:
+            assert isinstance(value, str)
+            parsed = datetime.fromisoformat(value)
+            assert parsed.tzinfo is not None, f"naive timestamp leaked: {value!r}"
+
+    @pytest.mark.parametrize("updated_at", [
+        1750000000.5,          # legacy epoch float
+        1750000000,            # legacy epoch int
+        "not-a-timestamp",     # garbage string
+        None,                  # explicit null
+        True,                  # bool (int subclass) garbage
+        {"nested": "junk"},    # structured garbage
+    ])
+    def test_local_runtime_updated_at_normalized(self, monkeypatch, updated_at):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+            "updated_at": updated_at,
+        })
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        self._assert_contract(resp.json()["gateway_updated_at"])
+
+    def test_local_runtime_updated_at_absent(self, monkeypatch):
+        """Key missing entirely from the status file → null, not a crash."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_updated_at"] is None
+
+    def test_local_runtime_valid_epoch_becomes_iso_string(self, monkeypatch):
+        """A plausible legacy epoch value is converted, not dropped."""
+        from datetime import datetime, timezone
+        import hermes_cli.web_server as ws
+
+        epoch = 1750000000
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+            "updated_at": epoch,
+        })
+
+        value = self.client.get("/api/status").json()["gateway_updated_at"]
+        assert isinstance(value, str)
+        parsed = datetime.fromisoformat(value)
+        assert parsed.tzinfo is not None
+        assert parsed == datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+    def test_local_runtime_valid_iso_passes_through_parseable(self, monkeypatch):
+        """The canonical writer format survives normalization round-trip."""
+        from datetime import datetime
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+            "updated_at": "2026-07-21T12:00:00+00:00",
+        })
+
+        value = self.client.get("/api/status").json()["gateway_updated_at"]
+        assert isinstance(value, str)
+        assert datetime.fromisoformat(value).tzinfo is not None
+
+    def test_remote_health_numeric_updated_at_normalized(self, monkeypatch):
+        """Cross-container path: the remote /health/detailed body is the
+        runtime source, and a numeric updated_at from an older gateway build
+        must still come out as string|null."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+            "gateway_state": "running",
+            "platforms": {},
+            "updated_at": 1750000000.25,
+            "pid": 999,
+        }))
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        self._assert_contract(data["gateway_updated_at"])
+        # A plausible epoch is converted, not nulled.
+        assert isinstance(data["gateway_updated_at"], str)
+
+    def test_remote_health_garbage_updated_at_nulled(self, monkeypatch):
+        """Remote body with unparseable updated_at → null, never verbatim."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+            "gateway_state": "running",
+            "platforms": {},
+            "updated_at": "yesterday-ish",
+        }))
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_updated_at"] is None
+
+
 # ---------------------------------------------------------------------------
 # Dashboard theme normaliser tests
 # ---------------------------------------------------------------------------

@@ -2104,3 +2104,102 @@ class TestPermissionErrorOnLockFile:
         monkeypatch.setattr(Path, "unlink", deny_unlink)
 
         assert status.acquire_gateway_runtime_lock() is False
+
+
+class TestNormalizeUpdatedAt:
+    """Unit tests for the updated_at RFC3339|None normalization funnel."""
+
+    def test_epoch_int_converts_to_utc_iso(self):
+        from datetime import datetime, timezone
+
+        result = status.normalize_updated_at(1750000000)
+        assert isinstance(result, str)
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert parsed == datetime.fromtimestamp(1750000000, tz=timezone.utc)
+
+    def test_epoch_float_converts_to_utc_iso(self):
+        from datetime import datetime, timezone
+
+        result = status.normalize_updated_at(1750000000.5)
+        assert isinstance(result, str)
+        parsed = datetime.fromisoformat(result)
+        assert parsed == datetime.fromtimestamp(1750000000.5, tz=timezone.utc)
+
+    def test_iso_with_z_suffix_accepted(self):
+        from datetime import datetime, timezone
+
+        result = status.normalize_updated_at("2026-07-21T12:00:00Z")
+        assert result is not None
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_naive_iso_coerced_to_utc(self):
+        from datetime import datetime, timezone
+
+        result = status.normalize_updated_at("2026-07-21T12:00:00")
+        assert result is not None
+        parsed = datetime.fromisoformat(result)
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset().total_seconds() == 0
+        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_offset_aware_iso_round_trips_canonically(self):
+        canonical = "2026-07-21T12:00:00+00:00"
+        assert status.normalize_updated_at(canonical) == canonical
+
+    def test_garbage_string_returns_none(self):
+        assert status.normalize_updated_at("not-a-timestamp") is None
+
+    def test_none_returns_none(self):
+        assert status.normalize_updated_at(None) is None
+
+    def test_structured_garbage_returns_none(self):
+        assert status.normalize_updated_at({"a": 1}) is None
+        assert status.normalize_updated_at([1750000000]) is None
+
+    def test_bool_returns_none(self):
+        # bool is an int subclass, but True/False as an epoch timestamp is
+        # always garbage (and 0/1 would fail the range guard regardless).
+        # The funnel rejects bools explicitly — documented behaviour.
+        assert status.normalize_updated_at(True) is None
+        assert status.normalize_updated_at(False) is None
+
+    def test_epoch_before_2000_rejected(self):
+        assert status.normalize_updated_at(0) is None
+        assert status.normalize_updated_at(946684799) is None  # 1999-12-31T23:59:59Z
+        assert status.normalize_updated_at(-1750000000) is None
+
+    def test_epoch_far_future_rejected(self):
+        assert status.normalize_updated_at(time.time() + 90000) is None  # > now+1day
+        assert status.normalize_updated_at(4e18) is None
+
+    def test_epoch_slightly_future_accepted(self):
+        # Clock skew tolerance: up to a day ahead is plausible.
+        assert status.normalize_updated_at(time.time() + 3600) is not None
+
+    def test_non_finite_floats_rejected(self):
+        assert status.normalize_updated_at(float("nan")) is None
+        assert status.normalize_updated_at(float("inf")) is None
+        assert status.normalize_updated_at(float("-inf")) is None
+
+
+class TestRuntimeStatusUpdatedAtContract:
+    def test_write_then_read_updated_at_parses_tz_aware(self, tmp_path, monkeypatch):
+        """write_runtime_status persists an updated_at that fromisoformat
+        parses as a timezone-aware datetime — the writer side of the
+        string|null contract every emit surface relies on."""
+        from datetime import datetime
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        updated_at = payload["updated_at"]
+        assert isinstance(updated_at, str)
+        parsed = datetime.fromisoformat(updated_at)
+        assert parsed.tzinfo is not None
+        # And it survives the normalization funnel unchanged (canonical form).
+        assert status.normalize_updated_at(updated_at) == updated_at

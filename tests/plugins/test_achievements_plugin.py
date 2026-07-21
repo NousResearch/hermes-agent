@@ -376,3 +376,14 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+@pytest.mark.parametrize("model_name,expected", [
+    ("qwen2.5:3b", True),
+    ("llama3:8b", True),
+    ("mistral:7b", True),
+    ("phi3:mini", False),
+    ("gpt-4o", False),
+    ("openrouter/meta-llama/llama-3", False),
+])
+def test_is_local_model_name_ollama_native_format(plugin_api, model_name, expected):
+    assert plugin_api.is_local_model_name(model_name) is expected

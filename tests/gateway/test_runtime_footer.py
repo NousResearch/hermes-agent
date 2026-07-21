@@ -12,6 +12,7 @@ from gateway.runtime_footer import (
     _model_short,
     build_footer_line,
     format_runtime_footer,
+    resolve_footer_cwd,
     resolve_footer_config,
 )
 
@@ -50,6 +51,56 @@ def test_home_relative_cwd_leaves_abs_path_alone(tmp_path, monkeypatch):
 
 def test_home_relative_cwd_empty_returns_empty():
     assert _home_relative_cwd("") == ""
+
+
+def test_resolve_footer_cwd_prefers_live_task_cwd(monkeypatch):
+    from tools import file_tools
+
+    monkeypatch.setenv("TERMINAL_CWD", "/stale/start")
+    monkeypatch.setattr(
+        file_tools,
+        "_get_live_tracking_cwd",
+        lambda task_id="default": "/live/worktree" if task_id == "session-1" else None,
+    )
+
+    assert (
+        resolve_footer_cwd(
+            task_id="session-1",
+            session_key="telegram:chat",
+            fallback="/stale/start",
+        )
+        == "/live/worktree"
+    )
+
+
+def test_resolve_footer_cwd_falls_back_to_session_key(monkeypatch):
+    from tools import file_tools
+
+    monkeypatch.setattr(
+        file_tools,
+        "_get_live_tracking_cwd",
+        lambda task_id="default": "/live/by-session-key"
+        if task_id == "telegram:chat"
+        else None,
+    )
+
+    assert (
+        resolve_footer_cwd(
+            task_id="missing-task",
+            session_key="telegram:chat",
+            fallback="/stale/start",
+        )
+        == "/live/by-session-key"
+    )
+
+
+def test_resolve_footer_cwd_falls_back_to_static_env(monkeypatch):
+    from tools import file_tools
+
+    monkeypatch.setenv("TERMINAL_CWD", "/static/start")
+    monkeypatch.setattr(file_tools, "_get_live_tracking_cwd", lambda task_id="default": None)
+
+    assert resolve_footer_cwd(task_id="missing-task") == "/static/start"
 
 
 # ---------------------------------------------------------------------------

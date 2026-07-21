@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
@@ -18,15 +18,21 @@ export function PageHeaderProvider({
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
 
-  // Clear any per-page title / toolbar slots when the path changes. Child routes
-  // re-fill these on mount via usePageHeader.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useLayoutEffect(() => {
+  // Clear any per-page title / toolbar slots when the path changes. Child
+  // routes re-fill these from their own layout effects on mount. This MUST run
+  // during render (not in a layout effect): React fires layout effects
+  // child-first, parent-last, so a parent effect that cleared the slots would
+  // always clobber the buttons the child page just set on the same mount —
+  // making them flash in then vanish. Resetting via the render-phase
+  // "previous value" pattern runs before children commit, so it resets on a
+  // genuine path change yet never wipes a freshly-mounted page's slots.
+  const [prevPathname, setPrevPathname] = useState(pathname);
+  if (pathname !== prevPathname) {
+    setPrevPathname(pathname);
     setTitleOverride(null);
     setAfterTitle(null);
     setEnd(null);
-  }, [pathname]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  }
 
   const defaultTitle = useMemo(
     () => resolvePageTitle(pathname, t, pluginTabs),

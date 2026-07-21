@@ -408,10 +408,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, []);
 
   useEffect(() => {
-    // When hidden (non-chat tab) we must not register the header button —
-    // another page owns the header's end slot at that point.
+    // When hidden (non-chat tab) another page owns the header's end slot.
+    // We must NOT write to it at all — not even setEnd(null) — or we stomp
+    // the owning page's toolbar (e.g. Profiles page Build/Create buttons
+    // flash in then vanish). Bail without touching the slot. The owning
+    // page's own effect manages set/clear; when the user navigates to /chat
+    // the PageHeaderProvider path-change reset clears it for us first.
     if (!isActive) {
-      setEnd(null);
       return;
     }
     if (!narrow) {

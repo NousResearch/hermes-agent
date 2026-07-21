@@ -6937,6 +6937,8 @@ class TestPersistUserMessageOverride:
         self, agent
     ):
         agent._session_db = MagicMock()
+        agent._session_db_created = True
+        agent._session_json_enabled = False
         agent.session_id = "session-123"
         agent._last_flushed_db_idx = 0
         agent._persist_user_message_idx = 0
@@ -6958,12 +6960,12 @@ class TestPersistUserMessageOverride:
         agent._persist_user_message_override = clean_content
         messages = [{"role": "user", "content": timestamped_content}]
 
-        agent._persist_session(messages, [])
+        agent._flush_messages_to_session_db(messages, [])
 
         assert messages[0]["content"] == timestamped_content
-        first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
-        assert first_db_write["content"] == "What color is this?\n[screenshot]"
-        assert first_db_write["timestamp"] == 1777376530.0
+        batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+        assert batch[0]["content"] == "What color is this?\n[screenshot]"
+        assert batch[0]["timestamp"] == 1777376530.0
 
 
 class TestReasoningReplayForStrictProviders:

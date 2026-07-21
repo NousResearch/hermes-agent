@@ -46,6 +46,12 @@ DEFAULT_CONFIG = {
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
     },
+    # Global message timestamp opt-in. ``None`` preserves compatibility with
+    # legacy gateway.message_timestamps.enabled when the top-level setting is
+    # not explicitly chosen by the user.
+    "message_timestamps": {
+        "enabled": None,
+    },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).

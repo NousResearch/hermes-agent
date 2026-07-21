@@ -9,9 +9,11 @@ subcommand dispatch.
 
 import json
 import os
+import sqlite3
 import tempfile
 import shutil
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -266,6 +268,41 @@ def test_stale_verified_outcome_lesson_is_terminal_without_memory_mutation(
     assert store.memory_entries == []
     audit = list_approval_decision_receipts(subsystem=wa.MEMORY)
     assert [(row["terminal_outcome"], row["outcome_receipt_id"]) for row in audit] == [
+        ("terminal_noop", receipt["id"])
+    ]
+
+
+def test_expired_verified_outcome_lesson_is_terminal_without_memory_mutation(
+    hermes_home, tmp_path, monkeypatch
+):
+    """V3 approval must not promote proof that aged out while the workspace was idle."""
+    from agent.verification_evidence import list_approval_decision_receipts
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, stage_verified_outcome_lesson
+
+    receipt = _confirmed_outcome_receipt(tmp_path, monkeypatch)
+    staged = stage_verified_outcome_lesson(
+        receipt["id"],
+        "This lesson must not survive expired proof.",
+        session_id="goal-learning-session",
+        cwd=tmp_path,
+    )
+    assert staged["success"] is True
+
+    expired_at = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    with sqlite3.connect(Path(hermes_home) / "verification_evidence.db") as conn:
+        conn.execute("UPDATE verification_events SET created_at = ?", (expired_at,))
+        conn.commit()
+
+    store = MemoryStore()
+    store.load_from_disk()
+    output = handle_pending_subcommand(wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store)
+
+    assert "Approved 0" in output
+    assert "no longer reusable" in output
+    assert store.memory_entries == []
+    assert [(row["terminal_outcome"], row["outcome_receipt_id"]) for row in list_approval_decision_receipts(subsystem=wa.MEMORY)] == [
         ("terminal_noop", receipt["id"])
     ]
 

@@ -55,11 +55,17 @@ time, and `reusable` flag. It never stores raw goal, contract, or subgoal text.
 | --- | --- | --- |
 | `judge_done_unconfirmed` | No | Judge output is a candidate, not a success label. |
 | `blocked` or `cancelled` | No | These are audit outcomes, not demonstrations. |
-| `achieved_confirmed` + fresh `passed` verification | Yes | A human confirmed it and the workspace has current evidence. |
-| `achieved_confirmed` + stale/failed/unverified evidence | No | Confirmation is recorded, but it is unsafe to reuse. |
+| `achieved_confirmed` + fresh `passed` verification | Yes | A human confirmed it and the workspace has unexpired current evidence. |
+| `achieved_confirmed` + stale/expired/failed/unverified evidence | No | Confirmation is recorded, but it is unsafe to reuse. |
 
 `list_reusable_outcome_receipts()` is explicit pull-only retrieval. This change
 does not alter memory prompts, background learning writes, or skill files.
+
+Passing evidence has a fixed retention window.  The ledger opportunistically
+prunes old rows when new proof is recorded, but every read and outcome-learning
+replay also treats an event outside that window as `expired`.  Thus a quiet
+workspace cannot keep an old receipt reusable merely because no later command
+happened to trigger cleanup.
 
 `/goal outcomes` (with `/goal learning` as an alias) exposes that pull-only
 view on CLI, gateway, and TUI. It is restricted to the active session and

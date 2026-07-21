@@ -62,6 +62,31 @@ def _retention_cutoff() -> str:
     return (datetime.now(timezone.utc) - timedelta(days=_MAX_EVIDENCE_AGE_DAYS)).isoformat()
 
 
+def _evidence_is_expired(
+    created_at: Any, *, now: datetime | None = None
+) -> bool:
+    """Return whether an evidence timestamp is outside the retained proof window.
+
+    Ledger cleanup is opportunistic and runs when new verification is recorded.
+    Eligibility checks cannot rely on a future write to enforce the same window:
+    a malformed legacy timestamp or an idle event older than the cutoff must
+    fail closed instead of remaining reusable indefinitely.
+    """
+    if not isinstance(created_at, str):
+        return True
+    try:
+        recorded = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    current = now or datetime.now(timezone.utc)
+    if recorded.tzinfo is None or current.tzinfo is None:
+        return True
+    recorded_utc = recorded.astimezone(timezone.utc)
+    current_utc = current.astimezone(timezone.utc)
+    cutoff = current_utc - timedelta(days=_MAX_EVIDENCE_AGE_DAYS)
+    return recorded_utc < cutoff or recorded_utc > current_utc
+
+
 def _db_path() -> Path:
     return get_hermes_home() / "verification_evidence.db"
 
@@ -761,6 +786,8 @@ def verification_status(
     evidence = dict(event)
     if state["last_edit_at"] and state["last_edit_at"] > evidence["created_at"]:
         status = "stale"
+    elif _evidence_is_expired(evidence.get("created_at")):
+        status = "expired"
     else:
         status = evidence["status"]
     return {
@@ -1052,6 +1079,8 @@ def _outcome_verification_status_in_conn(
     evidence = dict(event)
     if state["last_edit_at"] and state["last_edit_at"] > evidence["created_at"]:
         status = "stale"
+    elif _evidence_is_expired(evidence.get("created_at")):
+        status = "expired"
     else:
         status = evidence["status"]
     result = {

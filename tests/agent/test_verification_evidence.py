@@ -292,6 +292,72 @@ def test_get_reusable_outcome_receipt_enforces_current_session_workspace_and_evi
     ) is None
 
 
+def test_evidence_expiry_window_normalizes_timezones_and_rejects_future_time():
+    anchor = datetime(2030, 1, 31, 12, tzinfo=timezone.utc)
+
+    assert verification_evidence._evidence_is_expired(
+        "2030-01-01T21:00:00+09:00", now=anchor
+    ) is False
+    assert verification_evidence._evidence_is_expired(
+        "2030-01-01T12:00:00+00:00", now=anchor
+    ) is False
+    assert verification_evidence._evidence_is_expired(
+        "2030-01-01T11:59:59+00:00", now=anchor
+    ) is True
+    assert verification_evidence._evidence_is_expired(
+        "2030-02-01T12:00:01+00:00", now=anchor
+    ) is True
+
+
+def test_idle_expired_evidence_is_not_reusable_without_later_ledger_write(
+    tmp_path, monkeypatch
+):
+    """Retention is an eligibility rule, not only cleanup triggered by later work."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _node_project(tmp_path)
+    monkeypatch.setattr(
+        "agent.coding_context.project_facts_for",
+        lambda _cwd=None: {
+            "root": str(tmp_path),
+            "verifyCommands": ["pnpm test"],
+            "manifests": ["package.json"],
+            "packageManagers": ["pnpm"],
+            "contextFiles": [],
+        },
+    )
+    record_terminal_result(
+        command="pnpm test", cwd=tmp_path, session_id="s1", exit_code=0, output="all green"
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1", cwd=tmp_path, goal="ship a time-bounded lesson", terminal_kind="judge_done_unconfirmed"
+    )
+    assert receipt is not None
+    assert confirm_outcome_receipt(receipt["id"], expected_session_id="s1", cwd=tmp_path)["reusable"]
+
+    expired_at = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    with sqlite3.connect(home / "verification_evidence.db") as conn:
+        conn.execute("UPDATE verification_events SET created_at = ?", (expired_at,))
+        conn.commit()
+
+    # No later record is written: this is the idle path that cleanup alone missed.
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "expired"
+    assert list_reusable_outcome_receipts(cwd=tmp_path) == []
+    assert get_reusable_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    ) is None
+
+    future_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    with sqlite3.connect(home / "verification_evidence.db") as conn:
+        conn.execute("UPDATE verification_events SET created_at = ?", (future_at,))
+        conn.commit()
+    assert verification_status(session_id="s1", cwd=tmp_path)["status"] == "expired"
+    assert list_reusable_outcome_receipts(cwd=tmp_path) == []
+    assert get_reusable_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    ) is None
+
+
 def test_outcome_receipt_binds_final_contract_and_ordered_subgoals(tmp_path, monkeypatch):
     """Learning candidates identify the exact criteria the judge evaluated."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

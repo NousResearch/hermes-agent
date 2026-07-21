@@ -271,14 +271,20 @@ class TestTurnTraceIsolation:
         """
 
         class _Span:
+            def __init__(self):
+                self.ended = False
+                self.updates = []
+                self.trace_updates = []
+
             def update(self, **kw):
-                pass
+                self.updates.append(kw)
 
             def end(self, **kw):
-                pass
+                self.ended = True
 
-            def set_trace_io(self, **kw):
-                pass
+            def update_trace(self, **kw):
+                # Real SDK method on LangfuseChain/Span (NOT set_trace_io).
+                self.trace_updates.append(kw)
 
             def start_observation(self, **kw):
                 return _Span()
@@ -1021,3 +1027,167 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+class TestFinishTraceUsesUpdateTrace:
+    """Regression: SDK v3 has update_trace, not set_trace_io.
+
+    Calling the non-existent set_trace_io raised AttributeError inside
+    _finish_trace's try block and skipped root_span.end(). Generations/tools
+    still exported, so the Langfuse list showed Observation Levels + Latency
+    but blank Input/Output columns (no CHAIN root).
+    """
+
+    def test_finish_ends_root_and_calls_update_trace(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        roots: list = []
+
+        class _Span:
+            def __init__(self):
+                self.ended = False
+                self.updates = []
+                self.trace_updates = []
+
+            def update(self, **kw):
+                self.updates.append(kw)
+
+            def end(self, **kw):
+                self.ended = True
+
+            def update_trace(self, **kw):
+                self.trace_updates.append(kw)
+
+            def start_observation(self, **kw):
+                return _Span()
+
+            # Deliberately NO set_trace_io — mirrors real LangfuseChain.
+
+        class _RootCM:
+            def __init__(self):
+                self.span = _Span()
+                roots.append(self.span)
+
+            def __enter__(self):
+                return self.span
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        mod.on_pre_llm_request(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id="turn-1",
+        )
+        mod.on_post_llm_call(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            assistant_content_chars=12,
+            assistant_tool_call_count=0,
+            assistant_response="hello world!",
+            turn_id="turn-1",
+        )
+
+        assert len(roots) == 1
+        root = roots[0]
+        assert root.ended is True
+        assert any("output" in u for u in root.trace_updates)
+        assert any("output" in u for u in root.updates)
+        assert mod._TRACE_STATE == {}
+
+    def test_finish_still_ends_when_update_trace_raises(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        roots: list = []
+
+        class _Span:
+            def __init__(self):
+                self.ended = False
+
+            def update(self, **kw):
+                pass
+
+            def end(self, **kw):
+                self.ended = True
+
+            def update_trace(self, **kw):
+                raise RuntimeError("simulated update_trace failure")
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __init__(self):
+                self.span = _Span()
+                roots.append(self.span)
+
+            def __enter__(self):
+                return self.span
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        mod.on_pre_llm_request(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id="turn-1",
+        )
+        mod.on_post_llm_call(
+            task_id="t1",
+            session_id="s1",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            assistant_content_chars=5,
+            assistant_tool_call_count=0,
+            assistant_response="done",
+            turn_id="turn-1",
+        )
+
+        assert roots[0].ended is True
+        assert mod._TRACE_STATE == {}

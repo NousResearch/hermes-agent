@@ -194,6 +194,14 @@ export const StreamStallIndicator: FC = () => {
 
     return `${s.message.content.length}:${textLength}`
   })
+  // Every running assistant bubble mounts this component (see
+  // assistant-message.tsx), so a reconnect + queued prompt can leave two
+  // bubbles simultaneously `running` and each render its own "Summarizing
+  // thread" / "Hermes is thinking" row with the same timer (#68634). The
+  // component's own contract above is tail-only ("the thinking indicator
+  // returns at the tail"), so gate on this being the last message in the
+  // thread and render nothing for non-tail bubbles.
+  const isLast = useAuiState(s => s.message.isLast)
 
   // Timestamp of the activity that preceded the current quiet spell, set once
   // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
@@ -219,7 +227,7 @@ export const StreamStallIndicator: FC = () => {
   // A named wait doesn't have to earn the stall threshold first — we already
   // know what the turn is doing, so say it as soon as the label is ready rather
   // than leaving the transcript silent for STREAM_STALL_S.
-  const active = (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
+  const active = isLast && (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the stream went quiet — the stall's own

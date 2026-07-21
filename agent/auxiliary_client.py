@@ -3057,7 +3057,8 @@ def _is_payment_error(exc: Exception) -> bool:
             "out of funds", "run out of funds",
             "balance_depleted", "no usable credits",
             "model_not_supported_on_free_tier",
-            "not available on the free tier",
+            "not available on the free tier", "unavailable for free",
+            "paid version is available",
             "requires a subscription", "upgrade for access",
             "upgrade for higher limits", "reached your session usage limit",
             # Daily / monthly / weekly quota exhaustion keywords
@@ -3114,7 +3115,8 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             "out of funds", "run out of funds",
             "balance_depleted", "no usable credits",
             "model_not_supported_on_free_tier",
-            "not available on the free tier",
+            "not available on the free tier", "unavailable for free",
+            "paid version is available",
         )):
             return True
     return False
@@ -3309,7 +3311,8 @@ def _is_model_not_found_error(exc: Exception) -> bool:
     if any(kw in err_lower for kw in (
         "credits", "insufficient funds", "billing", "out of funds",
         "balance_depleted", "no usable credits", "free tier", "free-tier",
-        "not available on the free tier",
+        "not available on the free tier", "unavailable for free",
+        "paid version is available",
     )):
         return False
     if status not in {404, 400, None}:
@@ -3367,6 +3370,7 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
         "credits", "insufficient funds", "billing", "out of funds",
         "balance_depleted", "no usable credits", "payment required",
         "free tier", "free-tier", "not available on the free tier",
+        "unavailable for free", "paid version is available",
         "model_not_supported_on_free_tier", "quota",
     )):
         return False

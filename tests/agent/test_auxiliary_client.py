@@ -1667,6 +1667,15 @@ class TestIsPaymentError:
         exc.status_code = 404
         assert _is_payment_error(exc) is True
 
+    def test_404_openrouter_retired_free_slug_is_payment(self):
+        """OpenRouter's exact retired ``:free`` response must trigger fallback."""
+        exc = Exception(
+            "This model is unavailable for free. The paid version is available "
+            "now - use this slug instead: meta-llama/llama-4-maverick"
+        )
+        exc.status_code = 404
+        assert _is_payment_error(exc) is True
+
     def test_403_subscription_required_is_payment(self):
         exc = Exception(
             "this model requires a subscription, upgrade for access: "

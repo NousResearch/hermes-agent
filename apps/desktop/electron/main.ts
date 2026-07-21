@@ -39,6 +39,7 @@ import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
+import { codeClientDeepLink } from './code-client-deep-link'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -8777,6 +8778,10 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
   }
+})
+
+ipcMain.handle('hermes:code-client:open', async (_event, payload) => {
+  await shell.openExternal(codeClientDeepLink(payload))
 })
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {

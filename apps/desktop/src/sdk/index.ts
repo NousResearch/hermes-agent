@@ -26,6 +26,7 @@ import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $filePreviewTarget } from '@/store/preview'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -39,6 +40,12 @@ export interface ViewportRect {
   height: number
   /** Below the app's sidebar-collapse breakpoint (rails become overlays). */
   narrow: boolean
+}
+
+export interface CodeClientLaunch {
+  client: 'claude-code' | 'codex'
+  cwd: string
+  prompt: string
 }
 
 const readViewport = (): ViewportRect => ({
@@ -65,6 +72,8 @@ export const host = {
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */
     model: readonlyAtom<string>($currentModel),
+    /** Active file-preview target, or null when no file tab is selected. */
+    previewTarget: readonlyAtom($filePreviewTarget),
     /** Profile the live gateway is routed to. */
     profile: readonlyAtom<string>($activeGatewayProfile),
     /** Window geometry ({ width, height, narrow }). */
@@ -81,6 +90,17 @@ export const host = {
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+
+  /** Open a review-before-send prompt in an allowlisted local code client. */
+  openCodeClient: async (input: CodeClientLaunch): Promise<void> => {
+    const openCodeClient = window.hermesDesktop?.openCodeClient
+
+    if (!openCodeClient) {
+      throw new Error('Code-client launch is unavailable outside Hermes Desktop')
+    }
+
+    await openCodeClient(input)
+  },
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
@@ -184,6 +204,7 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+export type { PreviewTarget } from '@/store/preview'
 
 // -- contracts ----------------------------------------------------------------
 

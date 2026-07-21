@@ -11,7 +11,7 @@ import { $activeSessionId, $currentCwd } from '@/store/session'
 import { ToolFallback } from './fallback'
 
 vi.mock('@assistant-ui/react', async importOriginal => {
-  const actual = await importOriginal<typeof import('@assistant-ui/react')>()
+  const actual = await importOriginal<Record<string, unknown>>()
 
   return {
     ...actual,

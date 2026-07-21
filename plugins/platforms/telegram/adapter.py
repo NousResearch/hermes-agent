@@ -832,6 +832,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
+        # Inbound update_id dedup: Telegram can redeliver the same update
+        # (retry-delivery, webhook/polling overlap, graceful-shutdown ACK
+        # race). PTB's polling offset advances per fetch, but a re-fetch
+        # after a partial ACK reprocesses already-handled updates. A bounded
+        # LRU keyed on update_id prevents duplicate agent turns (#68502).
+        self._seen_update_ids: Dict[int, float] = {}
+        self._seen_update_ids_lock = threading.Lock()
+        self._seen_update_ids_max = 4096
 
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
@@ -8131,6 +8139,30 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
+    def _is_duplicate_update(self, update: Update) -> bool:
+        """Return True if this update was already processed (#68502).
+
+        Telegram can redeliver the same update_id via retry-delivery,
+        webhook/polling overlap, or a graceful-shutdown ACK race. A bounded
+        in-memory dict keyed on ``update.update_id`` suppresses duplicates
+        before any handler work begins.
+        """
+        uid = getattr(update, "update_id", None)
+        if uid is None:
+            return False
+        with self._seen_update_ids_lock:
+            if uid in self._seen_update_ids:
+                logger.debug("[Telegram] Suppressing duplicate update_id=%s", uid)
+                return True
+            self._seen_update_ids[uid] = time.time()
+            # Evict oldest entries when the cap is hit.
+            if len(self._seen_update_ids) > self._seen_update_ids_max:
+                _sorted = sorted(self._seen_update_ids.items(), key=lambda kv: kv[1])
+                _evict = len(self._seen_update_ids) - self._seen_update_ids_max
+                for k, _ in _sorted[:_evict]:
+                    del self._seen_update_ids[k]
+        return False
+
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 
@@ -8148,6 +8180,8 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        if self._is_duplicate_update(update):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -8176,6 +8210,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if self._is_duplicate_update(update):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -8197,6 +8233,8 @@ class TelegramAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if self._is_duplicate_update(update):
+            return
         """Handle incoming location/venue pin messages."""
         msg = self._effective_update_message(update)
         if not msg:
@@ -8403,6 +8441,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        if self._is_duplicate_update(update):
+            return
         if not update.message:
             return
         if not self._is_user_authorized_from_message(update.message):

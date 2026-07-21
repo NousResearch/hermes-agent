@@ -38,8 +38,10 @@ CARD_CLICKED is ACK'd only in v1 (follow-up PR implements interactivity).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import mimetypes
 import os
 import random
 import re
@@ -1115,6 +1117,23 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 self._set_fatal_error(code="subscription_check", message=msg, retryable=True)
                 return False
 
+        # Single-instance guard. Pub/Sub load-balances a subscription's
+        # message stream across every subscriber, so two gateway processes
+        # pulling the same subscription split inbound events and BOTH post
+        # typing cards / replies (the dedup cache and thread-count store are
+        # per-process, so state is split-brained). Mirror the push/poll
+        # siblings (Slack Socket Mode, Telegram long-polling, Discord, QQBot),
+        # which all acquire a single-instance lock on connect. Scope the
+        # identity to the subscription path so two gateways on DIFFERENT
+        # subscriptions can coexist. On conflict, _acquire_platform_lock sets
+        # a non-retryable fatal error.
+        if not self._acquire_platform_lock(
+            "google_chat-subscription",
+            subscription_path,
+            "Google Chat Pub/Sub subscription",
+        ):
+            return False
+
         # Resolve bot user_id (eager): cache first, then members.list.
         self._bot_user_id = self._load_cached_bot_id()
         if not self._bot_user_id:
@@ -1171,6 +1190,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._subscriber = None
+        self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[GoogleChat] Disconnected")
 
@@ -1183,6 +1203,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
         ``subscribe()`` returns a concurrent.futures.Future that resolves when
         the stream dies. We await ``future.result()`` in a worker thread and
         react to exceptions.
+
+        This task is created at the END of ``connect()``, AFTER
+        ``_mark_connected()`` has already returned True to the gateway, so a
+        permanently-dead stream is invisible to the startup connect path.
+        ``_set_fatal_error`` only flips ``_running`` and writes a status file;
+        it does NOT notify the gateway. The gateway's only post-startup
+        recovery hook is ``_notify_fatal_error()`` ->
+        ``GatewayRunner._handle_adapter_fatal_error()``, which disconnects the
+        dead adapter and requeues retryable failures. Each fatal return path
+        therefore awaits ``_notify_fatal_error()`` so a revoked SA key or
+        sustained outage hands the adapter to that recovery policy instead of
+        silently going dead (mirrors plugins/platforms/irc/adapter.py).
         """
         attempt = 0
         while not self._shutting_down:
@@ -1213,6 +1245,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     message="Pub/Sub authentication failed (SA key invalid/revoked)",
                     retryable=False,
                 )
+                await self._notify_fatal_error()
                 return
             except gax_exceptions.PermissionDenied:
                 self._set_fatal_error(
@@ -1220,6 +1253,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     message="SA lacks pubsub.subscriber on the subscription",
                     retryable=False,
                 )
+                await self._notify_fatal_error()
                 return
             except Exception as exc:
                 attempt += 1
@@ -1236,6 +1270,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                         message=f"Pub/Sub reconnect failed {attempt} times; giving up",
                         retryable=False,
                     )
+                    await self._notify_fatal_error()
                     return
                 delay = min(
                     self._RECONNECT_MAX_DELAY,
@@ -1363,6 +1398,42 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         return None
 
+    @staticmethod
+    def _relay_dedup_surrogate(
+        msg: Dict[str, Any], space: Dict[str, Any]
+    ) -> str:
+        """Deterministic dedup key for relay events that carry no resource name.
+
+        The native and workspace-addons formats always carry a real Chat
+        resource name; the relay format only forwards ``message_name`` when
+        the relay chooses to. When it is absent, ``msg['name']`` is empty and
+        the caller's dedup guard would be skipped entirely, so a Pub/Sub
+        redelivery re-dispatches the message and the agent processes it twice.
+
+        Hashes the stable parts of the event — sender surrogate, space,
+        thread, and text — so a redelivery of the same relay message produces
+        the same key and is suppressed by the dedup cache. Returns ``""`` when
+        there is nothing identifying to hash.
+
+        Caveat: the relay envelope provides no per-event id or timestamp at
+        this call site, so the key is content-derived. Two genuinely distinct
+        relay messages with identical text from the same sender in the same
+        thread within the dedup TTL window collapse to one. This is the best
+        available surrogate for redelivery suppression on the relay path.
+        """
+        sender = msg.get("sender") or {}
+        thread = msg.get("thread") or {}
+        parts = [
+            sender.get("name") or sender.get("email") or "",
+            space.get("name") or "",
+            thread.get("name") or "",
+            msg.get("text") or msg.get("argumentText") or "",
+        ]
+        if not any(parts):
+            return ""
+        digest = hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+        return f"relay-content:{digest}"
+
     def _on_pubsub_message(self, message: Any) -> None:
         """Pub/Sub callback — parse envelope and dispatch to asyncio loop.
 
@@ -1465,8 +1536,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 message.ack()
                 return
 
-            # Dedup guard — Pub/Sub is at-least-once.
+            # Dedup guard — Pub/Sub is at-least-once. The native and
+            # workspace-addons formats always carry a real resource name. The
+            # relay format only carries ``message_name`` when the relay
+            # forwards it; when it is absent the dict-level ``name`` is empty
+            # and the guard would be skipped, so a redelivery re-dispatches
+            # the message and the agent processes it twice. Fall back to a
+            # deterministic content-hash surrogate so the relay path still
+            # dedups (see _relay_dedup_surrogate for the surrogate's caveat).
             msg_name = msg.get("name") or ""
+            if not msg_name:
+                msg_name = self._relay_dedup_surrogate(msg, space)
             if msg_name and self._dedup.is_duplicate(msg_name):
                 logger.debug("[GoogleChat] Dedup drop for %s", msg_name)
                 message.ack()
@@ -1858,9 +1938,27 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 continue
             media_urls.append(local_path)
             media_types.append(mime or "application/octet-stream")
-            # Prefer the first-seen type for MessageType if no text present.
-            if message_type == MessageType.TEXT and not text:
-                message_type = _mime_for_message_type(mime or "")
+
+        # Classify the message type from the attachment set, independent of
+        # whether a caption rides along. The gateway's document-forwarding
+        # block (gateway/run.py) is gated strictly on
+        # ``message_type == MessageType.DOCUMENT`` with no MIME fallback, so a
+        # document/PDF/zip attached WITH a caption used to stay TEXT and be
+        # dropped from the agent's view (only the empty-caption case worked).
+        # Images and audio route on their own MIME prefix downstream, so the
+        # message-level type only matters for the DOCUMENT path: prefer
+        # DOCUMENT whenever any attachment is a non-media file (covers the
+        # mixed image+PDF case where the PDF would otherwise be invisible);
+        # otherwise fall back to the first attachment's media type. The
+        # caption flows through unchanged as ``text``.
+        if media_types:
+            attachment_types = [
+                _mime_for_message_type(m or "") for m in media_types
+            ]
+            if MessageType.DOCUMENT in attachment_types:
+                message_type = MessageType.DOCUMENT
+            else:
+                message_type = attachment_types[0]
 
         if is_slash:
             message_type = MessageType.COMMAND
@@ -1957,6 +2055,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
         mime = attachment.get("contentType") or ""
         source = attachment.get("source") or ""
         name = attachment.get("name") or ""
+        # ``name`` is the RESOURCE name (spaces/S/messages/M/attachments/A) —
+        # an opaque id with no extension. ``contentName`` is the
+        # human-readable filename (e.g. report.pdf). Prefer it so the cached
+        # file keeps its real extension; without it cache_document_from_bytes
+        # stores an extensionless blob and gateway/run.py's extension-based
+        # MIME/text classification (and the agent-facing display name) breaks.
+        content_name = (attachment.get("contentName") or "").strip()
         attachment_data_ref = attachment.get("attachmentDataRef") or {}
         resource_name = attachment_data_ref.get("resourceName") or ""
         download_uri = attachment.get("downloadUri") or ""
@@ -2036,7 +2141,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         # Cache based on MIME. Upstream's cache_* helpers expect `ext` for
         # media (image/audio/video) and a positional `filename` for docs.
-        filename = name.split("/")[-1] if name else "attachment"
+        # Prefer the real filename from contentName; fall back to the last
+        # segment of the resource name only when contentName is absent.
+        if content_name:
+            filename = content_name
+        else:
+            filename = name.split("/")[-1] if name else "attachment"
         if "." in filename:
             ext = "." + filename.rsplit(".", 1)[-1].lower()
         else:
@@ -2141,7 +2251,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                 "[GoogleChat] Rate limit hit %d times on chat; throttling",
                                 self._rate_limit_hits[chat_id],
                             )
-                        raise
+                        # Return the structured SendResult that every other
+                        # status class returns instead of re-raising a bare
+                        # HttpError out of send(). Callers (gateway/run.py)
+                        # only inspect ``result.success``; an unhandled raise
+                        # here drops the message past the success=False
+                        # handling/logging path. retryable=True lets base.py
+                        # apply its transient-error retry policy
+                        # (SendResult.retryable contract, base.py).
+                        return SendResult(
+                            success=False,
+                            error=_redact_sensitive(str(exc)),
+                            retryable=True,
+                        )
                     raise
             if last_result is None:
                 return SendResult(success=False, error="empty message")
@@ -2356,27 +2478,30 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 .execute(http=self._new_authed_http())
             )
 
-        resp = await asyncio.to_thread(_do_patch)
+        # Route through the bounded-retry helper so a transient 429/5xx on the
+        # typing-card patch path (send()'s first chunk) is retried rather than
+        # surfaced as a single hard failure. _call_with_retry re-raises
+        # non-retryable HttpErrors on the first attempt, so the 403/404/429
+        # handling in send() and edit_message() is preserved.
+        resp = await self._call_with_retry(_do_patch, op_name="messages.patch")
         return SendResult(success=True, message_id=resp.get("name", message_name))
 
     def _chunk_text(self, text: str) -> List[str]:
+        """Split a long message into chunks, preserving code-fence boundaries.
+
+        Delegates to ``BasePlatformAdapter.truncate_message`` (the same helper
+        Discord/Slack/Mattermost use). The previous newline/hard-cut split was
+        fence-unaware: when a triple-backtick block straddled the boundary, the
+        opening ``` landed in chunk N and the closing ``` in chunk N+1, so
+        Google Chat rendered chunk N as an unterminated monospace block (all
+        following text became code) and chunk N+1 as plain text with a stray
+        trailing fence. ``truncate_message`` closes the fence at the end of a
+        chunk and reopens it (with the original language tag) at the start of
+        the next, and appends ``(i/N)`` indicators.
+        """
         if not text:
             return []
-        if len(text) <= _MAX_TEXT_LENGTH:
-            return [text]
-        chunks: List[str] = []
-        remaining = text
-        while remaining:
-            if len(remaining) <= _MAX_TEXT_LENGTH:
-                chunks.append(remaining)
-                break
-            # Try to split on a newline near the cutoff.
-            cut = remaining.rfind("\n", 0, _MAX_TEXT_LENGTH)
-            if cut < _MAX_TEXT_LENGTH // 2:
-                cut = _MAX_TEXT_LENGTH
-            chunks.append(remaining[:cut])
-            remaining = remaining[cut:].lstrip()
-        return chunks
+        return self.truncate_message(text, self.MAX_MESSAGE_LENGTH)
 
     # ------------------------------------------------------------------
     # Outbound formatting
@@ -2895,9 +3020,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs: Any,
     ) -> SendResult:
+        # Pass mime_hint=None and let _send_file resolve a CONCRETE type
+        # (image/png, image/jpeg, …) from the extension. "image/*" is a
+        # wildcard range, not a valid Content-Type; googleapiclient would
+        # forward it verbatim and tag the Chat attachment "image/*", which is
+        # invalid and can block inline rendering / be rejected by media.upload.
         return await self._send_file(
             chat_id, image_path, caption,
-            mime_hint="image/*",
+            mime_hint=None,
             thread_id=self._resolve_thread_id(reply_to, kwargs.get("metadata"), chat_id=chat_id),
         )
 
@@ -3139,7 +3269,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"file not found: {path}")
 
         filename = override_filename or os.path.basename(path) or "upload.bin"
-        mime = mime_hint or "application/octet-stream"
+        # Resolve a CONCRETE MIME. A wildcard range (e.g. "image/*") is not a
+        # valid Content-Type and gets forwarded verbatim by googleapiclient,
+        # tagging the resulting Chat attachment invalidly. When the hint is
+        # missing or a wildcard, guess from the (override) filename so e.g. a
+        # .png uploads as image/png and a .pdf as application/pdf; fall back
+        # to application/octet-stream only when the guess fails.
+        mime = mime_hint or ""
+        if not mime or mime.endswith("/*"):
+            guessed, _ = mimetypes.guess_type(override_filename or path)
+            mime = guessed or "application/octet-stream"
 
         sender_email = self._last_sender_by_chat.get(chat_id)
         chat_api, identity = await self._acquire_user_chat_api(sender_email)

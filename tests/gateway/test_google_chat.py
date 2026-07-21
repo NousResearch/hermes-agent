@@ -617,17 +617,37 @@ class TestChunkText:
         text = "a" * 10000
         chunks = adapter._chunk_text(text)
         assert len(chunks) >= 2
-        assert all(len(c) <= 4000 for c in chunks)
-        assert "".join(chunks) == text
+        # Each chunk (including the appended "(i/N)" indicator) fits the limit.
+        assert all(len(c) <= adapter.MAX_MESSAGE_LENGTH for c in chunks)
+        # All of the original body survives across the chunks.
+        assert "".join(chunks).count("a") == 10000
 
     def test_splits_on_newline_near_boundary(self, adapter):
-        # Build a ~5000-char string with a newline near the 4000 cut.
+        # Build a ~5300-char string with a newline near the 4000 cut.
         text = "a" * 3800 + "\n" + "b" * 1500
         chunks = adapter._chunk_text(text)
         assert len(chunks) == 2
-        # First chunk ends at the newline (3800 a's, no trailing b's)
-        assert chunks[0].endswith("a")
-        assert "\n" not in chunks[0][-5:]  # the split already ate the newline
+        assert all(len(c) <= adapter.MAX_MESSAGE_LENGTH for c in chunks)
+        # The split prefers the newline, so the run of a's lands in chunk 0
+        # and the run of b's in chunk 1 (modulo the "(i/N)" indicator).
+        assert "a" in chunks[0] and "b" not in chunks[0]
+        assert "b" in chunks[1]
+
+    def test_code_fence_is_carried_across_chunks(self, adapter):
+        """Regression: a fenced code block larger than the chunk size must
+        not split with the opening ``` in chunk N and the closing ``` in
+        chunk N+1 (which renders chunk N as an unterminated monospace block
+        in Google Chat). truncate_message closes-and-reopens the fence with
+        the original language tag, so every chunk has balanced fences."""
+        body = "\n".join(f"line_{i:04d} = {i}" for i in range(600))
+        text = f"```python\n{body}\n```"
+        chunks = adapter._chunk_text(text)
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            # Balanced fences in every chunk: even number of ``` markers.
+            assert chunk.count("```") % 2 == 0
+        # The language tag is reopened on the continuation chunk(s).
+        assert "```python" in chunks[1]
 
 
 # ===========================================================================
@@ -760,6 +780,29 @@ class TestOnPubsubMessage:
             adapter._on_pubsub_message(msg)
             submit.assert_called_once()
         msg.ack.assert_called_once()
+
+    def test_relay_redelivery_without_message_name_is_deduped(self, adapter):
+        """Regression: a relay (format 3) event that omits message_name has an
+        empty dict-level ``name``. Pub/Sub is at-least-once, so a redelivery
+        must still be suppressed via the content-hash surrogate — otherwise
+        the agent processes the same message twice."""
+        envelope = {
+            "event_type": "MESSAGE",
+            "sender_email": "alice@example.com",
+            "text": "do the thing",
+            "space_name": "spaces/RELAY",
+            "thread_name": "spaces/RELAY/threads/T",
+            # NOTE: no "message_name" — the dict-level name is empty.
+        }
+        first = _make_pubsub_message(envelope)
+        second = _make_pubsub_message(envelope)
+        with patch.object(adapter, "_submit_on_loop") as submit:
+            adapter._on_pubsub_message(first)
+            adapter._on_pubsub_message(second)
+            # First dispatches; the redelivery is dropped by the surrogate.
+            assert submit.call_count == 1
+        first.ack.assert_called_once()
+        second.ack.assert_called_once()
 
     def test_callback_exception_does_not_escape(self, adapter):
         env = _make_chat_envelope(text="hola")
@@ -1094,6 +1137,53 @@ class TestBuildMessageEvent:
         # With no text, the message type should reflect the first attachment.
         assert event.message_type == MessageType.PHOTO
 
+    @pytest.mark.asyncio
+    async def test_document_with_caption_is_classified_document(self, adapter):
+        """Regression: a document attached WITH a caption must still classify
+        as MessageType.DOCUMENT. The gateway's document-forwarding block is
+        gated strictly on DOCUMENT with no MIME fallback, so the old
+        ``and not text`` guard left a captioned PDF as TEXT and the agent
+        never learned the file existed."""
+        attachments = [{
+            "name": "spaces/S/messages/M/attachments/A",
+            "contentName": "report.pdf",
+            "contentType": "application/pdf",
+        }]
+        env = _make_chat_envelope(text="here is the report", attachments=attachments)
+        msg = env["chat"]["messagePayload"]["message"]
+        with patch.object(
+            adapter, "_download_attachment",
+            new=AsyncMock(return_value=("/cache/report.pdf", "application/pdf")),
+        ):
+            event = await adapter._build_message_event(msg, env)
+        assert event.media_urls == ["/cache/report.pdf"]
+        assert event.message_type == MessageType.DOCUMENT
+        # The caption still flows through as the message text.
+        assert event.text == "here is the report"
+
+    @pytest.mark.asyncio
+    async def test_mixed_attachments_prefer_document(self, adapter):
+        """Image + PDF in one message: the message type must be DOCUMENT so
+        the PDF reaches the agent (images route on their own MIME prefix
+        downstream regardless of message_type, but the document note keys on
+        message_type == DOCUMENT)."""
+        attachments = [
+            {"name": "a/img", "contentName": "pic.png", "contentType": "image/png"},
+            {"name": "a/doc", "contentName": "report.pdf", "contentType": "application/pdf"},
+        ]
+        env = _make_chat_envelope(text="", attachments=attachments)
+        msg = env["chat"]["messagePayload"]["message"]
+
+        async def _fake_download(att):
+            if att["contentType"].startswith("image/"):
+                return ("/cache/pic.png", "image/png")
+            return ("/cache/report.pdf", "application/pdf")
+
+        with patch.object(adapter, "_download_attachment", new=_fake_download):
+            event = await adapter._build_message_event(msg, env)
+        assert event.media_urls == ["/cache/pic.png", "/cache/report.pdf"]
+        assert event.message_type == MessageType.DOCUMENT
+
 
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling
@@ -1207,11 +1297,18 @@ class TestSend:
         assert "not found" in (result.error or "")
 
     @pytest.mark.asyncio
-    async def test_429_increments_rate_limit_counter_and_raises(self, adapter):
+    async def test_429_returns_retryable_send_result(self, adapter):
+        """A 429 must return a structured SendResult(success=False,
+        retryable=True) — matching the 403/404 branches — NOT re-raise a bare
+        HttpError out of send(). Callers (gateway/run.py) only inspect
+        result.success; an unhandled raise drops the message past the
+        success=False handling/logging path, and retryable=True lets base.py
+        apply its transient-error retry policy."""
         exc = _FakeHttpError(status=429, reason="Too Many Requests")
         adapter._create_message = AsyncMock(side_effect=exc)
-        with pytest.raises(_FakeHttpError):
-            await adapter.send("spaces/S", "hola")
+        result = await adapter.send("spaces/S", "hola")
+        assert result.success is False
+        assert result.retryable is True
         assert adapter._rate_limit_hits.get("spaces/S") == 1
 
     def test_card_spec_to_cards_v2_builds_button_card(self):
@@ -1713,6 +1810,47 @@ class TestNativeAttachmentDelivery:
         assert body_passed["attachment"][0]["attachmentDataRef"] == {
             "resourceName": "ref-abc"
         }
+
+    @pytest.mark.asyncio
+    async def test_send_image_uploads_concrete_mime_not_wildcard(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Regression: send_image_file must upload a CONCRETE Content-Type
+        (image/png) resolved from the extension, never the wildcard range
+        ``image/*`` (which googleapiclient forwards verbatim, tagging the
+        Chat attachment invalidly and blocking inline rendering)."""
+        f = tmp_path / "diagram.png"
+        f.write_bytes(b"\x89PNG\r\n")
+
+        captured = {}
+        from plugins.platforms.google_chat import adapter as gc_mod
+
+        def _fake_media_upload(path, mimetype=None, resumable=False):
+            captured["mimetype"] = mimetype
+            return MagicMock()
+
+        monkeypatch.setattr(
+            gc_mod, "MediaFileUpload", _fake_media_upload, raising=False,
+        )
+
+        upload_call = MagicMock()
+        upload_call.return_value.execute = MagicMock(
+            return_value={"attachmentDataRef": {"resourceName": "ref-xyz"}}
+        )
+        create_call = MagicMock()
+        create_call.return_value.execute = MagicMock(
+            return_value={"name": "spaces/S/messages/MID"}
+        )
+        adapter._user_chat_api = MagicMock()
+        adapter._user_chat_api.media.return_value.upload = upload_call
+        adapter._user_chat_api.spaces.return_value.messages.return_value.create = create_call
+        adapter._user_credentials = MagicMock(valid=True)
+        adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
+
+        result = await adapter.send_image_file("spaces/S", str(f), caption=None)
+        assert result.success is True
+        assert captured["mimetype"] == "image/png"
+        assert not (captured["mimetype"] or "").endswith("/*")
 
     @pytest.mark.asyncio
     async def test_send_file_falls_back_to_notice_on_401(self, adapter, tmp_path):
@@ -2479,6 +2617,44 @@ class TestAttachmentSSRFGuard:
         assert mime == "application/pdf"
 
     @pytest.mark.asyncio
+    async def test_document_cached_with_contentName_not_resource_name(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Regression: the cached document filename must come from
+        ``contentName`` (the real filename, e.g. report.pdf), NOT the opaque
+        resource ``name``. Caching under the resource name strips the
+        extension, breaking gateway/run.py's extension-based MIME/text
+        classification and the agent-facing display name."""
+        attachment = {
+            "contentType": "application/pdf",
+            "name": "spaces/S/messages/M/attachments/AABBCC",
+            "contentName": "quarterly_report.pdf",
+            "attachmentDataRef": {
+                "resourceName": "spaces/S/messages/M/attachments/AABBCC",
+            },
+        }
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            return b"%PDF-fake"
+
+        monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+        captured = {}
+        from plugins.platforms.google_chat import adapter as gc_mod
+
+        def _cache_doc(data, filename=None, ext=None):
+            captured["filename"] = filename
+            return str(tmp_path / "out")
+
+        monkeypatch.setattr(
+            gc_mod, "cache_document_from_bytes", _cache_doc, raising=False,
+        )
+
+        path, mime = await adapter._download_attachment(attachment)
+        assert path == str(tmp_path / "out")
+        # Real filename (with extension) used, not the opaque resource id.
+        assert captured["filename"] == "quarterly_report.pdf"
+
+    @pytest.mark.asyncio
     async def test_rejects_non_google_host(self, adapter):
         attachment = {
             "contentType": "image/png",
@@ -2950,6 +3126,44 @@ class TestSupervisorReconnect:
         await adapter._run_supervisor()
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_code == "pubsub_reconnect_exhausted"
+
+    @pytest.mark.asyncio
+    async def test_reconnect_exhausted_notifies_gateway(self, adapter, monkeypatch):
+        """Regression: a permanently-dead stream must call _notify_fatal_error
+        so GatewayRunner._handle_adapter_fatal_error() can disconnect/requeue
+        the adapter. Without it the adapter stays in the gateway's table with
+        is_connected==False and recovery needs a manual restart."""
+        async def _instant(*args, **kwargs):
+            return None
+        monkeypatch.setattr(
+            "plugins.platforms.google_chat.adapter.asyncio.sleep", _instant
+        )
+        adapter._subscriber.subscribe = MagicMock(
+            side_effect=RuntimeError("stream died")
+        )
+        notified = []
+        adapter.set_fatal_error_handler(lambda a: notified.append(a))
+
+        await adapter._run_supervisor()
+        assert adapter.fatal_error_code == "pubsub_reconnect_exhausted"
+        assert notified == [adapter]
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_notifies_gateway(self, adapter):
+        """A revoked/invalid SA key (Unauthenticated) is non-retryable and
+        must escalate to the gateway via _notify_fatal_error, not just flip
+        the local _running flag."""
+        from plugins.platforms.google_chat import adapter as gc_mod
+
+        adapter._subscriber.subscribe = MagicMock(
+            side_effect=gc_mod.gax_exceptions.Unauthenticated("revoked")
+        )
+        notified = []
+        adapter.set_fatal_error_handler(lambda a: notified.append(a))
+
+        await adapter._run_supervisor()
+        assert adapter.fatal_error_code == "pubsub_auth"
+        assert notified == [adapter]
 
 
 # ===========================================================================

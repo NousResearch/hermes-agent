@@ -4647,6 +4647,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            # Prefer agent.provider — it updates on fallback.
+            # self.provider reflects the originally configured provider and never
+            # changes mid-session.
+            "provider": getattr(agent, "provider", None) or getattr(self, "provider", ""),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -5156,12 +5160,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                _sb_p = snapshot.get("provider", "")
+                _sb_ml = snapshot["model_short"] + (" (" + _sb_p + ")" if _sb_p else "")
+                text = "⚕ " + _sb_ml + " · " + duration_label
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                _sb_p2 = snapshot.get("provider", "")
+                _sb_ml2 = snapshot["model_short"] + (" (" + _sb_p2 + ")" if _sb_p2 else "")
+                parts = ["⚕ " + _sb_ml2, percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5187,7 +5195,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            _sb_p3 = snapshot.get("provider", "")
+            _sb_ml3 = snapshot["model_short"] + (" (" + _sb_p3 + ")" if _sb_p3 else "")
+            parts = ["⚕ " + _sb_ml3, context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5227,9 +5237,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             yolo_active = self._is_session_yolo_active()
 
             if width < 52:
+                _f_p = snapshot.get("provider", "")
+                _f_ml = snapshot["model_short"] + (" (" + _f_p + ")" if _f_p else "")
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", _f_ml),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -5245,9 +5257,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
+                    _f_p2 = snapshot.get("provider", "")
+                    _f_ml2 = snapshot["model_short"] + (" (" + _f_p2 + ")" if _f_p2 else "")
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", _f_ml2),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -5284,9 +5298,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
+                    _f_p3 = snapshot.get("provider", "")
+                    _f_ml3 = snapshot["model_short"] + (" (" + _f_p3 + ")" if _f_p3 else "")
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", _f_ml3),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),

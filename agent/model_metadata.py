@@ -1053,6 +1053,9 @@ def fetch_endpoint_model_metadata(
 
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
+        # SSRF protection: skip requests to private/local IPs
+        if is_local_endpoint(candidate):
+            continue
         try:
             response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
             response.raise_for_status()

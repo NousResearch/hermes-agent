@@ -2765,6 +2765,11 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``initial_status="blocked"`` is a sticky manual/human-ops block:
+    parent completion will not auto-promote it; an explicit unblock is
+    required to release it. Use parents plus the default status for
+    dependency-only waiting.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -3015,6 +3020,17 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial_status=blocked",
+                            "source": "create_task",
+                            "created_by": created_by,
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5875,6 +5891,13 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        prev = conn.execute(
+            "SELECT worker_pid, claim_lock FROM tasks "
+            "WHERE id = ? AND status != 'archived'",
+            (task_id,),
+        ).fetchone()
+        if not prev:
+            return False
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -5891,7 +5914,37 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        # Keep the state-change audit event in the same transaction as
+        # the archive itself. Worker termination is best-effort and happens
+        # after commit; a crash between commit and kill must not erase the
+        # archived audit record. The follow-up worker_terminated event below
+        # records the actual termination result.
+        _append_event(
+            conn,
+            task_id,
+            "archived",
+            {
+                "worker_termination": {
+                    "prev_pid": int(prev["worker_pid"]) if prev["worker_pid"] else None,
+                    "prev_claim_lock": prev["claim_lock"],
+                    "pending": bool(prev["worker_pid"] and prev["claim_lock"]),
+                }
+            },
+            run_id=run_id,
+        )
+
+    termination = _terminate_reclaimed_worker(
+        prev["worker_pid"],
+        prev["claim_lock"],
+    )
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "worker_terminated",
+            {"worker_termination": termination},
+            run_id=run_id,
+        )
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -6587,14 +6640,25 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Safety rule: when using the real OS signal path, only signal a PID
+    that is still a child of this process. That child check is the
+    practical PID-reuse guard available from the stored claim_lock +
+    worker_pid pair: if a PID has exited and been recycled, waitpid()
+    reports it is not our child and we refuse to signal it. Successful
+    termination waits/reaps the child so no zombie remains.
+    """
     import signal
 
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
+        "prev_claim_lock": claim_lock,
         "host_local": False,
+        "pid_is_child": False,
         "termination_attempted": False,
         "terminated": False,
+        "reaped": False,
         "sigkill": False,
     }
     if not pid or pid <= 0 or not claim_lock:
@@ -6611,6 +6675,24 @@ def _terminate_reclaimed_worker(
     if kill is None:
         return info
 
+    real_signal_path = signal_fn is None and os.name != "nt"
+    if real_signal_path:
+        try:
+            waited_pid, status = os.waitpid(int(pid), os.WNOHANG)
+        except ChildProcessError:
+            info["refused_reason"] = "pid_not_child_or_already_reaped"
+            return info
+        except OSError as exc:
+            info["refused_reason"] = f"waitpid_probe_failed:{exc.__class__.__name__}"
+            return info
+        if waited_pid == int(pid):
+            _record_worker_exit(int(pid), status)
+            info["pid_is_child"] = True
+            info["terminated"] = True
+            info["reaped"] = True
+            return info
+        info["pid_is_child"] = True
+
     info["termination_attempted"] = True
     try:
         kill(int(pid), signal.SIGTERM)
@@ -6624,12 +6706,25 @@ def _terminate_reclaimed_worker(
         return info
 
     for _ in range(10):
-        if not _pid_alive(pid):
+        if real_signal_path:
+            try:
+                waited_pid, status = os.waitpid(int(pid), os.WNOHANG)
+            except ChildProcessError:
+                info["terminated"] = True
+                info["reaped"] = True
+                return info
+            if waited_pid == int(pid):
+                _record_worker_exit(int(pid), status)
+                info["terminated"] = True
+                info["reaped"] = True
+                return info
+        elif not _pid_alive(pid):
             info["terminated"] = True
             return info
         time.sleep(0.5)
 
-    if _pid_alive(pid):
+    still_alive = True if real_signal_path else _pid_alive(pid)
+    if still_alive:
         try:
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
@@ -6638,6 +6733,23 @@ def _terminate_reclaimed_worker(
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
+
+    if real_signal_path:
+        for _ in range(10):
+            try:
+                waited_pid, status = os.waitpid(int(pid), os.WNOHANG)
+            except ChildProcessError:
+                info["terminated"] = True
+                info["reaped"] = True
+                return info
+            if waited_pid == int(pid):
+                _record_worker_exit(int(pid), status)
+                info["terminated"] = True
+                info["reaped"] = True
+                return info
+            time.sleep(0.2)
+        info["terminated"] = not _pid_alive(pid)
+        return info
 
     info["terminated"] = not _pid_alive(pid)
     return info

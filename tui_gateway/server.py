@@ -2422,6 +2422,80 @@ def resolve_skin() -> dict:
         return {}
 
 
+# Signature of the last skin broadcast: (name, active user-file mtime). Lets the
+# per-tool reconcile fire ``skin.changed`` on any real move — a name switch OR a
+# live color edit to the active skin — and nothing else.
+_last_skin_sig: tuple[str, float | None] | None = None
+
+
+def _skin_sig() -> tuple[str, float | None]:
+    """(active skin name, its user-file mtime). Built-ins have no file, so only
+    their name moves; a user skin's mtime lets an in-place color edit repaint too."""
+    name = str((_load_cfg().get("display") or {}).get("skin") or "default")
+    override = get_hermes_home_override()
+    home = override if isinstance(override, str) and override else _hermes_home
+    try:
+        mtime: float | None = (Path(home) / "skins" / f"{name}.yaml").stat().st_mtime
+    except OSError:
+        mtime = None
+    return name, mtime
+
+
+def _note_skin_broadcast() -> None:
+    """Sync the reconcile baseline after the /skin RPC emits, so the per-tool
+    check doesn't re-broadcast the skin /skin just applied."""
+    global _last_skin_sig
+    try:
+        _last_skin_sig = _skin_sig()
+    except Exception:
+        pass
+
+
+def _broadcast_skin_if_changed() -> None:
+    """Emit ``skin.changed`` when the active skin moved — the agent switched it
+    (``hermes config set display.skin``) OR edited the active skin's colors in
+    place ("I don't like that coral" → tweak the YAML).
+
+    Routes through the SAME live path as ``/skin`` so every surface (TUI + desktop)
+    repaints, no slash command. The signature check is a dict lookup + one stat,
+    so polling it is ~free.
+    """
+    global _last_skin_sig
+    try:
+        sig = _skin_sig()
+    except Exception:
+        return
+    if sig == _last_skin_sig:
+        return
+    _last_skin_sig = sig
+    try:
+        _emit("skin.changed", "", resolve_skin())
+    except Exception:
+        pass
+
+
+_skin_watcher_started = False
+
+
+def _ensure_skin_watcher() -> None:
+    """Poll the config for skin changes and broadcast ``skin.changed`` — so a skin
+    Hermes activates (``hermes config set display.skin``) or recolors goes live on
+    every surface within ~half a second, on its own, with no tool-hook or slash
+    command in the loop. Idempotent; started at gateway.ready."""
+    global _skin_watcher_started
+    if _skin_watcher_started:
+        return
+    _skin_watcher_started = True
+    _note_skin_broadcast()  # seed the baseline so only a real change repaints
+
+    def _loop() -> None:
+        while True:
+            time.sleep(0.5)
+            _broadcast_skin_if_changed()
+
+    threading.Thread(target=_loop, name="hermes-skin-watcher", daemon=True).start()
+
+
 def _resolve_model() -> str:
     env = (
         os.environ.get("HERMES_MODEL", "")
@@ -11917,6 +11991,9 @@ def _(rid, params: dict) -> dict:
                 nv = value
                 if key == "skin":
                     _emit("skin.changed", "", resolve_skin())
+                    # Keep the reconcile baseline in sync so the per-tool check
+                    # doesn't re-broadcast the skin the /skin RPC just applied.
+                    _note_skin_broadcast()
             resp = {"key": key, "value": nv}
             if key == "personality":
                 resp["history_reset"] = history_reset
@@ -12556,15 +12633,8 @@ def _(rid, params: dict) -> dict:
     if key == "prompt":
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":
-        # `value` is the active skin name (back-compat, used by the TUI). `skin`
-        # carries the full resolved palette so cross-surface consumers (the
-        # desktop) can rebuild the theme without their own YAML loader.
         return _ok(
-            rid,
-            {
-                "value": (_load_cfg().get("display") or {}).get("skin", "default"),
-                "skin": resolve_skin(),
-            },
+            rid, {"value": (_load_cfg().get("display") or {}).get("skin", "default")}
         )
     if key == "indicator":
         # Normalize so a hand-edited config.yaml with stray casing or

@@ -1,10 +1,8 @@
-import type { HermesSkin } from '@hermes/shared/skin'
 import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
-import { $gateway } from '@/store/gateway'
 import {
   $currentCwd,
   getComposerSelectionGeneration,
@@ -18,9 +16,6 @@ import {
   setIntroPersonality
 } from '@/store/session'
 import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
-// Leaf import (not the `@/themes` barrel) so this hook doesn't drag in the
-// ThemeProvider/profile module graph — keeps it decoupled and test-mockable.
-import { ingestBackendSkin } from '@/themes/backend-sync'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -116,16 +111,6 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
         applyAutoSpeakFromConfig(config)
-
-        // Cross-surface skin sync: a skin Hermes authors/activates from a prompt
-        // edits config.yaml directly, which never emits `skin.changed`. The
-        // post-turn config refresh is our catch-all — fetch the resolved palette
-        // and repaint if the active skin name actually changed (guarded upstream).
-        void $gateway
-          .get()
-          ?.request<{ skin?: HermesSkin }>('config.get', { key: 'skin' })
-          .then(res => ingestBackendSkin(res?.skin, { apply: true }))
-          .catch(() => undefined)
       } catch {
         // Config is nice-to-have; chat still works without it.
       }

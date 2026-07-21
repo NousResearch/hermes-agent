@@ -280,6 +280,56 @@ def test_migrator_records_preset_in_report(tmp_path: Path):
     assert report["selection"]["skill_conflict_mode"] == "skip"
 
 
+def test_migrator_survives_permission_denied_workspace_path(tmp_path: Path, monkeypatch):
+    """A non-root migration must not crash when openclaw.json carries a stale
+    absolute workspace path the user can't access (e.g. /root/.openclaw/workspace
+    left over from a prior root install) — #36831."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    stale_ws = "/root/.openclaw/workspace"
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": stale_ws}}}),
+        encoding="utf-8",
+    )
+    # A real file inside the source workspace so there's something to preview.
+    (source / "workspace").mkdir()
+    (source / "workspace" / "SOUL.md").write_text("# Soul\n\nhi\n", encoding="utf-8")
+
+    # Deny stat() on the stale path the way an unreadable /root/ would. This
+    # faithfully reproduces the original crash: pathlib's Path.is_dir() calls
+    # os.stat() and re-raises EACCES (only os.path.isdir swallows it).
+    real_stat = mod.os.stat
+
+    def fake_stat(path, *a, **kw):
+        p = str(path)
+        if p == stale_ws or p.startswith(stale_ws + "/"):
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(mod.os, "stat", fake_stat)
+
+    # Construction + preview must not raise PermissionError.
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options={"soul"},
+    )
+    report = migrator.migrate()
+
+    # The inaccessible workspace is ignored rather than crashing the run.
+    assert migrator._custom_workspace is None
+    assert isinstance(report, dict)
+
+
 def test_source_candidate_finds_files_in_custom_workspace(tmp_path: Path):
     """When agents.defaults.workspace points outside ~/.openclaw, files should
     be discovered there as a fallback."""

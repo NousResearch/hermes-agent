@@ -312,14 +312,14 @@ Use `{{` and `}}` for literal braces.
 |--------------------|---------|------------------------------------------------------------------------------------------------------------|
 | `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
-| `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
+| `voice_compatible` | auto    | Unset: auto (Telegram gets an Opus/OGG voice bubble via ffmpeg, other platforms get a document). `true`: always try a voice bubble. `false`: always deliver as a document/audio attachment. |
 | `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 
 #### Behavior notes
 
 - **Built-in names always win.** A `tts.providers.openai` entry never shadows the native OpenAI provider, so no user config can silently replace a built-in.
-- **Default delivery is a document.** Command providers deliver as regular audio attachments on every platform. Opt in to voice-bubble delivery per-provider with `voice_compatible: true`.
+- **Telegram gets a voice bubble by default.** On Telegram, command-provider audio is converted to Opus/OGG (via ffmpeg) and delivered as a native voice note, matching the built-in providers. On other platforms it stays a regular audio attachment. Force either behaviour per-provider with `voice_compatible: true` / `false`.
 - **Command failures surface to the agent.** Non-zero exit, empty output, or timeout all return an error with the command's stderr/stdout included so you can debug the provider from the conversation.
 - **`type: command` is the default when `command:` is set.** Writing `type: command` explicitly is good practice but not required; an entry with a non-empty `command` string is treated as a command provider.
 - **`{input_path}` / `{text_path}` are interchangeable.** Use whichever reads better in your command.

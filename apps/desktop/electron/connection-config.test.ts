@@ -25,6 +25,7 @@ import {
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  globalRemoteActiveFor,
   isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -32,6 +33,7 @@ import {
   normAuthMode,
   parseDesktopConnectionArg,
   pathWithGlobalRemoteProfile,
+  preserveDesktopConnectionSelection,
   profileRemoteOverride,
   removeSavedConnection,
   resolveAuthMode,
@@ -52,6 +54,14 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(''), null)
   assert.equal(connectionScopeKey(null), null)
   assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('an explicit Local runtime selection overrides a forced remote environment', () => {
+  assert.equal(globalRemoteActiveFor('local', 'https://forced.example', 'remote'), false)
+  assert.equal(globalRemoteActiveFor('home-lab', '', 'local'), true)
+  assert.equal(globalRemoteActiveFor(null, 'https://forced.example', 'local'), true)
+  assert.equal(globalRemoteActiveFor(null, '', 'cloud'), true)
+  assert.equal(globalRemoteActiveFor(null, '', 'local'), false)
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {
@@ -219,6 +229,31 @@ test('selectSavedConnection mirrors a named remote without exposing a secret in 
   })
   assert.equal(selectSavedConnection({ ...config, mode: 'remote' }, 'local').mode, 'local')
   assert.throws(() => selectSavedConnection(config, 'missing'), /Available connections: home/)
+})
+
+test('preserveDesktopConnectionSelection updates the catalog without changing the default target', () => {
+  const previous = {
+    mode: 'local',
+    remote: { url: 'https://legacy.example' },
+    selectedConnection: null,
+    connections: {}
+  }
+
+  const next = {
+    mode: 'remote',
+    remote: { url: 'https://home.example' },
+    selectedConnection: 'home-lab',
+    connections: {
+      'home-lab': { name: 'Home Lab', url: 'https://home.example', authMode: 'oauth' }
+    }
+  }
+
+  assert.deepEqual(preserveDesktopConnectionSelection(next, previous), {
+    ...next,
+    mode: 'local',
+    remote: previous.remote,
+    selectedConnection: null
+  })
 })
 
 test('removeSavedConnection falls back to local only when deleting the active remote', () => {

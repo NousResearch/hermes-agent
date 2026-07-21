@@ -330,6 +330,15 @@ function selectSavedConnection(config, selector) {
   }
 }
 
+function preserveDesktopConnectionSelection(nextConfig, previousConfig) {
+  return {
+    ...nextConfig,
+    mode: previousConfig.mode,
+    remote: previousConfig.remote,
+    selectedConnection: previousConfig.selectedConnection
+  }
+}
+
 function removeSavedConnection(config, selector) {
   const resolved: any = resolveSavedConnection(config, selector)
 
@@ -480,6 +489,14 @@ function normAuthMode(mode) {
 // so no resolution site forgets the third arm.
 function modeIsRemoteLike(mode) {
   return mode === 'remote' || mode === 'cloud'
+}
+
+function globalRemoteActiveFor(runtimeSelector, envUrl, mode) {
+  if (runtimeSelector) {
+    return runtimeSelector !== 'local'
+  }
+
+  return Boolean(envUrl) || modeIsRemoteLike(mode)
 }
 
 /**
@@ -651,6 +668,7 @@ export {
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  globalRemoteActiveFor,
   isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -658,6 +676,7 @@ export {
   normAuthMode,
   parseDesktopConnectionArg,
   pathWithGlobalRemoteProfile,
+  preserveDesktopConnectionSelection,
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileRemoteOverride,
   removeSavedConnection,

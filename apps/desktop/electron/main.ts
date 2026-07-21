@@ -49,12 +49,14 @@ import {
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  globalRemoteActiveFor,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeStoredConnectionConfig,
   normAuthMode,
   parseDesktopConnectionArg,
   pathWithGlobalRemoteProfile,
+  preserveDesktopConnectionSelection,
   profileRemoteOverride,
   removeSavedConnection,
   resolveAuthMode,
@@ -6566,11 +6568,11 @@ function configuredRemoteProfileNames() {
 // profile via ?profile=. Cloud counts — it resolves to a remote backend (Q6).
 // Distinct from per-profile overrides — here there's one host for all.
 function globalRemoteActive() {
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
-    return true
-  }
-
-  return modeIsRemoteLike(readDesktopConnectionConfig().mode)
+  return globalRemoteActiveFor(
+    runtimeConnectionSelector,
+    process.env.HERMES_DESKTOP_REMOTE_URL,
+    readDesktopConnectionConfig().mode
+  )
 }
 
 // True when the PRIMARY profile's backend resolves to a remote/cloud host —
@@ -8321,7 +8323,14 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
-  const config = coerceDesktopConnectionConfig(payload)
+  const existing = readDesktopConnectionConfig()
+  const next = coerceDesktopConnectionConfig(payload, existing)
+
+  const config =
+    payload?.preserveSelection && !connectionScopeKey(payload?.profile)
+      ? preserveDesktopConnectionSelection(next, existing)
+      : next
+
   writeDesktopConnectionConfig(config)
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)

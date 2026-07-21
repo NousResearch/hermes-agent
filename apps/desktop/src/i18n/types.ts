@@ -473,7 +473,6 @@ export interface Translations {
       savedConnectionsTitle: string
       savedConnectionsDesc: string
       addConnection: string
-      noSavedConnections: string
       connectedConnection: string
       connectConnection: string
       connectionShortcut: (id: string, url: string) => string

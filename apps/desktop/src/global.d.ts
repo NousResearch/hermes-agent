@@ -459,6 +459,9 @@ export interface DesktopConnectionConfigInput {
   // a new named connection"; undefined updates the current selection.
   connectionId?: null | string
   connectionName?: string
+  // Save/update the named record without changing the persisted default target.
+  // Used by OAuth preflight before the user explicitly connects.
+  preserveSelection?: boolean
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string

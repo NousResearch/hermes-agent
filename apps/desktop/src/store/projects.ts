@@ -6,11 +6,11 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
+import { $projectScope, ALL_PROJECTS, resetProjectScope } from '@/store/project-scope'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -103,14 +103,7 @@ export const $reposScanning = atom(false)
 // pure view state (localStorage), distinct from the durable active-project
 // pointer in projects.db — though entering a project also makes it active so new
 // chats land there, exactly as selecting a profile does.
-export const ALL_PROJECTS = '__all_projects__'
-
-const PROJECT_SCOPE_KEY = 'hermes.desktop.projectScope'
-
-export const $projectScope = persistentAtom<string>(PROJECT_SCOPE_KEY, ALL_PROJECTS, {
-  decode: raw => raw || ALL_PROJECTS,
-  encode: value => value || ALL_PROJECTS
-})
+export { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 
 // Enter a project: scope the sidebar to it and make it the active project
 // (best-effort — the durable pointer is nice-to-have, the view scope is the
@@ -127,7 +120,7 @@ export function enterProject(id: string): void {
 }
 
 export function exitProjectScope(): void {
-  $projectScope.set(ALL_PROJECTS)
+  resetProjectScope()
 }
 
 // The cwd a NEW chat should start in. The "active project" is just an atom

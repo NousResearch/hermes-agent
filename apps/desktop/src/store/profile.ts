@@ -12,7 +12,8 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { resetProjectScope } from '@/store/project-scope'
+import { type NewChatWorkspaceTarget, setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -158,10 +159,18 @@ export const $newChatProfile = atom<string | null>(null)
 // draft: a profile switch/create (below), or deleting the project that owns the
 // currently-open session (store/projects). The chat controller subscribes and
 // resets to the intro draft, so we never strand the user in an orphaned view.
-export const $freshSessionRequest = atom(0)
+export interface FreshSessionRequest {
+  token: number
+  workspaceTarget?: NewChatWorkspaceTarget
+}
 
-export function requestFreshSession(): void {
-  $freshSessionRequest.set($freshSessionRequest.get() + 1)
+export const $freshSessionRequest = atom<FreshSessionRequest | null>(null)
+
+let freshSessionToken = 0
+
+export function requestFreshSession(workspaceTarget: NewChatWorkspaceTarget = undefined): void {
+  freshSessionToken += 1
+  $freshSessionRequest.set({ token: freshSessionToken, workspaceTarget })
 }
 
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
@@ -342,7 +351,12 @@ export function selectProfile(name: string): void {
   $newChatProfile.set(target)
 
   if (switching) {
-    requestFreshSession()
+    // Project ids and folders belong to one profile's projects.db. Clear the
+    // previous profile's scope before the fresh-draft observer runs, and make
+    // that draft explicitly detached so neither the old tree nor a remote
+    // profile's remembered cwd can leak into the target profile.
+    resetProjectScope()
+    requestFreshSession(null)
   }
 
   void ensureGatewayProfile(target)
@@ -357,7 +371,8 @@ export function selectProfile(name: string): void {
 export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
-  requestFreshSession()
+  resetProjectScope()
+  requestFreshSession(null)
   void ensureGatewayProfile(target)
 }
 

@@ -780,14 +780,39 @@ def resolve_skill_config_values(
 # ── Description extraction ────────────────────────────────────────────────
 
 
+SKILL_DESCRIPTION_TRUNCATE_AT = 60
+SKILL_DESCRIPTION_TRUNCATE_KEEP = 57
+
+
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+    """Extract a description from parsed frontmatter for the system prompt.
+
+    By default, descriptions over ``SKILL_DESCRIPTION_TRUNCATE_AT`` characters
+    are truncated to ``SKILL_DESCRIPTION_TRUNCATE_KEEP`` chars + ``"..."`` so the
+    system prompt's ``<available_skills>`` block stays compact when many skills
+    are loaded.
+
+    Skills that need to carry richer ambient signal (framework references,
+    persona tone, knowledge content that should shape reasoning before the
+    body is loaded via ``skill_view``) can opt out of truncation by setting
+    ``description_full: true`` in their frontmatter.
+
+    The check is ``frontmatter.get("description_full") is True`` — i.e. the
+    parsed value must be Python ``True``. In practice that means any YAML
+    expression PyYAML resolves to a boolean ``True`` opts out: ``true``,
+    ``yes``, and ``on`` (YAML 1.1 boolean synonyms) all qualify. Strings
+    such as ``"true"``, integers like ``1``, and lists do *not* opt out
+    — they are kept truncated, since the safer default for a misconfigured
+    flag is the existing 60-char behavior.
+    """
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
+    if frontmatter.get("description_full") is True:
+        return desc
+    if len(desc) > SKILL_DESCRIPTION_TRUNCATE_AT:
+        return desc[:SKILL_DESCRIPTION_TRUNCATE_KEEP] + "..."
     return desc
 
 

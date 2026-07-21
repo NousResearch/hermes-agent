@@ -306,6 +306,37 @@ class TestStripExistingManagedBlock:
         assert 'foo = "bar"' in out
 
 
+class TestExtractExistingPermissions:
+    """Unit tests for _extract_existing_permissions (#27616)."""
+
+    def test_extracts_top_level_permissions(self):
+        from hermes_cli.codex_runtime_plugin_migration import _extract_existing_permissions
+        text = 'default_permissions = ":danger-no-sandbox"\nsandbox_mode = "danger-full-access"\n'
+        result = _extract_existing_permissions(text)
+        assert result == {"default_permissions": ":danger-no-sandbox", "sandbox_mode": "danger-full-access"}
+
+    def test_stops_at_table_header(self):
+        from hermes_cli.codex_runtime_plugin_migration import _extract_existing_permissions
+        text = 'default_permissions = ":workspace"\n[features]\ndefault_permissions = ":danger-no-sandbox"\n'
+        result = _extract_existing_permissions(text)
+        assert result == {"default_permissions": ":workspace"}
+
+    def test_empty_config(self):
+        from hermes_cli.codex_runtime_plugin_migration import _extract_existing_permissions
+        assert _extract_existing_permissions("") == {}
+
+    def test_single_quoted_values(self):
+        from hermes_cli.codex_runtime_plugin_migration import _extract_existing_permissions
+        text = "default_permissions = ':danger-no-sandbox'\n"
+        result = _extract_existing_permissions(text)
+        assert result == {"default_permissions": ":danger-no-sandbox"}
+
+    def test_ignores_non_permission_keys(self):
+        from hermes_cli.codex_runtime_plugin_migration import _extract_existing_permissions
+        text = 'some_key = "value"\nother = 42\n'
+        assert _extract_existing_permissions(text) == {}
+
+
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
@@ -658,6 +689,56 @@ class TestMigrate:
         assert "Migrated 2 MCP server(s)" in summary
         assert "- a" in summary
         assert "- b" in summary
+
+    def test_preserves_existing_full_access_permissions(self, tmp_path):
+        """Regression test for #27616: re-migration should preserve an
+        existing ``default_permissions = ":danger-no-sandbox"`` instead of
+        overwriting it with the default ``:workspace``."""
+        # First migration with full-access
+        migrate({}, codex_home=tmp_path, discover_plugins=False,
+                default_permission_profile=":danger-no-sandbox",
+                expose_hermes_tools=False)
+        text = (tmp_path / "config.toml").read_text()
+        assert 'default_permissions = ":danger-no-sandbox"' in text
+
+        # Re-migration with default :workspace — should preserve full-access
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         default_permission_profile=":workspace",
+                         expose_hermes_tools=False)
+        text = (tmp_path / "config.toml").read_text()
+        assert 'default_permissions = ":danger-no-sandbox"' in text
+        assert report.preserved_permissions is not None
+        assert report.preserved_permissions.get("default_permissions") == ":danger-no-sandbox"
+        assert report.wrote_permissions_default == ":danger-no-sandbox"
+
+    def test_does_not_preserve_workspace_permissions(self, tmp_path):
+        """Only full-access values are preserved; workspace stays workspace."""
+        migrate({}, codex_home=tmp_path, discover_plugins=False,
+                default_permission_profile=":workspace",
+                expose_hermes_tools=False)
+
+        # Re-migration with default — nothing to preserve, stays :workspace
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         default_permission_profile=":workspace",
+                         expose_hermes_tools=False)
+        text = (tmp_path / "config.toml").read_text()
+        assert 'default_permissions = ":workspace"' in text
+        assert report.preserved_permissions is None
+
+    def test_full_access_preserved_even_when_caller_passes_read_only(self, tmp_path):
+        """Full-access permissions are always preserved, even if the caller
+        passes a different profile. Safety-first: we never downgrade."""
+        migrate({}, codex_home=tmp_path, discover_plugins=False,
+                default_permission_profile=":danger-no-sandbox",
+                expose_hermes_tools=False)
+
+        # Caller passes :read-only, but existing full-access is preserved
+        report = migrate({}, codex_home=tmp_path, discover_plugins=False,
+                         default_permission_profile=":read-only",
+                         expose_hermes_tools=False)
+        text = (tmp_path / "config.toml").read_text()
+        assert 'default_permissions = ":danger-no-sandbox"' in text
+        assert report.preserved_permissions is not None
 
 
 # ---- Bug B: duplicate [plugins.X] tables ----

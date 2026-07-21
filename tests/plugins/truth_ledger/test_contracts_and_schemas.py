@@ -264,6 +264,7 @@ def test_schema_format_fields_are_normative(schemas_mod):
         "20260720T233000Z",
         "2026-W30-1T23:30:00Z",
         "2026-07-20T23:30:00,123Z",
+        "2026-07-20T23:30:00+12:60",
     ],
 )
 def test_schema_rejects_non_rfc3339_datetime_variants(schemas_mod, invalid_timestamp):

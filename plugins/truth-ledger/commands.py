@@ -237,13 +237,15 @@ def retract_fact(root: Path | str, *, fact_id: str, apply: bool = False) -> dict
             "dry_run": not apply,
         }
 
+    raw_target_fact = target.get("fact")
+    target_fact: dict[str, Any] = dict(raw_target_fact) if isinstance(raw_target_fact, dict) else {}
     payload: dict[str, Any] = {
         "ok": True,
         "action": "retract",
         "fact_id": fact_id,
         "dry_run": not apply,
-        "target_key": str(target.get("key") or ""),
-        "target_subject": str(target.get("subject") or ""),
+        "target_key": str(target_fact.get("key") or target.get("key") or ""),
+        "target_subject": str(target_fact.get("subject") or target.get("subject") or ""),
     }
     if not apply:
         return payload
@@ -251,8 +253,6 @@ def retract_fact(root: Path | str, *, fact_id: str, apply: bool = False) -> dict
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     source_basis = f"manual-retract|{fact_id}|{now}"
     event_id = f"evt_{hashlib.sha256(source_basis.encode('utf-8')).hexdigest()[:24]}"
-    raw_target_fact = target.get("fact")
-    target_fact: dict[str, Any] = dict(raw_target_fact) if isinstance(raw_target_fact, dict) else {}
     retract_event = {
         "schema_version": 1,
         "event_id": event_id,

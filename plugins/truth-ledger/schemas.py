@@ -13,13 +13,21 @@ SCHEMAS_DIR = Path(__file__).with_name("schemas")
 
 _FORMAT_CHECKER = FormatChecker()
 _RFC3339_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"(?:[Zz]|[+-](?P<offset_hour>\d{2}):(?P<offset_minute>\d{2}))$"
 )
 
 
 @_FORMAT_CHECKER.checks("date-time", raises=(TypeError, ValueError))
 def _is_rfc3339_datetime(value: object) -> bool:
-    if not isinstance(value, str) or _RFC3339_RE.fullmatch(value) is None:
+    if not isinstance(value, str):
+        return False
+    match = _RFC3339_RE.fullmatch(value)
+    if match is None:
+        return False
+    if match.group("offset_hour") is not None and (
+        int(match.group("offset_hour")) > 23 or int(match.group("offset_minute")) > 59
+    ):
         return False
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
     return parsed.tzinfo is not None

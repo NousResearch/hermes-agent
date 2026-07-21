@@ -37,10 +37,6 @@ def _seed_active_fact(root: Path, *, fact_id: str = "fact_1") -> None:
             "event_id": "evt_assert_1",
             "operation": "assert",
             "fact_id": fact_id,
-            "scope": "user",
-            "subject": "platform-user:cli:u1",
-            "key": "profile.reply_style",
-            "value": "contains-secret-token-12345",
             "fact": {
                 "scope": "user",
                 "kind": "preference",
@@ -49,6 +45,24 @@ def _seed_active_fact(root: Path, *, fact_id: str = "fact_1") -> None:
                 "value": "contains-secret-token-12345",
             },
             "occurred_at": "2026-07-17T20:00:00Z",
+            "supersedes": None,
+            "evidence": {
+                "type": "user_stated",
+                "profile": "default",
+                "platform": "cli",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "task_id": None,
+                "speaker_id": "u1",
+                "conversation_id": None,
+                "thread_id": None,
+            },
+            "extraction": {
+                "schema_name": "truth-ledger.fact-candidates.v1",
+                "provider": "test",
+                "model": "test",
+                "prompt_version": 1,
+            },
         },
     )
 

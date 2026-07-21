@@ -689,6 +689,360 @@ class TestPlaceholderKeyDetection:
         )
 
 
+# ---------------------------------------------------------------------------
+# Server-side auth probe (#29332).
+#
+# Regression coverage for the second silent-failure mode: a credential
+# that survives the syntactic prefix guard (``pk-lf-fakeKey1234``) but
+# is rejected by the Langfuse server.  The SDK doesn't validate at
+# construction time, so pre-fix the plugin happily queued traces and
+# dropped every single one at flush time with no signal in the Hermes
+# logs.  The fix calls ``client.auth_check()`` in a daemon thread
+# immediately after construction; on explicit ``False`` it warns and
+# routes future hook calls through the ``_INIT_FAILED`` short-circuit.
+# Inconclusive results (exceptions, missing method on legacy SDKs)
+# must remain silent so flaky networks don't disable observability
+# for operators with valid creds.
+# ---------------------------------------------------------------------------
+
+
+class _AuthFake:
+    """SDK stand-in whose ``auth_check`` behaviour the caller dictates.
+
+    ``mode`` controls the probe outcome:
+      - ``"ok"`` returns ``True`` (credentials accepted)
+      - ``"reject"`` returns ``False`` (server explicitly rejected)
+      - ``"raise"`` raises ``RuntimeError`` (transient / SDK quirk)
+      - ``"attribute_error"`` raises ``AttributeError`` (the documented
+        langfuse-python <=3.0.4 quirk — see
+        https://github.com/langfuse/langfuse/issues/7456)
+      - ``"missing"`` omits the ``auth_check`` attribute entirely
+        (legacy SDK build, no probe surface at all)
+    Construction kwargs are recorded for assertions on the SDK init
+    path.
+    """
+
+    instances: list["_AuthFake"] = []
+    mode = "ok"
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.auth_check_calls = 0
+        _AuthFake.instances.append(self)
+        if _AuthFake.mode == "missing":
+            try:
+                delattr(self, "auth_check")
+            except AttributeError:
+                pass
+
+    def auth_check(self):
+        self.auth_check_calls += 1
+        mode = _AuthFake.mode
+        if mode == "ok":
+            return True
+        if mode == "reject":
+            return False
+        if mode == "raise":
+            raise RuntimeError("network blip during auth_check")
+        if mode == "attribute_error":
+            # Mirror langfuse-python's known buggy path where the
+            # underlying ``api`` attribute hasn't been wired up.
+            raise AttributeError("'Langfuse' object has no attribute 'api'")
+        raise AssertionError(f"unknown _AuthFake.mode={mode!r}")
+
+
+class _AuthFakeMissingMethod:
+    """Legacy SDK build where ``auth_check`` simply isn't exposed.
+
+    Distinct from ``_AuthFake(mode='missing')`` because the latter
+    still defines the method on the class — making ``getattr`` find
+    it even when the instance attribute was deleted.  This class
+    omits the method at the class level so ``getattr(client,
+    "auth_check", None)`` truly returns ``None``."""
+
+    instances: list["_AuthFakeMissingMethod"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _AuthFakeMissingMethod.instances.append(self)
+
+
+class TestServerSideAuthProbe:
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self, monkeypatch, *, fake_cls=_AuthFake):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        _AuthFake.instances.clear()
+        _AuthFakeMissingMethod.instances.clear()
+        monkeypatch.setattr(mod, "Langfuse", fake_cls, raising=False)
+        return mod
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        for k in (
+            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_SKIP_AUTH_CHECK", "HERMES_LANGFUSE_BASE_URL",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+    @staticmethod
+    def _set_real_creds(monkeypatch):
+        # Prefix-valid credentials so the syntactic placeholder guard
+        # passes and the auth probe is the actual gate under test.
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-prefix-ok-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-prefix-ok-xyz")
+
+    # -- direct unit coverage of _run_auth_check (no threading) ----------
+
+    def test_run_auth_check_ok_returns_true_no_warning(
+        self, monkeypatch, caplog
+    ):
+        self._clear_env(monkeypatch)
+        _AuthFake.mode = "ok"
+        plugin = self._fresh_plugin(monkeypatch)
+        client = _AuthFake()
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._run_auth_check(client) is True
+        assert client.auth_check_calls == 1
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert warnings == []
+
+    def test_run_auth_check_rejection_warns_and_marks_init_failed(
+        self, monkeypatch, caplog
+    ):
+        """The headline #29332 path: explicit False from the server
+        flips the cache to ``_INIT_FAILED`` and emits a single loud
+        warning naming both env vars and the base URL."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_BASE_URL", "https://lf.example.test")
+        _AuthFake.mode = "reject"
+        plugin = self._fresh_plugin(monkeypatch)
+        client = _AuthFake()
+        plugin._LANGFUSE_CLIENT = client  # simulate the post-construct cache
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._run_auth_check(client) is False
+        # Future _get_langfuse() calls must short-circuit on the
+        # existing fast path — that's the whole reason we toggle the
+        # cache to _INIT_FAILED rather than just logging.
+        assert plugin._LANGFUSE_CLIENT is plugin._INIT_FAILED
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "REJECTED" in msg
+        assert "HERMES_LANGFUSE_PUBLIC_KEY" in msg
+        assert "HERMES_LANGFUSE_SECRET_KEY" in msg
+        # The base URL must appear so the operator can disambiguate
+        # cloud-vs-self-hosted credential mismatches at a glance.
+        assert "https://lf.example.test" in msg
+
+    def test_run_auth_check_exception_is_inconclusive(
+        self, monkeypatch, caplog
+    ):
+        """A flaky network or buggy SDK MUST NOT disable observability.
+
+        Logging at DEBUG keeps the operator's terminal quiet for
+        installs that are working fine but happen to throw during
+        the probe."""
+        self._clear_env(monkeypatch)
+        _AuthFake.mode = "raise"
+        plugin = self._fresh_plugin(monkeypatch)
+        client = _AuthFake()
+        plugin._LANGFUSE_CLIENT = client
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._run_auth_check(client) is True
+        assert plugin._LANGFUSE_CLIENT is client, (
+            "Transient errors must not flip the cache to _INIT_FAILED"
+        )
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert warnings == []
+
+    def test_run_auth_check_known_attribute_error_quirk_is_inconclusive(
+        self, monkeypatch, caplog
+    ):
+        """langfuse-python <=3.0.4 raises AttributeError when the
+        ``api`` attribute wasn't wired up (issue langfuse/langfuse#7456).
+        That's an SDK regression, not a credential failure — must NOT
+        disable the plugin."""
+        self._clear_env(monkeypatch)
+        _AuthFake.mode = "attribute_error"
+        plugin = self._fresh_plugin(monkeypatch)
+        client = _AuthFake()
+        plugin._LANGFUSE_CLIENT = client
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._run_auth_check(client) is True
+        assert plugin._LANGFUSE_CLIENT is client
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert warnings == []
+
+    def test_run_auth_check_missing_method_is_skipped_silently(
+        self, monkeypatch, caplog
+    ):
+        """Legacy SDKs that don't expose ``auth_check`` at all must
+        leave the plugin behaving exactly as it did before this fix."""
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin(monkeypatch, fake_cls=_AuthFakeMissingMethod)
+        client = _AuthFakeMissingMethod()
+        plugin._LANGFUSE_CLIENT = client
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._run_auth_check(client) is True
+        assert plugin._LANGFUSE_CLIENT is client
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert warnings == []
+
+    # -- spawn-thread plumbing ------------------------------------------
+
+    def test_spawn_auth_check_thread_starts_daemon(self, monkeypatch):
+        """The probe MUST run in a daemon thread so a slow auth
+        round-trip doesn't block the agent's first turn — and so the
+        thread doesn't keep the process alive if the parent exits."""
+        self._clear_env(monkeypatch)
+        _AuthFake.mode = "ok"
+        plugin = self._fresh_plugin(monkeypatch)
+        client = _AuthFake()
+        thread = plugin._spawn_auth_check_thread(client)
+        assert thread is not None
+        thread.join(timeout=2.0)
+        assert thread.daemon is True
+        assert thread.name == "langfuse-auth-check"
+        assert client.auth_check_calls == 1
+
+    def test_spawn_auth_check_thread_respects_skip_env(self, monkeypatch):
+        """``HERMES_LANGFUSE_SKIP_AUTH_CHECK=1`` is the escape hatch
+        for offline / restricted-network setups.  Setting it must
+        bypass the probe entirely — no thread, no call."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_SKIP_AUTH_CHECK", "1")
+        _AuthFake.mode = "ok"
+        plugin = self._fresh_plugin(monkeypatch)
+        client = _AuthFake()
+        thread = plugin._spawn_auth_check_thread(client)
+        assert thread is None
+        assert client.auth_check_calls == 0
+
+    @pytest.mark.parametrize("skip_value", ["true", "yes", "on", "1"])
+    def test_spawn_auth_check_thread_skip_env_truthy_values(
+        self, monkeypatch, skip_value
+    ):
+        """The skip env follows the same truthy-value contract as the
+        rest of the plugin's boolean env vars (``_env_bool``)."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_SKIP_AUTH_CHECK", skip_value)
+        plugin = self._fresh_plugin(monkeypatch)
+        assert plugin._spawn_auth_check_thread(_AuthFake()) is None
+
+    # -- end-to-end via _get_langfuse() ---------------------------------
+
+    def test_get_langfuse_starts_probe_after_construction(self, monkeypatch):
+        """End-to-end happy path: valid prefix → construct client →
+        kick off the auth probe → return the client.  We deliberately
+        join the spawned thread before asserting so the test is
+        deterministic regardless of scheduler timing."""
+        self._clear_env(monkeypatch)
+        self._set_real_creds(monkeypatch)
+        _AuthFake.mode = "ok"
+        plugin = self._fresh_plugin(monkeypatch)
+
+        spawned: list[Any] = []
+        real_spawn = plugin._spawn_auth_check_thread
+
+        def capturing_spawn(client):
+            thread = real_spawn(client)
+            if thread is not None:
+                thread.join(timeout=2.0)
+            spawned.append(thread)
+            return thread
+
+        monkeypatch.setattr(plugin, "_spawn_auth_check_thread", capturing_spawn)
+
+        client = plugin._get_langfuse()
+        assert isinstance(client, _AuthFake)
+        assert spawned and spawned[0] is not None
+        # Auth check ran once; on success the cached client remains
+        # available for hook callers.
+        assert client.auth_check_calls == 1
+        assert plugin._LANGFUSE_CLIENT is client
+
+    def test_get_langfuse_rejection_disables_subsequent_calls(
+        self, monkeypatch, caplog
+    ):
+        """The reporter's exact scenario: server rejects the
+        credentials, the operator sees one loud warning, every
+        subsequent hook short-circuits to None — no traces queued
+        for a flush that will never authenticate."""
+        self._clear_env(monkeypatch)
+        self._set_real_creds(monkeypatch)
+        _AuthFake.mode = "reject"
+        plugin = self._fresh_plugin(monkeypatch)
+
+        threads: list[Any] = []
+        real_spawn = plugin._spawn_auth_check_thread
+
+        def joining_spawn(client):
+            thread = real_spawn(client)
+            if thread is not None:
+                thread.join(timeout=2.0)
+            threads.append(thread)
+            return thread
+
+        monkeypatch.setattr(plugin, "_spawn_auth_check_thread", joining_spawn)
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            # First call constructs the client and triggers the probe.
+            # The probe joins (via the patched spawn) before we move
+            # on, so the cache is guaranteed to be in its post-probe
+            # state when we re-call.
+            first = plugin._get_langfuse()
+            # Pre-fix the first call returned a usable client and
+            # nothing else happened.  Post-fix the probe ran on the
+            # spawned thread, returned False, and flipped the cache
+            # to _INIT_FAILED.
+            assert plugin._LANGFUSE_CLIENT is plugin._INIT_FAILED
+            # Subsequent calls must short-circuit through the fast
+            # path at the top of _get_langfuse() so a busy gateway
+            # doesn't spam the SDK constructor or the warning log.
+            for _ in range(10):
+                assert plugin._get_langfuse() is None
+
+        # When the probe completes synchronously (as in this test via
+        # ``joining_spawn``) the first call sees the cache already
+        # flipped to ``_INIT_FAILED`` and normalizes that to None
+        # before returning.  In the real async case the first hook
+        # might still get back a usable-looking client for one or two
+        # turns before the probe lands — also acceptable; the cache
+        # poisoning kicks in for every subsequent call.  We accept
+        # either shape here as long as the warning fired and the
+        # cache is poisoned.
+        assert first is None or isinstance(first, _AuthFake)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert len(warnings) == 1
+        assert "REJECTED" in warnings[0].getMessage()
+
+    def test_get_langfuse_skip_env_bypasses_probe(self, monkeypatch):
+        """With the escape hatch set, no thread spawns and the cached
+        client survives even when the server would have rejected it.
+        This is the explicit opt-out the docstring promises."""
+        self._clear_env(monkeypatch)
+        self._set_real_creds(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_SKIP_AUTH_CHECK", "1")
+        _AuthFake.mode = "reject"  # would normally disable the plugin
+        plugin = self._fresh_plugin(monkeypatch)
+        client = plugin._get_langfuse()
+        assert isinstance(client, _AuthFake)
+        assert client.auth_check_calls == 0, (
+            "HERMES_LANGFUSE_SKIP_AUTH_CHECK=1 must bypass auth_check entirely"
+        )
+        assert plugin._LANGFUSE_CLIENT is client
+
+
 class TestRequestMessageCoercion:
     def test_prefers_request_messages_then_messages_then_history_then_user_message(self):
         sys.modules.pop("plugins.observability.langfuse", None)

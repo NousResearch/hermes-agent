@@ -190,6 +190,7 @@ Environment variables for the bundled [`observability/langfuse`](/user-guide/fea
 | `HERMES_LANGFUSE_SAMPLE_RATE` | SDK sampling rate 0.0–1.0 (default: `1.0`) |
 | `HERMES_LANGFUSE_MAX_CHARS` | Per-field truncation for serialized payloads (default: `12000`) |
 | `HERMES_LANGFUSE_DEBUG` | `true` enables verbose plugin logging to `agent.log` |
+| `HERMES_LANGFUSE_SKIP_AUTH_CHECK` | `true` skips the startup `Langfuse.auth_check()` probe added in #29332. Set this in offline / restricted-network installs where the probe would always-fail and would otherwise log a misleading "credentials rejected" warning. Default off — the probe is what surfaces typo'd / revoked / wrong-project keys instead of silently dropping every trace. |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Standard Langfuse SDK names. Accepted as fallbacks when the `HERMES_LANGFUSE_*` equivalents are unset. |
 
 ### Nous Tool Gateway

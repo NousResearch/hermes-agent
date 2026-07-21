@@ -12279,8 +12279,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # by the Enter key binding (routed to the clarify response queue),
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
+            # In single-query / non-interactive mode, _interrupt_queue has no
+            # producer (prompt_toolkit event loop isn't running). Polling an
+            # empty queue in this mode and treating SIGINT during the wait as
+            # a KeyboardInterrupt causes crashes when the agent blocks on
+            # interactive tools (e.g., clarify). Fall through to the simple
+            # join path instead.
+            _interactive = (
+                hasattr(self, '_interrupt_queue')
+                and self._app is not None
+            )
             while agent_thread.is_alive():
-                if hasattr(self, '_interrupt_queue'):
+                if _interactive:
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
                         if interrupt_msg:

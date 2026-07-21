@@ -1174,6 +1174,12 @@ def _make_run_env(env: dict) -> dict:
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
+    # Sanitize PYTHONHOME/PYTHONPATH — they can cause the subprocess to load
+    # the wrong Python interpreter (e.g. uv's Python instead of conda's), which
+    # breaks tools like conda that rely on finding their own stdlib packages.
+    run_env.pop("PYTHONHOME", None)
+    run_env.pop("PYTHONPATH", None)
+
     return run_env
 
 

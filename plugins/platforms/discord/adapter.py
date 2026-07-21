@@ -7241,8 +7241,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg_type = MessageType.DOCUMENT
                     break
 
-        # When auto-threading kicked in, route responses to the new thread
+        # When auto-threading kicked in, keep the parent channel as chat_id so the
+        # final text response goes inline in the channel. Tool-progress messages
+        # route to the thread via source.thread_id (set above). This mirrors
+        # Slack's behaviour: progress in a thread, response in the channel.
+        # When auto-thread is OFF, effective_channel is just message.channel (no-op).
         effective_channel = auto_threaded_channel or message.channel
+        # When auto-threaded, chat_id should be the parent channel so the final
+        # response lands inline; thread_id already points to the auto-thread.
+        if auto_threaded_channel is not None:
+            source_chat_id = str(message.channel.id)
+        else:
+            source_chat_id = str(effective_channel.id)
 
         # Determine chat type
         if isinstance(message.channel, discord.DMChannel):
@@ -7265,7 +7275,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Build source
         guild = getattr(message, "guild", None)
         source = self.build_source(
-            chat_id=str(effective_channel.id),
+            chat_id=source_chat_id,
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),

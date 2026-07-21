@@ -703,213 +703,6 @@ def _sudo_nopasswd_works() -> bool:
         return False
 
 
-def _read_balanced_parens(command: str, open_idx: int) -> int:
-    """Return the index just past the ')' matching the '(' at *open_idx*.
-
-    Honors nested parens and quoted strings so parens/operators inside
-    quotes don't perturb the depth count. Returns -1 if unbalanced.
-    """
-    n = len(command)
-    depth = 0
-    i = open_idx
-    while i < n:
-        ch = command[i]
-        if ch == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if ch in "'\"":
-            _, i = _read_shell_token(command, i)
-            continue
-        if ch == "(":
-            depth += 1
-            i += 1
-            continue
-        if ch == ")":
-            depth -= 1
-            i += 1
-            if depth == 0:
-                return i
-            continue
-        i += 1
-    return -1
-
-
-def _background_tail(body: str) -> str:
-    """Wrap the last depth-0 command in *body* in a non-forking brace group.
-
-    Used to defuse `( A && B ) &`: once `B` becomes `{ B & }` *inside* the
-    subshell, the subshell backgrounds B as a simple command (no fork) and
-    exits right after launching it instead of waiting on it — so the
-    outer `&` backgrounds a subshell that's already finished (or about
-    to), not one stuck in `wait4` on B forever.
-
-    If the tail already ends in its own `&` (the subshell already
-    backgrounds it, e.g. `(A && B &)`), *body* is returned unchanged —
-    that shape is already safe: the subshell doesn't wait on an
-    already-backgrounded B either.
-    """
-    n = len(body)
-    i = 0
-    paren_depth = 0
-    brace_depth = 0
-    last_split = 0
-
-    while i < n:
-        ch = body[i]
-
-        if ch == "\\" and i + 1 < n:
-            i += 2
-            continue
-
-        if ch in "'\"":
-            _, i = _read_shell_token(body, i)
-            continue
-
-        if ch == "(":
-            paren_depth += 1
-            i += 1
-            continue
-        if ch == ")":
-            paren_depth = max(0, paren_depth - 1)
-            i += 1
-            continue
-        if ch == "{" and i + 1 < n and body[i + 1].isspace():
-            brace_depth += 1
-            i += 1
-            continue
-        if ch == "}" and brace_depth > 0:
-            brace_depth -= 1
-            i += 1
-            last_split = i
-            continue
-
-        if paren_depth > 0 or brace_depth > 0:
-            i += 1
-            continue
-
-        if body.startswith("&&", i) or body.startswith("||", i):
-            i += 2
-            last_split = i
-            continue
-
-        if ch == ";":
-            i += 1
-            last_split = i
-            continue
-
-        if ch == "|":
-            i += 1
-            last_split = i
-            continue
-
-        if ch == "&":
-            if i + 1 < n and body[i + 1] == ">":
-                i += 2
-                continue
-            j = i - 1
-            while j >= 0 and body[j].isspace():
-                j -= 1
-            if j >= 0 and body[j] in "<>":
-                i += 1
-                continue
-            # The tail already backgrounds itself — already safe.
-            return body
-
-        _, next_i = _read_shell_token(body, i)
-        i = max(next_i, i + 1)
-
-    prefix = body[:last_split]
-    tail = body[last_split:]
-    stripped = tail.strip()
-    if not stripped:
-        return body
-    leading_ws = tail[: len(tail) - len(tail.lstrip())]
-    trailing_ws = tail[len(tail.rstrip()) :]
-    return prefix + leading_ws + "{ " + stripped + " & }" + trailing_ws
-
-
-def _rewrite_parenthesized_background(command: str) -> str:
-    """Rewrite `( BODY ) &` at depth 0 so BODY backgrounds its own tail.
-
-    `(...)` always forks a real subshell, `&` or not — so `(A && B) &`
-    forks a subshell that runs `A && B` to completion (waiting on `B`)
-    before the subshell itself can exit, then backgrounds *that*
-    subshell. The outer `&` never blocks the calling shell, but the
-    subshell process does: same `wait4`-forever-while-holding-the-stdout-
-    pipe bug as the unparenthesized `A && B &` case that
-    `_rewrite_compound_background` handles below — just via a spelling
-    its tokenizer deliberately skips (see issue discussion: verified with
-    `(cmd) &` passing through unchanged pre-fix).
-
-    Fix: rewrite the *inside* of the parens so its own tail backgrounds
-    itself via a brace group before the subshell would otherwise wait on
-    it (`(A && { B & })`), so the subshell exits right after launching B
-    rather than blocking on it. The explicit `(...)` is left in place —
-    it's likely there for a reason (e.g. `cd` isolation from the rest of
-    the script) and removing it would change semantics.
-
-    Skips `$(...)` command substitution (not a backgrounded subshell) and
-    content inside quotes/comments.
-    """
-    n = len(command)
-    out: list[str] = []
-    i = 0
-
-    while i < n:
-        ch = command[i]
-
-        if ch == "\\" and i + 1 < n:
-            out.append(command[i : i + 2])
-            i += 2
-            continue
-
-        if ch in "'\"":
-            tok, next_i = _read_shell_token(command, i)
-            out.append(tok)
-            i = next_i
-            continue
-
-        if ch == "#":
-            nl = command.find("\n", i)
-            if nl == -1:
-                out.append(command[i:])
-                i = n
-                break
-            out.append(command[i:nl])
-            i = nl
-            continue
-
-        if ch == "(" and (i == 0 or command[i - 1] != "$"):
-            close_after = _read_balanced_parens(command, i)
-            if close_after == -1:
-                out.append(command[i:])
-                i = n
-                break
-            body = command[i + 1 : close_after - 1]
-
-            k = close_after
-            while k < n and command[k] in " \t":
-                k += 1
-            is_amp_amp = command.startswith("&&", k)
-            is_redirect = (
-                k < n and command[k] == "&" and k + 1 < n and command[k + 1] == ">"
-            )
-            if k < n and command[k] == "&" and not is_amp_amp and not is_redirect:
-                new_body = _background_tail(body)
-                out.append("(" + new_body + ")" + command[close_after:k] + "&")
-                i = k + 1
-                continue
-
-            out.append(command[i:close_after])
-            i = close_after
-            continue
-
-        out.append(ch)
-        i += 1
-
-    return "".join(out)
-
-
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
 
@@ -930,18 +723,46 @@ def _rewrite_compound_background(command: str) -> str:
     when the parent shell exits.
 
     Handles redirects (``&>``, ``2>&1``) and skips content inside quoted
-    strings and parenthesised subshells (the `(...)&` spelling of the same
-    bug is handled by ``_rewrite_parenthesized_background``, applied
-    first, below). Leaves simple ``cmd &`` alone — that construct doesn't
-    have the subshell-wait bug.
+    strings and parenthesised subshells. Leaves simple ``cmd &`` alone —
+    that construct doesn't have the subshell-wait bug.
 
     A rewritten tail is a brace *group*, not a subshell, so bash requires
     a statement terminator after the closing ``}`` before anything else
     on the same line — otherwise ``{ B & } C`` is a syntax error at parse
-    time. When another command follows on the line, this inserts a ``;``
-    right after the ``}``.
+    time. Rather than insert a separator (which would change `C`'s
+    scheduling: originally `A && B & C` backgrounds the whole `A && B`
+    compound as one job and runs `C` immediately, so inserting `;` would
+    make `C` wait on `A` first — a real, measured behavior change, not
+    just a cosmetic one), this rewriter simply **skips** rewriting a
+    statement when a same-line command follows the backgrounding `&`.
+    That leaves the original (leaky but correct) bash behavior fully
+    intact for that shape rather than trade a syntax error for a
+    scheduling change.
+
+    Deliberate non-goal: the parenthesised spelling of this same bug,
+    `(A && B) &`, is left untouched. An earlier version of this function
+    attempted to rewrite the inside of the parens too, but that requires
+    textually parsing an arbitrary subshell body — which cannot be made
+    safe in general. Concretely it mis-rewrote arithmetic contexts
+    (`(( 1+1 )) &` — the outer double-paren is arithmetic evaluation, not
+    two nested subshells, but a textual parens-matcher can't tell the
+    difference and turned it into `({ ( 1+1 ) & }) &`, which runs `1+1`
+    as a *command* instead of evaluating it, a silent behavior change,
+    not just a syntax error) and would equally mishandle heredocs,
+    backtick substitutions, and reserved-word compounds (`while`, `case`,
+    `for`) if extended further. Two things make leaving this case alone
+    acceptable: (1) the top-level shell never blocks on a backgrounded
+    subshell either way (`(A && B) &` returns to the caller immediately,
+    verified — this is standard job-control behavior, not something the
+    rewrite needs to fix), and (2) the terminal tool's own hang risk from
+    a backgrounded process inheriting the stdout pipe is already handled
+    generically by the idle-after-exit drain timeout in
+    ``tools/environments/base.py`` (issue #8340), independent of shell
+    spelling. What's left unfixed is purely the resource-hygiene cost of
+    a leaked subshell stuck in ``wait4`` — a real but much smaller
+    problem than a silent semantic corruption, so it's accepted rather
+    than chased with more textual rewriting.
     """
-    command = _rewrite_parenthesized_background(command)
     n = len(command)
     i = 0
     paren_depth = 0
@@ -1052,9 +873,20 @@ def _rewrite_compound_background(command: str) -> str:
             if j >= 0 and command[j] in "<>":
                 i += 1
                 continue
-            # Real background operator
+            # Real background operator. If a command follows on the same
+            # line, rewriting would need a statement separator after the
+            # brace group — which changes scheduling (see docstring) — so
+            # skip the rewrite for this statement entirely rather than
+            # insert one. `;`, `&&`, `||`, `|`, `}`, end-of-line, and
+            # end-of-string are all already-valid continuations that
+            # don't need a rewrite to begin with.
             if last_chain_op_end >= 0:
-                rewrites.append((last_chain_op_end, i))
+                j = i + 1
+                while j < n and command[j] in " \t":
+                    j += 1
+                next_char = command[j] if j < n else ""
+                if not next_char or next_char in ";\n}&|":
+                    rewrites.append((last_chain_op_end, i))
             last_chain_op_end = -1
             i += 1
             continue
@@ -1079,16 +911,9 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        # The `}` itself also needs a terminator before whatever follows on
-        # the same line (`;`, `&&`, `||`, `|`, another `}`, or end-of-line
-        # are all already valid; anything else — e.g. a bare next command
-        # in `A && B & C` — is a syntax error unless we insert one).
-        j = 0
-        while j < len(suffix) and suffix[j] in " \t":
-            j += 1
-        next_char = suffix[j] if j < len(suffix) else ""
-        separator = ";" if next_char and next_char not in ";\n}&|" else ""
-        result = prefix + "{ " + middle + "& }" + separator + suffix
+        # (Callers only reach here when whatever follows on the same line
+        # is already a valid continuation — see the lookahead-skip above.)
+        result = prefix + "{ " + middle + "& }" + suffix
 
     return result
 

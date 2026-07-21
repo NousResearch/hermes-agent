@@ -11,19 +11,33 @@ The rewriter fixes this by wrapping the tail in a brace group —
 ``A && { B & }`` — so B runs as a simple backgrounded command inside
 the current shell. No subshell fork, no wait.
 
-Two gaps found in that fix (issue #68915):
+One gap found in that fix, and one attempted extension reverted (issue
+#68915):
 
-1. ``A && B & C`` rewrote to ``A && { B & } C``, which is a bash syntax
-   error (a brace *group* needs a statement terminator before the next
-   command on the same line). Fixed by inserting ``;`` after ``}`` when
-   something else follows.
-2. ``(A && B) &`` passed through unchanged — the explicit ``(...)``
-   spelling has the identical subshell-wait bug (parens always fork,
-   ``&`` or not) but the tokenizer deliberately skipped parenthesised
-   content. Fixed by ``_rewrite_parenthesized_background``, which
-   rewrites the *inside* of the parens so its own tail backgrounds
-   itself (``(A && { B & })``), leaving the explicit subshell in place
-   for any `cd`/env isolation it provides.
+1. ``A && B & C`` rewrote to ``A && { B & } C``, a bash syntax error (a
+   brace *group* needs a statement terminator before the next command on
+   the same line). An initial fix inserted ``;`` after ``}`` — but that
+   changes scheduling: originally the whole ``A && B`` compound is
+   backgrounded as one job, so ``C`` runs immediately; ``A && { B & };C``
+   instead runs ``A`` in the foreground first, delaying ``C`` (measured
+   0.01s -> 0.24s in adversarial review). The actual fix is to **skip**
+   rewriting that statement entirely, leaving the original (leaky but
+   behaviorally correct) bash alone.
+2. An attempted extension rewrote the parenthesised spelling of the same
+   bug, ``(A && B) &``, by textually rewriting the inside of the parens.
+   Reverted: it mis-rewrote ``(( 1+1 )) &`` (bash arithmetic evaluation,
+   not two nested subshells) into ``({ ( 1+1 ) & }) &``, which runs
+   ``1+1`` as a *command* — a silent semantic corruption, not just a
+   syntax error — and would equally mishandle heredocs, backtick
+   substitutions, and reserved-word compounds (`while`, `case`, `for`)
+   if extended further. See ``TestParenthesisedSubshellUntouched`` below:
+   `(...)&` is a deliberate non-goal, not an oversight — the top-level
+   shell doesn't block on it either way, and the terminal tool's own
+   pipe-inheritance hang risk is handled generically elsewhere
+   (``tools/environments/base.py``, issue #8340). What's left unfixed is
+   the resource-hygiene cost of a leaked subshell, accepted rather than
+   chased with more textual rewriting that can't be made safe in
+   general.
 """
 
 
@@ -84,94 +98,103 @@ class TestRewrites:
         assert rewrite(cmd) == "A && { B & }\nfalse || { C & }"
 
 
-class TestTrailingCommandAfterBackground:
-    """`A && B & C` must stay valid bash — a brace group needs a `;`
-    before the next command on the same line."""
+class TestTrailingCommandAfterBackgroundIsSkipped:
+    """`A && B & C` must stay valid bash AND keep its original scheduling
+    (C runs immediately, not after A). The only way to guarantee both is
+    to not rewrite this shape at all — leave it exactly as written."""
 
-    def test_simple_trailing_command(self):
-        assert rewrite("A && B & C") == "A && { B & }; C"
+    def test_simple_trailing_command_untouched(self):
+        assert rewrite("A && B & C") == "A && B & C"
 
-    def test_realistic_server_start_with_trailing_command(self):
+    def test_realistic_server_start_with_trailing_command_untouched(self):
         cmd = "cd /app && node server.js & echo started"
-        assert rewrite(cmd) == "cd /app && { node server.js & }; echo started"
+        assert rewrite(cmd) == cmd
 
-    def test_trailing_command_already_valid_not_double_separated(self):
-        # Newline, `;`, `&&`, `||`, `|` after `}` are already valid — don't
-        # insert a redundant `;`.
+    def test_multiline_only_the_trailing_statement_is_skipped(self):
+        # The first line has a same-line trailing command -> skip. The
+        # second line ends cleanly -> still rewritten.
+        cmd = "A && B & C\nfalse || D &"
+        assert rewrite(cmd) == "A && B & C\nfalse || { D & }"
+
+    def test_trailing_command_already_valid_shapes_still_rewritten(self):
+        # Newline, `;`, `&&`, `||`, `|` after `&` are already valid
+        # continuations -> these ARE rewritten (no scheduling change,
+        # since there's no bare trailing command to reorder against).
         assert rewrite("A && B &\nC") == "A && { B & }\nC"
         assert rewrite("A && B &;C") == "A && { B & };C"
         assert rewrite("A && B & && C") == "A && { B & } && C"
         assert rewrite("A && B & || C") == "A && { B & } || C"
         assert rewrite("A && B & | C") == "A && { B & } | C"
 
-    def test_trailing_command_end_of_string_no_separator(self):
+    def test_trailing_command_end_of_string_still_rewritten(self):
         assert rewrite("A && B &") == "A && { B & }"
 
-    def test_bash_accepts_the_rewritten_syntax(self):
+    def test_bash_accepts_the_untouched_original(self):
         shutil = pytest.importorskip("shutil")
         if shutil.which("bash") is None:
             pytest.skip("bash not available")
-        rewritten = rewrite("cd /app && node server.js & echo started")
+        cmd = "cd /app && node server.js & echo started"
+        rewritten = rewrite(cmd)
+        assert rewritten == cmd
         result = subprocess.run(
-            ["bash", "-n", "-c", rewritten],
-            capture_output=True,
-            text=True,
+            ["bash", "-n", "-c", rewritten], capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stderr
 
 
-class TestParenthesisedSubshellBackground:
-    """`(A && B) &` has the same subshell-wait bug as `A && B &` — parens
-    always fork a subshell, so the subshell waits on B before it (and the
-    pipe it inherited) can exit."""
+class TestParenthesisedSubshellUntouched:
+    """`(...) &` is a deliberate non-goal (see module docstring): textual
+    rewriting inside an arbitrary subshell body cannot be made safe in
+    general. All of these MUST pass through byte-for-byte unchanged."""
 
     def test_simple_parenthesised_chain(self):
-        assert rewrite("(A && B) &") == "(A && { B & }) &"
+        assert rewrite("(A && B) &") == "(A && B) &"
 
     def test_parenthesised_or(self):
-        assert rewrite("(A || B) &") == "(A || { B & }) &"
+        assert rewrite("(A || B) &") == "(A || B) &"
 
     def test_parenthesised_single_command(self):
-        # No chain operator inside — the whole body is the tail.
-        assert rewrite("(cmd) &") == "({ cmd & }) &"
+        assert rewrite("(cmd) &") == "(cmd) &"
 
     def test_realistic_server_start_in_parens(self):
         cmd = "(cd /app && node server.js) &"
-        assert rewrite(cmd) == "(cd /app && { node server.js & }) &"
+        assert rewrite(cmd) == cmd
 
-    def test_already_backgrounded_tail_left_alone(self):
-        # The subshell already backgrounds B itself — it won't wait on
-        # it either way, so there's nothing to fix.
+    def test_arithmetic_context_not_mangled(self):
+        # CRITICAL regression: `((...))` is arithmetic evaluation, not
+        # two nested subshells. A textual parens-matcher can't tell the
+        # difference; a prior version of this rewrite turned this into
+        # `({ ( 1+1 ) & }) &`, which runs `1+1` as a *command* (bash:
+        # "1+1: command not found") instead of evaluating it.
+        assert rewrite("(( 1+1 )) &") == "(( 1+1 )) &"
+
+    def test_subshell_with_loop_not_split(self):
+        # A textual rewrite would try to background only the loop's
+        # tail, splitting a reserved-word compound and producing a
+        # syntax error.
+        cmd = "(while false; do :; done) &"
+        assert rewrite(cmd) == cmd
+
+    def test_subshell_with_heredoc_not_split(self):
+        cmd = "(cat <<'EOF'\nhello\nEOF\n) &"
+        assert rewrite(cmd) == cmd
+
+    def test_subshell_with_backtick_substitution_not_split(self):
+        cmd = "(echo `date`) &"
+        assert rewrite(cmd) == cmd
+
+    def test_already_backgrounded_tail_untouched(self):
         assert rewrite("(A && B &) &") == "(A && B &) &"
 
     def test_parens_without_trailing_background_untouched(self):
-        # No outer `&` — the subshell isn't backgrounded, so it's a
-        # normal synchronous subshell with no wait4-forever risk.
         assert rewrite("(A && B)") == "(A && B)"
 
     def test_parens_followed_by_and_and_not_confused(self):
         assert rewrite("(A && B) && C") == "(A && B) && C"
 
-    def test_command_substitution_still_not_rewritten(self):
+    def test_command_substitution_not_rewritten(self):
         cmd = 'echo "$(A && B)" &'
-        assert rewrite(cmd) == 'echo "$(A && B)" &'
-
-    def test_bash_accepts_the_rewritten_syntax(self):
-        shutil = pytest.importorskip("shutil")
-        if shutil.which("bash") is None:
-            pytest.skip("bash not available")
-        for cmd in [
-            "(A && B) &",
-            "(cmd) &",
-            "(cd /app && node server.js) &",
-        ]:
-            rewritten = rewrite(cmd)
-            result = subprocess.run(
-                ["bash", "-n", "-c", rewritten],
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode == 0, (cmd, rewritten, result.stderr)
+        assert rewrite(cmd) == cmd
 
 
 class TestPreserved:

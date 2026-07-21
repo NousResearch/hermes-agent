@@ -27,6 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    MAX_NORMALIZED_TEXT_LENGTH,
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
@@ -330,7 +331,7 @@ class TestAdapterInit:
         adapter = APIServerAdapter(config)
         assert adapter._port == 8642
 
-    def test_create_agent_forwards_config_reasoning_effort(self, monkeypatch):
+    def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -349,7 +350,15 @@ class TestAdapterInit:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
         monkeypatch.setattr(
             "gateway.run._load_gateway_config",
-            lambda: {"agent": {"reasoning_effort": "xhigh"}},
+            lambda: {
+                "agent": {"reasoning_effort": "xhigh"},
+                "checkpoints": {
+                    "enabled": True,
+                    "max_snapshots": 7,
+                    "max_total_size_mb": 321,
+                    "max_file_size_mb": 4,
+                },
+            },
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
@@ -365,6 +374,10 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert captured["checkpoints_enabled"] is True
+        assert captured["checkpoint_max_snapshots"] == 7
+        assert captured["checkpoint_max_total_size_mb"] == 321
+        assert captured["checkpoint_max_file_size_mb"] == 4
 
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}
@@ -690,6 +703,26 @@ def auth_adapter():
 
 
 class TestAgentExecution:
+    def test_api_session_replay_cleanup_is_scoped(self, adapter):
+        first_scope = adapter._ephemeral_replay_scope_for_session("session-1")
+        second_scope = adapter._ephemeral_replay_scope_for_session("session-2")
+        adapter._ephemeral_user_context_replay_store.update(
+            {
+                (first_scope, 0, "digest-a"): "Location: 1.0, 2.0",
+                (second_scope, 0, "digest-b"): "Location: 3.0, 4.0",
+            }
+        )
+
+        adapter._clear_ephemeral_replay_for_session("session-1")
+
+        assert all(
+            key[0] != first_scope
+            for key in adapter._ephemeral_user_context_replay_store
+        )
+        assert (second_scope, 0, "digest-b") in (
+            adapter._ephemeral_user_context_replay_store
+        )
+
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()
@@ -740,6 +773,30 @@ class TestAgentExecution:
             task_id="session-123",
             ephemeral_user_context="Location: 1.0, 2.0",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_shares_replay_store_only_with_explicit_scope(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        scope = adapter._ephemeral_replay_scope_for_session("session-123")
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+                ephemeral_replay_scope=scope,
+            )
+
+        assert (
+            mock_agent._ephemeral_user_context_replay_store
+            is adapter._ephemeral_user_context_replay_store
+        )
+        assert (
+            mock_agent._ephemeral_user_context_replay_lock
+            is adapter._ephemeral_user_context_replay_lock
+        )
+        assert mock_agent._ephemeral_user_context_replay_scope == scope
 
 
 # ---------------------------------------------------------------------------
@@ -1252,6 +1309,87 @@ class TestChatCompletionsEndpoint:
 
         assert response.status == 400
         assert "hermes_ephemeral_user_context" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_hermes_ephemeral_user_context_enforces_exact_length_boundary(
+        self, adapter
+    ):
+        app = _create_app(adapter)
+        result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new_callable=AsyncMock,
+                return_value=(result, usage),
+            ):
+                accepted = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "hermes_ephemeral_user_context": (
+                            "x" * MAX_NORMALIZED_TEXT_LENGTH
+                        ),
+                    },
+                )
+                rejected = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "hermes_ephemeral_user_context": (
+                            "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1)
+                        ),
+                    },
+                )
+
+        assert accepted.status == 200
+        assert rejected.status == 400
+
+    @pytest.mark.asyncio
+    async def test_ephemeral_context_participates_in_idempotency_fingerprint(
+        self, adapter
+    ):
+        app = _create_app(adapter)
+        calls = []
+
+        async def _run_agent(**kwargs):
+            context = kwargs.get("ephemeral_user_context")
+            calls.append(context)
+            return (
+                {"final_response": context, "messages": [], "api_calls": 1},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        headers = {"Idempotency-Key": "volatile-context-key"}
+        base_body = {
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "Where am I?"}],
+        }
+        with patch(
+            "gateway.platforms.api_server._idem_cache", _IdempotencyCache()
+        ), patch.object(adapter, "_run_agent", side_effect=_run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={**base_body, "hermes_ephemeral_user_context": "first"},
+                )
+                second = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={**base_body, "hermes_ephemeral_user_context": "second"},
+                )
+                repeated = await cli.post(
+                    "/v1/chat/completions",
+                    headers=headers,
+                    json={**base_body, "hermes_ephemeral_user_context": "second"},
+                )
+
+        assert first.status == second.status == repeated.status == 200
+        assert calls == ["first", "second"]
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
@@ -3753,6 +3891,7 @@ class TestSessionIdHeader:
                 )
             assert resp.status == 200
             assert resp.headers.get("X-Hermes-Session-Id") is not None
+            assert mock_run.call_args.kwargs["ephemeral_replay_scope"] is None
 
     @pytest.mark.asyncio
     async def test_provided_session_id_is_used_and_echoed(self, auth_adapter):
@@ -3779,6 +3918,9 @@ class TestSessionIdHeader:
             assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["session_id"] == "my-session-123"
+            assert call_kwargs["ephemeral_replay_scope"] == (
+                auth_adapter._ephemeral_replay_scope_for_session("my-session-123")
+            )
 
     @pytest.mark.asyncio
     async def test_traversal_session_id_header_rejected(self, auth_adapter):
@@ -4312,3 +4454,129 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Event-loop offloading for synchronous SessionDB calls (P1)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionDbOffEventLoop:
+    """Regression: synchronous SessionDB calls in the OpenAI-compatible API
+    server must run OFF the aiohttp event loop. A blocking SQLite read/write on
+    the loop freezes every in-flight request under load (same class of bug as
+    gateway build_channel_directory, #60794 / #60810), so each call is wrapped
+    in asyncio.to_thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_existing_session_or_404_offloads(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def get_session(self, session_id):
+                captured["thread"] = threading.current_thread()
+                return {"id": session_id, "source": "api_server"}
+
+        auth_adapter._session_db = FakeDB()
+        session, err = await auth_adapter._get_existing_session_or_404("sess-x")
+        assert err is None
+        assert session["id"] == "sess-x"
+        # The blocking DB call must NOT execute on the event-loop thread.
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_offloads_db_off_event_loop(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["thread"] = threading.current_thread()
+                return []
+
+        auth_adapter._session_db = FakeDB()
+        app = _create_app(auth_adapter)
+        app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/sessions",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+        assert resp.status == 200
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_id_create_one_201_one_409(self, auth_adapter):
+        """Two concurrent creates for the same ID must yield one 201 and one 409.
+
+        The create sequence (existence check + insert + title) runs as a
+        single off-loop call, so concurrent same-ID requests serialize at
+        the DB level.  Before the fix the TOCTOU window between the check
+        and the insert let both requests pass the existence guard and both
+        return 201 via the ON CONFLICT enrichment upsert.
+        """
+        import asyncio
+
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            # Fire both requests concurrently through the same server.
+            resp_a, resp_b = await asyncio.gather(
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+            )
+        assert sorted([resp_a.status, resp_b.status]) == [201, 409]
+
+    @pytest.mark.asyncio
+    async def test_ensure_session_db_first_request_path(self, auth_adapter):
+        """First /api/sessions request initializes SessionDB off the event loop."""
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def __init__(self, db_path=None):
+                captured["init_thread"] = threading.current_thread()
+
+            def list_sessions_rich(self, **kwargs):
+                return []
+
+        # Simulate cold start -- no DB yet.
+        auth_adapter._session_db = None
+        auth_adapter._session_db_lock = None
+
+        original_class = None
+        import hermes_state
+        original_class = hermes_state.SessionDB
+        hermes_state.SessionDB = FakeDB
+        try:
+            app = _create_app(auth_adapter)
+            app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/api/sessions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+            assert resp.status == 200
+            # SessionDB() was constructed -- the init must NOT be on the event-loop thread.
+            assert "init_thread" in captured
+            assert captured["init_thread"] != threading.current_thread()
+        finally:
+            hermes_state.SessionDB = original_class
+            auth_adapter._session_db = None
+            auth_adapter._session_db_lock = None

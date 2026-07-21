@@ -75,9 +75,11 @@ async def test_registered_location_handler_accepts_edited_updates(
     )
 
     payload = json.loads(
-        (tmp_path / "state" / "telegram_background_locations.json").read_text()
+        adapter._background_location_state_path.read_text()
     )
-    record = payload["locations"]["chat:111:user:111"]
+    subject_key = adapter._background_location_subject_key(message)
+    assert subject_key is not None
+    record = payload["locations"][subject_key]
     assert record["longitude"] == -0.1419
     assert record["source"] == "live_location"
     assert record["is_edited_update"] is True

@@ -187,5 +187,28 @@ async def test_steer_rejected_payload_returns_rejection_message():
     assert "rejected" in result.lower() or "empty" in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_explicit_steer_with_volatile_context_queues_new_turn():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+    prior = _make_event("already queued")
+    adapter._pending_messages[sk] = prior
+    event = _make_event("/steer use my current position")
+    event.ephemeral_user_context = "Location: 1.0, 2.0"
+
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    assert "volatile platform context" in result.lower()
+    running_agent.steer.assert_not_called()
+    assert adapter._pending_messages[sk] is prior
+    queued = runner._queued_events[sk][0]
+    assert queued.text == "use my current position"
+    assert queued.ephemeral_user_context == "Location: 1.0, 2.0"
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

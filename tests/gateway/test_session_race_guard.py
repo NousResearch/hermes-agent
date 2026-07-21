@@ -261,6 +261,41 @@ def test_merge_pending_message_event_prefers_newest_ephemeral_context_for_text()
     assert pending[session_key].ephemeral_user_context == "new location"
 
 
+def test_merge_pending_message_event_clears_context_across_senders():
+    pending = {}
+    first_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="group-1",
+        chat_type="group",
+        user_id="user-a",
+    )
+    second_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="group-1",
+        chat_type="group",
+        user_id="user-b",
+    )
+    session_key = build_session_key(first_source, group_sessions_per_user=False)
+    first = MessageEvent(
+        text="first",
+        message_type=MessageType.TEXT,
+        source=first_source,
+        ephemeral_user_context="location A",
+    )
+    second = MessageEvent(
+        text="second",
+        message_type=MessageType.TEXT,
+        source=second_source,
+        ephemeral_user_context="location B",
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    assert pending[session_key].text == "first\nsecond"
+    assert pending[session_key].ephemeral_user_context is None
+
+
 def test_merge_pending_message_event_promotes_document_followups_over_text():
     pending = {}
     source = SessionSource(

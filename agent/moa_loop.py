@@ -850,7 +850,10 @@ class MoAChatCompletions:
         return usage, cost
 
     def consume_and_save_trace(
-        self, session_id: Any = None, aggregator_output_fallback: Any = None
+        self,
+        session_id: Any = None,
+        aggregator_output_fallback: Any = None,
+        input_redactions: Optional[list[str]] = None,
     ) -> None:
         """Flush the pending full-turn trace to disk, if one is pending.
 
@@ -892,6 +895,7 @@ class MoAChatCompletions:
                 aggregator_input_messages=pending.get("aggregator_input_messages"),
                 aggregator_output=agg_output,
                 aggregator_streamed=bool(pending.get("aggregator_streamed")),
+                input_redactions=input_redactions,
             )
         except Exception as exc:  # pragma: no cover - tracing must never break a turn
             logger.debug("MoA trace flush failed: %s", exc)
@@ -1169,7 +1173,10 @@ class MoAClient:
         return getattr(self.chat.completions, "last_aggregator_slot", None)
 
     def consume_and_save_trace(
-        self, session_id: Any = None, aggregator_output_fallback: Any = None
+        self,
+        session_id: Any = None,
+        aggregator_output_fallback: Any = None,
+        input_redactions: Optional[list[str]] = None,
     ) -> None:
         """Flush the pending full-turn MoA trace via the completions facade.
 
@@ -1178,5 +1185,7 @@ class MoAClient:
         streaming path's trace is self-contained (see the facade docstring).
         """
         return self.chat.completions.consume_and_save_trace(
-            session_id, aggregator_output_fallback=aggregator_output_fallback
+            session_id,
+            aggregator_output_fallback=aggregator_output_fallback,
+            input_redactions=input_redactions,
         )

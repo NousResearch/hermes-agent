@@ -1163,6 +1163,35 @@ def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     ]
 
 
+def test_codex_final_preflight_bounds_middleware_cache_key(monkeypatch):
+    """Execution middleware cannot reintroduce an over-length provider key."""
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+    long_key = "paperclip:" + "x" * 130
+
+    def _execution_middleware(request, next_call, **_context):
+        replacement = dict(request)
+        replacement["prompt_cache_key"] = long_key
+        return next_call(replacement)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert captured["prompt_cache_key"].startswith("pck_")
+    assert len(captured["prompt_cache_key"]) <= 64
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to
@@ -2342,6 +2371,37 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
     }
 
 
+def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
+    """_interim_content_was_streamed should return True when the streamed text
+    is a PREFIX of the final content (trailing delta added after stream, or
+    partial stream before verify nudge).  Exact equality is too strict — it
+    fails safe to a benign duplicate bubble instead of settling the interim.
+    (#65919 review: prefix-based match like the TUI's finalTail dedup.)"""
+    agent = _build_agent(monkeypatch)
+
+    # Exact match still works
+    agent._current_streamed_assistant_text = "hello world"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is a prefix of the final (trailing delta) — should match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is empty — should not match
+    agent._current_streamed_assistant_text = ""
+    assert agent._interim_content_was_streamed("hello world") is False
+
+    # Final is empty — should not match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("") is False
+
+    # Streamed is LONGER than final (reverse direction) — should NOT match.
+    # This is the unsafe direction: it could suppress a needed resend in the
+    # gateway path where already_streamed=True calls on_segment_break().
+    agent._current_streamed_assistant_text = "hello world extra"
+    assert agent._interim_content_was_streamed("hello") is False
+
+
 def test_interim_commentary_preserves_assistant_content(monkeypatch):
     """Interim commentary must not silently mutate assistant text containing
     literal <memory-context> markers — that's legitimate model output (docs,
@@ -2870,6 +2930,56 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     payload = json.loads(dumped_text)
     assert payload["request"]["headers"]["Authorization"].startswith("Bearer sk-ant-p...")
     assert "***" in dumped_text or "..." in dumped_text
+
+
+def test_dump_api_request_debug_omits_volatile_user_context(monkeypatch, tmp_path):
+    import json
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+    volatile = "[Background Telegram location context]\nLatitude: 1.0"
+    agent._active_ephemeral_user_context_redactions = (volatile,)
+
+    class ProviderError(RuntimeError):
+        response: object
+
+    echoed_request = json.dumps(
+        {
+            "messages": [
+                {"role": "user", "content": f"Where am I?\n\n{volatile}"}
+            ]
+        }
+    )
+    error = ProviderError("provider echoed request")
+    error.response = SimpleNamespace(status_code=400, text=echoed_request)
+
+    dump_file = agent._dump_api_request_debug(
+        {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": f"Where am I?\n\n{volatile}"}
+            ],
+        },
+        reason="provider_error",
+        error=error,
+    )
+
+    dumped_text = dump_file.read_text()
+    assert volatile not in dumped_text
+    assert "[volatile user context omitted]" in dumped_text
+    payload = json.loads(dumped_text)
+    assert payload["request"]["body"]["messages"][0]["role"] == "user"
+    assert json.dumps(volatile)[1:-1] not in payload["error"]["response_text"]
+    assert "[volatile user context omitted]" in payload["error"]["response_text"]
 
 
 # --- Reasoning-only response tests (fix for empty content retry loop) ---

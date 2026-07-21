@@ -2194,6 +2194,74 @@ class TestSendTyping:
         )
 
     @pytest.mark.asyncio
+    async def test_custom_typing_status_text(self):
+        # typing_status_text overrides the default status wording.
+        config = PlatformConfig(
+            enabled=True, token="xoxb-fake-token",
+            typing_status_text="is pouncing… 🐾",
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is pouncing… 🐾",
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_status_text_overrides_default(self, adapter):
+        # set_status_text() feeds the live per-tool phrase into the next
+        # typing refresh.
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter.set_status_text("C123", "is running pytest…")
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is running pytest…",
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_status_beats_configured_static_text(self):
+        # Dynamic per-tool phrase wins over typing_status_text while set;
+        # clearing it falls back to the configured static string.
+        config = PlatformConfig(
+            enabled=True, token="xoxb-fake-token",
+            typing_status_text="is pouncing… 🐾",
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        a.set_status_text("C123", "is reading docs/api.md…")
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            a._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is reading docs/api.md…"
+        )
+        a.set_status_text("C123", None)
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            a._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is pouncing… 🐾"
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_status_scoped_per_chat(self, adapter):
+        # A phrase for one channel must not leak into another channel's
+        # status line.
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter.set_status_text("C_OTHER", "is running pytest…")
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is thinking..."
+        )
+
+    @pytest.mark.asyncio
     async def test_noop_without_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         await adapter.send_typing("C123")

@@ -122,9 +122,10 @@ With this option enabled:
 
 - accepted location and venue updates never start an agent turn or trigger a
   reply;
-- only the latest location for each Telegram sender/chat pair is retained;
+- only the latest location for each Telegram bot/sender/chat tuple is retained
+  in the profile state file;
 - the state is stored profile-locally at
-  `$HERMES_HOME/state/telegram_background_locations.json` with exact
+  `$HERMES_HOME/state/telegram_background_locations/<bot-scope>.json` with exact
   coordinates, Telegram sender/chat/message/update/thread identifiers,
   timestamps, optional accuracy/heading/proximity/live-period metadata, and
   sanitized venue title/address metadata when present;
@@ -132,27 +133,69 @@ With this option enabled:
   location as ephemeral user-side context for that turn, so questions such as
   "Where am I?" or "What's nearby?" can use it without changing the cached
   system prompt or persisting the injected location in the Hermes conversation
-  transcript.
+  transcript;
+- while a single-user conversation remains live, Hermes keeps a bounded
+  RAM-only sidecar of the exact context sent on each turn and replays it with
+  that historical user turn on later model requests. This keeps the provider
+  prompt prefix byte-stable, but means those later requests can contain prior
+  location snapshots in addition to the latest location on the current turn;
+- shared group/topic sessions do not retain or replay this per-user sidecar.
+  The current sender's location can still accompany their current turn, but a
+  later turn from another participant cannot recover it through replay.
 
-Records are scoped to the Telegram sender and chat. They are not currently
+Records are scoped to the configured Telegram bot identity, sender, and chat;
+forum/group topics are isolated from one another, while private-chat topics
+share the same sender/chat location.
+Rotating a token for the same numeric bot ID preserves its state; switching the
+profile to a different bot does not expose the prior bot's records. Legacy
+unscoped state from older versions is ignored. Location posts sent through a
+shared `sender_chat` persona (including anonymous-admin/on-behalf-of messages)
+are not retained because Telegram does not expose a stable individual identity
+for safely replaying them on a later turn. Records are not currently
 available to turns from Discord or other platforms because Hermes does not have
 a cross-platform identity mapping for gateway users.
+
+Temporary live-location records are attached only until Telegram's
+`live_period` expires. Stopping a live share removes its retained record;
+`0x7FFFFFFF` live shares remain active until explicitly stopped. Static
+location pins and venues do not have an automatic expiry, so clear the state as
+described below when you no longer want them retained.
 
 The state file is written with owner-only permissions on POSIX systems because
 it contains exact coordinates. Normal Telegram authorization and chat/topic
 gates still apply, and the option defaults to `false` for compatibility. To
 clear the state, stop the gateway, remove the file, and then restart it. The
-running gateway keeps an in-memory cache, so deleting only the live file does
-not clear the active process and a later update can recreate the cached state.
+running gateway keeps both the latest-location cache and the bounded replay
+sidecar in memory, so deleting only the live file does not clear the active
+process and a later update can recreate the cached state. Restarting the
+process clears RAM-only replay data. The API server shares replay data across
+requests only for an explicit, authenticated `X-Hermes-Session-Id`; its
+fingerprint-derived implicit sessions do not share volatile replay state. The
+API server also clears an explicit session's replay data when that session is
+ended or deleted; otherwise the oldest replay records are evicted automatically
+when the process-wide bound is reached.
 
 This option intentionally sends the latest coordinates with each later accepted
 text message or command from that sender, including turns unrelated to
 location. Hermes does not persist that ephemeral user context in its
 conversation transcript, but the coordinates are sent to your configured model
-provider and an agent response may repeat them. Hermes snapshots or other
-backups may also retain the state file, including its Telegram identifiers and
-any sanitized venue metadata, after you delete the live copy. Enable this only
-when that privacy tradeoff matches your deployment and retention policy.
+provider, are replayed in later requests for the same live conversation as
+described above, and an agent response may repeat them. If opt-in MoA traces
+are enabled, Hermes omits current and RAM-replayed volatile input blocks from
+reference and aggregator trace inputs; model output that repeats the coordinates
+can still be retained. Hermes also replaces these blocks in observer-hook
+payloads and API request debug dumps. Provider-execution middleware necessarily
+receives the real request, so an enabled middleware plugin or upstream provider
+can still log or retain it.
+The state file itself may also survive in Hermes snapshots or other backups,
+including its Telegram identifiers and sanitized venue metadata, after you
+delete the live copy.
+
+The stateful `codex_app_server` runtime does not currently accept this volatile
+side channel: Hermes leaves background location context out of those turns so
+Codex cannot replay it from its internal thread history. Enable this option only
+when these privacy and runtime tradeoffs match your deployment and retention
+policy.
 
 ## Step 3: Privacy Mode (Critical for Groups)
 

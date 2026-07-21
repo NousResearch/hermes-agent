@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -17,8 +18,9 @@ import os
 import html as _html
 import re
 import threading
+import time
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
@@ -543,6 +545,24 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# shutdown()/initialize() on the getUpdates httpx request close and rebuild the
+# connection pool. When a connection is wedged on a stale CLOSE-WAIT socket that
+# close can block forever, hanging _drain_polling_connections() and freezing the
+# whole reconnect ladder (the tracked _polling_error_task never completes, so
+# every escalation path stays gated behind its in-flight guard). Bound the drain
+# so the ladder always advances toward the fatal-restart escalation. Matches
+# _UPDATER_STOP_TIMEOUT. Refs: NousResearch/hermes-agent#66377
+_DRAIN_TIMEOUT = 15.0
+# Cause-agnostic wedged-recovery watchdog (#66377). Every recovery path (the
+# reconnect ladder's re-entry, the pending-update probe, PTB's error callback)
+# gates new recovery on ``_polling_error_task.done()``; if that task ever wedges
+# on a hung await that no local bound covers, the whole gateway goes silently
+# deaf with nothing retrying. The heartbeat loop force-escalates a recovery task
+# that stays in-flight far longer than any healthy ladder attempt could take —
+# stop (_UPDATER_STOP_TIMEOUT) + drain (2x_DRAIN_TIMEOUT) + start
+# (_UPDATER_START_TIMEOUT) + max backoff (60s) is ~135s, so 300s is
+# unambiguously stuck.
+_POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
@@ -581,8 +601,14 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
-    _BACKGROUND_LOCATION_STATE_VERSION = 1
+    # Version 2 namespaces records by Telegram bot identity. Version 1 keys
+    # were only chat/sender scoped, so reusing a profile with another bot token
+    # could expose the first bot's location state to the second bot.
+    _BACKGROUND_LOCATION_STATE_VERSION = 2
     _BACKGROUND_LOCATION_MAX_SUBJECTS = 512
+    _BACKGROUND_LOCATION_MAX_STATE_BYTES = 2 * 1024 * 1024
+    _BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD = 0x7FFFFFFF
+    _BACKGROUND_LOCATION_WRITE_TIMEOUT_SECONDS = 10.0
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
@@ -673,11 +699,18 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         from hermes_constants import get_hermes_home
 
+        self._background_location_bot_scope = self._resolve_background_location_bot_scope(
+            config.token
+        )
         self._background_location_state_path = (
-            get_hermes_home() / "state" / "telegram_background_locations.json"
+            get_hermes_home()
+            / "state"
+            / "telegram_background_locations"
+            / f"{self._background_location_bot_scope}.json"
         )
         self._background_location_records: Optional[Dict[str, dict]] = None
         self._background_location_write_lock = asyncio.Lock()
+        self._background_location_write_thread: Optional[threading.Thread] = None
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -2005,20 +2038,22 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return
         try:
-            await polling_req.shutdown()
+            # Bounded: a wedged CLOSE-WAIT socket can make this close hang
+            # forever and freeze the reconnect ladder (#66377).
+            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
         except Exception:
             logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
+                "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
         try:
-            await polling_req.initialize()
+            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
         except Exception:
             logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
+                "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
 
@@ -2354,11 +2389,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if attempt > MAX_NETWORK_RETRIES:
             message = (
                 "Telegram polling could not reconnect after %d network error retries. "
-                "Restarting gateway." % MAX_NETWORK_RETRIES
+                "Escalating to gateway recovery." % MAX_NETWORK_RETRIES
             )
             logger.error("[%s] %s Last error: %s", self.name, message, _redact_telegram_error_text(error))
             self._set_fatal_error("telegram_network_error", message, retryable=True)
-            await self._notify_fatal_error()
+            await self._handoff_polling_fatal_error()
             return
 
         delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
@@ -2472,6 +2507,16 @@ class TelegramAdapter(BasePlatformAdapter):
         HEARTBEAT_INTERVAL = 90   # seconds between probes
         PROBE_TIMEOUT = 15        # seconds before declaring the path dead
 
+        # Wedged-recovery watchdog state (#66377). Tracked locally so no
+        # _polling_error_task assignment site needs to stamp a timestamp: the
+        # heartbeat notes when it first observes a given recovery task still
+        # in-flight, and force-escalates if the *same* task object is still
+        # running after _POLLING_ERROR_TASK_STUCK_TIMEOUT. A healthy ladder
+        # attempt completes (task done) or chains to a new task well before
+        # then, so a single long-lived task is unambiguously wedged.
+        stuck_task_ref: Optional[asyncio.Task] = None
+        stuck_task_since = 0.0
+
         while True:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -2479,6 +2524,42 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 if self.has_fatal_error:
                     return
+
+                # Independent wedged-recovery watchdog (#66377): if the tracked
+                # recovery task has hung (any await no local bound covers), every
+                # other recovery path is gated behind it and returns early
+                # forever — the gateway stays alive but deaf. Force a
+                # retryable-fatal so the background reconnector rebuilds the
+                # adapter instead of relying on the frozen ladder.
+                recovery_task = self._polling_error_task
+                if recovery_task is not None and not recovery_task.done():
+                    now = time.monotonic()
+                    if recovery_task is not stuck_task_ref:
+                        stuck_task_ref = recovery_task
+                        stuck_task_since = now
+                    elif now - stuck_task_since > _POLLING_ERROR_TASK_STUCK_TIMEOUT:
+                        stuck_for = now - stuck_task_since
+                        logger.error(
+                            "[%s] Telegram reconnect task wedged for %.0fs with no "
+                            "ladder progress; forcing retryable-fatal so the gateway "
+                            "reconnects instead of staying silently deaf.",
+                            self.name, stuck_for,
+                        )
+                        try:
+                            recovery_task.cancel()
+                        except Exception:
+                            pass
+                        self._set_fatal_error(
+                            "telegram_network_error",
+                            "Telegram reconnect task wedged for %.0fs; forcing "
+                            "gateway reconnect." % stuck_for,
+                            retryable=True,
+                        )
+                        await self._handoff_polling_fatal_error()
+                        return
+                else:
+                    stuck_task_ref = None
+
                 bot = self._app.bot if self._app else None
                 if bot is None:
                     continue
@@ -2933,7 +3014,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, stop_error, exc_info=True,
             )
         if not _already_fatal:
-            await self._notify_fatal_error()
+            await self._handoff_polling_fatal_error()
+
+    async def _handoff_polling_fatal_error(self) -> None:
+        """Notify the runner without letting child teardown cancel this owner.
+
+        The runner bounds adapter cleanup in a child task.  ``disconnect()``
+        cancels the tracked polling-recovery task and the heartbeat task, so
+        retaining the current notifier in either field would cancel the fatal
+        callback before the runner can finish its reconnect or shutdown
+        decision.  Release only the current owner from whichever field tracks
+        it; unrelated tasks remain under teardown control.
+        """
+        current_task = asyncio.current_task()
+        if self._polling_error_task is current_task:
+            self._polling_error_task = None
+        if getattr(self, "_polling_heartbeat_task", None) is current_task:
+            self._polling_heartbeat_task = None
+        await self._notify_fatal_error()
 
     async def _create_dm_topic(
         self,
@@ -3394,6 +3492,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         
         try:
+            # State loading is bounded but still performs disk I/O. Warm the
+            # cache off-loop before polling/webhook handlers can accept an
+            # update, keeping normal text and command dispatch non-blocking.
+            if self._background_locations_enabled:
+                await asyncio.to_thread(self._load_background_location_records)
+
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
 
@@ -5904,29 +6008,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="This approval has already been resolved.")
                     return
 
-                # Map choice to human-readable label
-                label_map = {
-                    "once": "✅ Approved once",
-                    "session": "✅ Approved for session",
-                    "always": "✅ Approved permanently",
-                    "deny": "❌ Denied",
-                }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
 
-                await query.answer(text=label)
-
-                # Edit message to show decision, remove buttons
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass  # non-fatal if edit fails
-
-                # Resolve the approval — unblocks the agent thread
+                # Resolve the approval FIRST — unblocks the agent thread.
+                # Rendering happens after so the message reflects what
+                # actually occurred: a tap that lands after the approval
+                # wait timed out (count == 0) must NOT claim "Approved" —
+                # the command was already denied and will not run (#63501
+                # regression follow-up: 60s waits made stale taps common).
                 try:
                     from tools.approval import resolve_gateway_approval
                     count = resolve_gateway_approval(session_key, choice)
@@ -5937,6 +6026,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
                     count = 0
+
+                if count:
+                    # Map choice to human-readable label
+                    label_map = {
+                        "once": "✅ Approved once",
+                        "session": "✅ Approved for session",
+                        "always": "✅ Approved permanently",
+                        "deny": "❌ Denied",
+                    }
+                    label = label_map.get(choice, "Resolved")
+                    edit_text = f"{label} by {user_display}"
+                else:
+                    label = "⌛ Approval expired"
+                    edit_text = (
+                        f"{label} — no command was waiting. "
+                        f"It already timed out (and was denied) or was resolved elsewhere."
+                    )
+
+                await query.answer(text=label)
+
+                # Edit message to show decision, remove buttons
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(edit_text),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if edit fails
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths
@@ -8072,25 +8190,44 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _background_location_subject_key(message: Message) -> Optional[str]:
+    def _resolve_background_location_bot_scope(token: Any) -> str:
+        """Return a non-secret stable identifier for the configured bot.
+
+        Telegram bot tokens begin with the numeric bot ID, which remains stable
+        across token rotation. Tests and defensive callers may provide a token
+        without that shape; hash it so the raw credential is never persisted.
+        """
+        raw_token = str(token or "")
+        bot_id, separator, _secret = raw_token.partition(":")
+        if separator and bot_id.isdigit():
+            return bot_id
+        return f"token-{hashlib.sha256(raw_token.encode('utf-8')).hexdigest()[:16]}"
+
+    def _background_location_subject_key(self, message: Message) -> Optional[str]:
         """Return a privacy-scoped key for one Telegram sender.
 
-        Include the chat as well as the sender so an exact location shared in a
-        private chat can never surface in a group conversation. A DM's topics
-        share the same chat ID, so the location remains useful across them.
-        Prefer ``sender_chat`` when present because Telegram may also provide a
-        synthetic ``from_user`` for anonymous-admin/on-behalf-of messages.
-        Otherwise scope ordinary messages to their user and destination chat.
+        Include bot identity, chat, and sender so an exact location cannot
+        cross bot credentials, conversations, or users. A DM's topics share
+        the same chat ID, so the location remains useful across them. Fail
+        closed for ``sender_chat`` messages: Telegram uses that shared persona
+        for anonymous-admin/on-behalf-of posts, so it cannot identify the
+        individual who should receive the coordinates on a later turn.
         """
+        prefix = f"bot:{self._background_location_bot_scope}"
         chat_id = getattr(getattr(message, "chat", None), "id", None)
         sender_chat_id = getattr(getattr(message, "sender_chat", None), "id", None)
-        if sender_chat_id is not None and chat_id is not None:
-            return f"chat:{chat_id}:sender_chat:{sender_chat_id}"
+        if sender_chat_id is not None:
+            return None
         user_id = getattr(getattr(message, "from_user", None), "id", None)
         if user_id is not None and chat_id is not None:
-            return f"chat:{chat_id}:user:{user_id}"
-        if chat_id is not None:
-            return f"chat:{chat_id}"
+            key = f"{prefix}:chat:{chat_id}:user:{user_id}"
+            chat_type = str(
+                getattr(getattr(message, "chat", None), "type", "") or ""
+            ).lower()
+            thread_id = self._effective_message_thread_id(message)
+            if chat_type not in {"private", "dm"} and thread_id is not None:
+                key += f":thread:{thread_id}"
+            return key
         return None
 
     def _load_background_location_records(self) -> Dict[str, dict]:
@@ -8108,19 +8245,41 @@ class TelegramAdapter(BasePlatformAdapter):
         if path is None:
             from hermes_constants import get_hermes_home
 
-            path = get_hermes_home() / "state" / "telegram_background_locations.json"
+            path = (
+                get_hermes_home()
+                / "state"
+                / "telegram_background_locations"
+                / f"{self._background_location_bot_scope}.json"
+            )
             self._background_location_state_path = path
 
         records: Dict[str, dict] = {}
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            raw_records = payload.get("locations", {}) if isinstance(payload, dict) else {}
+            with path.open("rb") as state_file:
+                raw_payload = state_file.read(
+                    self._BACKGROUND_LOCATION_MAX_STATE_BYTES + 1
+                )
+            if len(raw_payload) > self._BACKGROUND_LOCATION_MAX_STATE_BYTES:
+                raise ValueError("background location state exceeds size limit")
+            payload = json.loads(raw_payload)
+            if not isinstance(payload, dict) or payload.get("version") != (
+                self._BACKGROUND_LOCATION_STATE_VERSION
+            ):
+                raise ValueError("unsupported background location state version")
+            raw_records = payload.get("locations", {})
             if isinstance(raw_records, dict):
-                records = {
-                    str(key): value
+                valid_records = [
+                    (str(key), value)
                     for key, value in raw_records.items()
-                    if isinstance(value, dict)
-                }
+                    if str(key).startswith("bot:") and isinstance(value, dict)
+                ]
+                valid_records.sort(
+                    key=lambda item: str(item[1].get("recorded_at", "")),
+                    reverse=True,
+                )
+                records = dict(
+                    valid_records[: self._BACKGROUND_LOCATION_MAX_SUBJECTS]
+                )
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError):
@@ -8188,6 +8347,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return a non-negative integer without accepting booleans."""
         if isinstance(value, bool):
             return None
+        if isinstance(value, timedelta):
+            seconds = value.total_seconds()
+            if seconds < 0 or not seconds.is_integer():
+                return None
+            return int(seconds)
         try:
             number = int(value)
         except (TypeError, ValueError):
@@ -8247,13 +8411,47 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[Telegram] Ignoring background location with invalid coordinates")
             return False
 
-        live_period = getattr(location, "live_period", None)
+        live_period = self._coerce_nonnegative_int(
+            getattr(location, "live_period", None)
+        )
+        if live_period == 0:
+            live_period = None
         edited = bool(
             getattr(update, "edited_message", None)
             or getattr(update, "edited_channel_post", None)
         )
+        records = dict(self._load_background_location_records())
+        existing_record = records.get(subject_key)
+        telegram_timestamp = self._background_location_timestamp(
+            getattr(message, "edit_date", None) or getattr(message, "date", None)
+        )
+        update_id = self._coerce_nonnegative_int(getattr(update, "update_id", None))
+
+        # Telegram exposes ``Location.live_period`` only while a live location
+        # is active. An edited copy of the same live-location message without
+        # that field is its stop update; remove the retained coordinate.
+        if (
+            edited
+            and live_period is None
+            and isinstance(existing_record, dict)
+            and existing_record.get("source") == "live_location"
+            and str(existing_record.get("message_id", ""))
+            == str(getattr(message, "message_id", ""))
+        ):
+            stop_marker: Dict[str, Any] = {}
+            if telegram_timestamp:
+                stop_marker["telegram_timestamp"] = telegram_timestamp
+            if update_id is not None:
+                stop_marker["update_id"] = str(update_id)
+            if self._background_location_candidate_is_newer(
+                existing_record, stop_marker
+            ):
+                records.pop(subject_key, None)
+                return self._write_background_location_records(records)
+            return True
+
         source_kind = "venue" if venue is not None else (
-            "live_location" if live_period is not None or edited else "location"
+            "live_location" if live_period is not None else "location"
         )
         now = datetime.now(timezone.utc)
         record: Dict[str, Any] = {
@@ -8265,7 +8463,6 @@ class TelegramAdapter(BasePlatformAdapter):
             "chat_id": str(getattr(getattr(message, "chat", None), "id", "")),
             "message_id": str(getattr(message, "message_id", "")),
         }
-        update_id = self._coerce_nonnegative_int(getattr(update, "update_id", None))
         if update_id is not None:
             record["update_id"] = str(update_id)
 
@@ -8279,9 +8476,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if thread_id is not None:
             record["thread_id"] = str(thread_id)
 
-        telegram_timestamp = self._background_location_timestamp(
-            getattr(message, "edit_date", None) or getattr(message, "date", None)
-        )
         if telegram_timestamp:
             record["telegram_timestamp"] = telegram_timestamp
 
@@ -8291,11 +8485,16 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             if number is not None:
                 record[key] = number
-        try:
-            if live_period is not None and int(live_period) > 0:
-                record["live_period"] = int(live_period)
-        except (TypeError, ValueError):
-            pass
+        if live_period is not None:
+            record["live_period"] = live_period
+            live_started_at = self._parse_background_location_datetime(
+                self._background_location_timestamp(getattr(message, "date", None))
+            ) or now
+            record["live_started_at"] = live_started_at.isoformat()
+            if live_period != self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD:
+                record["live_expires_at"] = (
+                    live_started_at + timedelta(seconds=live_period)
+                ).isoformat()
 
         if venue is not None:
             from gateway.session import neutralize_untrusted_inline_text
@@ -8320,7 +8519,6 @@ class TelegramAdapter(BasePlatformAdapter):
             if venue_data:
                 record["venue"] = venue_data
 
-        records = dict(self._load_background_location_records())
         if not self._background_location_candidate_is_newer(
             records.get(subject_key),
             record,
@@ -8339,6 +8537,10 @@ class TelegramAdapter(BasePlatformAdapter):
             records.clear()
             records.update(newest)
 
+        return self._write_background_location_records(records)
+
+    def _write_background_location_records(self, records: Dict[str, dict]) -> bool:
+        """Atomically replace bot-scoped state and publish the cache on success."""
         payload = {
             "version": self._BACKGROUND_LOCATION_STATE_VERSION,
             "locations": records,
@@ -8366,28 +8568,64 @@ class TelegramAdapter(BasePlatformAdapter):
         update: Update,
         message: Message,
     ) -> bool:
-        """Serialize an atomic whole-state write without blocking the event loop.
+        """Run one bounded atomic write without blocking shutdown on stuck I/O.
 
-        A cancelled coroutine still waits for its worker while holding the lock:
-        ``asyncio.to_thread`` cannot stop an in-flight write, and releasing the
-        lock early would let the next update race that whole-state replacement.
+        Filesystem syscalls cannot be cancelled safely. The worker is therefore
+        a daemon thread, while this coroutine has a deadline. If cancellation or
+        a timeout leaves the worker alive, later updates fail closed instead of
+        racing a second whole-state replacement.
         """
         async with self._background_location_write_lock:
-            write_task = asyncio.create_task(
-                asyncio.to_thread(
-                    self._record_background_location,
-                    update,
-                    message,
+            active_thread = self._background_location_write_thread
+            if active_thread is not None and active_thread.is_alive():
+                logger.warning(
+                    "[Telegram] Background location state write is still in "
+                    "progress; dropping a newer update to avoid a file race"
                 )
+                return False
+
+            loop = asyncio.get_running_loop()
+            result_future = loop.create_future()
+
+            def _resolve_result(result: bool) -> None:
+                if not result_future.done():
+                    result_future.set_result(result)
+
+            def _write() -> None:
+                try:
+                    result = bool(self._record_background_location(update, message))
+                except BaseException:
+                    logger.warning(
+                        "[Telegram] Unexpected background location write failure",
+                        exc_info=True,
+                    )
+                    result = False
+                try:
+                    loop.call_soon_threadsafe(_resolve_result, result)
+                except RuntimeError:
+                    # The event loop may already be closed during shutdown. The
+                    # daemon worker can finish independently without blocking it.
+                    pass
+
+            worker = threading.Thread(
+                target=_write,
+                name="telegram-background-location-writer",
+                daemon=True,
             )
+            self._background_location_write_thread = worker
+            worker.start()
             try:
-                return await asyncio.shield(write_task)
-            except asyncio.CancelledError:
-                # ``to_thread`` cannot stop the worker. Keep the lock until it
-                # exits so a replacement/reconnect update cannot race a
-                # whole-state write that is still in flight.
-                await asyncio.shield(write_task)
-                raise
+                return await asyncio.wait_for(
+                    asyncio.shield(result_future),
+                    timeout=self._BACKGROUND_LOCATION_WRITE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Telegram] Background location state write exceeded %.1fs; "
+                    "continuing without waiting for the filesystem",
+                    self._BACKGROUND_LOCATION_WRITE_TIMEOUT_SECONDS,
+                )
+                return False
 
     def _is_background_location_authorized(self, message: Message) -> bool:
         """Require a definitive gateway auth decision before retaining state.
@@ -8462,6 +8700,16 @@ class TelegramAdapter(BasePlatformAdapter):
         source = record.get("source")
         if source not in {"location", "live_location", "venue"}:
             source = "location"
+        if source == "live_location":
+            live_period = self._coerce_nonnegative_int(record.get("live_period"))
+            if live_period is None:
+                return None
+            if live_period != self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD:
+                expires_at = self._parse_background_location_datetime(
+                    record.get("live_expires_at")
+                )
+                if expires_at is None or datetime.now(timezone.utc) >= expires_at:
+                    return None
         recorded_at = self._parse_background_location_datetime(
             record.get("telegram_timestamp")
         ) or self._parse_background_location_datetime(record.get("recorded_at"))
@@ -8622,20 +8870,28 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching.
+        """Session- and sender-scoped key for text message batching.
 
         Applies the installed topic-recovery hook first so DM-topic batches
         coalesce on (and dispatch to) the recovered lane rather than the
-        raw inbound ``message_thread_id`` Telegram may have attached.
+        raw inbound ``message_thread_id`` Telegram may have attached. Sender
+        scoping is independent of downstream shared-session policy: ingress
+        chunks from different people must never share volatile user context.
         """
         from gateway.session import build_session_key
         self._apply_topic_recovery(event)
-        return build_session_key(
+        session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
             profile=event.source.profile,
         )
+        sender_id = str(getattr(event.source, "user_id", "") or "").strip()
+        if not sender_id:
+            raw_message = getattr(event, "raw_message", None)
+            sender = getattr(raw_message, "from_user", None)
+            sender_id = str(getattr(sender, "id", "") or "").strip()
+        return f"{session_key}:ingress-sender:{sender_id or 'unknown'}"
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.

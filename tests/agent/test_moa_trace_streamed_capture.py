@@ -16,6 +16,7 @@ with real file I/O against a temp HERMES_HOME — no mocks on the write path.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,3 +154,54 @@ def test_empty_fallback_string_treated_as_missing(tmp_path, monkeypatch):
     agg = rec["aggregator"]
     assert agg["output"] is None
     assert agg["output_location"] == "assistant_message_in_session_db"
+
+
+def test_volatile_platform_context_is_omitted_from_all_trace_inputs(
+    tmp_path, monkeypatch
+):
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    mc = _make_completions_with_pending(streamed=False, inline_output="answer")
+    volatile = "[Background Telegram location context]\nLatitude: 48.8584"
+    mc._pending_trace["aggregator_input_messages"][1]["content"] += (
+        f"\n\n{volatile}"
+    )
+    account = SimpleNamespace(
+        usage=None,
+        model="reference-model",
+        provider="test",
+        temperature=0.2,
+        messages=[{"role": "user", "content": f"question\n\n{volatile}"}],
+        output="reference answer",
+        cost_usd=None,
+        cost_status=None,
+        cost_source=None,
+    )
+    mc._pending_trace["reference_outputs"] = [
+        ("test:reference-model", "reference answer", account)
+    ]
+
+    mc.consume_and_save_trace(
+        "sess_redacted",
+        input_redactions=[volatile],
+    )
+
+    record = _read_single_trace(trace_dir, "sess_redacted")
+    serialized = json.dumps(record)
+    assert volatile not in serialized
+    assert "Latitude: 48.8584" not in serialized
+    assert "[volatile user context omitted]" in serialized
+
+
+def test_short_redaction_does_not_corrupt_unrelated_trace_text(tmp_path, monkeypatch):
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    mc = _make_completions_with_pending(streamed=False, inline_output="answer")
+    mc._pending_trace["aggregator_input_messages"][1]["content"] = (
+        "alpha beta\n\na"
+    )
+
+    mc.consume_and_save_trace("sess_short", input_redactions=["a"])
+
+    record = _read_single_trace(trace_dir, "sess_short")
+    assert record["aggregator"]["input_messages"][1]["content"] == (
+        "alpha beta\n\n[volatile user context omitted]"
+    )

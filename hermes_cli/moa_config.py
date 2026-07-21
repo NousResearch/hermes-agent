@@ -295,7 +295,13 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     preset_name = str(name or cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
     preset = cfg["presets"].get(preset_name)
     if preset is None:
-        raise KeyError(preset_name)
+        from agent.errors import MoAPresetNotFoundError
+
+        available = ", ".join(cfg["presets"]) or "(none)"
+        raise MoAPresetNotFoundError(
+            f"MoA preset '{preset_name}' was not found. Available presets: "
+            f"{available}. Run `hermes moa list`."
+        )
     return deepcopy(preset)
 
 

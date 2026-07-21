@@ -445,6 +445,40 @@ class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
 
+    def test_list_content_flattened_no_crash(self, agent):
+        """Anthropic-via-OpenRouter returns content as a block list.
+
+        A raw list reaching ``re.sub`` raised ``TypeError: expected string
+        or bytes-like object, got 'list'``, which the outer conversation
+        loop swallowed and retried forever (infinite "preparing terminal…"
+        loop). ``strip_think_blocks`` must flatten list content to visible
+        text and drop reasoning blocks.
+        """
+        result = agent._strip_think_blocks(
+            [
+                {"type": "text", "text": "visible answer"},
+                {"type": "thinking", "thinking": "internal reasoning"},
+            ]
+        )
+        assert isinstance(result, str)
+        assert "visible answer" in result
+        assert "internal reasoning" not in result
+
+    def test_dict_content_flattened_no_crash(self, agent):
+        """Some servers return content as a single dict block."""
+        result = agent._strip_think_blocks({"type": "text", "text": "hello world"})
+        assert isinstance(result, str)
+        assert "hello world" in result
+
+    def test_list_of_only_thinking_returns_empty(self, agent):
+        """A list carrying only reasoning blocks yields no visible text."""
+        assert (
+            agent._strip_think_blocks([{"type": "thinking", "thinking": "x"}]) == ""
+        )
+
+    def test_empty_list_returns_empty(self, agent):
+        assert agent._strip_think_blocks([]) == ""
+
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
@@ -4225,6 +4259,35 @@ class TestRunConversation:
             for call in persist_session.call_args_list
         )
 
+    def test_ephemeral_user_context_survives_history_repair_reindex(self, agent):
+        """Dropping an orphan tool before the current turn must not lose it."""
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+        malformed_history = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "tool", "tool_call_id": "orphan", "content": "result"},
+        ]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation(
+                "current question",
+                conversation_history=malformed_history,
+                ephemeral_user_context="[Volatile location] 5.0, 6.0",
+            )
+
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert api_messages[-1]["role"] == "user"
+        assert api_messages[-1]["content"] == (
+            "current question\n\n[Volatile location] 5.0, 6.0"
+        )
+
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)
         agent.api_mode = "codex_responses"
@@ -4390,6 +4453,45 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+
+    def test_volatile_context_reaches_provider_but_not_observer_hooks(self, agent):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Done", finish_reason="stop"
+        )
+        volatile = "[Background Telegram location context]\nLatitude: 1.0"
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "pre_api_request",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation(
+                "Where am I?",
+                ephemeral_user_context=volatile,
+            )
+
+        provider_payload = agent.client.chat.completions.create.call_args.kwargs
+        provider_user = next(
+            message
+            for message in provider_payload["messages"]
+            if message["role"] == "user"
+        )
+        assert volatile in provider_user["content"]
+        pre_hook = next(kwargs for name, kwargs in hook_calls if name == "pre_api_request")
+        assert volatile not in str(pre_hook["request_messages"])
+        assert volatile not in str(pre_hook["request"])
+        assert "[volatile user context omitted]" in str(pre_hook["request_messages"])
 
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False
@@ -7671,13 +7773,60 @@ class TestAnthropicInterruptHandler:
         assert "anthropic_messages" in source, \
             "interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
-    def test_interruptible_rebuilds_anthropic_client(self):
-        """After interrupting, the Anthropic client should be rebuilt."""
-        import inspect
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+        """#67142: a non-streaming Anthropic interrupt must abort the
+        request-local client from the poll thread, never close/rebuild the
+        shared _anthropic_client (which raced a live SSL BIO and corrupted an
+        unrelated SQLite DB via TLS-FD recycling).
+
+        Replaces the former source-reading assertion (which asserted the old,
+        now-removed rebuild-on-interrupt behavior) with a behavior test.
+        """
+        import threading
+        import time
+        from unittest.mock import MagicMock
+        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
-        source = inspect.getsource(interruptible_api_call)
-        assert "build_anthropic_client" in source, \
-            "interruptible_api_call must rebuild Anthropic client after interrupt"
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = MagicMock()
+        agent._rebuild_anthropic_client = MagicMock()
+        request_client = MagicMock()
+        agent._create_request_anthropic_client = MagicMock(return_value=request_client)
+        agent._abort_request_anthropic_client = MagicMock()
+        agent._close_request_anthropic_client = MagicMock()
+
+        def _create(_api_kwargs, *, client):
+            assert client is request_client
+            agent._interrupt_requested = True
+            time.sleep(1.0)
+            raise RuntimeError("forced close would have happened")
+
+        agent._anthropic_messages_create = MagicMock(side_effect=_create)
+
+        t0 = time.time()
+        with pytest.raises(InterruptedError):
+            interruptible_api_call(agent, {"model": "x", "messages": []})
+        elapsed = time.time() - t0
+
+        assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+        # The shared client is never closed/rebuilt from the poll thread.
+        agent._anthropic_client.close.assert_not_called()
+        agent._rebuild_anthropic_client.assert_not_called()
+        # The poll (stranger) thread aborts the request-local client's socket.
+        agent._abort_request_anthropic_client.assert_called_once_with(
+            request_client, reason="interrupt_abort"
+        )
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""

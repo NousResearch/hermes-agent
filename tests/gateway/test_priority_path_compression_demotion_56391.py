@@ -156,3 +156,20 @@ async def test_priority_path_still_interrupts_without_compression_lock():
     await runner._handle_message(_make_event("still there?"))
 
     agent_mock.interrupt.assert_called_once_with("still there?")
+
+
+@pytest.mark.asyncio
+async def test_priority_steer_path_queues_volatile_context_intact():
+    runner, agent_mock, sk = _make_runner(compression_in_flight=False)
+    runner._busy_input_mode = "steer"
+    agent_mock.steer.return_value = True
+    event = _make_event("use my current position")
+    event.ephemeral_user_context = "Location: 1.0, 2.0"
+
+    await runner._handle_message(event)
+
+    agent_mock.steer.assert_not_called()
+    agent_mock.interrupt.assert_not_called()
+    queued = runner.adapters[Platform.TELEGRAM]._pending_messages.get(sk)
+    assert queued is event
+    assert queued.ephemeral_user_context == "Location: 1.0, 2.0"

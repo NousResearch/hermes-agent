@@ -87,6 +87,7 @@ _FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
+_NPM_ERROR_LOG_MAX_CHARS = 300
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
 # install of the pinned spectrum-ts tree normally takes well under a minute;
@@ -132,6 +133,19 @@ def _coerce_port(value: Any, default: int) -> int:
         return default
 
 
+def sidecar_deps_installed() -> bool:
+    """True when spectrum-ts is present under node_modules/.
+
+    Checks the dependency's own directory, not just node_modules/'s
+    existence: npm creates node_modules/ before aborting on ENOSPC, a
+    network timeout, or EACCES, so an empty/partial node_modules/ would
+    otherwise read as "installed". Shared by check_requirements(),
+    _start_sidecar(), and `hermes photon status` so all three agree on
+    what "installed" means.
+    """
+    return (_SIDECAR_DIR / "node_modules" / "spectrum-ts").exists()
+
+
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
@@ -143,7 +157,7 @@ def check_requirements() -> bool:
             os.getenv("PHOTON_NODE_BIN") or "node",
         )
         return False
-    if not (_SIDECAR_DIR / "node_modules" / "spectrum-ts").exists():
+    if not sidecar_deps_installed():
         # spectrum-ts not installed yet, or node_modules/ was partially created
         # by an aborted npm install (ENOSPC, network timeout, EACCES).
         # Checking spectrum-ts presence — not just node_modules/ existence —
@@ -157,7 +171,7 @@ def check_requirements() -> bool:
         npm_error = ""
         try:
             if _NPM_ERROR_LOG.exists():
-                npm_error = _NPM_ERROR_LOG.read_text(encoding="utf-8").strip()[:300]
+                npm_error = _NPM_ERROR_LOG.read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
         except OSError:
             pass
         if npm_error:
@@ -1011,7 +1025,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
     async def _start_sidecar(self) -> None:
-        if not (_SIDECAR_DIR / "node_modules").exists():
+        if not sidecar_deps_installed():
             raise RuntimeError(
                 f"Photon sidecar deps not installed. Run: "
                 f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"

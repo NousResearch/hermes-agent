@@ -152,6 +152,51 @@ def test_regression_empty_stderr_does_not_write_log(
 # 5. proc.stderr is None — no AttributeError
 # ---------------------------------------------------------------------------
 
+def test_regression_permissionerror_on_success_unlink_does_not_propagate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A successful npm install must still return 0 even if deleting the
+    stale _NPM_ERROR_LOG raises something other than FileNotFoundError
+    (e.g. PermissionError on a locked file) — the unlink is best-effort."""
+    error_log = tmp_path / ".photon-npm-error.log"
+
+    class _UnremovablePath(type(error_log)):
+        def unlink(self, *a, **kw):
+            raise PermissionError("access denied")
+
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(
+        cli_mod.subprocess, "run",
+        lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
+    )
+    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", _UnremovablePath(error_log))
+
+    rc = cli_mod._install_sidecar()
+    assert rc == 0  # PermissionError on cleanup must not fail the install
+
+
+def test_regression_long_stderr_truncated_before_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A huge npm stderr must be bounded before it hits disk, not just when
+    read back later — otherwise a verbose npm failure writes an unbounded
+    file to the sidecar directory on every retry."""
+    error_log = tmp_path / ".photon-npm-error.log"
+    huge_stderr = "npm ERR! " + ("x" * 10_000)
+
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(
+        cli_mod.subprocess, "run",
+        lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=huge_stderr),
+    )
+    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", error_log)
+
+    cli_mod._install_sidecar()
+
+    written = error_log.read_text(encoding="utf-8")
+    assert len(written) <= cli_mod._NPM_ERROR_LOG_MAX_CHARS
+
+
 def test_regression_none_stderr_does_not_crash(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

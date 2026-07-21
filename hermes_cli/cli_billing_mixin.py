@@ -262,52 +262,80 @@ class CLIBillingMixin:
         # Paid + admin/owner + interactive → the in-terminal change flow.
         self._subscription_change_menu(state, manage_url)
 
+    def _open_url_in_browser(self, url: str) -> bool:
+        """Open ``url`` in a REAL graphical browser; return whether one opened.
+
+        The one opener behind every "open the portal" path in this mixin. Applies
+        the same console-browser / remote-session guard the device-code auth flows
+        use (``hermes_cli.auth``): ``webbrowser.open()`` returns ``True`` even when
+        it launched a text-mode browser (w3m/lynx over SSH) that hijacks the TTY,
+        so we refuse those and let the caller print the URL instead. Returns
+        ``False`` on any guard refusal or open failure, ``True`` only when a real
+        graphical browser launched.
+        """
+        if not url:
+            return False
+        try:
+            from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
+
+            if _is_remote_session() or not _can_open_graphical_browser():
+                return False
+        except Exception:
+            # Guard unavailable → fall through to a plain best-effort open.
+            pass
+        try:
+            import webbrowser
+
+            return bool(webbrowser.open(url))
+        except Exception:
+            return False
+
     def _subscription_free_catalog(self, state, manage_url):
         """Free + admin/owner + interactive: print the plan catalog, pick one, then
         open the portal manage-subscription deep-link with ``plan=<tier_id>``.
 
         The catalog mirrors the TUI Free rows (name · $/mo · $credits/mo, from the
-        same ``tiers[]`` data). Monthly credits are DOLLARS — rendered ``$X
-        credits/mo``. Starting a NEW subscription needs a fresh card, so the only
-        action is the portal hand-off (the terminal never charges here); the picked
-        tier rides along as ``plan=`` so the portal preselects it.
+        same ``tiers[]`` data via the shared ``selectable_tiers`` / ``format_tier_row``
+        helpers). Monthly credits are DOLLARS — rendered ``$X credits/mo`` (hidden
+        when absent/zero). Starting a NEW subscription needs a fresh card, so the
+        only action is the portal hand-off (the terminal never charges here); the
+        picked tier rides along as ``plan=`` so the portal preselects it.
         """
         from cli import _cprint, _b, _d
 
-        from agent.billing_view import format_money
-        from agent.subscription_view import subscription_manage_url
-
-        # Catalog = enabled paid tiers (Free / tier_order 0 excluded), cheapest first.
-        tiers = sorted(
-            (t for t in (state.tiers or ()) if t.is_enabled and (t.tier_order or 0) > 0),
-            key=lambda t: t.tier_order or 0,
+        from agent.subscription_view import (
+            format_tier_row,
+            selectable_tiers,
+            subscription_manage_url,
         )
+
+        tiers = selectable_tiers(state)
         if not tiers:
             # No catalog to show → the plain portal hand-off (no plan= to append).
             self._subscription_open_portal(state, manage_url, verb="Start a subscription")
             return
 
-        def _row(t) -> str:
-            return (
-                f"{t.name} · {format_money(t.dollars_per_month)}/mo · "
-                f"{format_money(t.monthly_credits)} credits/mo"
-            )
-
         print()
         _cprint(f"  ⚕ {_b('Choose a plan')}")
         print(f"  {'─' * 41}")
         for i, t in enumerate(tiers, 1):
-            print(f"  {i}. {_row(t)}")
+            print(f"  {i}. {format_tier_row(t)}")
         _cprint(f"  {_d('Starting a subscription opens the portal to add your card.')}")
 
-        choices = [(t.tier_id, _row(t), f"start {t.name} on the portal") for t in tiers]
+        choices = [(t.tier_id, format_tier_row(t), f"start {t.name} on the portal") for t in tiers]
         choices.append(("cancel", "Cancel", "do nothing"))
         raw = self._prompt_text_input_modal(
             title="Start a subscription",
             detail="Pick a plan to open it on the portal.",
             choices=choices,
         )
-        choice = self._normalize_slash_confirm_choice(raw, choices)
+        # The rows are printed numbered, so accept a bare number as a pick (the
+        # shared normalizer only knows the confirm-dialog digit aliases).
+        _digit = (raw or "").strip()
+        if _digit.isdigit() and 1 <= int(_digit) <= len(tiers):
+            choice = tiers[int(_digit) - 1].tier_id
+        else:
+            choice = self._normalize_slash_confirm_choice(raw, choices)
         if not choice or choice == "cancel":
             print("  🟡 Cancelled. No plan started.")
             return
@@ -319,17 +347,11 @@ class CLIBillingMixin:
             return
         picked = next((t for t in tiers if t.tier_id == choice), None)
         label = picked.name if picked else "your plan"
-        opened = False
-        try:
-            import webbrowser
-
-            opened = webbrowser.open(tier_url)
-        except Exception:
-            opened = False
-        if opened:
+        if self._open_url_in_browser(tier_url):
             print(f"  Opening the portal to start {label}…")
         else:
-            # No browser (headless / SSH): print the link so it stays actionable.
+            # No graphical browser (headless / SSH / console browser): print the
+            # link so it stays actionable.
             print(f"  Open this URL to start {label}: {tier_url}")
         print("  Finish in your browser, then re-run /subscription.")
 
@@ -350,14 +372,7 @@ class CLIBillingMixin:
         raw = self._prompt_text_input_modal(title=verb, detail="", choices=choices)
         choice = self._normalize_slash_confirm_choice(raw, choices)
         if choice == "open":
-            opened = False
-            try:
-                import webbrowser
-
-                opened = webbrowser.open(manage_url)
-            except Exception:
-                opened = False
-            if not opened:
+            if not self._open_url_in_browser(manage_url):
                 print(f"  Open this URL: {manage_url}")
             print()
             print("  Finish in your browser, then re-run /subscription.")
@@ -406,24 +421,20 @@ class CLIBillingMixin:
 
     def _subscription_pick_tier(self, state):
         """Tier picker → preview → confirm (mirrors the TUI picker screen)."""
-        from agent.billing_view import format_money
+        from agent.subscription_view import format_tier_row, is_upgrade, selectable_tiers
 
         c = state.current
-        tiers = tuple(state.tiers or ())
-        cur_order = next((t.tier_order for t in tiers if t.is_current), 0)
         # Selectable = enabled paid tiers other than current (free/no-sub excluded;
         # dropping to free is a cancellation, on the change menu). Sorted by price.
-        selectable = sorted(
-            [t for t in tiers if t.is_enabled and not t.is_current and (t.tier_order or 0) > 0],
-            key=lambda t: t.tier_order or 0,
-        )
+        # Shared with the Free catalog + blocked-preview branch (one derivation).
+        selectable = selectable_tiers(state)
         if not selectable:
             print("  No other plans are available to switch to right now.")
             return
         choices = []
         for t in selectable:
-            direction = "upgrade" if (t.tier_order or 0) > cur_order else "downgrade"
-            choices.append((t.tier_id, f"{t.name} · {format_money(t.dollars_per_month)}/mo · {direction}", f"switch to {t.name}"))
+            direction = "upgrade" if is_upgrade(state, t.tier_id) else "downgrade"
+            choices.append((t.tier_id, f"{format_tier_row(t)} · {direction}", f"switch to {t.name}"))
         choices.append(("cancel", "Back", "do nothing"))
         raw = self._prompt_text_input_modal(
             title="Change plan",
@@ -474,13 +485,11 @@ class CLIBillingMixin:
             # tier rides along as plan= only for an UPGRADE hand-off — new-sub /
             # upgrade deep-links carry the plan; downgrades stay native (binding
             # ruling), so a blocked downgrade keeps the generic manage link.
-            from agent.subscription_view import subscription_manage_url
+            from agent.subscription_view import is_upgrade, subscription_manage_url
 
-            _orders = {t.tier_id: (t.tier_order or 0) for t in (state.tiers or ())}
-            _cur_order = _orders.get(state.current.tier_id, 0) if state.current else 0
-            _is_upgrade = _orders.get(tier_id, 0) > _cur_order
+            _plan = tier_id if is_upgrade(state, tier_id) else None
             _cprint(f"  🟡 {p.reason or 'This change cannot be confirmed here — manage it on the portal.'}")
-            _mu = subscription_manage_url(state, tier_id=tier_id if _is_upgrade else None)
+            _mu = subscription_manage_url(state, tier_id=_plan)
             if _mu:
                 print(f"  Manage on portal: {_mu}")
             return
@@ -864,7 +873,14 @@ class CLIBillingMixin:
         # copy). "credits" stays out of the dollars-only /topup surface: "Add funds
         # now" carries the one-time meaning without it.
         _cprint(f"  {_d('Add funds now — a single charge, added to your balance today.')}")
-        if ar is not None and ar.enabled:
+        if (
+            ar is not None
+            and ar.enabled
+            and ar.reload_to_usd is not None
+            and ar.reload_to_usd.is_finite()
+            and ar.threshold_usd is not None
+            and ar.threshold_usd.is_finite()
+        ):
             _auto_line = (
                 f"Refill when low — charges {format_money(ar.reload_to_usd)} automatically "
                 f"when your balance falls below {format_money(ar.threshold_usd)}."
@@ -934,14 +950,7 @@ class CLIBillingMixin:
         if not url:
             print("  No portal URL available.")
             return
-        opened = False
-        try:
-            import webbrowser
-
-            opened = webbrowser.open(url)
-        except Exception:
-            opened = False
-        if not opened:
+        if not self._open_url_in_browser(url):
             print(f"  Open this URL: {url}")
         print("  Complete billing changes in the browser.")
 

@@ -84,18 +84,27 @@ def _free_state(tiers=_FREE_TIERS) -> SubscriptionState:
     )
 
 
+def _capture_opener(monkeypatch, *, opened_ok=False):
+    """Patch the canonical browser opener to capture the URL; return whether a
+    real browser 'opened' (default False → the printed-URL fallback fires)."""
+    seen = {}
+
+    def _open(self, url):
+        seen["url"] = url
+        return opened_ok
+
+    monkeypatch.setattr(HermesCLI, "_open_url_in_browser", _open, raising=False)
+    return seen
+
+
 def test_free_prints_catalog_and_deep_links_with_plan(cli, monkeypatch, capsys):
     # (a)+(b): Free + admin + interactive prints the plan catalog (name · $/mo ·
-    # $credits/mo) and a numbered pick opens the portal deep-link with plan=<tier_id>.
+    # $credits/mo) and a pick opens the portal deep-link with plan=<tier_id>.
     cli._app = object()  # interactive
     monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _free_state())
     # catalog pick → "plus" (single modal; the pick opens the portal directly)
     monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("plus"), raising=False)
-    # Capture the opened URL; return False so the fallback also prints it.
-    import webbrowser
-
-    opened = {}
-    monkeypatch.setattr(webbrowser, "open", lambda url: opened.update(url=url) or False)
+    opened = _capture_opener(monkeypatch)  # returns False → URL also printed
 
     cli._show_subscription()
     out = capsys.readouterr().out
@@ -110,6 +119,24 @@ def test_free_prints_catalog_and_deep_links_with_plan(cli, monkeypatch, capsys):
     # carries plan=<picked tier>, org_id first, plan second.
     assert opened.get("url") == "https://portal.example/manage-subscription?org_id=org_1&plan=plus"
     assert "/manage-subscription?org_id=org_1&plan=plus" in out
+    assert "start Plus" in out
+
+
+def test_free_numbered_pick_stdin_fallback_opens_tier(cli, monkeypatch, capsys):
+    # (1): the numbered contract — a bare digit through the modal's stdin fallback
+    # maps to the Nth printed row and opens THAT tier's deep-link. The shared
+    # normalizer only knows confirm-dialog digit aliases, so this path is bespoke.
+    cli._app = object()
+    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _free_state())
+    # Row 1 = Plus (cheapest selectable). Feed a bare "1" as the stdin fallback.
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("1"), raising=False)
+    opened = _capture_opener(monkeypatch)
+
+    cli._show_subscription()
+    out = capsys.readouterr().out
+
+    # "1" resolved to Plus (row 1), not to the normalizer's alias → Plus URL opens.
+    assert opened.get("url") == "https://portal.example/manage-subscription?org_id=org_1&plan=plus"
     assert "start Plus" in out
 
 
@@ -137,6 +164,55 @@ def test_free_no_paid_tiers_falls_back_to_plain_portal(cli, monkeypatch, capsys)
 
     assert "Choose a plan" not in out  # no catalog
     assert "plan=" not in out
+
+
+# ── canonical browser opener (guarded like the device-code auth flows) ──
+
+
+def test_open_url_in_browser_refuses_remote_session(cli, monkeypatch):
+    # (4): a remote/SSH session must NOT auto-open — webbrowser.open is never called.
+    import webbrowser
+
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(auth, "_is_remote_session", lambda: True, raising=False)
+    called = {"n": 0}
+    monkeypatch.setattr(webbrowser, "open", lambda url: called.update(n=called["n"] + 1) or True)
+
+    assert cli._open_url_in_browser("https://x.example") is False
+    assert called["n"] == 0  # guard short-circuits before webbrowser.open
+
+
+def test_open_url_in_browser_refuses_console_browser(cli, monkeypatch):
+    # (4): a console/text-mode browser (w3m/lynx) must NOT hijack the TTY.
+    import webbrowser
+
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(auth, "_is_remote_session", lambda: False, raising=False)
+    monkeypatch.setattr(auth, "_can_open_graphical_browser", lambda: False, raising=False)
+    called = {"n": 0}
+    monkeypatch.setattr(webbrowser, "open", lambda url: called.update(n=called["n"] + 1) or True)
+
+    assert cli._open_url_in_browser("https://x.example") is False
+    assert called["n"] == 0
+
+
+def test_open_url_in_browser_opens_when_graphical(cli, monkeypatch):
+    # (4): a real graphical browser → open and report True.
+    import webbrowser
+
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(auth, "_is_remote_session", lambda: False, raising=False)
+    monkeypatch.setattr(auth, "_can_open_graphical_browser", lambda: True, raising=False)
+    monkeypatch.setattr(webbrowser, "open", lambda url: True)
+
+    assert cli._open_url_in_browser("https://x.example") is True
+
+
+def test_open_url_in_browser_empty_is_false(cli):
+    assert cli._open_url_in_browser("") is False
 
 
 def test_blocked_upgrade_fallback_carries_plan_param(cli, monkeypatch, capsys):

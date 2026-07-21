@@ -195,6 +195,31 @@ def test_topup_overview_automatic_copy_names_amounts_when_on(cli, monkeypatch, c
     assert "Refill when low — charges $20 automatically when your balance falls below $5." in out
 
 
+def test_topup_automatic_copy_generic_when_amounts_missing(cli, monkeypatch, capsys):
+    # (5): auto-reload "enabled" but amounts absent (partial response) → generic
+    # copy, never "charges — automatically … below —.".
+    from agent.billing_view import AutoReload
+
+    cli._app = object()
+    state = BillingState(
+        logged_in=True, role="OWNER", balance_usd=Decimal("50"),
+        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
+        card=CardInfo(brand="Visa", last4="4242"),
+        auto_reload=AutoReload(enabled=True, threshold_usd=None, reload_to_usd=None),
+        portal_url="https://portal/billing",
+    )
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("cancel"), raising=False)
+    cli._show_billing("/topup")
+    out = capsys.readouterr().out
+
+    assert (
+        "Refill when low — charges your card automatically when your balance "
+        "falls below the amount you set."
+    ) in out
+    assert "charges — automatically" not in out
+
+
 def test_overview_shows_card_with_provenance(cli, monkeypatch, capsys):
     state = BillingState(
         logged_in=True, role="OWNER", balance_usd=Decimal("10"),

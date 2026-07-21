@@ -4270,15 +4270,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            # Reaching here means _call_once() returned rather than raising —
+            # the transport delivered a response, so the server IS reachable,
+            # even when the tool itself reports an application-level error
+            # (e.g. CBM "function not found" / "project not found", surfaced via
+            # MCP isError). Such domain errors are NOT reachability failures:
+            # previously any {"error"} payload bumped the breaker, so 3 bad
+            # symbol lookups tripped a false "server unreachable" 60s cooldown
+            # while CBM was perfectly healthy (2026-07-21 曼联 charge 排查实发).
+            # Only genuine transport failures count: exceptions (except below)
+            # and the not-connected/dead-session paths above already bump. A
+            # delivered response — success or app-error — resets.
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

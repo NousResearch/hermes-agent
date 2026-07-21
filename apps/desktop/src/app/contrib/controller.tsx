@@ -5,6 +5,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { IdleMount } from '@/components/idle-mount'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -51,6 +52,7 @@ import {
 import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/preview'
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -89,6 +91,10 @@ import { ContribWiring, WiredPane } from './wiring'
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
 const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+
+// Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
+// them to idle so they're off the first-paint path, warm before reveal.
+const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
 // The main tab carries the same session context menu as tile tabs (targets
 // the loaded primary session; no menu on a fresh draft).
 const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
@@ -181,7 +187,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <FilesPane />
+    render: () => idle(<FilesPane />)
   },
   {
     id: 'preview',
@@ -199,7 +205,7 @@ registry.registerMany([
       minWidth: PREVIEW_RAIL_MIN_WIDTH,
       maxWidth: PREVIEW_RAIL_MAX_WIDTH
     },
-    render: () => <PreviewRailPane />
+    render: () => idle(<PreviewRailPane />)
   },
   {
     id: 'review',
@@ -215,7 +221,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <ReviewPaneContent />
+    render: () => idle(<ReviewPaneContent />)
   },
   {
     // Optional chrome — in NO default layout. Adoption stacks it with the
@@ -226,7 +232,7 @@ registry.registerMany([
     // revealOnPreset: the Quad layout places logs, so applying it turns the
     // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
-    render: () => <LogsPane />
+    render: () => idle(<LogsPane />)
   }
 ])
 
@@ -403,6 +409,9 @@ const syncWorkspaceTitle = () => {
     area: 'panes',
     title: stored ? storedSessionTitle(stored) : 'New session',
     data: {
+      // The tab's lead dot — same shared map the sidebar row reads, so the
+      // main tab and its sidebar row always show the same color.
+      accent: sessionColorFor(stored),
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       placement: 'main',
@@ -417,6 +426,7 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+$sessionColorById.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the

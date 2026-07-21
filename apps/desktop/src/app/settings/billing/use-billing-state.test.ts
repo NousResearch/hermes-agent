@@ -65,7 +65,7 @@ describe('deriveBillingView', () => {
     const buyCredits = view.accountRows.find(row => row.id === 'buy_credits')
 
     expect(buyCredits?.description).toBe(
-      'Terminal billing is off for this account — an admin must enable it on the portal.'
+      "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page."
     )
     expect(buyCredits?.chips).toBeUndefined()
     expect(view.accountRows.find(row => row.id === 'auto_reload')).toMatchObject({
@@ -182,6 +182,103 @@ describe('deriveBillingView', () => {
       caption: 'Subscription details are unavailable; opening the portal is still available.',
       value: 'Ultra'
     })
+  })
+
+  it('free with catalog: tier chips render inline and open the portal', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        context: 'personal',
+        current: null,
+        tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0',
+            name: 'Free',
+            tier_id: 'free',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$40',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '3000',
+            name: 'Ultra',
+            tier_id: 'ultra',
+            tier_order: 2
+          },
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '1000',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    const subscription = view.accountRows.find(row => row.id === 'subscription')
+
+    expect(subscription?.description).toBe('Paid models need a subscription — pick a plan to start it on the portal.')
+    expect(subscription?.chips).toEqual([
+      { disabled: false, label: 'Plus · $20/mo · $1,000 credits/mo', url: subscription?.action?.url },
+      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: subscription?.action?.url }
+    ])
+  })
+
+  it('subscriber who can change plans: current tier marked inert, others open the portal', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        context: 'personal',
+        tiers: [
+          {
+            dollars_per_month_display: '$20',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '1000',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 1
+          },
+          {
+            dollars_per_month_display: '$40',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '3000',
+            name: 'Ultra',
+            tier_id: 'ultra',
+            tier_order: 2
+          }
+        ]
+      })
+    )
+
+    const subscription = view.accountRows.find(row => row.id === 'subscription')
+
+    expect(subscription?.chips).toEqual([
+      { disabled: true, label: '✓ Plus · $20/mo · $1,000 credits/mo' },
+      { disabled: false, label: 'Ultra · $40/mo · $3,000 credits/mo', url: subscription?.action?.url }
+    ])
+  })
+
+  it('members and team contexts get no tier chips', () => {
+    const member = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
+    )
+
+    const team = deriveBillingView(okBilling(todayBillingState), okSubscription(todaySubscriptionState))
+
+    expect(member.accountRows.find(row => row.id === 'subscription')?.chips).toBeUndefined()
+    expect(team.accountRows.find(row => row.id === 'subscription')?.chips).toBeUndefined()
   })
 
   it('clamps overdrawn subscription credits to $0 and names the overage', () => {

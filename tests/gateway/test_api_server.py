@@ -330,7 +330,7 @@ class TestAdapterInit:
         adapter = APIServerAdapter(config)
         assert adapter._port == 8642
 
-    def test_create_agent_forwards_config_reasoning_effort(self, monkeypatch):
+    def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
 
         class FakeAgent:
@@ -349,7 +349,15 @@ class TestAdapterInit:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
         monkeypatch.setattr(
             "gateway.run._load_gateway_config",
-            lambda: {"agent": {"reasoning_effort": "xhigh"}},
+            lambda: {
+                "agent": {"reasoning_effort": "xhigh"},
+                "checkpoints": {
+                    "enabled": True,
+                    "max_snapshots": 7,
+                    "max_total_size_mb": 321,
+                    "max_file_size_mb": 4,
+                },
+            },
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
@@ -365,6 +373,10 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert captured["checkpoints_enabled"] is True
+        assert captured["checkpoint_max_snapshots"] == 7
+        assert captured["checkpoint_max_total_size_mb"] == 321
+        assert captured["checkpoint_max_file_size_mb"] == 4
 
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}
@@ -4249,3 +4261,129 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Event-loop offloading for synchronous SessionDB calls (P1)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionDbOffEventLoop:
+    """Regression: synchronous SessionDB calls in the OpenAI-compatible API
+    server must run OFF the aiohttp event loop. A blocking SQLite read/write on
+    the loop freezes every in-flight request under load (same class of bug as
+    gateway build_channel_directory, #60794 / #60810), so each call is wrapped
+    in asyncio.to_thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_existing_session_or_404_offloads(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def get_session(self, session_id):
+                captured["thread"] = threading.current_thread()
+                return {"id": session_id, "source": "api_server"}
+
+        auth_adapter._session_db = FakeDB()
+        session, err = await auth_adapter._get_existing_session_or_404("sess-x")
+        assert err is None
+        assert session["id"] == "sess-x"
+        # The blocking DB call must NOT execute on the event-loop thread.
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_offloads_db_off_event_loop(self, auth_adapter):
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["thread"] = threading.current_thread()
+                return []
+
+        auth_adapter._session_db = FakeDB()
+        app = _create_app(auth_adapter)
+        app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/sessions",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+        assert resp.status == 200
+        assert captured["thread"] is not None
+        assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_id_create_one_201_one_409(self, auth_adapter):
+        """Two concurrent creates for the same ID must yield one 201 and one 409.
+
+        The create sequence (existence check + insert + title) runs as a
+        single off-loop call, so concurrent same-ID requests serialize at
+        the DB level.  Before the fix the TOCTOU window between the check
+        and the insert let both requests pass the existence guard and both
+        return 201 via the ON CONFLICT enrichment upsert.
+        """
+        import asyncio
+
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            # Fire both requests concurrently through the same server.
+            resp_a, resp_b = await asyncio.gather(
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+                cli.post(
+                    "/api/sessions",
+                    json={"id": "race-same-id"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                ),
+            )
+        assert sorted([resp_a.status, resp_b.status]) == [201, 409]
+
+    @pytest.mark.asyncio
+    async def test_ensure_session_db_first_request_path(self, auth_adapter):
+        """First /api/sessions request initializes SessionDB off the event loop."""
+        import threading
+
+        captured = {}
+
+        class FakeDB:
+            def __init__(self, db_path=None):
+                captured["init_thread"] = threading.current_thread()
+
+            def list_sessions_rich(self, **kwargs):
+                return []
+
+        # Simulate cold start -- no DB yet.
+        auth_adapter._session_db = None
+        auth_adapter._session_db_lock = None
+
+        original_class = None
+        import hermes_state
+        original_class = hermes_state.SessionDB
+        hermes_state.SessionDB = FakeDB
+        try:
+            app = _create_app(auth_adapter)
+            app.router.add_get("/api/sessions", auth_adapter._handle_list_sessions)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/api/sessions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+            assert resp.status == 200
+            # SessionDB() was constructed -- the init must NOT be on the event-loop thread.
+            assert "init_thread" in captured
+            assert captured["init_thread"] != threading.current_thread()
+        finally:
+            hermes_state.SessionDB = original_class
+            auth_adapter._session_db = None
+            auth_adapter._session_db_lock = None

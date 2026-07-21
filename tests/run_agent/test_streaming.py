@@ -1196,6 +1196,9 @@ class TestAnthropicStreamCallbacks:
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.return_value = mock_stream
+        # #67142: streaming now runs on a request-local anthropic client; route
+        # it to the test mock so .messages.stream is exercised.
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         agent._interruptible_streaming_api_call({})
 
@@ -1251,16 +1254,18 @@ class TestAnthropicStreamCallbacks:
             _BadStream(),
             good_stream,
         ]
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         response = agent._interruptible_streaming_api_call({})
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        # Anthropic-native cleanup: close + rebuild the Anthropic client, never
-        # the OpenAI primary client.
+        # #67142: cleanup runs on the request-local anthropic client (closed,
+        # worker-owned, via _close_request_client_once), never rebuilding the
+        # shared client and never touching the OpenAI primary client.
         assert mock_replace.call_count == 0
-        assert mock_rebuild.call_count == 1
-        assert agent._anthropic_client.close.call_count == 1
+        assert mock_rebuild.call_count == 0
+        assert agent._anthropic_client.close.call_count >= 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
@@ -1286,6 +1291,7 @@ class TestAnthropicStreamCallbacks:
         agent._anthropic_client.messages.stream.side_effect = ValueError(
             "invalid local request shape"
         )
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         with pytest.raises(ValueError, match="invalid local request shape"):
             agent._interruptible_streaming_api_call({})
@@ -1326,15 +1332,17 @@ class TestAnthropicStreamCallbacks:
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.return_value = empty_stream
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         with pytest.raises(EmptyStreamError):
             agent._interruptible_streaming_api_call({})
 
         assert agent._anthropic_client.messages.stream.call_count == 3
-        # Anthropic-native cleanup between attempts: rebuild the Anthropic
-        # client, never the OpenAI primary client.
+        # #67142: cleanup between attempts runs on the request-local anthropic
+        # client (fresh one built per attempt); the shared client is never
+        # rebuilt and the OpenAI primary client is never touched.
         assert mock_replace.call_count == 0
-        assert mock_rebuild.call_count == 2
+        assert mock_rebuild.call_count == 0
 
     @patch("run_agent.AIAgent._try_refresh_anthropic_client_credentials")
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
@@ -1369,13 +1377,14 @@ class TestAnthropicStreamCallbacks:
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.return_value = empty_stream
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         with pytest.raises(EmptyStreamError):
             agent._interruptible_streaming_api_call({})
 
         assert agent._anthropic_client.messages.stream.call_count == 3
         assert mock_replace.call_count == 0
-        assert mock_rebuild.call_count == 2
+        assert mock_rebuild.call_count == 0
 
 
 class TestPartialToolCallWarning:

@@ -310,6 +310,7 @@ class _MatrixApprovalPrompt:
         session_key: str,
         chat_id: str,
         message_id: str,
+        approval_id: str | None = None,
         resolved: bool = False,
         requester_user_id: str | None = None,
         expires_at: float | None = None,
@@ -323,6 +324,7 @@ class _MatrixApprovalPrompt:
         self.session_key = session_key
         self.chat_id = chat_id
         self.message_id = message_id
+        self.approval_id = approval_id
         self.resolved = resolved
         self.requester_user_id = requester_user_id
         self.expires_at = expires_at
@@ -1022,7 +1024,7 @@ class MatrixAdapter(BasePlatformAdapter):
             "❎": "deny",
         }
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
-        self._approval_prompt_by_session: Dict[str, str] = {}
+        self._approval_prompt_by_session: Dict[str, Set[str]] = {}
         self._approval_require_sender: bool = os.getenv(
             "MATRIX_APPROVAL_REQUIRE_SENDER", "true"
         ).lower() in ("true", "1", "yes")
@@ -2110,6 +2112,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
+        approval_id = str((metadata or {}).get("approval_id") or "") or None
         redacted_command = force_redact_command(command)
         text, html_body = format_pending_expanded(
             command=redacted_command,
@@ -2130,6 +2133,7 @@ class MatrixAdapter(BasePlatformAdapter):
             session_key=session_key,
             chat_id=chat_id,
             message_id=result.message_id,
+            approval_id=approval_id,
             requester_user_id=requester_user_id,
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
             command=redacted_command,
@@ -2139,25 +2143,10 @@ class MatrixAdapter(BasePlatformAdapter):
             smart_denied=smart_denied,
             metadata=send_meta,
         )
-        old_event = self._approval_prompt_by_session.get(session_key)
-        if old_event:
-            old_prompt = self._approval_prompts_by_event.pop(old_event, None)
-            if old_prompt is not None and not old_prompt.resolved:
-                old_prompt.resolved = True
-                self._cancel_approval_summary_task(old_prompt)
-                try:
-                    await self._redact_bot_approval_reactions(chat_id, old_prompt)
-                    await self._finalize_matrix_approval_prompt(
-                        chat_id,
-                        old_event,
-                        old_prompt,
-                        choice="expired",
-                        actor="",
-                    )
-                except Exception as exc:
-                    logger.debug("Matrix: failed to supersede old approval card: %s", exc)
         self._approval_prompts_by_event[result.message_id] = prompt
-        self._approval_prompt_by_session[session_key] = result.message_id
+        self._approval_prompt_by_session.setdefault(session_key, set()).add(
+            result.message_id
+        )
 
         if not allow_session:
             reactions = ("✅", "❌")
@@ -3464,11 +3453,19 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     from tools.approval import resolve_gateway_approval
 
-                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    if prompt.approval_id is None:
+                        # Backward compatibility for prompts created by older
+                        # adapters/tests before approval identity was attached.
+                        count = resolve_gateway_approval(prompt.session_key, choice)
+                    else:
+                        count = resolve_gateway_approval(
+                            prompt.session_key,
+                            choice,
+                            approval_id=prompt.approval_id,
+                        )
                     if count:
                         prompt.resolved = True
-                        self._approval_prompts_by_event.pop(reacts_to, None)
-                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                        self._forget_matrix_approval_prompt(reacts_to, prompt)
                         logger.info(
                             "Matrix reaction resolved %d approval(s) for session %s "
                             "(choice=%s, user=%s)",
@@ -3484,8 +3481,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         # MATRIX_APPROVAL_TIMEOUT_SECONDS (prompt UI). User reacts
                         # after the agent already timed out → queue empty.
                         prompt.resolved = True
-                        self._approval_prompts_by_event.pop(reacts_to, None)
-                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                        self._forget_matrix_approval_prompt(reacts_to, prompt)
                         await self._redact_bot_approval_reactions(room_id, prompt)
                         logger.warning(
                             "Matrix approval reaction %s from %s on %s had no "
@@ -3581,6 +3577,25 @@ class MatrixAdapter(BasePlatformAdapter):
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
 
+    def _forget_matrix_approval_prompt(
+        self,
+        target_event_id: str,
+        prompt: "_MatrixApprovalPrompt",
+    ) -> None:
+        """Remove one approval card without disturbing concurrent cards."""
+        self._approval_prompts_by_event.pop(target_event_id, None)
+        events = self._approval_prompt_by_session.get(prompt.session_key)
+        if events is None:
+            return
+        if isinstance(events, set):
+            events.discard(target_event_id)
+            empty = not events
+        else:
+            # Legacy in-memory representation stored one event id directly.
+            empty = events == target_event_id
+        if empty:
+            self._approval_prompt_by_session.pop(prompt.session_key, None)
+
     async def _validate_matrix_prompt_reactor(
         self,
         room_id: str,
@@ -3642,8 +3657,7 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         prompt.resolved = True
         self._cancel_approval_summary_task(prompt)
-        self._approval_prompts_by_event.pop(target_event_id, None)
-        self._approval_prompt_by_session.pop(prompt.session_key, None)
+        self._forget_matrix_approval_prompt(target_event_id, prompt)
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._finalize_matrix_approval_prompt(
             room_id, target_event_id, prompt, choice="expired", actor="",
@@ -3785,17 +3799,17 @@ class MatrixAdapter(BasePlatformAdapter):
                 if prompt.resolved:
                     return
                 try:
-                    pending = has_blocking_approval(prompt.session_key)
+                    pending = has_blocking_approval(
+                        prompt.session_key,
+                        approval_id=prompt.approval_id,
+                    )
                 except Exception:
                     pending = True
                 if not pending:
                     if prompt.resolved:
                         return
                     prompt.resolved = True
-                    self._approval_prompts_by_event.pop(prompt.message_id, None)
-                    mapped = self._approval_prompt_by_session.get(prompt.session_key)
-                    if mapped == prompt.message_id:
-                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                    self._forget_matrix_approval_prompt(prompt.message_id, prompt)
                     try:
                         await self._redact_bot_approval_reactions(prompt.chat_id, prompt)
                     except Exception:

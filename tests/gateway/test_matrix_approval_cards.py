@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,7 +26,9 @@ class TestApprovalCardFormatting:
             description="recursive delete",
             allow_permanent=True,
         )
-        assert "Approval needed" in text
+        # Stable producer contract used by Matrix clients to render rich
+        # approval controls (including the two-step permanent warning).
+        assert "Dangerous command requires approval" in text
         assert "recursive delete" in text
         assert "rm -rf /tmp/example" in text
         assert "✅ once" in text
@@ -34,6 +37,7 @@ class TestApprovalCardFormatting:
         assert "❌ deny" in text
         assert "❎" not in text
         assert html is not None
+        assert "Dangerous command requires approval" in html
         assert "<pre>" in html
         assert "rm -rf /tmp/example" in html
 
@@ -66,9 +70,11 @@ class TestApprovalCardFormatting:
             summary="Discards recent local commits and uncommitted work.",
         )
         assert "Advisory interpretation" in text
+        assert "Dangerous command requires approval" in text
         # Plaintext stays compact for notifications; full command lives in HTML details.
         assert "git reset --hard HEAD~1" not in text
         assert html is not None
+        assert "Dangerous command requires approval" in html
         assert "<details>" in html
         assert "git reset --hard HEAD~1" in html
         assert "Discards recent local commits" in html
@@ -122,6 +128,45 @@ class TestApprovalCardFormatting:
 
 class TestMatrixApprovalCardLifecycle:
     @pytest.mark.asyncio
+    async def test_approval_html_edit_keeps_matrix_replacement_prefix(self):
+        """Approval edits retain Matrix's outer fallback marker."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        sent = {}
+
+        async def _send_event(room, event_type, content):
+            sent["content"] = content
+            return "$replacement"
+
+        adapter._client = types.SimpleNamespace(send_message_event=_send_event)
+        text, html = format_pending_summarized(
+            command="systemctl restart example.service",
+            description="stop/restart system service",
+            summary="Restarts the example service.",
+        )
+
+        result = await adapter.edit_message(
+            "!room:example.org",
+            "$approval",
+            text,
+            metadata={"matrix_formatted_body": html},
+        )
+
+        assert result.success is True
+        content = sent["content"]
+        assert content["body"].startswith("* ")
+        assert content["formatted_body"].startswith("* ")
+        assert not content["m.new_content"]["body"].startswith("* ")
+        assert not content["m.new_content"]["formatted_body"].startswith("* ")
+
+    @pytest.mark.asyncio
     async def test_send_exec_approval_uses_expanded_card_and_seeds_reactions(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
         from plugins.platforms.matrix.adapter import MatrixAdapter
@@ -150,7 +195,7 @@ class TestMatrixApprovalCardLifecycle:
 
         assert result.success is True
         body = adapter.send.await_args.args[1]
-        assert "Approval needed" in body
+        assert "Dangerous command requires approval" in body
         assert "recursive delete" in body
         assert "rm -rf /tmp/test" in body
         assert "❎" not in body
@@ -204,6 +249,129 @@ class TestMatrixApprovalCardLifecycle:
         assert emojis == ["✅", "❌"]
 
     @pytest.mark.asyncio
+    async def test_concurrent_same_session_prompts_keep_distinct_identity(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        adapter._client = types.SimpleNamespace()
+        adapter.send = AsyncMock(
+            side_effect=[
+                types.SimpleNamespace(success=True, message_id="$evt1"),
+                types.SimpleNamespace(success=True, message_id="$evt2"),
+            ]
+        )
+        adapter._send_reaction = AsyncMock(return_value="$r")
+        adapter._schedule_approval_resolution_watch = MagicMock()
+
+        with patch(
+            "plugins.platforms.matrix.approval_cards.load_matrix_approval_summary_config",
+            return_value=types.SimpleNamespace(enabled=False),
+        ):
+            await adapter.send_exec_approval(
+                chat_id="!room:example.org",
+                command="rm -rf /tmp/first",
+                session_key="sess-1",
+                metadata={"approval_id": "approval-1"},
+            )
+            await adapter.send_exec_approval(
+                chat_id="!room:example.org",
+                command="rm -rf /tmp/second",
+                session_key="sess-1",
+                metadata={"approval_id": "approval-2"},
+            )
+
+        assert set(adapter._approval_prompts_by_event) == {"$evt1", "$evt2"}
+        assert adapter._approval_prompt_by_session["sess-1"] == {"$evt1", "$evt2"}
+        assert adapter._approval_prompts_by_event["$evt1"].approval_id == "approval-1"
+        assert adapter._approval_prompts_by_event["$evt2"].approval_id == "approval-2"
+
+    @pytest.mark.asyncio
+    async def test_typed_fifo_resolution_finalizes_only_oldest_real_prompt(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from tools import approval as approval_mod
+
+        session_key = "sess-real-fifo"
+        first = approval_mod._ApprovalEntry({"command": "rm -rf /tmp/first"})
+        second = approval_mod._ApprovalEntry({"command": "rm -rf /tmp/second"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[session_key] = [first, second]
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        adapter._client = types.SimpleNamespace()
+        adapter.send = AsyncMock(
+            side_effect=[
+                types.SimpleNamespace(success=True, message_id="$evt1"),
+                types.SimpleNamespace(success=True, message_id="$evt2"),
+            ]
+        )
+        adapter._send_reaction = AsyncMock(return_value="$r")
+        adapter._redact_bot_approval_reactions = AsyncMock()
+        adapter._finalize_matrix_approval_prompt = AsyncMock()
+
+        try:
+            with patch(
+                "plugins.platforms.matrix.approval_cards.load_matrix_approval_summary_config",
+                return_value=types.SimpleNamespace(enabled=False),
+            ):
+                await adapter.send_exec_approval(
+                    chat_id="!room:example.org",
+                    command=first.data["command"],
+                    session_key=session_key,
+                    metadata={"approval_id": first.approval_id},
+                )
+                await adapter.send_exec_approval(
+                    chat_id="!room:example.org",
+                    command=second.data["command"],
+                    session_key=session_key,
+                    metadata={"approval_id": second.approval_id},
+                )
+
+            prompt1 = adapter._approval_prompts_by_event["$evt1"]
+            prompt2 = adapter._approval_prompts_by_event["$evt2"]
+
+            assert approval_mod.resolve_gateway_approval(session_key, "once") == 1
+            await asyncio.sleep(0.6)
+
+            assert first.event.is_set() is True
+            assert second.event.is_set() is False
+            assert prompt1.resolved is True
+            assert prompt2.resolved is False
+            assert "$evt1" not in adapter._approval_prompts_by_event
+            assert adapter._approval_prompt_by_session[session_key] == {"$evt2"}
+            assert approval_mod.has_blocking_approval(
+                session_key,
+                approval_id=second.approval_id,
+            ) is True
+            adapter._finalize_matrix_approval_prompt.assert_awaited_once_with(
+                "!room:example.org",
+                "$evt1",
+                prompt1,
+                choice="resolved",
+                actor="",
+            )
+        finally:
+            prompt2 = adapter._approval_prompts_by_event.get("$evt2")
+            if prompt2 is not None:
+                prompt2.resolved = True
+                adapter._forget_matrix_approval_prompt("$evt2", prompt2)
+            approval_mod.clear_session(session_key)
+            await asyncio.sleep(0.6)
+
+    @pytest.mark.asyncio
     async def test_reaction_resolve_edits_terminal_card(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
         from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
@@ -220,10 +388,11 @@ class TestMatrixApprovalCardLifecycle:
             session_key="sess-1",
             chat_id="!room:example.org",
             message_id="$target",
+            approval_id="approval-2",
             command="rm -rf /tmp/x",
             description="recursive delete",
         )
-        adapter._approval_prompt_by_session["sess-1"] = "$target"
+        adapter._approval_prompt_by_session["sess-1"] = {"$target"}
         adapter.edit_message = AsyncMock(return_value=types.SimpleNamespace(success=True))
         adapter._redact_bot_approval_reactions = AsyncMock()
 
@@ -235,13 +404,54 @@ class TestMatrixApprovalCardLifecycle:
             content=content,
         )
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1):
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
             await adapter._on_reaction(event)
 
+        resolve.assert_called_once_with(
+            "sess-1",
+            "once",
+            approval_id="approval-2",
+        )
         assert adapter.edit_message.await_count == 1
         edited = adapter.edit_message.await_args.args[2]
         assert "Approved once" in edited
         assert "rm -rf /tmp/x" in edited
+
+    @pytest.mark.asyncio
+    async def test_resolution_watch_tracks_one_approval_id(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        prompt = _MatrixApprovalPrompt(
+            session_key="sess-1",
+            chat_id="!room:example.org",
+            message_id="$target",
+            approval_id="approval-2",
+            command="rm -rf /tmp/x",
+        )
+        adapter._approval_prompts_by_event[prompt.message_id] = prompt
+        adapter._approval_prompt_by_session[prompt.session_key] = {prompt.message_id}
+        adapter._redact_bot_approval_reactions = AsyncMock()
+        adapter._finalize_matrix_approval_prompt = AsyncMock()
+
+        with patch("tools.approval.has_blocking_approval", return_value=False) as pending:
+            adapter._schedule_approval_resolution_watch(prompt)
+            for _ in range(10):
+                if prompt.resolved:
+                    break
+                await asyncio.sleep(0)
+
+        pending.assert_called_once_with("sess-1", approval_id="approval-2")
+        assert prompt.resolved is True
+        assert "$target" not in adapter._approval_prompts_by_event
+        adapter._finalize_matrix_approval_prompt.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_summary_edit_skipped_when_already_resolved(self, monkeypatch):

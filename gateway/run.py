@@ -353,6 +353,18 @@ def _redact_approval_command(cmd: "str | None") -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+def _build_exec_approval_metadata(
+    base: "dict | None",
+    approval_data: dict,
+) -> dict:
+    """Preserve transport context and attach the pending approval identity."""
+    metadata = dict(base or {})
+    approval_id = str(approval_data.get("approval_id") or "")
+    if approval_id:
+        metadata["approval_id"] = approval_id
+    return metadata
+
+
 def _format_exec_approval_fallback(
     command: str,
     description: str,
@@ -21091,7 +21103,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_build_exec_approval_metadata(
+                                    _status_thread_metadata,
+                                    approval_data,
+                                ),
                                 allow_permanent=approval_data.get("allow_permanent", True),
                                 allow_session=approval_data.get("allow_session", True),
                                 smart_denied=approval_data.get("smart_denied", False),

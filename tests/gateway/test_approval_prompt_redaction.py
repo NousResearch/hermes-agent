@@ -152,6 +152,19 @@ class TestApprovalCommandWiring:
             assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
             assert isinstance(value.args[1], ast.Constant) and value.args[1].value is default
 
+    def test_exec_approval_metadata_preserves_thread_and_adds_identity(self):
+        from gateway.run import _build_exec_approval_metadata
+
+        metadata = _build_exec_approval_metadata(
+            {"thread_id": "$thread"},
+            {"approval_id": "approval-123"},
+        )
+
+        assert metadata == {
+            "thread_id": "$thread",
+            "approval_id": "approval-123",
+        }
+
 
 class TestApprovalTextFallbackContract:
     def test_smart_deny_only_advertises_one_operation(self):

@@ -155,6 +155,66 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_resolve_by_approval_id_targets_clicked_entry(self):
+        """Interactive cards can resolve out of FIFO order without cross-wiring."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            has_blocking_approval,
+            _ApprovalEntry,
+            _gateway_queues,
+        )
+
+        session_key = "test-targeted"
+        e1 = _ApprovalEntry({"command": "first"})
+        e2 = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        assert e1.approval_id != e2.approval_id
+
+        count = resolve_gateway_approval(
+            session_key,
+            "deny",
+            approval_id=e2.approval_id,
+        )
+
+        assert count == 1
+        assert not e1.event.is_set()
+        assert e1.result is None
+        assert e2.event.is_set()
+        assert e2.result == "deny"
+        assert has_blocking_approval(session_key, approval_id=e1.approval_id)
+        assert not has_blocking_approval(session_key, approval_id=e2.approval_id)
+        assert _gateway_queues[session_key] == [e1]
+
+    def test_gateway_notify_receives_entry_approval_id(self):
+        """The UI transport receives the same identity stored in the queue."""
+        from tools.approval import _await_gateway_decision, resolve_gateway_approval
+
+        session_key = "test-notify-identity"
+        notified = {}
+
+        def notify(data):
+            notified.update(data)
+            resolve_gateway_approval(
+                session_key,
+                "once",
+                approval_id=data["approval_id"],
+            )
+
+        result = _await_gateway_decision(
+            session_key,
+            notify,
+            {
+                "command": "rm -rf /tmp/example",
+                "description": "recursive delete",
+                "pattern_key": "recursive delete",
+            },
+        )
+
+        assert result["resolved"] is True
+        assert result["choice"] == "once"
+        assert notified["approval_id"]
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

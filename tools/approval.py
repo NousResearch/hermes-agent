@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2029,11 +2030,13 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("approval_id", "event", "data", "result", "reason")
 
     def __init__(self, data: dict):
+        self.data = dict(data)
+        self.approval_id = str(self.data.get("approval_id") or uuid.uuid4().hex)
+        self.data["approval_id"] = self.approval_id
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
@@ -2072,13 +2075,14 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             approval_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
+    resolved at once (``/approve all``).  *approval_id* targets one interactive
+    card exactly.  Without either option, the oldest request is resolved (FIFO).
 
     *reason* is an optional free-text explanation attached to an explicit
     deny (``/deny <reason>``).  It is relayed back to the agent in the
@@ -2093,6 +2097,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if resolve_all:
             targets = list(queue)
             queue.clear()
+        elif approval_id:
+            target = next(
+                (entry for entry in queue if entry.approval_id == approval_id),
+                None,
+            )
+            if target is None:
+                return 0
+            queue.remove(target)
+            targets = [target]
         else:
             targets = [queue.pop(0)]
         if not queue:
@@ -2106,10 +2119,14 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
-def has_blocking_approval(session_key: str) -> bool:
-    """Check if a session has one or more blocking gateway approvals waiting."""
+def has_blocking_approval(session_key: str,
+                          approval_id: Optional[str] = None) -> bool:
+    """Check for a pending session approval, optionally by opaque identity."""
     with _lock:
-        return bool(_gateway_queues.get(session_key))
+        queue = _gateway_queues.get(session_key, [])
+        if approval_id:
+            return any(entry.approval_id == approval_id for entry in queue)
+        return bool(queue)
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -3108,7 +3125,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_cb(entry.data)
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()

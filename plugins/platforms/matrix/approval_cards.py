@@ -190,7 +190,7 @@ def format_pending_expanded(
     )
 
     text = (
-        "⚠️ **Approval needed**\n"
+        "⚠️ **Dangerous command requires approval**\n"
         f"Reason: {reason}\n\n"
         f"{_md_code_block(redacted)}\n\n"
         f"{scope}\n\n"
@@ -198,7 +198,7 @@ def format_pending_expanded(
     )
 
     html_body = (
-        "<p>⚠️ <strong>Approval needed</strong><br/>"
+        "<p>⚠️ <strong>Dangerous command requires approval</strong><br/>"
         f"Reason: {html.escape(reason)}</p>"
         f"{_html_pre(redacted)}"
         f"<p>{html.escape(scope)}<br/>"
@@ -230,7 +230,7 @@ def format_pending_summarized(
     # Plaintext intentionally omits the full command; rich clients expose it
     # in a disclosure while notification/plain clients get only the summary.
     text = (
-        "⚠️ **Approval needed**\n"
+        "⚠️ **Dangerous command requires approval**\n"
         f"Reason: {reason}\n"
         f"Advisory interpretation: {clean_summary}\n\n"
         f"{reactions}"
@@ -241,7 +241,7 @@ def format_pending_summarized(
         inner_html=_html_pre(redacted),
     )
     html_body = (
-        "<p>⚠️ <strong>Approval needed</strong><br/>"
+        "<p>⚠️ <strong>Dangerous command requires approval</strong><br/>"
         f"Reason: {html.escape(reason)}<br/>"
         f"<em>Advisory interpretation:</em> {html.escape(clean_summary)}</p>"
         f"{details}"

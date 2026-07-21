@@ -123,7 +123,12 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
   { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
-  { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
+  { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] },
+
+  // ── Voice ────────────────────────────────────────────────────────────────
+  // Push-to-talk toggle. Shipped unbound to avoid colliding with mod+b
+  // (view.toggleSidebar); user assigns a combo in the shortcuts panel.
+  { id: 'voice.toggleRecord', category: 'view', defaults: [] }
 ]
 
 export const KEYBIND_ACTION_IDS: readonly string[] = KEYBIND_ACTIONS.map(action => action.id)

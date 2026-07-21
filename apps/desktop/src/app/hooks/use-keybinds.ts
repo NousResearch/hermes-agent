@@ -187,6 +187,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.closeTab': () => void closeActiveTab(),
     'view.reopenTab': reopenLastClosedTile,
 
+    // Bridged to the composer-mounted voice hook, which owns the enabled
+    // state (same cross-scope pattern as session.new).
+    'voice.toggleRecord': () => window.dispatchEvent(new CustomEvent('hermes:voice-toggle-record')),
+
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
 
     'profile.default': switchToDefaultProfile,

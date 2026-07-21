@@ -949,6 +949,23 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('preserves Smart DENY and explicit approval choices on the overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        allow_permanent: true,
+        choices: ['once', 'deny'],
+        command: 'rm -rf /tmp/x',
+        description: 'smart deny override',
+        smart_denied: true
+      },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
+  })
+
   it('still surfaces terminal turn failures as errors', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -1307,6 +1324,24 @@ describe('createGatewayEventHandler', () => {
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
   })
 
+  it('clears only the matching sensitive prompt when the gateway expires it', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    patchOverlayState({
+      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new' },
+      sudo: { requestId: 'sudo-1' }
+    })
+
+    onEvent({ payload: { request_id: 'secret-old' }, type: 'secret.expire' } as any)
+    expect(getOverlayState().secret?.requestId).toBe('secret-new')
+
+    onEvent({ payload: { request_id: 'secret-new' }, type: 'secret.expire' } as any)
+    expect(getOverlayState().secret).toBeNull()
+
+    onEvent({ payload: { request_id: 'sudo-1' }, type: 'sudo.expire' } as any)
+    expect(getOverlayState().sudo).toBeNull()
+  })
+
   // ── Credits notice (Strategy B) ──────────────────────────────────────
   describe('credits notice', () => {
     it('shows a notice immediately when idle (no turn in flight)', () => {
@@ -1646,6 +1681,83 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('message.interim', () => {
+    it('finalizes an interim segment without settling the turn', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'streaming text' }, type: 'message.delta' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'streaming text' }, type: 'message.interim' } as any)
+
+      // Turn is still active — busy stays true, no completion messages appended
+      expect(getUiState().busy).toBe(true)
+      expect(appended).toHaveLength(0)
+    })
+
+    it('keeps identical interim and terminal replies as separate messages without response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' } as any)
+      onEvent({ payload: { text: 'same reply' }, type: 'message.complete' } as any)
+
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(2)
+    })
+
+    it('settles identical terminal reply onto interim when response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' } as any)
+      onEvent({ payload: { response_previewed: true, text: 'same reply' }, type: 'message.complete' } as any)
+
+      // With response_previewed, the terminal reply is the same model
+      // response that was published provisionally — settle onto the
+      // interim instead of duplicating. (#65919 review)
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(1)
+      expect(assistantMsgs[0]?.text).toBe('same reply')
+    })
+
+    it('deduplicates flushed chunks within the terminal message after an interim boundary', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // Interim seals the first segment
+      onEvent({ payload: { already_streamed: true, text: 'interim answer' }, type: 'message.interim' } as any)
+      // Post-interim deltas that match the final text — these get deduped
+      onEvent({ payload: { text: 'final answer' }, type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+      const texts = appended.filter(m => m.role === 'assistant' && m.text).map(m => m.text)
+      // interim + final, no duplication of the final
+      expect(texts).toContain('interim answer')
+      expect(texts.filter(t => t === 'final answer')).toHaveLength(1)
+    })
+
+    it('ignores malformed message.interim payload', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // No payload at all
+      onEvent({ type: 'message.interim' } as any)
+      // Empty text
+      onEvent({ payload: { text: '' }, type: 'message.interim' } as any)
+      // Undefined text
+      onEvent({ payload: { text: undefined }, type: 'message.interim' } as any)
+
+      // Turn continues without finalizing or throwing
+      expect(getUiState().busy).toBe(true)
+      expect(appended).toHaveLength(0)
     })
   })
 })

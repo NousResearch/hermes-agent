@@ -1,10 +1,11 @@
 import { atom } from 'nanostores'
 
-import { queryClient } from '@/lib/query-client'
+import { resetSidebarBatchCapability } from '@/hermes'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
+  $unreadFinishedSessionIds,
   setActiveSessionId,
-  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -15,16 +16,14 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal,
-  setWorkingSessionIds
+  setSessionsTotal
 } from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
 // overlay from resurrecting when startHermes re-emits boot progress.
 export const $gatewaySwitching = atom(false)
-
-const PREVIEW_HOLD_MS = 1400
 
 /**
  * Clear gateway-bound session UI so sidebar skeletons retrigger.
@@ -39,6 +38,9 @@ const PREVIEW_HOLD_MS = 1400
  * alone so the user stays where they were (e.g. mid-Gateway settings).
  */
 export function wipeSessionListsForGatewaySwitch(): void {
+  // The next backend is a different runtime — don't carry the old one's
+  // "batched sidebar endpoint missing" capability verdict across the switch.
+  resetSidebarBatchCapability()
   setSessions([])
   setSessionsTotal(0)
   setSessionProfileTotals({})
@@ -46,8 +48,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  setWorkingSessionIds([])
-  setAttentionSessionIds([])
+  // Clearing $sessionStates automatically clears $workingSessionIds and
+  // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
+  // $unreadFinishedSessionIds is separate, so wipe it explicitly.
+  clearAllSessionStates()
+  $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()
 
@@ -56,28 +61,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
-  void queryClient.invalidateQueries()
-}
-
-/**
- * Dev review beat: wipe → skeletons for PREVIEW_HOLD_MS → clear loading.
- * Does not tear down a real backend. Fired from the Settings button (Electron
- * has no easy `?query=` entry).
- */
-export async function previewGatewaySwitch(holdMs = PREVIEW_HOLD_MS): Promise<void> {
-  if ($gatewaySwitching.get()) {
-    return
-  }
-
-  $gatewaySwitching.set(true)
-  wipeSessionListsForGatewaySwitch()
-
-  try {
-    await new Promise<void>(resolve => {
-      window.setTimeout(resolve, holdMs)
-    })
-  } finally {
-    setSessionsLoading(false)
-    $gatewaySwitching.set(false)
-  }
+  // Narrowed: account/marketplace/onboarding caches are global, not gateway-
+  // scoped, so a mode swap must not refetch them.
+  invalidateProfileScopedQueries()
 }

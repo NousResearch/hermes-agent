@@ -1147,6 +1147,39 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("inflight") is None  # stale entry cleaned up
 
+    def test_stale_maxed_oneshot_kept_when_running_check_errors(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """If the running-set lookup fails, do not delete a possibly live run.
+
+        This is the fail-closed sibling of #62002/#62014: the liveness check is
+        the only signal distinguishing "expired but live" from "stale and dead".
+        Treating a lookup error as "not running" reopens the data-loss path by
+        deleting the job record underneath an in-flight one-shot.
+        """
+        import cron.scheduler as scheduler_mod
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=ttl + 300)).isoformat()
+        save_jobs([{
+            "id": "inflight-error", "name": "flight check", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 1},
+            "run_claim": {"at": run_at, "by": "this-machine"},
+        }])
+
+        def fail_running_set():
+            raise RuntimeError("running set unavailable")
+
+        monkeypatch.setattr(scheduler_mod, "get_running_job_ids", fail_running_set)
+
+        assert get_due_jobs() == []
+        assert get_job("inflight-error") is not None
+
     def test_run_claim_heartbeat_keeps_long_run_claimed_past_ttl(
         self, tmp_cron_dir, monkeypatch
     ):
@@ -1172,7 +1205,8 @@ class TestGetDueJobs:
         # Mid-run heartbeat before the TTL horizon refreshes the claim.
         monkeypatch.setattr("cron.jobs._hermes_now",
                             lambda: t0 + timedelta(seconds=ttl - 60))
-        assert heartbeat_run_claim("slowrun") is True
+        owner = get_job("slowrun")["run_claim"]["by"]
+        assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
 
         # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
         # tick would stale-remove the maxed one-shot; with it the claim is
@@ -1196,9 +1230,39 @@ class TestGetDueJobs:
             "schedule": {"kind": "once", "run_at": future},
             "next_run_at": future, "enabled": True, "state": "scheduled",
         }])
-        assert heartbeat_run_claim("noclaim") is False
-        assert heartbeat_run_claim("missing-job") is False
+        assert heartbeat_run_claim("noclaim", expected_owner="owner") is False
+        assert heartbeat_run_claim("missing-job", expected_owner="owner") is False
         assert get_job("noclaim").get("run_claim") is None
+
+    def test_heartbeat_run_claim_rejects_replaced_owner(self, tmp_cron_dir):
+        """A resumed stale runner must not keep a newer owner's claim alive."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "reclaimed", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": future},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+            "run_claim": {"at": original_at, "by": "new-owner"},
+        }])
+
+        assert heartbeat_run_claim("reclaimed", expected_owner="old-owner") is False
+        assert get_job("reclaimed")["run_claim"] == {
+            "at": original_at,
+            "by": "new-owner",
+        }
+
+    def test_heartbeat_run_claim_rejects_non_oneshot(self, tmp_cron_dir):
+        """Heartbeat ownership applies only to one-shot dispatch claims."""
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "recurring", "name": "R", "prompt": "x",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "enabled": True,
+            "run_claim": {"at": original_at, "by": "owner"},
+        }])
+
+        assert heartbeat_run_claim("recurring", expected_owner="owner") is False
+        assert get_job("recurring")["run_claim"]["at"] == original_at
 
 
     def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
@@ -1881,3 +1945,221 @@ class TestClaimDispatch:
         # At minimum, the good job's record is still intact (no corruption from the bad neighbor)
         loaded = {j["id"]: j for j in load_jobs()}
         assert "good" in loaded
+
+
+class TestLateEnvRepointScopesStore:
+    """A HERMES_HOME set AFTER cron.jobs import must scope the store even
+    without use_cron_store(): fixtures that patch the environment too late
+    previously read/wrote the import-time jobs.json — the user's real file."""
+
+    def test_late_env_repoint_scopes_store(self, tmp_path, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store = jobs._current_cron_store()
+        expected = tmp_path.resolve() / "cron"
+        assert store.cron_dir == expected
+        assert store.jobs_file == expected / "jobs.json"
+        assert store.output_dir == expected / "output"
+        # the import-time compatibility constants are untouched
+        assert jobs.JOBS_FILE != store.jobs_file
+
+    def test_unchanged_home_returns_import_time_constants(self, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(jobs.HERMES_DIR))
+        store = jobs._current_cron_store()
+        assert store.jobs_file is jobs.JOBS_FILE
+
+    def test_use_cron_store_override_still_wins(self, tmp_path, monkeypatch):
+        import cron.jobs as jobs
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
+        with jobs.use_cron_store(tmp_path / "override-home"):
+            store = jobs._current_cron_store()
+            assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
+
+    def test_patched_compatibility_constants_beat_env(self, tmp_path, monkeypatch):
+        """Deliberately re-pointed module constants are the documented
+        process-wide escape hatch — they win over a repointed HERMES_HOME."""
+        import cron.jobs as jobs
+
+        patched_dir = tmp_path / "patched-cron"
+        monkeypatch.setattr(jobs, "CRON_DIR", patched_dir)
+        monkeypatch.setattr(jobs, "JOBS_FILE", patched_dir / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", patched_dir / "output")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
+        store = jobs._current_cron_store()
+        assert store.jobs_file == patched_dir / "jobs.json"
+
+    def test_public_io_after_late_env_repoint_leaves_old_file_untouched(
+        self, tmp_path, monkeypatch
+    ):
+        """The public API, not the store internals: save_jobs()/load_jobs()
+        called after a post-import HERMES_HOME repoint must operate on the NEW
+        home's jobs.json and leave the import-time file byte-identical.
+
+        The "import-time home" is SIMULATED at a tmp location by patching the
+        module constants and the import-time snapshot together (so they still
+        compare equal and the deliberate-repoint branch does not fire). The
+        test must never touch the real import-time jobs.json: if this module
+        was first imported before the suite's env isolation applied, that
+        path IS the developer's live file — writing a sentinel there is
+        exactly the incident this PR exists to prevent."""
+        import cron.jobs as jobs
+
+        sim_old_home = tmp_path / "import-time-home"
+        sim_cron = sim_old_home / "cron"
+        monkeypatch.setattr(jobs, "HERMES_DIR", sim_old_home)
+        monkeypatch.setattr(jobs, "CRON_DIR", sim_cron)
+        monkeypatch.setattr(jobs, "JOBS_FILE", sim_cron / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", sim_cron / "output")
+        monkeypatch.setattr(
+            jobs, "_IMPORT_STORE",
+            jobs._CronStorePaths(jobs.CRON_DIR, jobs.JOBS_FILE, jobs.OUTPUT_DIR),
+        )
+
+        # Plant a sentinel at the (simulated) import-time location — the file
+        # a late-patching fixture used to clobber.
+        old_file = jobs.JOBS_FILE
+        old_file.parent.mkdir(parents=True, exist_ok=True)
+        sentinel = '[{"id": "sentinel-do-not-touch"}]'
+        old_file.write_text(sentinel, encoding="utf-8")
+
+        new_home = tmp_path / "late-home"
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+
+        job = {
+            "id": "lateenvjob01",
+            "name": "late-env",
+            "prompt": None,
+            "schedule_display": None,
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "enabled": True,
+        }
+        save_jobs([job])
+
+        # public read round-trips from the NEW home...
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["lateenvjob01"]
+        new_file = new_home.resolve() / "cron" / "jobs.json"
+        assert new_file.is_file()
+        # ...and the import-time file is byte-identical to the sentinel.
+        assert old_file.read_text(encoding="utf-8") == sentinel
+
+
+# =========================================================================
+# UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
+# =========================================================================
+
+class TestJobsJsonUtf8Bom:
+    """jobs.json readers must accept a leading UTF-8 BOM.
+
+    Matching the env-class dialect (utf-8-sig): a BOM from Windows editors
+    must not raise JSONDecodeError / RuntimeError on load_jobs().
+    """
+
+    def test_load_jobs_accepts_utf8_bom(self, tmp_cron_dir):
+        """BOM'd jobs.json loads — the pre-fix crash repro."""
+        import json
+        from pathlib import Path
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": [
+                {
+                    "id": "bomjob01",
+                    "name": "bom-test",
+                    "enabled": True,
+                    "prompt": "hello",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                }
+            ]
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8")
+        )
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["bomjob01"]
+        assert loaded[0]["name"] == "bom-test"
+
+    def test_load_jobs_bomless_regression(self, tmp_cron_dir):
+        """BOM-less UTF-8 jobs.json must keep loading after utf-8-sig."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": [
+                {
+                    "id": "plainjob01",
+                    "name": "plain",
+                    "enabled": True,
+                    "prompt": "hi",
+                    "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+                }
+            ]
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["plainjob01"]
+
+    def test_load_jobs_bom_empty_jobs_list(self, tmp_cron_dir):
+        """Minimal BOM'd store ({"jobs": []}) must not raise."""
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(b'\xef\xbb\xbf{"jobs": []}')
+
+        assert load_jobs() == []
+
+    def test_load_jobs_bom_plus_bare_list_auto_repairs(self, tmp_cron_dir):
+        """BOM + bare list (hand-edited) must load and rewrap to dict envelope."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        bare = [
+            {
+                "id": "barebom01",
+                "name": "bare",
+                "enabled": True,
+                "prompt": "x",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            }
+        ]
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(b"\xef\xbb\xbf" + json.dumps(bare).encode("utf-8"))
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["barebom01"]
+        # Auto-repair rewrites via save_jobs (plain utf-8) — heals the BOM.
+        on_disk = JOBS_FILE.read_bytes()
+        assert not on_disk.startswith(b"\xef\xbb\xbf"), "save_jobs should rewrite without BOM"
+        rewritten = json.loads(on_disk.decode("utf-8"))
+        assert isinstance(rewritten, dict)
+        assert [j["id"] for j in rewritten["jobs"]] == ["barebom01"]
+
+    def test_load_jobs_bom_plus_control_char_uses_strict_false_arm(self, tmp_cron_dir):
+        """BOM + bare control char in a string value exercises the strict=False arm.
+
+        json.load (strict) rejects unescaped control chars; the retry path must
+        also open with utf-8-sig so the BOM does not re-crash the repair.
+        """
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        # Valid JSON structure but with a raw newline inside a string value
+        # (invalid under strict=True). Leading UTF-8 BOM.
+        raw = (
+            b'\xef\xbb\xbf{"jobs": [{"id": "ctrlbom01", "name": "has\nnewline",'
+            b' "enabled": true, "prompt": "x",'
+            b' "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"}}]}'
+        )
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(raw)
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["ctrlbom01"]
+        assert "newline" in loaded[0]["name"]

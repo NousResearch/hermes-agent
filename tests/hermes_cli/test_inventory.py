@@ -276,6 +276,43 @@ def test_build_models_payload_can_probe_only_current_custom_provider():
     assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
 
 
+def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
+    """CLI /model picker must pass force_refresh to probe flags (#65652, #65650).
+
+    Normal open (/model bare) skips non-current probes; /model --refresh probes
+    all custom providers to freshen their model lists.
+    """
+    ctx = _empty_ctx()
+
+    # Normal open — skip non-current probes
+    force_refresh = False
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as mock_list:
+        build_models_payload(
+            ctx,
+            probe_custom_providers=force_refresh,
+            probe_current_custom_provider=not force_refresh,
+        )
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
+    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
+
+    # Refresh open — probe everything
+    force_refresh = True
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as mock_list:
+        build_models_payload(
+            ctx,
+            probe_custom_providers=force_refresh,
+            probe_current_custom_provider=not force_refresh,
+        )
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is True
+    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
+
+
 def test_list_authenticated_providers_force_fresh_is_keyword_only():
     """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
 
@@ -417,6 +454,55 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ]
 
 
+def test_explicit_only_keeps_unauthenticated_current_provider_visible():
+    """Desktop's configured-only picker must retain its saved provider row."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            picker_hints=True,
+        )
+
+    assert [row["slug"] for row in payload["providers"]] == ["deepseek"]
+    row = payload["providers"][0]
+    assert row["source"] == "configured-current"
+    assert row["authenticated"] is False
+    assert row["models"] == ["deepseek-v4-pro"]
+    assert "DEEPSEEK_API_KEY" in row["warning"]
+def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
+    """If the saved provider is currently unauthenticated, keep a visible row
+    with the saved model so GUI pickers don't silently jump to another
+    authenticated provider."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
+
+    deepseek = next(r for r in payload["providers"] if r["slug"] == "deepseek")
+    assert deepseek["source"] == "configured-current"
+    assert deepseek["is_current"] is True
+    assert deepseek["authenticated"] is False
+    assert deepseek["models"] == ["deepseek-v4-pro"]
+    assert deepseek["total_models"] == 1
+    assert deepseek["auth_type"] == "api_key"
+    assert "DEEPSEEK_API_KEY" in deepseek["warning"]
+    assert "saved model only" in deepseek["warning"]
+
+
+def test_include_unconfigured_does_not_duplicate_configured_current_row():
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            include_unconfigured=True,
+            picker_hints=True,
+        )
+
+    assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
+
 def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     rows = [
         {"slug": "moa", "name": "MoA", "models": ["review"],
@@ -450,10 +536,10 @@ def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     ):
         payload = build_models_payload(ctx, explicit_only=True)
 
-    assert [row["slug"] for row in payload["providers"]] == ["moa"]
+    assert [row["slug"] for row in payload["providers"]] == ["moa", "openrouter"]
     assert payload["providers"][0]["models"] == ["review"]
-
-
+    assert payload["providers"][1]["source"] == "configured-current"
+    assert payload["providers"][1]["authenticated"] is False
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

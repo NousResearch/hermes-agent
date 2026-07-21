@@ -1,5 +1,6 @@
+import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
+import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -19,10 +20,11 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
-const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
+const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
 
-const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
+const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
+const REASONING_SESSION_FLAGS = new Set(['--session'])
+const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -32,10 +34,46 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   if (TUI_SESSION_MODEL_RE.test(trimmed)) {
-    return stripTuiSessionFlag(trimmed)
+    return sessionScopedModelArg(trimmed)
   }
 
   return trimmed
+}
+
+const reasoningConfigPayload = (arg: string, sid: string) => {
+  const parts = arg.trim().split(/\s+/).filter(Boolean)
+  let scope = ''
+  const valueParts: string[] = []
+
+  for (const part of parts) {
+    const flag = part.toLowerCase()
+
+    if (REASONING_GLOBAL_FLAGS.has(flag)) {
+      scope = 'global'
+
+      continue
+    }
+
+    if (REASONING_SESSION_FLAGS.has(flag)) {
+      // Session scope is the default; accept the flag for parity with /model.
+      if (!scope) {
+        scope = 'session'
+      }
+
+      continue
+    }
+
+    valueParts.push(part)
+  }
+
+  const value = valueParts.join(' ')
+
+  return {
+    key: 'reasoning',
+    session_id: sid,
+    value,
+    ...(scope ? { scope } : {})
+  }
 }
 
 export const sessionCommands: SlashCommand[] = [
@@ -445,7 +483,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning' })
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(
               r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
@@ -453,7 +491,7 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg }).then(
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (!r.value) {
             return
@@ -577,25 +615,61 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
+        const sys = ctx.transcript.sys
+
         if (r) {
           patchUiState({
             usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
           })
         }
 
-        // Nous credits block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Render it whenever
-        // present, before the token panel.
-        const creditsLines = r?.credits_lines ?? []
+        // Nous balance block is agent-independent (a portal fetch), so it shows
+        // even with zero API calls or on a resumed session. Prefer the shared
+        // dollar usage model (two-bar view, dollars-only); fall back to the
+        // legacy text lines only when the model is unavailable.
+        const usageModel = r?.usage
+        const barLines = usageBarsText(usageModel)
+        let showedBalance = false
 
-        if (creditsLines.length) {
-          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
+        if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
+          const sections: PanelSection[] = []
+          const plan = usageModel.plan_name ?? (usageModel.status === 'free' ? 'Free' : null)
+
+          if (plan) {
+            sections.push({
+              text: `Plan: ${plan}${usageModel.renews_display ? ` · renews ${usageModel.renews_display}` : ''}`
+            })
+          }
+
+          if (barLines.length) {
+            sections.push({ text: barLines.join('\n') })
+          }
+
+          if (usageModel.status === 'free') {
+            sections.push({ text: '> Free · free models only. Run /subscription to reach paid models.' })
+          } else if (usageModel.status === 'low') {
+            sections.push({
+              text: `! Low balance · ${usageModel.total_spendable_display ?? 'under $5'} left. Run /topup or /subscription.`
+            })
+          }
+
+          ctx.transcript.panel('Balance', sections)
+          showedBalance = true
+        } else {
+          const creditsLines = r?.credits_lines ?? []
+
+          if (creditsLines.length) {
+            ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
+            showedBalance = true
+          }
         }
 
         if (!r?.calls) {
-          if (!creditsLines.length) {
-            ctx.transcript.sys('no API calls yet')
+          if (!showedBalance) {
+            sys('no API calls yet')
           }
+
+          sys(USAGE_CTA)
 
           return
         }
@@ -621,6 +695,8 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         ctx.transcript.panel('Usage', sections)
+
+        sys(USAGE_CTA)
       })
     }
   }

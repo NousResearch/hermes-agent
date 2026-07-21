@@ -30,6 +30,7 @@ from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
+    "DEEPINFRA_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -42,6 +43,7 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
+    "FIREWORKS_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -197,6 +199,100 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+
+
+# Deprecated / legacy config keys still read for back-compat. Doctor surfaces
+# them as non-failing warnings with the modern replacement — it does not
+# auto-migrate or delete (migrations live in config.py version steps).
+_DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
+    # (section, key, replacement)
+    ("display", "tool_progress_overrides", "display.platforms"),
+    ("delegation", "max_async_children", "delegation.max_concurrent_children"),
+)
+
+# compression.summary_* → auxiliary.compression (model/provider/base_url)
+_DEPRECATED_COMPRESSION_SUMMARY_KEYS: tuple[str, ...] = (
+    "summary_model",
+    "summary_provider",
+    "summary_base_url",
+)
+
+# Deprecated env vars (checked in the .env file, not process env, so config→env
+# bridges like terminal.cwd → TERMINAL_CWD do not false-positive).
+_DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
+    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml"),
+    ("HERMES_TOOL_PROGRESS_MODE", "display.tool_progress in config.yaml"),
+    ("TERMINAL_CWD", "terminal.cwd in config.yaml"),
+    ("MESSAGING_CWD", "terminal.cwd in config.yaml"),
+    ("QQ_HOME_CHANNEL", "QQBOT_HOME_CHANNEL"),
+    ("QQ_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_NAME"),
+)
+
+
+def collect_deprecated_config_keys(raw_config: dict | None) -> list[tuple[str, str]]:
+    """Return ``(legacy_path, replacement)`` for deprecated keys present in *raw_config*.
+
+    Only keys that appear in the on-disk YAML are reported (raw file load, not
+    merged defaults). Empty containers still count — presence of the legacy
+    key is the signal that the user should migrate.
+    """
+    findings: list[tuple[str, str]] = []
+    if not isinstance(raw_config, dict):
+        return findings
+
+    for section, key, replacement in _DEPRECATED_CONFIG_KEYS:
+        section_val = raw_config.get(section)
+        if isinstance(section_val, dict) and key in section_val:
+            findings.append((f"{section}.{key}", replacement))
+
+    compression = raw_config.get("compression")
+    if isinstance(compression, dict):
+        for key in _DEPRECATED_COMPRESSION_SUMMARY_KEYS:
+            if key in compression:
+                findings.append((f"compression.{key}", "auxiliary.compression"))
+
+    return findings
+
+
+def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
+    """Return ``(legacy_env, replacement)`` for deprecated vars present in *env_map*.
+
+    *env_map* should come from the on-disk ``.env`` (e.g. ``load_env()``), not
+    ``os.environ``, so bridged runtime vars do not trigger false positives.
+    """
+    findings: list[tuple[str, str]] = []
+    if not isinstance(env_map, dict):
+        return findings
+    for name, replacement in _DEPRECATED_ENV_VARS:
+        val = env_map.get(name)
+        if val is not None and str(val).strip() != "":
+            findings.append((name, replacement))
+    return findings
+
+
+def report_deprecated_config_and_env(
+    raw_config: dict | None = None,
+    env_map: dict | None = None,
+) -> list[tuple[str, str]]:
+    """Emit non-failing doctor warnings for deprecated config keys and env vars.
+
+    Returns the list of ``(legacy, replacement)`` findings that were reported
+    (empty when nothing deprecated is present). Does not mutate config/env and
+    does not append to the blocking ``issues`` list.
+    """
+    findings = collect_deprecated_config_keys(raw_config)
+    findings.extend(collect_deprecated_env_vars(env_map))
+    if not findings:
+        check_ok("No deprecated config keys or env vars")
+        return findings
+
+    for legacy, replacement in findings:
+        check_warn(
+            f"Deprecated: {legacy}",
+            f"(use {replacement} instead)",
+        )
+        check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
+    return findings
 
 
 def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
@@ -773,7 +869,12 @@ def run_doctor(args):
 
             user_providers = cfg.get("providers")
             if isinstance(user_providers, dict):
-                known_providers.update(str(name).strip().lower() for name in user_providers if str(name).strip())
+                from hermes_cli.config import is_provider_enabled
+                known_providers.update(
+                    str(name).strip().lower()
+                    for name, prov_cfg in user_providers.items()
+                    if str(name).strip() and is_provider_enabled(prov_cfg)
+                )
             for entry in custom_providers:
                 if not isinstance(entry, dict):
                     continue
@@ -845,6 +946,14 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                # Fireworks' native model IDs are slash-form
+                # (accounts/fireworks/models/... and .../routers/...), so a "/"
+                # is expected, not an aggregator vendor prefix.
+                "fireworks",
+                # DeepInfra is an aggregator-style gateway: its catalog
+                # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
+                # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
+                "deepinfra",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
@@ -1049,6 +1158,25 @@ def run_doctor(args):
         except Exception:
             pass
 
+        # Surface deprecated/legacy config keys and env vars (warn-only).
+        # Migrations may still live in config.py version steps; doctor does
+        # not auto-delete here — only tells the user the modern replacement.
+        try:
+            import yaml as _yaml_depr
+            from hermes_cli.config import load_env as _load_env_depr
+
+            with open(config_path, encoding="utf-8") as _f_depr:
+                _raw_for_depr = _yaml_depr.safe_load(_f_depr) or {}
+            # Prefer the on-disk .env so bridged process env (e.g. TERMINAL_CWD
+            # from terminal.cwd) does not false-positive.
+            try:
+                _env_for_depr = _load_env_depr()
+            except Exception:
+                _env_for_depr = {}
+            report_deprecated_config_and_env(_raw_for_depr, _env_for_depr)
+        except Exception:
+            pass
+
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
             from hermes_cli.config import validate_config_structure
@@ -1064,6 +1192,19 @@ def run_doctor(args):
                     for hint_line in ci.hint.splitlines():
                         check_info(hint_line)
                     issues.append(ci.message)
+        except Exception:
+            pass
+
+    if not config_path.exists():
+        # No config.yaml — still surface deprecated env vars from .env.
+        try:
+            from hermes_cli.config import load_env as _load_env_depr
+
+            try:
+                _env_for_depr = _load_env_depr()
+            except Exception:
+                _env_for_depr = {}
+            report_deprecated_config_and_env({}, _env_for_depr)
         except Exception:
             pass
 

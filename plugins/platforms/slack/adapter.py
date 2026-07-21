@@ -788,6 +788,14 @@ class SlackAdapter(BasePlatformAdapter):
         # cache bridges lifecycle and message delivery ordering.
         self._agent_view_contexts: Dict[Tuple[str, str], Dict[str, str]] = {}
         self._AGENT_VIEW_CONTEXTS_MAX = 5000
+        # Status-bubble dedup (issue #30045, extended to Slack): remember the
+        # message ts of the last status bubble per (channel, thread, status
+        # key) so repeated progress callbacks (compression retries, fallback
+        # switches, ...) edit ONE message in place instead of appending a new
+        # bubble per event — long retry loops used to spam threads with
+        # dozens of out-of-order status messages.
+        self._status_message_ids: Dict[Tuple[str, str, str], str] = {}
+        self._STATUS_MESSAGE_IDS_MAX = 2000
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
@@ -2238,6 +2246,49 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Ephemeral send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a status message, or edit the previous one with the same key.
+
+        Issue #30045 (Telegram) extended to Slack: progress/status callbacks
+        (context-pressure, compression retries, model fallback, lifecycle)
+        used to append a fresh bubble on every call, spamming threads during
+        long retry loops. The first call posts and the message ts is
+        remembered; subsequent calls with the same (channel, thread,
+        status_key) edit that message in place via ``chat.update``. If the
+        edit fails (message deleted, too old, ...) the cached ts is dropped
+        and a fresh message is sent.
+        """
+        thread_ts = self._resolve_thread_ts(None, metadata) or ""
+        key = (str(chat_id), str(thread_ts), str(status_key))
+        cached_id = self._status_message_ids.get(key)
+        if cached_id is not None:
+            result = await self.edit_message(
+                chat_id, cached_id, content, finalize=False, metadata=metadata,
+            )
+            if result.success:
+                if result.message_id:
+                    self._status_message_ids[key] = str(result.message_id)
+                return result
+            # Edit failed — clear the cached ts and fall through to a fresh send.
+            self._status_message_ids.pop(key, None)
+        result = await self.send(chat_id, content, metadata=metadata)
+        if result.success and result.message_id:
+            if len(self._status_message_ids) >= self._STATUS_MESSAGE_IDS_MAX:
+                # Simple FIFO trim: drop the oldest half to bound memory.
+                for stale in list(self._status_message_ids)[
+                    : self._STATUS_MESSAGE_IDS_MAX // 2
+                ]:
+                    self._status_message_ids.pop(stale, None)
+            self._status_message_ids[key] = str(result.message_id)
+        return result
 
     async def edit_message(
         self,

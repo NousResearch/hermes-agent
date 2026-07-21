@@ -9276,3 +9276,193 @@ class TestServeIndexMissingIndex:
         resp = client.get("/chat")
         assert resp.status_code == 200
         assert "SPA-rebuilt" in resp.text
+
+
+class TestDashboardComponentHealth:
+    """Component-health rollup: error middleware, /api/status components, self-test."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        # Fresh state holder per test so counters don't leak across tests.
+        monkeypatch.setattr(ws, "DASHBOARD_HEALTH", ws.DashboardHealth())
+        self.ws = ws
+        self.client = TestClient(ws.app, raise_server_exceptions=False)
+        self.client.headers[ws._SESSION_HEADER_NAME] = ws._SESSION_TOKEN
+
+    # -- middleware -------------------------------------------------------
+
+    def test_middleware_counts_unhandled_exception(self):
+        """An exception escaping a route must be recorded (and re-raised)."""
+        route_path = "/api/_test_boom"
+
+        async def _boom():
+            raise RuntimeError("kaboom")
+
+        from fastapi.routing import APIRoute
+
+        self.ws.app.router.routes.insert(
+            0, APIRoute(route_path, _boom, methods=["GET"])
+        )
+        try:
+            resp = self.client.get(route_path)
+            assert resp.status_code == 500
+            assert self.ws.DASHBOARD_HEALTH.recent_error_count() == 1
+            assert self.ws.DASHBOARD_HEALTH.last_error_type == "RuntimeError"
+            # Path is retained internally only — snapshot must not export it.
+            assert self.ws.DASHBOARD_HEALTH.last_error_path == route_path
+        finally:
+            self.ws.app.router.routes[:] = [
+                r for r in self.ws.app.router.routes
+                if getattr(r, "path", None) != route_path
+            ]
+
+    def test_middleware_counts_5xx_response(self):
+        route_path = "/api/_test_teapot_fire"
+
+        async def _fivehundred():
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=503, content={"detail": "down"})
+
+        from fastapi.routing import APIRoute
+
+        self.ws.app.router.routes.insert(
+            0, APIRoute(route_path, _fivehundred, methods=["GET"])
+        )
+        try:
+            resp = self.client.get(route_path)
+            assert resp.status_code == 503
+            assert self.ws.DASHBOARD_HEALTH.recent_error_count() == 1
+            assert self.ws.DASHBOARD_HEALTH.last_error_type == "http_503"
+        finally:
+            self.ws.app.router.routes[:] = [
+                r for r in self.ws.app.router.routes
+                if getattr(r, "path", None) != route_path
+            ]
+
+    def test_error_window_expires_old_entries(self, monkeypatch):
+        health = self.ws.DashboardHealth(window_seconds=300)
+        now = {"t": 1000.0}
+        monkeypatch.setattr(self.ws.time, "time", lambda: now["t"])
+        health.record_error("RuntimeError", "/api/x")
+        assert health.recent_error_count() == 1
+        now["t"] = 1000.0 + 301
+        assert health.recent_error_count() == 0
+
+    # -- /api/status components ------------------------------------------
+
+    def test_status_includes_components_and_overall(self):
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall"] in {"ok", "degraded"}
+        components = data["components"]
+        assert set(components) == {"gateway", "storage", "dashboard", "platforms"}
+        for comp in components.values():
+            assert comp["status"] in {"ok", "degraded"}
+        dashboard = components["dashboard"]
+        assert dashboard["recent_unhandled_errors"] == 0
+        assert "last_error_at" in dashboard
+        assert dashboard["selftest"] in {"unknown", "ok", "failing"}
+
+    def test_storage_degraded_when_state_db_probe_fails(self, monkeypatch):
+        import gateway.readiness as readiness
+
+        monkeypatch.setattr(
+            readiness, "_probe_state_db", lambda home: {"status": "degraded", "detail": "OperationalError"}
+        )
+        resp = self.client.get("/api/status")
+        data = resp.json()
+        assert data["components"]["storage"] == {"status": "degraded"}
+        assert data["overall"] == "degraded"
+
+    def test_dashboard_component_degraded_after_error(self):
+        self.ws.DASHBOARD_HEALTH.record_error("RuntimeError", "/api/x")
+        resp = self.client.get("/api/status")
+        data = resp.json()
+        dashboard = data["components"]["dashboard"]
+        assert dashboard["status"] == "degraded"
+        assert dashboard["recent_unhandled_errors"] == 1
+        assert data["overall"] == "degraded"
+
+    def test_public_component_payload_carries_no_secret_bearing_fields(self):
+        """PUBLIC_API_PATHS contract: counts/enums only — no paths/messages."""
+        self.ws.DASHBOARD_HEALTH.record_error("RuntimeError", "/api/secret-route?token=abc")
+        resp = self.client.get("/api/status")
+        payload = json.dumps(resp.json()["components"])
+        assert "secret-route" not in payload
+        assert "token=abc" not in payload
+        assert "last_error_path" not in payload
+        assert "last_error_type" not in payload
+        assert "kaboom" not in payload
+
+    # -- self-test ---------------------------------------------------------
+
+    def test_selftest_records_failure_on_500(self, monkeypatch):
+        httpx = pytest.importorskip("httpx")
+
+        class _FakeResponse:
+            status_code = 500
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return _FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        asyncio.run(self.ws._dashboard_selftest_once())
+        assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
+        assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
+        assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
+
+    def test_selftest_records_pass_on_200(self, monkeypatch):
+        httpx = pytest.importorskip("httpx")
+
+        class _FakeResponse:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.calls = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, headers=None, **kwargs):
+                # The probe must authenticate with the real session token.
+                assert headers[self.ws_header] == self.ws_token
+                return _FakeResponse()
+
+        _FakeClient.ws_header = self.ws._SESSION_HEADER_NAME
+        _FakeClient.ws_token = self.ws._SESSION_TOKEN
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        asyncio.run(self.ws._dashboard_selftest_once())
+        assert self.ws.DASHBOARD_HEALTH.selftest_status == "ok"
+        assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 200
+
+    def test_selftest_real_asgi_roundtrip(self):
+        """End-to-end: the in-process ASGI self-test hits the real route."""
+        pytest.importorskip("httpx")
+        asyncio.run(self.ws._dashboard_selftest_once())
+        assert self.ws.DASHBOARD_HEALTH.selftest_status in {"ok", "failing"}
+        assert self.ws.DASHBOARD_HEALTH.selftest_http_status is not None

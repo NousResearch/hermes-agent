@@ -3,6 +3,7 @@ and the ``hermes kanban repair`` CLI verb."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -376,3 +377,133 @@ def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
         )
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# repair_db() API + `hermes kanban repair` CLI verb
+# ---------------------------------------------------------------------------
+
+def _run_kanban_cli(argv: list[str]) -> int:
+    """Drive the real argparse surface exactly like `hermes kanban …`."""
+    import argparse
+
+    from hermes_cli import kanban as kc
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", *argv])
+    return kc.kanban_command(args)
+
+
+@pytest.fixture
+def cli_home(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME so kanban_db_path() resolves inside tmp_path."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return home
+
+
+def test_repair_db_reports_ok_on_healthy_board(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _build_board_db(db_path)
+    report = kb.repair_db(db_path=db_path)
+    assert report.status == "ok"
+    assert report.messages == ["ok"]
+    assert report.backup_path is None
+
+
+def test_repair_db_missing_file(tmp_path):
+    report = kb.repair_db(db_path=tmp_path / "nope.db")
+    assert report.status == "missing"
+
+
+def test_repair_db_repairs_index_corruption_with_backup_first(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _build_board_db(db_path)
+    _corrupt_index(db_path, "idx_tasks_status")
+
+    report = kb.repair_db(db_path=db_path)
+    assert report.status == "repaired"
+    assert report.reindexed == ["idx_tasks_status"]
+    assert report.backup_path is not None and report.backup_path.exists()
+    # Backup captured the PRE-repair bytes (still corrupt in the copy).
+    assert any(
+        m.startswith("wrong # of entries in index")
+        for m in _integrity_messages(report.backup_path)
+    )
+    # Live DB is clean and data intact.
+    assert _integrity_messages(db_path) == ["ok"]
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert "task-0" in {t.title for t in kb.list_tasks(conn)}
+    finally:
+        conn.close()
+
+
+def test_repair_db_fail_closed_on_page_corruption(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    original = _write_page_corrupt_db(db_path)
+    report = kb.repair_db(db_path=db_path)
+    assert report.status == "corrupt"
+    assert report.reindexed == []
+    assert report.backup_path is not None and report.backup_path.exists()
+    # No REINDEX mutation happened on the live file.
+    assert db_path.read_bytes() == original
+
+
+def test_cli_repair_ok_exit_zero(cli_home, capsys):
+    kb.init_db()
+    rc = _run_kanban_cli(["repair"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "integrity_check ok" in out
+
+
+def test_cli_repair_repairs_and_exits_zero(cli_home, capsys):
+    db_path = kb.kanban_db_path()
+    _build_board_db(db_path)
+    _corrupt_index(db_path, "idx_tasks_status")
+
+    rc = _run_kanban_cli(["repair"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "repaired" in out
+    assert "idx_tasks_status" in out
+    assert "pre-repair backup" in out
+    assert _integrity_messages(db_path) == ["ok"]
+
+
+def test_cli_repair_still_corrupt_exits_nonzero(cli_home, capsys):
+    db_path = kb.kanban_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_page_corrupt_db(db_path)
+
+    rc = _run_kanban_cli(["repair"])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "CORRUPT" in err
+    assert "fail-closed" in err
+
+
+def test_cli_repair_json_shape(cli_home, capsys):
+    db_path = kb.kanban_db_path()
+    _build_board_db(db_path)
+    _corrupt_index(db_path, "idx_tasks_status")
+
+    rc = _run_kanban_cli(["repair", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["status"] == "repaired"
+    assert payload["reindexed"] == ["idx_tasks_status"]
+    assert payload["backup_path"]
+    assert Path(payload["backup_path"]).exists()
+
+
+def test_cli_repair_missing_db_exits_zero(cli_home, capsys):
+    rc = _run_kanban_cli(["repair"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "nothing to repair" in out

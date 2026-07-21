@@ -186,6 +186,41 @@ def test_start_spawns_subprocess_and_writes_active_pointer(tmp_path):
     assert active["meeting_id"] == "abc-defg-hij"
 
 
+def test_start_kills_spawned_process_when_active_write_fails(tmp_path):
+    """If _write_active() fails after Popen, the bot must not be orphaned.
+
+    The active pointer is the only handle later status()/stop() calls have
+    on the bot. When persisting it raises (e.g. disk full / permission), the
+    already-spawned subprocess would become an unreachable orphan — so start()
+    must kill it and re-raise instead of silently leaking the process.
+    """
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+    def _fake_popen(argv, **kwargs):
+        return _FakeProc(99999)
+
+    killed = []
+
+    def _kill(pid, sig):
+        killed.append((pid, sig))
+
+    with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+         patch.object(pm, "_pid_alive", return_value=False), \
+         patch.object(pm, "_write_active", side_effect=IOError("disk full")), \
+         patch.object(pm.os, "kill", side_effect=_kill):
+        with pytest.raises(IOError):
+            pm.start("https://meet.google.com/abc-defg-hij")
+
+    # The spawned bot was killed rather than leaked as an orphan...
+    assert (99999, signal.SIGKILL) in killed
+    # ...and no active pointer was left behind.
+    assert pm._read_active() is None
+
+
 def test_transcript_reads_last_n_lines(tmp_path):
     from plugins.google_meet import process_manager as pm
 

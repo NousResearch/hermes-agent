@@ -2762,16 +2762,24 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
 
-    def test_delivery_guidance_present(self):
-        """Cron hint tells agents their final response is auto-delivered."""
-        job = {"prompt": "Generate a report"}
+    def test_delivery_guidance_present_for_auto_delivered_jobs(self):
+        """Cron hint tells agents not to self-deliver when scheduler has a target."""
+        job = {"prompt": "Generate a report", "deliver": "origin", "origin": {"platform": "slack", "chat_id": "C123"}}
         result = _build_job_prompt(job)
         assert "do NOT use send_message" in result
         assert "automatically delivered" in result
 
+    def test_local_delivery_guidance_allows_explicit_send_message_workflows(self):
+        """Local-only cron jobs may intentionally post elsewhere via send_message."""
+        job = {"prompt": "If needed, use send_message to post to slack:C123.", "deliver": "local"}
+        result = _build_job_prompt(job)
+        assert "local-only" in result
+        assert "If this job's prompt explicitly instructs you to send a message" in result
+        assert "do NOT use send_message" not in result
+
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""
-        job = {"prompt": "My custom prompt"}
+        job = {"prompt": "My custom prompt", "deliver": "origin", "origin": {"platform": "slack", "chat_id": "C123"}}
         result = _build_job_prompt(job)
         system_pos = result.index("do NOT use send_message")
         prompt_pos = result.index("My custom prompt")

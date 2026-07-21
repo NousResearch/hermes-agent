@@ -2436,12 +2436,24 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
+    if str(job.get("deliver") or "").strip().lower() == "local":
+        delivery_hint = (
+            "DELIVERY: This cron job is configured for local-only final delivery. "
+            "Your final response will be saved locally for audit, not automatically sent to the user. "
+            "If this job's prompt explicitly instructs you to send a message to a specific target, "
+            "you may use send_message for that requested notification; otherwise just produce your "
+            "report/output as your final response. "
+        )
+    else:
+        delivery_hint = (
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+        )
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
+        f"{delivery_hint}"
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "

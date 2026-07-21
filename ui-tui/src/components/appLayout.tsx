@@ -1,3 +1,6 @@
+// Importing the apps barrel registers the reference widget apps at startup.
+import '../sdk/apps/index.js'
+
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
@@ -19,6 +22,7 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import { ActiveWidgetSlot } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -28,7 +32,6 @@ import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
-import { Dialog, Overlay } from './overlay.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
@@ -568,19 +571,7 @@ export const AppLayout = memo(function AppLayout({
         {!overlay.agents && <PetPane />}
       </Box>
 
-      {overlay.dialog && (
-        <Overlay backdrop zone={overlay.dialog.zone ?? 'center'}>
-          <Dialog
-            hint={overlay.dialog.hint ?? 'Esc/q close'}
-            title={overlay.dialog.title}
-            width={Math.min(60, composer.cols - 8)}
-          >
-            {overlay.dialog.body.split('\n').map((line, i) => (
-              <Text key={i}>{line || ' '}</Text>
-            ))}
-          </Dialog>
-        </Overlay>
-      )}
+      <ActiveWidgetSlot />
     </Shell>
   )
 })

@@ -1,8 +1,8 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, type ReactNode, useEffect, useRef, useState } from 'react'
 
-import type { GridTestState } from '../app/interfaces.js'
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
+import type { GridTestState } from '../sdk/apps/gridTestState.js'
 import type { Theme } from '../theme.js'
 
 import { GridAreas, type GridAreaWidget } from './widgetGrid.js'

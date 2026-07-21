@@ -1529,7 +1529,7 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
     DELETE FROM messages_fts WHERE rowid = old.id;
     INSERT INTO messages_fts(rowid, content) VALUES (
         new.id,
@@ -1555,7 +1555,7 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON message
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,

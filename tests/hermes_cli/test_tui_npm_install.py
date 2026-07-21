@@ -31,9 +31,19 @@ def _assert_utf8_replace_capture(kwargs: dict) -> None:
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
 
-
 def test_need_install_when_ink_missing(tmp_path: Path, main_mod) -> None:
     (tmp_path / "package-lock.json").write_text("{}")
+    assert main_mod._tui_need_npm_install(tmp_path) is True
+
+
+def test_need_install_when_ink_is_broken_symlink(tmp_path: Path, main_mod) -> None:
+    """Broken symlink (or junction) to ink → treat as missing, trigger install."""
+    (tmp_path / "package-lock.json").write_text("{}")
+    # Create a broken symlink (simulates a junction pointing to nowhere)
+    ink_dir = tmp_path / "node_modules" / "@hermes" / "ink"
+    ink_dir.mkdir(parents=True)
+    broken_link = ink_dir / "package.json"
+    broken_link.symlink_to("/nonexistent/path")
     assert main_mod._tui_need_npm_install(tmp_path) is True
 
 

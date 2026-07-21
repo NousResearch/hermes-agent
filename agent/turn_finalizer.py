@@ -185,6 +185,40 @@ def finalize_turn(
             from agent.message_sanitization import close_interrupted_tool_sequence
             close_interrupted_tool_sequence(messages, final_response)
 
+        # Plugin hook: transform_llm_output
+        # Run BEFORE _persist_session so the DB stores the transformed
+        # content (not the raw LLM output). The previous approach of
+        # re-persisting after the hook was ineffective because
+        # _persist_session stamps messages as persisted and skips them
+        # on subsequent calls (run_agent.py:1920-1921, :1988).
+        _response_transformed = False
+        if final_response and not interrupted:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _transform_results = _invoke_hook(
+                    "transform_llm_output",
+                    response_text=final_response,
+                    session_id=agent.session_id or "",
+                    model=agent.model,
+                    platform=getattr(agent, "platform", None) or "",
+                )
+                for _hook_result in _transform_results:
+                    if isinstance(_hook_result, str) and _hook_result:
+                        final_response = _hook_result
+                        _response_transformed = True
+                        break  # First non-empty string wins
+            except Exception as exc:
+                logger.warning("transform_llm_output hook failed: %s", exc)
+
+        # Sync transformed content back to messages so _persist_session
+        # captures it. This is the single persist path — no second call
+        # needed.
+        if _response_transformed and final_response and not interrupted:
+            for _i in range(len(messages) - 1, -1, -1):
+                if messages[_i].get("role") == "assistant" and not messages[_i].get("tool_calls"):
+                    messages[_i]["content"] = final_response
+                    break
+
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
@@ -307,51 +341,6 @@ def finalize_turn(
                             )
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
-
-    _response_transformed = False
-
-    # Plugin hook: transform_llm_output
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
-        try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
-                "transform_llm_output",
-                response_text=final_response,
-                session_id=agent.session_id or "",
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-            for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
-        except Exception as exc:
-            logger.warning("transform_llm_output hook failed: %s", exc)
-
-    # ── Sync transformed final_response back to messages for DB persistence ──
-    # _persist_session (line 188) runs before transform_llm_output, so the
-    # DB currently stores the raw LLM output. If the hook modified
-    # final_response, write the transformed content back to the last
-    # assistant message and re-persist so /resume, session_search, /history
-    # all see the transformed content.
-    if _response_transformed and final_response and not interrupted:
-        for _i in range(len(messages) - 1, -1, -1):
-            if messages[_i].get("role") == "assistant" and not messages[_i].get("tool_calls"):
-                messages[_i]["content"] = final_response
-                break
-        try:
-            agent._persist_session(messages, conversation_history)
-        except Exception as _re_persist_err:
-            _cleanup_errors.append(f"re-persist: {_re_persist_err}")
-            logger.error(
-                "finalize_turn: re-persist after transform_llm_output failed: %s",
-                _re_persist_err,
-                exc_info=True,
-            )
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

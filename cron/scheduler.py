@@ -1939,8 +1939,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            # Standalone path: run the async send in a fresh event loop (safe
+            # from any thread), but do not let the shared helper rediscover the
+            # live adapter this scheduler phase already rejected.
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+                allow_live_adapter=False,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -1969,7 +1979,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                cleaned_delivery_content,
+                                thread_id=thread_id,
+                                media_files=media_files,
+                                allow_live_adapter=False,
+                            ),
+                        )
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)

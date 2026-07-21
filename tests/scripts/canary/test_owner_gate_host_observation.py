@@ -1073,7 +1073,7 @@ def test_late_host_fact_cannot_run_after_signed_completion_stamp(
         "_attest",
         lambda *_args, **_kwargs: attest_called.append(True) or {},
     )
-    ticks = iter((100.0, 161.0))
+    ticks = iter((100.0, 100.0 + producer.FRESHNESS_SECONDS + 1))
     monkeypatch.setattr(producer.time, "monotonic", lambda: next(ticks))
     with pytest.raises(
         producer.OwnerGateHostObservationError,
@@ -1186,7 +1186,7 @@ def test_stalled_attached_sa_collection_fails_before_private_signer_load(
         "_load_host_signer",
         lambda _revision: signer_loaded.append(True),
     )
-    ticks = iter((100.0, 161.0))
+    ticks = iter((100.0, 100.0 + producer.FRESHNESS_SECONDS + 1))
     monkeypatch.setattr(producer.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(producer.time, "time", lambda: float(NOW))
     with pytest.raises(
@@ -1250,7 +1250,9 @@ def test_delayed_signer_readiness_cannot_escape_final_completion_deadline(
             "readiness_sha256": request["cloud_signer_readiness_sha256"],
         },
     )
-    ticks = iter((100.0, 100.0, 161.0))
+    ticks = iter(
+        (100.0, 100.0, 100.0 + producer.FRESHNESS_SECONDS + 1)
+    )
     monkeypatch.setattr(producer.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(producer.time, "time", lambda: float(NOW))
     with pytest.raises(

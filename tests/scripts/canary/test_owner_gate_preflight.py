@@ -496,7 +496,9 @@ def _host(plan, key, *, iam: bool) -> dict:
         "phase": "post_iam" if iam else "inert",
         "collected_at_unix": NOW - 1,
         "completed_at_unix": NOW - 1,
-        "fresh_through_unix": NOW + 59,
+        "fresh_through_unix": (
+            NOW - 1 + preflight.HOST_OBSERVATION_FRESHNESS_SECONDS
+        ),
         "plan_sha256": plan.sha256,
         "production_ingress_observation_sha256": (
             _production_ingress_envelope(plan, iam=iam)["envelope_sha256"]
@@ -1215,7 +1217,9 @@ def test_host_observation_must_be_consumed_before_signed_freshness_deadline() ->
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
             **_production_ingress_kwargs(plan, iam=False),
-            now_unix=NOW + 60,
+            now_unix=(
+                NOW + preflight.HOST_OBSERVATION_FRESHNESS_SECONDS
+            ),
         )
 
 

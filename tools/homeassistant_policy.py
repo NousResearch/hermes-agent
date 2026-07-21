@@ -47,4 +47,3 @@ def classify_service_action(
     if domain in TRUSTABLE_DOMAINS and all(target in trusted_entities for target in targets):
         return ServicePolicyDecision("allow", "Explicitly trusted Home Assistant entity", targets)
     return ServicePolicyDecision("approve", "Sensitive Home Assistant action", targets)
-

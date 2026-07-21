@@ -65,4 +65,3 @@ def test_legacy_mode_preserves_existing_nonblocked_behavior():
 def test_command_execution_domains_are_blocked_in_every_mode(domain):
     assert classify_service_action(domain, None, {}, mode="legacy").action == "block"
     assert classify_service_action(domain, None, {}, mode="safe").action == "block"
-

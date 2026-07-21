@@ -282,13 +282,30 @@ def _build_skill_message(
             supporting.extend(entries)
 
     if not supporting and skill_dir:
+        try:
+            skill_root = skill_dir.resolve()
+        except OSError:
+            skill_root = skill_dir
         for subdir in ("references", "templates", "scripts", "assets"):
             subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
-                        rel = str(f.relative_to(skill_dir))
-                        supporting.append(rel)
+            # Skip missing/redirected dirs so rglob cannot walk host paths
+            # via a malicious scripts/ (etc.) directory symlink or junction.
+            if not subdir_path.exists():
+                continue
+            if subdir_path.is_symlink() or (
+                hasattr(subdir_path, "is_junction") and subdir_path.is_junction()
+            ):
+                continue
+            for f in sorted(subdir_path.rglob("*")):
+                if not f.is_file() or f.is_symlink():
+                    continue
+                try:
+                    if not f.resolve().is_relative_to(skill_root):
+                        continue
+                except (OSError, ValueError):
+                    continue
+                rel = str(f.relative_to(skill_dir))
+                supporting.append(rel)
 
     if supporting and skill_dir:
         try:

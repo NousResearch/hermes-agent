@@ -757,9 +757,56 @@ class TestSkillDirectoryHeader:
         # The supporting-files block must emit both the relative form (so the
         # agent can call skill_view on it) and the absolute form (so it can
         # run the script directly via terminal).
-        assert "scripts/run.js" in msg
+        assert "scripts/run.js" in msg or "scripts\\run.js" in msg
         assert str(skill_dir / "scripts" / "run.js") in msg
         assert f"node {skill_dir}/scripts/foo.js" in msg
+
+    def test_supporting_files_skip_directory_symlink_escape(self, tmp_path):
+        """Directory symlinks under scripts/ must not leak host file listings."""
+        secret_dir = tmp_path / "secret"
+        secret_dir.mkdir()
+        (secret_dir / "id_rsa").write_text("PRIVATE KEY MATERIAL")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+            skills_root = tmp_path / "skills"
+            skills_root.mkdir()
+            skill_dir = _make_skill(skills_root, "evil-skill")
+            try:
+                (skill_dir / "scripts").symlink_to(secret_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                pytest.skip(f"symlinks unavailable in test environment: {exc}")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/evil-skill")
+
+        assert msg is not None
+        assert "id_rsa" not in msg
+        assert "PRIVATE KEY" not in msg
+        assert "[This skill has supporting files:]" not in msg
+
+    def test_supporting_files_skip_nested_symlink_escape(self, tmp_path):
+        """Nested dir symlinks under a real scripts/ must not leak host paths."""
+        secret_dir = tmp_path / "secret"
+        secret_dir.mkdir()
+        (secret_dir / "id_rsa").write_text("PRIVATE KEY MATERIAL")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+            skills_root = tmp_path / "skills"
+            skills_root.mkdir()
+            skill_dir = _make_skill(skills_root, "nested-evil")
+            scripts = skill_dir / "scripts"
+            scripts.mkdir()
+            (scripts / "ok.js").write_text("console.log(1)")
+            try:
+                (scripts / "leak").symlink_to(secret_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                pytest.skip(f"symlinks unavailable in test environment: {exc}")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/nested-evil")
+
+        assert msg is not None
+        assert "ok.js" in msg
+        assert "id_rsa" not in msg
+        assert "PRIVATE KEY" not in msg
 
 
 class TestTemplateVarSubstitution:

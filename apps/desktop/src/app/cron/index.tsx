@@ -86,7 +86,7 @@ import {
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from './job-state'
 import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 
 const DEFAULT_DELIVER = 'local'
@@ -123,7 +123,7 @@ const STATE_TONE: Record<string, PanelPillTone> = {
   completed: 'muted'
 }
 
-const truncate = (value: string, max = 80): string => (value.length > max ? `${value.slice(0, max)}…` : value)
+const truncate = (value: string, max = 80): string => truncateText(value, max)
 
 function jobName(job: CronJob): string {
   return asText(job.name).trim()

@@ -1528,8 +1528,11 @@ SKILL_MANAGE_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Path to a supporting file within the skill directory. "
-                    "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
+                    "For 'write_file'/'remove_file': required and MUST include a subdirectory prefix — "
+                    "one of references/, templates/, scripts/, or assets/. "
+                    "Bare filenames like 'SKILL.md', 'readme.md', or 'config.yaml' are REJECTED with a "
+                    "security error. Examples of valid paths: 'references/api.md', 'templates/config.yaml', "
+                    "'scripts/validate.py', 'assets/cover.png'. "
                     "For 'patch': optional, defaults to SKILL.md if omitted."
                 )
             },

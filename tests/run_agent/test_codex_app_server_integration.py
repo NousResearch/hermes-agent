@@ -743,6 +743,116 @@ class TestSessionRetirementOnRunAgent:
         assert "codex segfaulted" in result["error"]
 
 
+class TestSessionRuntimeSelection:
+    def test_live_runtime_switch_replaces_session_before_next_turn(
+        self, monkeypatch
+    ):
+        events = []
+        sessions = []
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.runtime = (
+                    str(kwargs.get("model") or "").strip() or None,
+                    str(kwargs.get("reasoning_effort") or "").strip() or None,
+                )
+                self.thread_id = f"thread-{len(sessions) + 1}"
+                self.close_calls = 0
+                sessions.append(self)
+                events.append(("constructed", self.runtime))
+
+            def run_turn(self, user_input, **kwargs):
+                events.append(("turn", self.runtime, user_input))
+                return TurnResult(
+                    final_text="ok",
+                    projected_messages=[],
+                    turn_id=f"turn-{user_input}",
+                    thread_id=self.thread_id,
+                )
+
+            def close(self):
+                self.close_calls += 1
+                events.append(("closed", self.runtime))
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+        agent = _make_codex_agent()
+        agent.model = " gpt-5.6-terra "
+        agent.reasoning_config = {"enabled": True, "effort": " high "}
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            first = agent.run_conversation("first")
+            agent.model = "gpt-5.6-terra"
+            agent.reasoning_config = {"enabled": True, "effort": "high"}
+            second = agent.run_conversation("second")
+            agent.model = "gpt-5.6-sol"
+            agent.reasoning_config = {"enabled": True, "effort": "max"}
+            third = agent.run_conversation("third")
+
+        assert len(sessions) == 2
+        assert sessions[0].close_calls == 1
+        assert sessions[1].close_calls == 0
+        assert first["codex_thread_id"] == second["codex_thread_id"] == "thread-1"
+        assert third["codex_thread_id"] == "thread-2"
+        assert events == [
+            ("constructed", ("gpt-5.6-terra", "high")),
+            ("turn", ("gpt-5.6-terra", "high"), "first"),
+            ("turn", ("gpt-5.6-terra", "high"), "second"),
+            ("closed", ("gpt-5.6-terra", "high")),
+            ("constructed", ("gpt-5.6-sol", "max")),
+            ("turn", ("gpt-5.6-sol", "max"), "third"),
+        ]
+
+    def test_reasoning_disable_reaches_codex_process_config(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def initialize(self, **kwargs):
+                pass
+
+            def request(self, method, params=None, timeout=30.0):
+                assert method == "thread/start"
+                return {"thread": {"id": "thread-disabled"}}
+
+            def close(self):
+                pass
+
+        def fake_run_turn(session, user_input, **kwargs):
+            thread_id = session.ensure_started()
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[],
+                turn_id="turn-disabled",
+                thread_id=thread_id,
+            )
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerClient",
+            FakeClient,
+        )
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent()
+        agent.model = "gpt-5.6-sol"
+        agent.reasoning_config = {"enabled": False}
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("no reasoning")
+
+        assert captured["extra_args"] == [
+            "-c",
+            'model="gpt-5.6-sol"',
+            "-c",
+            'model_reasoning_effort="none"',
+        ]
+
+
 class TestCodexToolProgressBridge:
     """#38835 / #33200: Codex app-server item notifications must surface as
     Hermes tool-progress so gateways show verbose breadcrumbs on this route.

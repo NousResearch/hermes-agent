@@ -634,10 +634,32 @@ def run_codex_app_server_turn(
         _ServerRequestRouting,
     )
 
-    # Lazy session: one CodexAppServerSession per AIAgent instance.
-    # Spawned on first turn, reused across turns, closed at AIAgent
-    # shutdown (see _cleanup hook).
-    if not hasattr(agent, "_codex_session") or agent._codex_session is None:
+    reasoning_config = getattr(agent, "reasoning_config", None) or {}
+    model = str(getattr(agent, "model", None) or "").strip() or None
+    reasoning_effort = (
+        "none"
+        if reasoning_config.get("enabled") is False
+        else str(reasoning_config.get("effort") or "").strip() or None
+    )
+    runtime_key = (model, reasoning_effort)
+
+    # Lazy session: one CodexAppServerSession per unchanged process runtime.
+    # Model and reasoning are process config, so a live selection change must
+    # retire the old thread before the next turn instead of billing stale config.
+    codex_session = getattr(agent, "_codex_session", None)
+    if (
+        codex_session is not None
+        and vars(agent).get("_codex_session_runtime_key", runtime_key)
+        != runtime_key
+    ):
+        try:
+            codex_session.close()
+        except Exception:
+            pass
+        agent._codex_session = None
+        codex_session = None
+
+    if codex_session is None:
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
@@ -678,11 +700,10 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
-        reasoning_config = getattr(agent, "reasoning_config", None) or {}
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
-            model=getattr(agent, "model", None),
-            reasoning_effort=reasoning_config.get("effort"),
+            model=model,
+            reasoning_effort=reasoning_effort,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
@@ -690,6 +711,7 @@ def run_codex_app_server_turn(
             ),
             on_event=make_codex_app_server_event_bridge(agent),
         )
+        agent._codex_session_runtime_key = runtime_key
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early

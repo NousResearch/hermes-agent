@@ -2914,6 +2914,155 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         server._sessions.pop("trunc-sid", None)
 
 
+def test_prompt_submit_rejects_when_finalization_wins_before_acceptance(monkeypatch):
+    """A resolved session reference cannot be accepted after finalization."""
+    session = _session(agent=None, attached_images=["still-attached.png"])
+    server._sessions["finalize-race"] = session
+    resolved = threading.Event()
+    finalized = threading.Event()
+    response = []
+    errors = []
+    side_effects = []
+    real_thread = threading.Thread
+
+    def _pause_after_session_lookup():
+        resolved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return {
+            "turn_isolation": False,
+            "compute_host_heartbeat_secs": 15,
+            "compute_host_respawn_max": 3,
+        }
+
+    def _submit():
+        try:
+            response.append(
+                server.handle_request(
+                    {
+                        "id": "submit",
+                        "method": "prompt.submit",
+                        "params": {
+                            "session_id": "finalize-race",
+                            "text": "must not be accepted",
+                        },
+                    }
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    class _CapturedRunThread:
+        def __init__(self, *args, **kwargs):
+            side_effects.append("run-thread-created")
+
+        def start(self):
+            side_effects.append("run-thread-started")
+
+    monkeypatch.setattr(
+        server, "_load_dashboard_process_isolation_config", _pause_after_session_lookup
+    )
+    monkeypatch.setattr(
+        server,
+        "_ensure_session_db_row",
+        lambda *_args: side_effects.append("db-row"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_persist_branch_seed",
+        lambda *_args: side_effects.append("branch-seed"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: side_effects.append("agent-build"),
+    )
+    monkeypatch.setattr(server, "_emit", lambda event, *_args: side_effects.append(event))
+    monkeypatch.setattr(server.threading, "Thread", _CapturedRunThread)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    submitter = real_thread(target=_submit, name="prompt-finalize-race")
+    try:
+        submitter.start()
+        assert resolved.wait(5)
+        assert server._close_session_by_id("finalize-race") is True
+        finalized.set()
+        submitter.join(5)
+        assert not submitter.is_alive()
+
+        assert errors == []
+        assert response and "error" in response[0]
+        assert response[0].get("result") != {"status": "streaming"}
+        assert side_effects == []
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert "inflight_turn" not in session
+        assert "_run_thread" not in session
+        assert session["attached_images"] == ["still-attached.png"]
+    finally:
+        finalized.set()
+        submitter.join(5)
+        server._sessions.pop("finalize-race", None)
+
+
+def test_busy_prompt_submit_rejects_when_finalization_wins_before_queue(monkeypatch):
+    session = _session(running=True)
+    server._sessions["busy-finalize-race"] = session
+    entered = threading.Event()
+    finalized = threading.Event()
+    response = []
+    real_handle_busy_submit = server._handle_busy_submit
+
+    def _pause_before_busy_acceptance(*args):
+        entered.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return real_handle_busy_submit(*args)
+
+    monkeypatch.setattr(server, "_handle_busy_submit", _pause_before_busy_acceptance)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    submitter = threading.Thread(
+        target=lambda: response.append(
+            server.handle_request(
+                {
+                    "id": "submit",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": "busy-finalize-race",
+                        "text": "must not be queued",
+                    },
+                }
+            )
+        ),
+        name="busy-prompt-finalize-race",
+    )
+    try:
+        submitter.start()
+        assert entered.wait(5)
+        server._finalize_session(session)
+        finalized.set()
+        submitter.join(5)
+        assert not submitter.is_alive()
+
+        assert response and "error" in response[0]
+        assert session.get("queued_prompt") is None
+        assert session.get("_finalized") is True
+    finally:
+        finalized.set()
+        submitter.join(5)
+        server._sessions.pop("busy-finalize-race", None)
+
+
 class _StopAfterOneNotificationPoll:
     def __init__(self):
         self._checks = 0
@@ -3952,6 +4101,193 @@ class _RecordingAgent:
     ):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
+
+
+def test_prompt_submit_continues_when_acceptance_wins_before_finalization(
+    monkeypatch, tmp_path
+):
+    """Finalization cannot revoke an ordinary prompt already accepted under lock."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
+    turns = []
+    events = []
+    accepted = threading.Event()
+    release_agent = threading.Event()
+    completed = threading.Event()
+    session = _session(agent=_RecordingAgent(turns))
+    server._sessions["accepted-finalize-race"] = session
+
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {
+            "turn_isolation": False,
+            "compute_host_heartbeat_secs": 15,
+            "compute_host_respawn_max": 3,
+        },
+    )
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_args: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_args: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: None)
+
+    def _wait_after_acceptance(active_session, _rid):
+        with active_session["history_lock"]:
+            assert active_session["running"] is True
+            assert isinstance(active_session.get("inflight_turn"), dict)
+        accepted.set()
+        if not release_agent.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return None
+
+    def _record_emit(event, *_args):
+        events.append(event)
+        if event == "message.complete":
+            completed.set()
+
+    monkeypatch.setattr(server, "_wait_agent", _wait_after_acceptance)
+    monkeypatch.setattr(server, "_emit", _record_emit)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "submit",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "accepted-finalize-race",
+                    "text": "accepted prompt",
+                },
+            }
+        )
+
+        assert response.get("result") == {"status": "streaming"}
+        assert accepted.wait(5)
+        server._finalize_session(session)
+        release_agent.set()
+        assert completed.wait(5)
+
+        assert turns == ["accepted prompt"]
+        assert "message.start" in events
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+    finally:
+        release_agent.set()
+        run_thread = session.get("_run_thread")
+        if isinstance(run_thread, threading.Thread):
+            run_thread.join(5)
+        server._sessions.pop("accepted-finalize-race", None)
+
+
+def test_goal_followup_does_not_restart_a_finalized_session(monkeypatch, tmp_path):
+    from hermes_cli import goals
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    turns = []
+    emitted = []
+
+    class _Agent(_RecordingAgent):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            turns.append(prompt)
+            return {
+                "final_response": "keep going",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "keep going"},
+                ],
+            }
+
+    class _GoalManager:
+        def __init__(self, **_kwargs):
+            pass
+
+        def is_active(self):
+            return True
+
+        def evaluate_after_turn(self, *_args, **_kwargs):
+            return {
+                "message": "continue",
+                "should_continue": True,
+                "continuation_prompt": "automatic followup",
+            }
+
+    session = _session(agent=_Agent(turns), running=True)
+    monkeypatch.setattr(goals, "GoalManager", _GoalManager)
+    monkeypatch.setattr(goals, "gather_background_processes", lambda: [])
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, *_args: emitted.append((event, bool(session.get("_finalized")))),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    def _finalize_before_followup(*_args):
+        server._finalize_session(session)
+        return False
+
+    monkeypatch.setattr(server, "_drain_queued_prompt", _finalize_before_followup)
+
+    server._run_prompt_submit("rid", "sid", session, "primary prompt")
+
+    assert turns == ["primary prompt"]
+    assert not [event for event in emitted if event == ("message.start", True)]
+    assert session.get("_finalized") is True
+    assert session["running"] is False
+
+
+def test_post_turn_drain_requeues_events_when_session_finalizes(monkeypatch, tmp_path):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    event = {
+        "type": "completion",
+        "session_id": "post_turn_finalize_race",
+        "command": "echo done",
+        "exit_code": 0,
+        "output": "done",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    emitted = []
+    session = _session(agent=_RecordingAgent([]), running=True)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_name, *_args: emitted.append(
+            (event_name, bool(session.get("_finalized")))
+        ),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    def _finalize_after_drain(**_kwargs):
+        server._finalize_session(session)
+        return [(event, "formatted completion")]
+
+    monkeypatch.setattr(process_registry, "drain_notifications", _finalize_after_drain)
+
+    server._run_prompt_submit("rid", "sid", session, "primary prompt")
+
+    assert not [item for item in emitted if item == ("message.start", True)]
+    assert session.get("_finalized") is True
+    assert session["running"] is False
+    assert isolated_queue.get_nowait() == event
+    assert isolated_queue.empty()
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
@@ -7758,6 +8094,64 @@ def test_interrupt_drops_queued_prompt_for_session():
         server._sessions.pop("sid", None)
 
 
+def test_queued_prompt_stays_pending_after_session_finalization(monkeypatch):
+    queued = {"text": "next prompt", "transport": None}
+    session = _session(queued_prompt=queued, _finalized=True)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, *_args: emitted.append(event))
+
+    assert server._drain_queued_prompt("rid", "sid", session) is False
+    assert session["queued_prompt"] is queued
+    assert session["running"] is False
+    assert emitted == []
+
+
+def test_queued_prompt_is_restored_when_finalization_wins_before_acceptance(
+    monkeypatch,
+):
+    queued = {"text": "next prompt", "transport": None}
+    session = _session(queued_prompt=queued)
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    real_submit = server._run_prompt_submit
+
+    def _pause_before_acceptance(*args):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return real_submit(*args)
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _pause_before_acceptance)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    worker = threading.Thread(
+        target=lambda: result.append(
+            server._drain_queued_prompt("rid", "sid", session)
+        ),
+        name="queued-prompt-finalize-race",
+    )
+    try:
+        worker.start()
+        assert reserved.wait(5)
+        server._finalize_session(session)
+        finalized.set()
+        worker.join(5)
+        assert not worker.is_alive()
+
+        assert result == [False]
+        assert session["queued_prompt"] is queued
+        assert session["running"] is False
+        assert session.get("_finalized") is True
+    finally:
+        finalized.set()
+        worker.join(5)
+
+
 def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     """Stop during lazy agent startup must not start the turn after init finishes."""
     threads = []
@@ -10479,6 +10873,79 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_restores_event_when_finalization_wins_after_format(
+    monkeypatch,
+):
+    """A formatted completion remains retryable when its session finalizes."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    event = {
+        "type": "completion",
+        "session_id": "proc_finalize_race",
+        "command": "echo done",
+        "exit_code": 0,
+        "output": "done",
+    }
+    isolated_queue.put(event)
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    formatted = threading.Event()
+    finalized = threading.Event()
+    emitted = []
+    stop = threading.Event()
+    session = _session(agent=None, _notif_stop=stop)
+    session["agent"] = None
+    server._sessions["poll-finalize-race"] = session
+
+    def _pause_after_pop(_event):
+        formatted.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return "formatted completion"
+
+    monkeypatch.setattr(
+        "tools.process_registry.format_process_notification", _pause_after_pop
+    )
+    monkeypatch.setattr(server, "_poll_tui_kanban_subscriptions", lambda *_args: False)
+    monkeypatch.setattr(server, "_emit", lambda event_name, *_args: emitted.append(event_name))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    poller = threading.Thread(
+        target=server._notification_poller_loop,
+        args=(stop, "poll-finalize-race", session),
+        name="completion-finalize-race",
+    )
+    try:
+        poller.start()
+        assert formatted.wait(5)
+        assert server._close_session_by_id("poll-finalize-race") is True
+        finalized.set()
+        poller.join(5)
+        assert not poller.is_alive()
+
+        assert emitted == []
+        assert session.get("_finalized") is True
+        assert session["running"] is False
+        assert isolated_queue.get_nowait() == event
+        assert isolated_queue.empty()
+    finally:
+        finalized.set()
+        stop.set()
+        poller.join(5)
+        server._sessions.pop("poll-finalize-race", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
 
 
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):

@@ -363,9 +363,12 @@ function derivePlanCard(
       ? `Renews ${renewal}`
       : 'No active subscription — paid models draw down top-up credits.'
 
-  // Actionable = there's a paid tier above the current one to move to. Downgrades
-  // are not counted at ticket 09 (they are inert here); ticket 11 flips this.
-  if (capable && tiers.some(tier => tier.state === 'upgrade')) {
+  // Actionable = a tile the user can act on. At ticket 09 only upgrades carry an
+  // `action` (downgrades are inert), so "has an action" ⟺ an upgrade exists. (The
+  // discriminated union means `'action' in tier` rather than `tier.action != null`.)
+  const hasActionableTier = tiers.some(tier => 'action' in tier)
+
+  if (capable && hasActionableTier) {
     return { action: { label: current ? 'Change plan' : 'View plans' }, caption, price, tierName }
   }
 

@@ -188,7 +188,7 @@ function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan:
             </Button>
           )}
           {plan.link && (
-            <Button onClick={() => openExternal(plan.link.url)} size="sm" type="button" variant="outline">
+            <Button onClick={() => plan.link && openExternal(plan.link.url)} size="sm" type="button" variant="outline">
               {plan.link.label}
               <ExternalLink className="size-3.5" />
             </Button>

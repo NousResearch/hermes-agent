@@ -9,9 +9,11 @@ import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
+  DetachedTurnTask,
   SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
+  SessionDetachTurnResponse,
   SessionInflightTurn,
   SessionResumeResponse,
   SessionTitleResponse,
@@ -20,6 +22,7 @@ import type {
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
+import { acknowledgeDetachedTask, registerDetachedTasks } from './detachedTasks.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
@@ -309,8 +312,40 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [startNewSession]
   )
 
+  const acknowledgeDetachedTasks = useCallback(
+    (ownerSid: string, tasks: DetachedTurnTask[]) => {
+      registerDetachedTasks(tasks)
+
+      for (const task of tasks) {
+        void acknowledgeDetachedTask(task, ownerSid, rpc, sys)
+      }
+    },
+    [rpc, sys]
+  )
+
+  const activateDetachedSession = useCallback(
+    (r: SessionDetachTurnResponse) => {
+      const info = r.info ?? null
+
+      resetSession()
+      setSessionStartedAt(Date.now())
+      writeActiveSessionFile(r.session_id)
+      patchUiState({
+        busy: false,
+        info,
+        sid: r.session_id,
+        status: info?.version ? 'ready' : 'starting agent…',
+        usage: usageFrom(info)
+      })
+      setHistoryItems(info ? [introMsg(info)] : [])
+      sys(`detached ${r.task_id} · original turn continues in ${r.source_session_key || r.source_session_id}`)
+      acknowledgeDetachedTasks(r.session_id, [r.task])
+    },
+    [acknowledgeDetachedTasks, resetSession, setHistoryItems, setSessionStartedAt, sys]
+  )
+
   const activateLiveSession = useCallback(
-    (id: string) => {
+    (id: string, notice?: string) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
@@ -340,6 +375,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
+          acknowledgeDetachedTasks(r.session_id, r.detached_tasks ?? [])
+          void rpc('session.interactions.replay', { session_id: r.session_id })
+
+          if (notice) {
+            sys(notice)
+          }
+
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
@@ -348,7 +390,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           patchUiState({ status: 'ready' })
         })
     },
-    [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [acknowledgeDetachedTasks, gw, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const resumeById = useCallback(
@@ -394,6 +436,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
+            acknowledgeDetachedTasks(r.session_id, r.detached_tasks ?? [])
+            void rpc('session.interactions.replay', { session_id: r.session_id })
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 
@@ -407,7 +451,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [
+      acknowledgeDetachedTasks,
+      closeSession,
+      colsRef,
+      gw,
+      panel,
+      resetSession,
+      rpc,
+      scrollRef,
+      setHistoryItems,
+      setSessionStartedAt,
+      sys
+    ]
   )
 
   const guardBusySessionSwitch = useCallback(
@@ -424,6 +480,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   return {
+    activateDetachedSession,
     activateLiveSession,
     closeSession,
     guardBusySessionSwitch,

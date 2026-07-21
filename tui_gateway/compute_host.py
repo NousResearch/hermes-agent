@@ -8,6 +8,7 @@ objects when ``dashboard.turn_isolation`` is enabled.
 from __future__ import annotations
 
 import argparse
+import copy
 import concurrent.futures
 import json
 import os
@@ -20,6 +21,28 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+
+_INTERACTIVE_REQUEST_EVENTS = frozenset(
+    {
+        "approval.request",
+        "clarify.request",
+        "input.request",
+        "secret.request",
+        "sudo.request",
+        "terminal.read.request",
+    }
+)
+_INTERACTIVE_RESPONSE_METHODS = frozenset(
+    {
+        "approval.respond",
+        "clarify.respond",
+        "secret.respond",
+        "sudo.respond",
+        "terminal.read.respond",
+    }
+)
+_INTERACTIVE_COMPLETE_EVENT = "_host.interactive.complete"
 
 
 def now_ns() -> int:
@@ -91,11 +114,43 @@ class _HostTransport:
 
     def write(self, obj: dict) -> bool:
         sid = ""
+        event_type = ""
+        payload: dict[str, Any] = {}
         try:
             if obj.get("method") == "event":
-                sid = str(((obj.get("params") or {}).get("session_id")) or "")
+                event_params = obj.get("params") or {}
+                sid = str(event_params.get("session_id") or "")
+                event_type = str(event_params.get("type") or "")
+                raw_payload = event_params.get("payload")
+                payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
         except Exception:
             sid = ""
+            event_type = ""
+            payload = {}
+        if event_type in _INTERACTIVE_REQUEST_EVENTS:
+            self._emit(
+                {
+                    "type": "interactive.request",
+                    "sid": sid,
+                    "source_sid": sid,
+                    "request_id": str(payload.get("request_id") or ""),
+                    "event": event_type,
+                    "payload": payload,
+                }
+            )
+            return True
+        if event_type == _INTERACTIVE_COMPLETE_EVENT:
+            self._emit(
+                {
+                    "type": "interactive.complete",
+                    "sid": sid,
+                    "source_sid": sid,
+                    "request_id": str(payload.get("request_id") or ""),
+                    "event": str(payload.get("event") or ""),
+                    "reason": str(payload.get("reason") or "complete"),
+                }
+            )
+            return True
         self._emit({"type": "rpc", "sid": sid, "message": obj})
         return True
 
@@ -179,7 +234,12 @@ class ComputeHost:
             from tui_gateway import server
         except Exception:
             return
-        for session in list(getattr(server, "_sessions", {}).values()):
+        for sid, session in list(getattr(server, "_sessions", {}).items()):
+            try:
+                server._clear_pending(sid)
+                server._drop_pending_approvals(sid)
+            except Exception:
+                pass
             try:
                 server._finalize_session(session, end_reason=f"compute_host_{reason}")
             except Exception:
@@ -197,6 +257,8 @@ class ComputeHost:
             self._handle_reload_mcp(frame)
         elif kind == "control":
             self._handle_control(frame)
+        elif kind == "interactive.response":
+            self._handle_interactive_response(frame)
         elif kind == "shutdown":
             self.emit({"type": "shutdown.ack", "request_id": frame.get("request_id")})
             # Explicit supervisor/test shutdown is a clean child-process close;
@@ -279,6 +341,16 @@ class ComputeHost:
             with session.get("history_lock", threading.Lock()):
                 session["_turn_cancel_requested"] = True
                 session["queued_prompt"] = None
+            server._clear_pending(sid)
+            try:
+                from tools.approval import resolve_gateway_approval
+
+                session_key = str(session.get("session_key") or "")
+                if session_key:
+                    resolve_gateway_approval(session_key, "deny", resolve_all=True)
+            except Exception:
+                pass
+            server._drop_pending_approvals(sid)
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": True, "applied_ns": now_ns()})
         except Exception as exc:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False, "message": str(exc)})
@@ -330,6 +402,8 @@ class ComputeHost:
                     "sid": session.sid,
                     "request_id": request_id,
                     "history_version": history_version,
+                    "base_history_version": max(0, history_version - 1),
+                    "history": list(result.get("messages") or []),
                     "message_count": len(result.get("messages") or []),
                     "interrupted": bool(result.get("interrupted")),
                     "ended_ns": now_ns(),
@@ -356,6 +430,7 @@ class ComputeHost:
                 if session.get("running"):
                     self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
                     return
+                base_history_version = int(session.get("history_version", 0))
                 session["running"] = True
                 session["_turn_cancel_requested"] = False
                 session["last_active"] = time.time()
@@ -382,7 +457,8 @@ class ComputeHost:
                 run_thread.join()
             with session["history_lock"]:
                 history_version = int(session.get("history_version", 0))
-                message_count = len(session.get("history") or [])
+                history = list(session.get("history") or [])
+                message_count = len(history)
                 interrupted = bool(session.get("_turn_cancel_requested"))
                 session_key = str(session.get("session_key") or "")
             session_info = server._session_info(session.get("agent"), session)
@@ -394,7 +470,13 @@ class ComputeHost:
                     "request_id": request_id,
                     "history_version": history_version,
                     "session_key": session_key,
+                    # Compare-and-swap against the version the child ACTUALLY
+                    # ran from. If the parent sent stale/newer metadata while a
+                    # persistent child already owned this session, echoing the
+                    # frame's version could authorize a later stale overwrite.
+                    "base_history_version": base_history_version,
                     "message_count": message_count,
+                    "history": history,
                     "interrupted": interrupted,
                     "ended_ns": now_ns(),
                     "session_info": session_info,
@@ -428,6 +510,24 @@ class ComputeHost:
                 session["profile_home"] = str(frame.get("profile_home"))
             if isinstance(frame.get("attached_images"), list):
                 session["attached_images"] = list(frame.get("attached_images") or [])
+            incoming_history = frame.get("history")
+            try:
+                incoming_version = int(frame.get("history_version") or 0)
+            except (TypeError, ValueError):
+                incoming_version = 0
+            with session.get("history_lock", threading.Lock()):
+                current_version = int(session.get("history_version", 0))
+                # A parent-side mutation that is provably newer (for example a
+                # recovered/reloaded source) becomes the next turn's base. A
+                # stale parent frame never rolls the authoritative child back.
+                if (
+                    not session.get("running")
+                    and isinstance(incoming_history, list)
+                    and incoming_version > current_version
+                    and all(isinstance(message, dict) for message in incoming_history)
+                ):
+                    session["history"] = copy.deepcopy(incoming_history)
+                    session["history_version"] = incoming_version
             return session
 
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
@@ -505,12 +605,80 @@ class ComputeHost:
             }
         session = server._sessions[sid]
         session["transport"] = self._transport
+        with session.get("history_lock", threading.Lock()):
+            session["history_version"] = max(
+                int(session.get("history_version", 0)),
+                int(frame.get("history_version") or 0),
+            )
         session["profile_home"] = profile_home or session.get("profile_home")
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
         return session
+
+    def _handle_interactive_response(self, frame: dict[str, Any]) -> None:
+        """Apply a parent-owned UI response to the child-owned real waiter."""
+        sid = str(frame.get("sid") or "")
+        control_id = str(frame.get("request_id") or "")
+        interactive_request_id = str(frame.get("interactive_request_id") or "")
+        method = str(frame.get("method") or "")
+        if not sid or not interactive_request_id or method not in _INTERACTIVE_RESPONSE_METHODS:
+            self.emit(
+                {
+                    "type": "interactive.response.error",
+                    "sid": sid,
+                    "request_id": control_id,
+                    "interactive_request_id": interactive_request_id,
+                    "message": "invalid interactive response frame",
+                }
+            )
+            return
+        try:
+            from tui_gateway import server
+
+            params = dict(frame.get("params") or {})
+            params["request_id"] = interactive_request_id
+            params["session_id"] = sid
+            response = server.handle_request(
+                {
+                    "id": control_id,
+                    "method": method,
+                    "params": params,
+                }
+            )
+            if not isinstance(response, dict) or response.get("error"):
+                error = (response or {}).get("error") if isinstance(response, dict) else None
+                self.emit(
+                    {
+                        "type": "interactive.response.error",
+                        "sid": sid,
+                        "request_id": control_id,
+                        "interactive_request_id": interactive_request_id,
+                        "message": str((error or {}).get("message") or "interactive response failed"),
+                        "response": response,
+                    }
+                )
+                return
+            self.emit(
+                {
+                    "type": "interactive.response.ack",
+                    "sid": sid,
+                    "request_id": control_id,
+                    "interactive_request_id": interactive_request_id,
+                    "response": response,
+                }
+            )
+        except Exception as exc:
+            self.emit(
+                {
+                    "type": "interactive.response.error",
+                    "sid": sid,
+                    "request_id": control_id,
+                    "interactive_request_id": interactive_request_id,
+                    "message": str(exc),
+                }
+            )
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:
         sid = str(frame.get("sid") or "")

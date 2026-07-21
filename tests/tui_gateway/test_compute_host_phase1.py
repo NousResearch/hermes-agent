@@ -77,6 +77,224 @@ def test_compute_host_frame_protocol_round_trip():
         host.close()
 
 
+@pytest.mark.parametrize(
+    ("event", "method", "value_key", "value"),
+    [
+        ("clarify.request", "clarify.respond", "answer", "clarified"),
+        ("input.request", "clarify.respond", "answer", "input"),
+        ("sudo.request", "sudo.respond", "password", "sudo-value"),
+        ("secret.request", "secret.respond", "value", "secret-value"),
+        (
+            "terminal.read.request",
+            "terminal.read.respond",
+            "text",
+            '{"lines":["terminal"]}',
+        ),
+    ],
+)
+def test_compute_host_interactive_response_reaches_real_child_waiter(
+    monkeypatch, event, method, value_key, value
+):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    sid = f"child-{event}"
+    server._sessions[sid] = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": f"key-{event}",
+        "transport": host._transport,
+    }
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    answer: dict[str, str] = {}
+    waiter = threading.Thread(
+        target=lambda: answer.setdefault(
+            "value", server._block(event, sid, {"prompt": event}, timeout=2)
+        )
+    )
+    try:
+        waiter.start()
+        request = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.request"
+            and frame.get("event") == event,
+        )
+        assert request["source_sid"] == sid
+        assert request["request_id"]
+
+        host.handle_frame(
+            {
+                "type": "interactive.response",
+                "sid": sid,
+                "request_id": f"response-{event}",
+                "interactive_request_id": request["request_id"],
+                "method": method,
+                "params": {value_key: value},
+            }
+        )
+        ack = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.response.ack"
+            and frame.get("request_id") == f"response-{event}",
+        )
+        assert ack["interactive_request_id"] == request["request_id"]
+        _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.complete"
+            and frame.get("request_id") == request["request_id"],
+        )
+        waiter.join(2)
+        assert answer == {"value": value}
+    finally:
+        server._clear_pending(sid)
+        waiter.join(2)
+        server._sessions.pop(sid, None)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+        host.close()
+
+
+def test_compute_host_interactive_response_reaches_real_approval_resolver(
+    monkeypatch,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    sid = "child-approval"
+    session_key = "child-approval-key"
+    server._sessions[sid] = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": session_key,
+        "transport": host._transport,
+    }
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 2)
+    result: dict[str, dict] = {}
+    waiter = threading.Thread(
+        target=lambda: result.setdefault(
+            "value",
+            approval._await_gateway_decision(
+                session_key,
+                lambda data: server._emit_approval_request(sid, data),
+                {
+                    "command": "dangerous",
+                    "description": "needs approval",
+                    "pattern_key": "test",
+                    "pattern_keys": ["test"],
+                },
+            ),
+        )
+    )
+    try:
+        waiter.start()
+        request = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.request"
+            and frame.get("event") == "approval.request",
+        )
+        host.handle_frame(
+            {
+                "type": "interactive.response",
+                "sid": sid,
+                "request_id": "approval-response",
+                "interactive_request_id": request["request_id"],
+                "method": "approval.respond",
+                "params": {"choice": "once"},
+            }
+        )
+        _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "interactive.response.ack"
+            and frame.get("request_id") == "approval-response",
+        )
+        waiter.join(2)
+        assert result["value"]["resolved"] is True
+        assert result["value"]["choice"] == "once"
+        assert not approval.has_blocking_approval(session_key)
+    finally:
+        approval.resolve_gateway_approval(session_key, "deny", resolve_all=True)
+        server._drop_pending_approvals(sid)
+        waiter.join(2)
+        server._sessions.pop(sid, None)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+        host.close()
+
+
+def test_compute_host_real_turn_end_serializes_authoritative_history(monkeypatch):
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    initial = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+    session = {
+        "agent": object(),
+        "history": list(initial),
+        "history_lock": threading.Lock(),
+        "history_version": 6,
+        "running": False,
+        "session_key": "history-key",
+    }
+
+    def run_prompt(_rid, _sid, target, text):
+        with target["history_lock"]:
+            target["history"] = [
+                *target["history"],
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": "second answer"},
+            ]
+            target["history_version"] += 1
+            target["running"] = False
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _server, _frame: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    try:
+        host._run_real_turn(
+            {
+                "sid": "history-sid",
+                "request_id": "history-turn",
+                "session_key": "history-key",
+                "history": initial,
+                # A persistent child can be authoritative at a newer version
+                # than a stale parent frame. The CAS base must be the version
+                # the child actually ran from (6), not this value.
+                "history_version": 5,
+                "text": "second",
+            }
+        )
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "history-turn",
+        )
+        # Parse the emitted line again: this is the real wire serialization,
+        # not a shared in-memory list handed to the assertion.
+        encoded = json.dumps(end)
+        decoded = json.loads(encoded)
+        assert decoded["base_history_version"] == 6
+        assert decoded["history_version"] == 7
+        assert [message["role"] for message in decoded["history"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert decoded["history"][-1]["content"] == "second answer"
+    finally:
+        host.close()
+
+
 def test_compute_host_interrupt_control_is_not_queued_behind_turn():
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
@@ -334,3 +552,158 @@ for raw in sys.stdin:
         assert supervisor.is_running()
     finally:
         supervisor.shutdown()
+
+
+def test_supervisor_pipe_proxies_detached_interaction_bidirectionally(
+    tmp_path, monkeypatch
+):
+    """Exercise the server proxy through real supervisor stdin/stdout pipes."""
+    from tui_gateway import server
+
+    script = tmp_path / "interactive_host.py"
+    script.write_text(
+        """
+import json, os, sys
+print(json.dumps({'type':'hello','host_pid':os.getpid(),'boot_id':'interactive','build_sha':'test','hermes_home':os.environ.get('HERMES_HOME','')}), flush=True)
+turn = None
+for raw in sys.stdin:
+    frame = json.loads(raw)
+    if frame.get('type') == 'shutdown':
+        print(json.dumps({'type':'shutdown.ack','request_id':frame.get('request_id')}), flush=True)
+        break
+    if frame.get('type') == 'turn.start':
+        turn = frame
+        print(json.dumps({
+            'type':'interactive.request',
+            'sid':frame.get('sid'),
+            'source_sid':frame.get('sid'),
+            'request_id':'child-clarify-1',
+            'event':'clarify.request',
+            'payload':{'request_id':'child-clarify-1','question':'from child','choices':[]},
+        }), flush=True)
+    if frame.get('type') == 'interactive.response':
+        assert frame.get('sid') == turn.get('sid')
+        assert frame.get('interactive_request_id') == 'child-clarify-1'
+        assert frame.get('method') == 'clarify.respond'
+        assert frame.get('params', {}).get('answer') == 'through pipe'
+        print(json.dumps({
+            'type':'interactive.response.ack',
+            'sid':frame.get('sid'),
+            'request_id':frame.get('request_id'),
+            'interactive_request_id':'child-clarify-1',
+            'response':{'jsonrpc':'2.0','id':frame.get('request_id'),'result':{'status':'ok'}},
+        }), flush=True)
+        print(json.dumps({
+            'type':'interactive.complete',
+            'sid':frame.get('sid'),
+            'source_sid':frame.get('sid'),
+            'request_id':'child-clarify-1',
+            'event':'clarify.request',
+            'reason':'answered',
+        }), flush=True)
+        print(json.dumps({
+            'type':'turn.end',
+            'sid':turn.get('sid'),
+            'request_id':turn.get('request_id'),
+            'history_version':1,
+            'message_count':0,
+        }), flush=True)
+""".strip(),
+        encoding="utf-8",
+    )
+    registry = tmp_path / "dashboard-compute-host.json"
+    emitted: list[tuple[str, str, dict]] = []
+    completed: list[dict] = []
+    source = {
+        "detached_turn_task_id": "pipe-task",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "pipe-source-key",
+    }
+    owner = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": "pipe-owner-key",
+    }
+    server._sessions.update({"pipe-source": source, "pipe-owner": owner})
+    server._detached_turns["pipe-task"] = {
+        "owner_session_id": "pipe-owner",
+        "source_session_id": "pipe-source",
+        "status": "running",
+        "task_id": "pipe-task",
+    }
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append(
+            (event, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    supervisor = HostSupervisor(
+        registry_path=registry,
+        argv=[sys.executable, str(script)],
+        interactive_sink=server._compute_host_interactive_sink,
+        respawn_max=0,
+        heartbeat_secs=1,
+        expected_build_sha="test",
+        autostart=False,
+    )
+    old_supervisor = server._compute_host_supervisor
+    server._compute_host_supervisor = supervisor
+    try:
+        supervisor.submit_turn(
+            {
+                "sid": "pipe-source",
+                "request_id": "pipe-turn",
+                "text": "hello",
+            },
+            on_complete=completed.append,
+        )
+        deadline = time.monotonic() + 3
+        while not emitted and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert emitted
+        event, presentation_sid, payload = emitted[0]
+        assert (event, presentation_sid) == ("clarify.request", "pipe-owner")
+        assert payload["request_id"] == "host:pipe-source:child-clarify-1"
+
+        denied = server._methods["clarify.respond"](
+            "wrong-owner",
+            {
+                "answer": "wrong",
+                "request_id": payload["request_id"],
+                "session_id": "pipe-source",
+            },
+        )
+        assert denied["error"]["code"] == 4043
+        assert completed == []
+
+        accepted = server._methods["clarify.respond"](
+            "right-owner",
+            {
+                "answer": "through pipe",
+                "request_id": payload["request_id"],
+                "session_id": "pipe-owner",
+            },
+        )
+        assert accepted["result"]["status"] == "ok"
+        deadline = time.monotonic() + 3
+        while not completed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert completed and completed[0]["type"] == "turn.end"
+        with server._prompt_lock:
+            assert payload["request_id"] not in server._compute_host_interactions
+            assert server._interactive_prompt_queues == {}
+    finally:
+        supervisor.shutdown()
+        server._compute_host_supervisor = old_supervisor
+        server._sessions.pop("pipe-source", None)
+        server._sessions.pop("pipe-owner", None)
+        server._detached_turns.pop("pipe-task", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_prompt_payloads.clear()
+            server._pending_prompt_presentations.clear()
+            server._interactive_prompt_queues.clear()

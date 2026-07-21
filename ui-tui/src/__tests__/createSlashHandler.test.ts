@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
+import { consumeDetachedTask, resetDetachedTaskTrackingForTests } from '../app/detachedTasks.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -26,6 +27,7 @@ describe('createSlashHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
+    resetDetachedTaskTrackingForTests()
     envState.dashboardTuiMode = false
   })
 
@@ -68,6 +70,119 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/session')).toBe(true)
     expect(getOverlayState().sessions).toBe(true)
+  })
+
+  it('detaches the busy turn for bare /background and activates its replacement', async () => {
+    patchUiState({ busy: true, sid: 'source-sid' })
+
+    const response = {
+      info: { model: 'fresh', skills: {}, tools: {} },
+      session_id: 'fresh-sid',
+      source_session_id: 'source-sid',
+      source_session_key: 'source-key',
+      task: { source_session_id: 'source-sid', status: 'running', task_id: 'bg_turn_1' },
+      task_id: 'bg_turn_1'
+    }
+
+    const rpc = vi.fn(() => Promise.resolve(response))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/background')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('session.detach_turn', { session_id: 'source-sid' })
+    await vi.waitFor(() => expect(ctx.session.activateDetachedSession).toHaveBeenCalledWith(response))
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('supports /detach as the explicit busy-turn command', async () => {
+    patchUiState({ busy: true, sid: 'source-sid' })
+
+    const response = {
+      session_id: 'fresh-sid',
+      source_session_id: 'source-sid',
+      task: { source_session_id: 'source-sid', status: 'running', task_id: 'bg_turn_2' },
+      task_id: 'bg_turn_2'
+    }
+
+    const rpc = vi.fn(() => Promise.resolve(response))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/detach')).toBe(true)
+    await vi.waitFor(() => expect(ctx.session.activateDetachedSession).toHaveBeenCalledWith(response))
+  })
+
+  it.each(['/bg', '/btw'])('keeps bare %s on the legacy usage path while busy', command => {
+    patchUiState({ busy: true, sid: 'source-sid' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('/background <prompt>')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.session.activateDetachedSession).not.toHaveBeenCalled()
+  })
+
+  it.each(['/background', '/bg', '/btw'])('keeps prompted %s on the isolated background-agent path', async command => {
+    patchUiState({ busy: true, sid: 'source-sid' })
+    const rpc = vi.fn(() => Promise.resolve({ task_id: 'bg_isolated' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)(`${command} investigate elsewhere`)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('prompt.background', {
+      session_id: 'source-sid',
+      text: 'investigate elsewhere'
+    })
+    await vi.waitFor(() => expect(getUiState().bgTasks.has('bg_isolated')).toBe(true))
+    expect(ctx.session.activateDetachedSession).not.toHaveBeenCalled()
+  })
+
+  it('handles prompt completion before the background-start RPC response exactly once', async () => {
+    patchUiState({ sid: 'source-sid' })
+    let resolveStart: ((value: { task_id: string }) => void) | undefined
+
+    const rpc = vi.fn(
+      () =>
+        new Promise<{ task_id: string }>(resolve => {
+          resolveStart = resolve
+        })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/background instant work')).toBe(true)
+    expect(resolveStart).toBeDefined()
+
+    const completion = {
+      source_session_id: '',
+      status: 'complete' as const,
+      task_id: 'bg_fast',
+      text: 'finished before start returned'
+    }
+
+    expect(consumeDetachedTask(completion, 'source-sid', rpc as any, ctx.transcript.sys)).toBe(true)
+    expect(consumeDetachedTask(completion, 'source-sid', rpc as any, ctx.transcript.sys)).toBe(true)
+
+    resolveStart!({ task_id: 'bg_fast' })
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('prompt.background', expect.anything()))
+    await Promise.resolve()
+
+    expect(ctx.transcript.sys).toHaveBeenCalledTimes(1)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('[bg bg_fast] finished before start returned')
+    expect(getUiState().bgTasks.has('bg_fast')).toBe(false)
+  })
+
+  it('explains canonical detach commands and bare aliases while idle without creating anything', () => {
+    patchUiState({ busy: false, sid: 'idle-sid' })
+    const ctx = buildCtx()
+    const handler = createSlashHandler(ctx)
+
+    expect(handler('/background')).toBe(true)
+    expect(handler('/detach')).toBe(true)
+    expect(handler('/bg')).toBe(true)
+    expect(handler('/btw')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenNthCalledWith(1, 'no running turn to detach')
+    expect(ctx.transcript.sys).toHaveBeenNthCalledWith(2, 'no running turn to detach')
+    expect(ctx.transcript.sys).toHaveBeenNthCalledWith(3, '/background <prompt>')
+    expect(ctx.transcript.sys).toHaveBeenNthCalledWith(4, '/background <prompt>')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
   it('handles /redraw locally without slash worker fallback', () => {
@@ -1030,6 +1145,7 @@ const buildLocal = () => ({
 })
 
 const buildSession = () => ({
+  activateDetachedSession: vi.fn(),
   closeSession: vi.fn(() => Promise.resolve(null)),
   die: vi.fn(),
   dieWithCode: vi.fn(),

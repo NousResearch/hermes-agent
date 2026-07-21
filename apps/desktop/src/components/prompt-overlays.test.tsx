@@ -43,7 +43,11 @@ describe('PromptOverlays', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() => expect($sudoRequest.get()).toBeNull())
-    expect(request).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    expect(request).toHaveBeenCalledWith('sudo.respond', {
+      password: '',
+      request_id: 'sudo-1',
+      session_id: 's1'
+    })
     expect(notifyError).not.toHaveBeenCalled()
   })
 
@@ -61,7 +65,11 @@ describe('PromptOverlays', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() => expect($secretRequest.get()).toBeNull())
-    expect(request).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    expect(request).toHaveBeenCalledWith('secret.respond', {
+      request_id: 'secret-1',
+      session_id: 's1',
+      value: ''
+    })
     expect(notifyError).not.toHaveBeenCalled()
   })
 })

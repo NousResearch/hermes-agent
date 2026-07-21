@@ -321,10 +321,17 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
 
 
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
+    completed_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second answer"},
+    ]
     session = _session(
         agent=None,
         agent_ready=threading.Event(),
         history=[{"role": "user", "content": "serving process must not read this"}],
+        history_version=3,
         _compute_host_active=True,
     )
     server._sessions["iso-sid"] = session
@@ -341,8 +348,10 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
                 "sid": "iso-sid",
                 "request_id": "turn-1",
                 "session_key": "rotated-session-key",
+                "base_history_version": 3,
+                "history": completed_history,
                 "history_version": 4,
-                "message_count": 3,
+                "message_count": len(completed_history),
                 "session_info": {
                     "model": "host-model",
                     "provider": "host-provider",
@@ -355,6 +364,13 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
 
         assert session["session_key"] == "rotated-session-key"
         assert session["history_version"] == 4
+        assert session["history"] == completed_history
+        assert [message["role"] for message in session["history"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
         assert session["_metadata_mirror"]["model"] == "host-model"
         info = server._session_info(None, session)
         assert info["model"] == "host-model"
@@ -366,6 +382,499 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         assert emitted[-1] == ("session.info", "iso-sid", info)
     finally:
         server._sessions.pop("iso-sid", None)
+
+
+def test_compute_host_history_mirror_does_not_overwrite_newer_parent_state():
+    newer_history = [
+        {"role": "user", "content": "new parent state"},
+        {"role": "assistant", "content": "already replaced"},
+    ]
+    session = _session(
+        history=[dict(message) for message in newer_history], history_version=8
+    )
+
+    server._apply_compute_host_metadata_mirror(
+        session,
+        {
+            "base_history_version": 6,
+            "history": [
+                {"role": "user", "content": "stale child state"},
+                {"role": "assistant", "content": "must not win"},
+            ],
+            "history_version": 7,
+            "message_count": 2,
+        },
+    )
+
+    assert session["history_version"] == 8
+    assert session["history"] == newer_history
+
+
+@pytest.mark.parametrize(
+    ("event", "respond_method", "value_key", "value"),
+    [
+        ("clarify.request", "clarify.respond", "answer", "answer"),
+        ("input.request", "clarify.respond", "answer", "input"),
+        ("sudo.request", "sudo.respond", "password", "password"),
+        ("secret.request", "secret.respond", "value", "secret"),
+        (
+            "terminal.read.request",
+            "terminal.read.respond",
+            "text",
+            '{"lines":[]}',
+        ),
+    ],
+)
+def test_compute_host_prompt_proxy_uses_detached_owner_fifo(
+    monkeypatch, event, respond_method, value_key, value
+):
+    class Supervisor:
+        def __init__(self):
+            self.responses = []
+
+        def respond_interactive(self, sid, **kwargs):
+            self.responses.append((sid, kwargs))
+            return {
+                "type": "interactive.response.ack",
+                "response": {"result": {"status": "ok"}},
+            }
+
+    supervisor = Supervisor()
+    source = _session(detached_turn_task_id="host-task", running=True)
+    owner = _session()
+    server._sessions.update({"host-source": source, "host-owner": owner})
+    server._detached_turns["host-task"] = {
+        "owner_session_id": "host-owner",
+        "source_session_id": "host-source",
+        "status": "running",
+        "task_id": "host-task",
+    }
+    emitted = []
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda *_a, **_k: supervisor)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda name, sid, payload=None: emitted.append(
+            (name, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    try:
+        server._compute_host_interactive_sink(
+            {
+                "type": "interactive.request",
+                "source_sid": "host-source",
+                "request_id": "child-request",
+                "event": event,
+                "payload": {"request_id": "child-request", "prompt": event},
+            }
+        )
+        assert emitted[0][0:2] == (event, "host-owner")
+        proxy_id = emitted[0][2]["request_id"]
+        assert proxy_id == "host:host-source:child-request"
+
+        wrong_owner = server._methods[respond_method](
+            "wrong",
+            {
+                value_key: value,
+                "request_id": proxy_id,
+                "session_id": "host-source",
+            },
+        )
+        assert wrong_owner["error"]["code"] == 4043
+        assert supervisor.responses == []
+
+        accepted = server._methods[respond_method](
+            "accepted",
+            {
+                value_key: value,
+                "request_id": proxy_id,
+                "session_id": "host-owner",
+            },
+        )
+        assert accepted["result"]["status"] == "ok"
+        assert supervisor.responses == [
+            (
+                "host-source",
+                {
+                    "request_id": "child-request",
+                    "method": respond_method,
+                    "params": {value_key: value},
+                    "wait": True,
+                },
+            )
+        ]
+        with server._prompt_lock:
+            assert proxy_id not in server._compute_host_interactions
+            assert server._interactive_prompt_queues == {}
+    finally:
+        server._sessions.pop("host-source", None)
+        server._sessions.pop("host-owner", None)
+        server._detached_turns.pop("host-task", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_prompt_payloads.clear()
+            server._pending_prompt_presentations.clear()
+            server._interactive_prompt_queues.clear()
+
+
+def test_compute_host_approval_proxy_resolves_only_from_detached_owner(
+    monkeypatch,
+):
+    class Supervisor:
+        def __init__(self):
+            self.responses = []
+
+        def respond_interactive(self, sid, **kwargs):
+            self.responses.append((sid, kwargs))
+            return {
+                "type": "interactive.response.ack",
+                "response": {"result": {"resolved": 1}},
+            }
+
+    supervisor = Supervisor()
+    server._sessions.update(
+        {
+            "approval-source": _session(
+                detached_turn_task_id="approval-task", running=True
+            ),
+            "approval-owner": _session(),
+        }
+    )
+    server._detached_turns["approval-task"] = {
+        "owner_session_id": "approval-owner",
+        "source_session_id": "approval-source",
+        "status": "running",
+        "task_id": "approval-task",
+    }
+    emitted = []
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda *_a, **_k: supervisor)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda name, sid, payload=None: emitted.append(
+            (name, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    try:
+        server._compute_host_interactive_sink(
+            {
+                "type": "interactive.request",
+                "source_sid": "approval-source",
+                "request_id": "child-approval",
+                "event": "approval.request",
+                "payload": {
+                    "request_id": "child-approval",
+                    "command": "dangerous",
+                    "description": "approval",
+                },
+            }
+        )
+        proxy_id = emitted[0][2]["request_id"]
+        accepted = server._methods["approval.respond"](
+            "accepted",
+            {
+                "choice": "once",
+                "request_id": proxy_id,
+                "session_id": "approval-owner",
+            },
+        )
+        assert accepted["result"]["resolved"] == 1
+        assert supervisor.responses[0][0] == "approval-source"
+        assert supervisor.responses[0][1]["request_id"] == "child-approval"
+        assert supervisor.responses[0][1]["method"] == "approval.respond"
+        assert supervisor.responses[0][1]["params"] == {
+            "all": False,
+            "choice": "once",
+        }
+    finally:
+        server._sessions.pop("approval-source", None)
+        server._sessions.pop("approval-owner", None)
+        server._detached_turns.pop("approval-task", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_approvals.clear()
+            server._interactive_prompt_queues.clear()
+
+
+def test_compute_host_non_detached_prompt_keeps_legacy_sessionless_response(
+    monkeypatch,
+):
+    class Supervisor:
+        def respond_interactive(self, _sid, **_kwargs):
+            return {
+                "type": "interactive.response.ack",
+                "response": {"result": {"status": "ok"}},
+            }
+
+    server._sessions["ordinary-source"] = _session(running=True)
+    emitted = []
+    monkeypatch.setattr(
+        server, "_get_compute_host_supervisor", lambda *_a, **_k: Supervisor()
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append(
+            (event, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    try:
+        server._compute_host_interactive_sink(
+            {
+                "type": "interactive.request",
+                "source_sid": "ordinary-source",
+                "request_id": "ordinary-child-request",
+                "event": "clarify.request",
+                "payload": {
+                    "request_id": "ordinary-child-request",
+                    "question": "ordinary",
+                },
+            }
+        )
+        assert emitted[0][0:2] == ("clarify.request", "ordinary-source")
+        response = server._methods["clarify.respond"](
+            "answer",
+            {
+                "answer": "legacy client",
+                "request_id": emitted[0][2]["request_id"],
+            },
+        )
+        assert response["result"]["status"] == "ok"
+    finally:
+        server._sessions.pop("ordinary-source", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_prompt_payloads.clear()
+            server._pending_prompt_presentations.clear()
+            server._interactive_prompt_queues.clear()
+
+
+def test_compute_host_terminal_error_retires_orphaned_prompt_proxy(monkeypatch):
+    """A child crash cannot emit interactive.complete after turn.error."""
+    source = _session(
+        _compute_host_active=True,
+        inflight_turn={"assistant": "", "streaming": True, "user": "wait"},
+        running=True,
+    )
+    server._sessions["crashed-source"] = source
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: True)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        server,
+        "_compute_host_supervisor",
+        types.SimpleNamespace(is_running=lambda: False),
+    )
+    try:
+        server._compute_host_interactive_sink(
+            {
+                "type": "interactive.request",
+                "source_sid": "crashed-source",
+                "request_id": "orphaned-child-request",
+                "event": "clarify.request",
+                "payload": {
+                    "question": "will the host survive?",
+                    "request_id": "orphaned-child-request",
+                },
+            }
+        )
+        proxy_id = "host:crashed-source:orphaned-child-request"
+        with server._prompt_lock:
+            assert proxy_id in server._compute_host_interactions
+
+        server._on_compute_host_turn_done(
+            "crashed-turn",
+            "crashed-source",
+            source,
+            {
+                "type": "turn.error",
+                "request_id": "crashed-turn",
+                "message": "compute host exited",
+            },
+        )
+        server._compute_host_interactive_sink(
+            {
+                "type": "interactive.request",
+                "source_sid": "crashed-source",
+                "request_id": "late-buffered-request",
+                "event": "clarify.request",
+                "payload": {
+                    "question": "arrived after child exit",
+                    "request_id": "late-buffered-request",
+                },
+            }
+        )
+
+        with server._prompt_lock:
+            assert proxy_id not in server._compute_host_interactions
+            assert (
+                "host:crashed-source:late-buffered-request"
+                not in server._compute_host_interactions
+            )
+            assert proxy_id not in server._pending_prompt_payloads
+            assert proxy_id not in server._pending_prompt_presentations
+            assert server._interactive_prompt_queues == {}
+    finally:
+        server._sessions.pop("crashed-source", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_prompt_payloads.clear()
+            server._pending_prompt_presentations.clear()
+            server._interactive_prompt_queues.clear()
+
+
+def test_compute_host_prompt_cancel_releases_child_and_parent_queue(monkeypatch):
+    class Supervisor:
+        def __init__(self):
+            self.responses = []
+
+        def respond_interactive(self, sid, **kwargs):
+            self.responses.append((sid, kwargs))
+            return {"status": "sent"}
+
+    supervisor = Supervisor()
+    old_supervisor = server._compute_host_supervisor
+    server._compute_host_supervisor = supervisor
+    server._sessions["cancel-source"] = _session(running=True)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: True)
+    try:
+        server._compute_host_interactive_sink(
+            {
+                "type": "interactive.request",
+                "source_sid": "cancel-source",
+                "request_id": "cancel-child-request",
+                "event": "secret.request",
+                "payload": {
+                    "env_var": "TOKEN",
+                    "request_id": "cancel-child-request",
+                },
+            }
+        )
+
+        server._clear_pending("cancel-source")
+
+        assert supervisor.responses == [
+            (
+                "cancel-source",
+                {
+                    "request_id": "cancel-child-request",
+                    "method": "secret.respond",
+                    "params": {"value": ""},
+                    "wait": False,
+                },
+            )
+        ]
+        with server._prompt_lock:
+            assert server._compute_host_interactions == {}
+            assert server._interactive_prompt_queues == {}
+    finally:
+        server._compute_host_supervisor = old_supervisor
+        server._sessions.pop("cancel-source", None)
+        with server._prompt_lock:
+            server._compute_host_interactions.clear()
+            server._pending_prompt_payloads.clear()
+            server._pending_prompt_presentations.clear()
+            server._interactive_prompt_queues.clear()
+
+
+def test_compute_host_detached_turn_uses_forwarded_terminal_once(monkeypatch):
+    task_id = "task-compute-host"
+    source = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        detached_dispatch_active=True,
+        detached_turn_task_id=task_id,
+        running=True,
+        session_key="source-key",
+        turn_settled=False,
+        _compute_host_active=True,
+        _live_sid="iso-source",
+    )
+    owner = _session(session_key="owner-key")
+    server._sessions.update({"iso-source": source, "iso-owner": owner})
+    server._detached_turns[task_id] = {
+        "notified": False,
+        "owner_session_id": "iso-owner",
+        "registered": True,
+        "source_session_id": "iso-source",
+        "source_session_key": "source-key",
+        "status": "running",
+        "task_id": task_id,
+    }
+    forwarded = []
+    emitted = []
+    monkeypatch.setattr(
+        server, "write_json", lambda message: forwarded.append(message) or True
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True,
+    )
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "host"})
+    try:
+        terminal_event = {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "payload": {"status": "complete", "text": "host result"},
+                "session_id": "iso-source",
+                "type": "message.complete",
+            },
+        }
+        assert server._compute_host_rpc_sink(terminal_event) is True
+        assert forwarded == [terminal_event]
+
+        server._on_compute_host_turn_done(
+            "host-turn",
+            "iso-source",
+            source,
+            {
+                "type": "turn.end",
+                "sid": "iso-source",
+                "request_id": "host-turn",
+                "session_info_emitted": True,
+            },
+        )
+
+        completions = [event for event in emitted if event[0] == "background.complete"]
+        assert completions == [
+            (
+                "background.complete",
+                "iso-owner",
+                {
+                    "source_session_id": "iso-source",
+                    "source_session_key": "source-key",
+                    "status": "complete",
+                    "task_id": task_id,
+                    "text": "host result",
+                },
+            )
+        ]
+        assert source["running"] is False
+        assert source["turn_settled"] is True
+        assert "detached_dispatch_active" not in source
+
+        server._on_compute_host_turn_done(
+            "host-turn-replay",
+            "iso-source",
+            source,
+            {
+                "type": "turn.end",
+                "sid": "iso-source",
+                "request_id": "host-turn-replay",
+                "session_info_emitted": True,
+            },
+        )
+        assert len(
+            [event for event in emitted if event[0] == "background.complete"]
+        ) == 1
+    finally:
+        server._sessions.pop("iso-source", None)
+        server._sessions.pop("iso-owner", None)
+        server._detached_turns.pop(task_id, None)
 
 
 def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
@@ -7270,6 +7779,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     import threading
 
     closed_workers: list[str] = []
+    closed_agents: list[str] = []
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
@@ -7287,6 +7797,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.provider = "openrouter"
             self.base_url = ""
             self.api_key = ""
+
+        def close(self):
+            closed_agents.append("agent")
 
     # Make _build block until we release it — simulates slow agent init.
     # Also signal when _build actually reaches _make_agent so the test
@@ -7359,31 +7872,24 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert close_resp.get("result", {}).get("closed") is True
 
-    # At this point session.close saw slash_worker=None (not yet
-    # installed) so it didn't close anything.  Release the build thread
-    # and let it finish — it should detect the orphan and clean up the
-    # worker it just allocated + unregister the notify.
+    # At this point session.close saw agent/slash_worker=None. Release the
+    # builder: its post-_make_agent membership check must close the late agent
+    # before it creates a worker or installs a notifier.
     release_build.set()
 
     # Give the build thread a moment to run through its finally.
     for _ in range(100):
-        if closed_workers:
+        if closed_agents:
             break
         import time
 
         time.sleep(0.02)
 
-    assert (
-        len(closed_workers) == 1
-    ), f"orphan worker was not cleaned up — closed_workers={closed_workers}"
-    # Notify may be unregistered by both session.close (unconditional)
-    # and the orphan-cleanup path; the key guarantee is that the build
-    # thread does at least one unregister call (any prior close
-    # already popped the callback; the duplicate is a no-op).
-    assert len(unregistered_keys) >= 1, (
-        f"orphan notify registration was not unregistered — "
-        f"unregistered_keys={unregistered_keys}"
-    )
+    assert closed_agents == ["agent"]
+    assert closed_workers == []
+    # session.close performs the defensive unregister; the late builder never
+    # registers a new callback after its membership check fails.
+    assert len(unregistered_keys) == 1
 
 
 @pytest.mark.real_agent_prewarm
@@ -8365,6 +8871,1659 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
     finally:
         server._sessions.pop("sid-a", None)
         server._sessions.pop("sid-b", None)
+
+
+def test_disconnect_cannot_overwrite_concurrent_activate_transport(monkeypatch):
+    old_transport = object()
+    new_transport = object()
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+
+    for close_on_disconnect in (False, True):
+        sid = f"race-{close_on_disconnect}"
+        entered_payload = threading.Event()
+        release_payload = threading.Event()
+        activated = []
+        disconnected = []
+        session = _session(
+            close_on_disconnect=close_on_disconnect,
+            transport=old_transport,
+        )
+        session["_live_sid"] = sid
+        server._sessions[sid] = session
+
+        def fallback(_session):
+            entered_payload.set()
+            assert release_payload.wait(2)
+            return {"model": "race-model"}
+
+        monkeypatch.setattr(server, "_fallback_session_info", fallback)
+        activate_thread = threading.Thread(
+            target=lambda: activated.append(
+                server._methods["session.activate"]("activate", {"session_id": sid})
+            )
+        )
+        disconnect_thread = threading.Thread(
+            target=lambda: disconnected.append(
+                server._close_sessions_for_transport(old_transport)
+            )
+        )
+        try:
+            activate_thread.start()
+            assert entered_payload.wait(2)
+            disconnect_thread.start()
+            # activate holds _sessions_lock through the real transport rebind;
+            # the disconnect must wait and then fail its old-identity check.
+            time.sleep(0.02)
+            assert disconnect_thread.is_alive()
+            release_payload.set()
+            activate_thread.join(2)
+            disconnect_thread.join(2)
+
+            assert "result" in activated[0]
+            assert disconnected == [(0, 0)]
+            assert server._sessions[sid] is session
+            assert session["transport"] is new_transport
+        finally:
+            release_payload.set()
+            activate_thread.join(2)
+            disconnect_thread.join(2)
+            server._sessions.pop(sid, None)
+
+
+def test_disconnect_cannot_overwrite_concurrent_resume_transport(monkeypatch):
+    old_transport = object()
+    new_transport = object()
+    entered_payload = threading.Event()
+    release_payload = threading.Event()
+    session = _session(
+        close_on_disconnect=True,
+        session_key="resume-key",
+        transport=old_transport,
+    )
+    session["_live_sid"] = "resume-sid"
+    server._sessions["resume-sid"] = session
+
+    class DB:
+        def get_session(self, target):
+            return {"id": target, "cwd": "/tmp", "source": "tui"}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+    def fallback(_session):
+        entered_payload.set()
+        assert release_payload.wait(2)
+        return {"model": "resume-model"}
+
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+    monkeypatch.setattr(server, "_get_db", lambda: DB())
+    monkeypatch.setattr(server, "_fallback_session_info", fallback)
+    resumed = []
+    disconnected = []
+    resume_thread = threading.Thread(
+        target=lambda: resumed.append(
+            server._methods["session.resume"](
+                "resume", {"session_id": "resume-key"}
+            )
+        )
+    )
+    disconnect_thread = threading.Thread(
+        target=lambda: disconnected.append(
+            server._close_sessions_for_transport(old_transport)
+        )
+    )
+    try:
+        resume_thread.start()
+        assert entered_payload.wait(2)
+        disconnect_thread.start()
+        # The live-session fast path may either hold the lifecycle lock
+        # through payload construction or publish the new transport first.
+        # In both valid interleavings the stale disconnect must not park or
+        # close the rebound record.
+        release_payload.set()
+        resume_thread.join(2)
+        disconnect_thread.join(2)
+
+        assert resumed[0]["result"]["session_id"] == "resume-sid"
+        assert disconnected == [(0, 0)]
+        assert server._sessions["resume-sid"] is session
+        assert session["transport"] is new_transport
+    finally:
+        release_payload.set()
+        resume_thread.join(2)
+        disconnect_thread.join(2)
+        server._sessions.pop("resume-sid", None)
+
+
+def test_detach_running_turn_reuses_exact_agent_and_delivers_once(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    source_done = threading.Event()
+    replacement_done = threading.Event()
+    calls = []
+    events = []
+
+    class SourceAgent:
+        model = "source-model"
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            task_id=None,
+        ):
+            calls.append((self, prompt, list(conversation_history or []), task_id))
+            started.set()
+            assert release.wait(2)
+            return {
+                "final_response": "source result",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "source result"},
+                ],
+            }
+
+    class ReplacementAgent:
+        model = "fresh-model"
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, task_id=None
+        ):
+            calls.append((self, prompt, list(conversation_history or []), task_id))
+            return {
+                "final_response": "fresh result",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "fresh result"},
+                ],
+            }
+
+    source_agent = SourceAgent()
+    source = _session(agent=source_agent, session_key="source-key")
+    server._sessions["source-sid"] = source
+    server._detached_turns.clear()
+
+    def fake_create(rid, params, *, routing=None):
+        server._sessions["fresh-sid"] = _session(
+            agent=ReplacementAgent(),
+            session_key="fresh-key",
+            cwd=source.get("cwd"),
+        )
+        return server._ok(
+            rid,
+            {
+                "session_id": "fresh-sid",
+                "stored_session_id": "fresh-key",
+                "messages": [],
+                "message_count": 0,
+                "info": {"model": "fresh-model", "skills": {}, "tools": {}},
+            },
+        )
+
+    def emit(event, sid, payload=None):
+        events.append((event, sid, payload or {}))
+        if event == "message.complete" and sid == "source-sid":
+            source_done.set()
+        if event == "message.complete" and sid == "fresh-sid":
+            replacement_done.set()
+        return True
+
+    monkeypatch.setattr(server, "_create_session", fake_create)
+    monkeypatch.setattr(server, "_emit", emit)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_info", lambda *args: {"model": args[0].model})
+
+    try:
+        submit = server._methods["prompt.submit"](
+            "submit", {"session_id": "source-sid", "text": "long research"}
+        )
+        assert submit["result"]["status"] == "streaming"
+        assert started.wait(2)
+        assert source["history"] == []
+
+        detached = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )["result"]
+        task_id = detached["task_id"]
+        assert detached["session_id"] == "fresh-sid"
+        assert detached["task"]["status"] == "running"
+        assert source["agent"] is source_agent
+        assert calls == [(source_agent, "long research", [], "source-key")]
+
+        duplicate = server._methods["session.detach_turn"](
+            "detach-again", {"session_id": "source-sid"}
+        )["result"]
+        assert duplicate["task_id"] == task_id
+        assert duplicate["session_id"] == "fresh-sid"
+        assert len(server._detached_turns) == 1
+
+        ack = server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": "fresh-sid", "task_id": task_id}
+        )
+        assert ack["result"]["task"]["status"] == "running"
+
+        # The replacement is a normal live session immediately, while the
+        # exact source run remains blocked on the same agent/thread.
+        fresh_submit = server._methods["prompt.submit"](
+            "fresh-submit", {"session_id": "fresh-sid", "text": "new chat"}
+        )
+        assert fresh_submit["result"]["status"] == "streaming"
+        assert replacement_done.wait(2)
+        assert source["history"] == []
+
+        release.set()
+        assert source_done.wait(2)
+        deadline = time.time() + 2
+        while time.time() < deadline and not any(e[0] == "background.complete" for e in events):
+            time.sleep(0.01)
+
+        source_calls = [call for call in calls if call[0] is source_agent]
+        assert source_calls == [(source_agent, "long research", [], "source-key")]
+        assert source["history"] == [
+            {"role": "user", "content": "long research"},
+            {"role": "assistant", "content": "source result"},
+        ]
+        assert [m["role"] for m in source["history"]] == ["user", "assistant"]
+
+        source_completions = [
+            e
+            for e in events
+            if e[0] == "message.complete" and e[1] == "source-sid"
+        ]
+        task_completions = [e for e in events if e[0] == "background.complete"]
+        assert len(source_completions) == 1
+        assert len(task_completions) == 1
+        assert task_completions[0][1] == "fresh-sid"
+        assert task_completions[0][2] == {
+            "source_session_id": "source-sid",
+            "source_session_key": "source-key",
+            "status": "complete",
+            "task_id": task_id,
+            "text": "source result",
+        }
+    finally:
+        release.set()
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("fresh-sid", None)
+        server._detached_turns.clear()
+
+
+def test_detach_turn_settled_idle_status_and_cross_session_guards(monkeypatch):
+    server._detached_turns.clear()
+    source = _session(running=False, turn_settled=True)
+    server._sessions["source-sid"] = source
+    server._sessions["owner-sid"] = _session(session_key="owner-key")
+    server._sessions["foreign-sid"] = _session(session_key="foreign-key")
+    try:
+        idle = server._methods["session.detach_turn"](
+            "idle", {"session_id": "source-sid"}
+        )
+        assert idle["error"]["code"] == 4024
+        assert "already_settled" in idle["error"]["message"]
+
+        for status, text in (
+            ("error", "error: provider failed"),
+            ("interrupted", "interrupted"),
+        ):
+            task_id = f"task-{status}"
+            source.update(
+                running=True,
+                turn_settled=False,
+                detached_turn_task_id=task_id,
+            )
+            server._detached_turns[task_id] = {
+                "delivered": False,
+                "notified": False,
+                "owner_session_id": "owner-sid",
+                "registered": True,
+                "source_session_id": "source-sid",
+                "source_session_key": "session-key",
+                "status": "running",
+                "task_id": task_id,
+            }
+            emitted = []
+            monkeypatch.setattr(
+                server,
+                "_emit",
+                lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True,
+            )
+
+            server._settle_detached_turn(source, status, text)
+            assert emitted == [
+                (
+                    "background.complete",
+                    "owner-sid",
+                    {
+                        "source_session_id": "source-sid",
+                        "source_session_key": "session-key",
+                        "status": status,
+                        "task_id": task_id,
+                        "text": text,
+                    },
+                )
+            ]
+            server._settle_detached_turn(source, status, text)
+            assert len(emitted) == 1
+
+            foreign = server._methods["session.detach_turn_ack"](
+                "foreign", {"session_id": "foreign-sid", "task_id": task_id}
+            )
+            assert foreign["error"]["code"] == 4042
+            premature = server._methods["session.detach_turn_consumed"](
+                "consume", {"session_id": "owner-sid", "task_id": task_id}
+            )
+            assert premature["result"]["consumed"] is True
+
+            source.pop("detached_turn_task_id", None)
+    finally:
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._sessions.pop("foreign-sid", None)
+        server._detached_turns.clear()
+
+
+def test_close_does_not_teardown_running_detached_source(monkeypatch):
+    agent = types.SimpleNamespace(close=lambda: (_ for _ in ()).throw(AssertionError("closed")))
+    server._sessions["source-sid"] = _session(
+        agent=agent,
+        running=True,
+        detached_turn_task_id="task-running",
+    )
+    try:
+        response = server._methods["session.close"]("close", {"session_id": "source-sid"})
+        assert response["result"]["closed"] is False
+        assert server._sessions["source-sid"]["agent"] is agent
+    finally:
+        server._sessions.pop("source-sid", None)
+
+
+def test_detached_completion_is_retained_for_registration_and_reconnect(monkeypatch):
+    task_id = "task-retained"
+    source = _session(
+        running=True,
+        detached_turn_task_id=task_id,
+        session_key="source-key",
+    )
+    owner = _session(session_key="owner-key")
+    server._sessions["source-sid"] = source
+    server._sessions["owner-sid"] = owner
+    server._detached_turns[task_id] = {
+        "delivered": False,
+        "notified": False,
+        "owner_session_id": "owner-sid",
+        "registered": False,
+        "source_session_id": "source-sid",
+        "source_session_key": "source-key",
+        "status": "running",
+        "task_id": task_id,
+    }
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True,
+    )
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "test"})
+    try:
+        # Completion can win the detach-response race. It is retained and not
+        # emitted before the client has registered the presentation id.
+        server._settle_detached_turn(source, "complete", "retained result")
+        assert emitted == []
+
+        ack = server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert ack["result"]["task"]["status"] == "complete"
+        assert ack["result"]["task"]["text"] == "retained result"
+
+        activated = server._methods["session.activate"](
+            "activate", {"session_id": "owner-sid"}
+        )
+        assert activated["result"]["detached_tasks"] == [ack["result"]["task"]]
+
+        consumed = server._methods["session.detach_turn_consumed"](
+            "consumed", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert consumed["result"]["consumed"] is True
+        assert task_id not in server._detached_turns
+        assert "detached_turn_task_id" not in source
+        activated_again = server._methods["session.activate"](
+            "activate-again", {"session_id": "owner-sid"}
+        )
+        assert "detached_tasks" not in activated_again["result"]
+    finally:
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+
+
+def test_terminal_detached_result_survives_source_close_until_owner_consumes(
+    monkeypatch,
+):
+    task_id = "task-source-closed"
+    source = _session(
+        detached_turn_task_id=task_id,
+        running=False,
+        session_key="source-key",
+        turn_settled=True,
+    )
+    owner = _session(session_key="owner-key")
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    server._detached_turns[task_id] = {
+        "notified": False,
+        "owner_session_id": "owner-sid",
+        "registered": True,
+        "source_session_id": "source-sid",
+        "source_session_key": "source-key",
+        "status": "complete",
+        "task_id": task_id,
+        "text": "retained after source close",
+    }
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+    try:
+        assert server._close_session_by_id("source-sid") is True
+        assert "source-sid" not in server._sessions
+        assert task_id in server._detached_turns
+
+        activated = server._methods["session.activate"](
+            "activate", {"session_id": "owner-sid"}
+        )
+        assert activated["result"]["detached_tasks"] == [
+            {
+                "source_session_id": "source-sid",
+                "source_session_key": "source-key",
+                "status": "complete",
+                "task_id": task_id,
+                "text": "retained after source close",
+            }
+        ]
+        consumed = server._methods["session.detach_turn_consumed"](
+            "consume", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert consumed["result"]["consumed"] is True
+        assert task_id not in server._detached_turns
+    finally:
+        server._close_session_by_id("source-sid", allow_running_detached=True)
+        server._close_session_by_id("owner-sid", allow_running_detached=True)
+        server._detached_turns.pop(task_id, None)
+
+
+def test_consumption_cannot_clear_source_protection_before_dispatch_exits(monkeypatch):
+    model_started = threading.Event()
+    release_model = threading.Event()
+    completion_delivered = threading.Event()
+    release_delivery = threading.Event()
+    dispatch_finished = threading.Event()
+
+    class SourceAgent:
+        model = "source-model"
+
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            model_started.set()
+            assert release_model.wait(2)
+            return {
+                "final_response": "done",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+
+    source = _session(agent=SourceAgent(), session_key="source-key")
+    source["_live_sid"] = "source-sid"
+    server._sessions["source-sid"] = source
+    server._detached_turns.clear()
+
+    def fake_create(rid, params, *, routing=None):
+        owner = _session(session_key="owner-key")
+        owner["_live_sid"] = "owner-sid"
+        server._sessions["owner-sid"] = owner
+        return server._ok(
+            rid,
+            {
+                "session_id": "owner-sid",
+                "stored_session_id": "owner-key",
+                "messages": [],
+                "message_count": 0,
+                "info": {"model": "owner-model", "skills": {}, "tools": {}},
+            },
+        )
+
+    def emit(event, sid, payload=None):
+        if event == "background.complete" and sid == "owner-sid":
+            completion_delivered.set()
+            assert release_delivery.wait(2)
+        return True
+
+    real_finish = server._finish_detached_dispatch
+
+    def finish(sid, session, **kwargs):
+        real_finish(sid, session, **kwargs)
+        if sid == "source-sid" and session is source:
+            dispatch_finished.set()
+
+    monkeypatch.setattr(server, "_create_session", fake_create)
+    monkeypatch.setattr(server, "_emit", emit)
+    monkeypatch.setattr(server, "_finish_detached_dispatch", finish)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent, *_a: {"model": agent.model})
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+
+    try:
+        server._methods["prompt.submit"](
+            "submit", {"session_id": "source-sid", "text": "long turn"}
+        )
+        assert model_started.wait(2)
+        detached = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )["result"]
+        task_id = detached["task_id"]
+        server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": "owner-sid", "task_id": task_id}
+        )
+
+        release_model.set()
+        assert completion_delivered.wait(2)
+        consumed = server._methods["session.detach_turn_consumed"](
+            "consume", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert consumed["result"]["consumed"] is True
+        assert task_id not in server._detached_turns
+        assert "detached_turn_task_id" not in source
+        assert source["detached_dispatch_active"] is True
+        assert server._methods["session.close"](
+            "close-racing", {"session_id": "source-sid"}
+        )["result"]["closed"] is False
+
+        release_delivery.set()
+        assert dispatch_finished.wait(2)
+        assert "detached_dispatch_active" not in source
+        assert server._methods["session.close"](
+            "close-after", {"session_id": "source-sid"}
+        )["result"]["closed"] is True
+    finally:
+        release_model.set()
+        release_delivery.set()
+        server._close_session_by_id(
+            "source-sid", allow_running_detached=True
+        )
+        server._close_session_by_id("owner-sid", allow_running_detached=True)
+        server._detached_turns.clear()
+
+
+def test_detach_routes_clarify_response_only_through_presentation_owner(monkeypatch):
+    source = _session(running=True, detached_turn_task_id="task-prompt")
+    owner = _session(session_key="owner-key")
+    foreign = _session(session_key="foreign-key")
+    server._sessions.update(
+        {"source-sid": source, "owner-sid": owner, "foreign-sid": foreign}
+    )
+    server._detached_turns["task-prompt"] = {
+        "owner_session_id": "owner-sid",
+        "source_session_id": "source-sid",
+        "status": "running",
+        "task_id": "task-prompt",
+    }
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True,
+    )
+    answer = []
+    thread = threading.Thread(
+        target=lambda: answer.append(
+            server._block("clarify.request", "source-sid", {"question": "Continue?", "choices": []})
+        )
+    )
+    try:
+        thread.start()
+        deadline = time.time() + 2
+        while time.time() < deadline and not emitted:
+            time.sleep(0.01)
+        assert emitted[0][0:2] == ("clarify.request", "owner-sid")
+        request_id = emitted[0][2]["request_id"]
+
+        rejected = server._methods["clarify.respond"](
+            "foreign",
+            {"answer": "wrong", "request_id": request_id, "session_id": "foreign-sid"},
+        )
+        assert rejected["error"]["code"] == 4043
+        accepted = server._methods["clarify.respond"](
+            "owner",
+            {"answer": "yes", "request_id": request_id, "session_id": "owner-sid"},
+        )
+        assert accepted["result"]["status"] == "ok"
+        thread.join(2)
+        assert answer == ["yes"]
+    finally:
+        server._clear_pending("source-sid")
+        thread.join(2)
+        for sid in ("source-sid", "owner-sid", "foreign-sid"):
+            server._sessions.pop(sid, None)
+        server._detached_turns.pop("task-prompt", None)
+
+
+def test_detach_ack_replays_already_pending_generic_prompt(monkeypatch):
+    source = _session(running=True)
+    owner = _session(session_key="owner-key")
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True,
+    )
+    answer = []
+    thread = threading.Thread(
+        target=lambda: answer.append(
+            server._block("terminal.read.request", "source-sid", {"start": 4}, timeout=5)
+        )
+    )
+    try:
+        thread.start()
+        deadline = time.time() + 2
+        while time.time() < deadline and not emitted:
+            time.sleep(0.01)
+        assert emitted[0][0:2] == ("terminal.read.request", "source-sid")
+        request_id = emitted[0][2]["request_id"]
+
+        source["detached_turn_task_id"] = "task-restore"
+        server._detached_turns["task-restore"] = {
+            "owner_session_id": "owner-sid",
+            "registered": False,
+            "source_session_id": "source-sid",
+            "status": "running",
+            "task_id": "task-restore",
+        }
+        ack = server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": "owner-sid", "task_id": "task-restore"}
+        )
+        assert ack["result"]["task"]["status"] == "running"
+        assert emitted[-1][0:2] == ("terminal.read.request", "owner-sid")
+        assert emitted[-1][2]["request_id"] == request_id
+
+        server._methods["terminal.read.respond"](
+            "respond",
+            {"request_id": request_id, "session_id": "owner-sid", "text": "buffer"},
+        )
+        thread.join(2)
+        assert answer == ["buffer"]
+    finally:
+        server._clear_pending("source-sid")
+        thread.join(2)
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop("task-restore", None)
+
+
+def test_first_detach_ack_replays_prompt_published_to_owner_before_ack(monkeypatch):
+    task_id = "task-pre-ack-prompt"
+    source = _session(running=True, detached_turn_task_id=task_id)
+    owner = _session(session_key="owner-key")
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    server._detached_turns[task_id] = {
+        "owner_session_id": "owner-sid",
+        "registered": False,
+        "source_session_id": "source-sid",
+        "status": "running",
+        "task_id": task_id,
+    }
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append(
+            (event, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    answers = []
+    thread = threading.Thread(
+        target=lambda: answers.append(
+            server._block(
+                "clarify.request",
+                "source-sid",
+                {"question": "published before ACK", "choices": []},
+                timeout=5,
+            )
+        )
+    )
+    try:
+        thread.start()
+        deadline = time.time() + 2
+        while not emitted and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(emitted) == 1
+        assert emitted[0][0:2] == ("clarify.request", "owner-sid")
+        request_id = emitted[0][2]["request_id"]
+
+        first = server._methods["session.detach_turn_ack"](
+            "ack-first", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert first["result"]["task"]["status"] == "running"
+        assert len(emitted) == 2
+        assert emitted[1][0:2] == ("clarify.request", "owner-sid")
+        assert emitted[1][2]["request_id"] == request_id
+
+        server._methods["session.detach_turn_ack"](
+            "ack-retry", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert len(emitted) == 2
+
+        accepted = server._methods["clarify.respond"](
+            "respond",
+            {
+                "answer": "continued",
+                "request_id": request_id,
+                "session_id": "owner-sid",
+            },
+        )
+        assert accepted["result"]["status"] == "ok"
+        thread.join(2)
+        assert answers == ["continued"]
+    finally:
+        server._clear_pending("source-sid")
+        thread.join(2)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+
+
+def test_detach_routes_approval_to_owner_but_resolves_source_queue(monkeypatch):
+    source = _session(
+        running=True,
+        detached_turn_task_id="task-approval",
+        session_key="source-key",
+    )
+    server._sessions.update(
+        {
+            "source-sid": source,
+            "owner-sid": _session(session_key="owner-key"),
+            "foreign-sid": _session(session_key="foreign-key"),
+        }
+    )
+    server._detached_turns["task-approval"] = {
+        "owner_session_id": "owner-sid",
+        "source_session_id": "source-sid",
+        "status": "running",
+        "task_id": "task-approval",
+    }
+    emitted = []
+    resolved = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)) or True,
+    )
+    monkeypatch.setattr(
+        "tools.approval.resolve_gateway_approval",
+        lambda key, choice, resolve_all=False: resolved.append((key, choice, resolve_all)) or 1,
+    )
+    try:
+        server._emit_approval_request(
+            "source-sid", {"command": "danger", "description": "test"}
+        )
+        assert emitted[0][0:2] == ("approval.request", "owner-sid")
+        request_id = emitted[0][2]["request_id"]
+        rejected = server._methods["approval.respond"](
+            "foreign",
+            {"choice": "once", "request_id": request_id, "session_id": "foreign-sid"},
+        )
+        assert rejected["error"]["code"] == 4043
+        accepted = server._methods["approval.respond"](
+            "owner",
+            {"choice": "once", "request_id": request_id, "session_id": "owner-sid"},
+        )
+        assert accepted["result"]["resolved"] == 1
+        assert resolved == [("source-key", "once", False)]
+    finally:
+        with server._prompt_lock:
+            server._pending_approvals.clear()
+            server._interactive_prompt_queues.clear()
+        for sid in ("source-sid", "owner-sid", "foreign-sid"):
+            server._sessions.pop(sid, None)
+        server._detached_turns.pop("task-approval", None)
+
+
+def test_detached_source_and_owner_same_overlay_are_fifo_and_replay_deduped(
+    monkeypatch,
+):
+    task_id = "task-overlay-fifo"
+    source = _session(running=True, detached_turn_task_id=task_id)
+    owner = _session(session_key="owner-key")
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    server._detached_turns[task_id] = {
+        "owner_session_id": "owner-sid",
+        "registered": False,
+        "source_session_id": "source-sid",
+        "status": "running",
+        "task_id": task_id,
+    }
+    emitted = []
+    first_visible = threading.Event()
+
+    def emit(event, sid, payload=None):
+        emitted.append((event, sid, dict(payload or {})))
+        first_visible.set()
+        return True
+
+    monkeypatch.setattr(server, "_emit", emit)
+    answers = {}
+    owner_thread = threading.Thread(
+        target=lambda: answers.__setitem__(
+            "owner",
+            server._block(
+                "clarify.request",
+                "owner-sid",
+                {"question": "owner question", "choices": []},
+                timeout=5,
+            ),
+        )
+    )
+    source_thread = threading.Thread(
+        target=lambda: answers.__setitem__(
+            "source",
+            server._block(
+                "clarify.request",
+                "source-sid",
+                {"question": "source question", "choices": []},
+                timeout=5,
+            ),
+        )
+    )
+    try:
+        owner_thread.start()
+        assert first_visible.wait(2)
+        assert len(emitted) == 1
+        owner_request_id = emitted[0][2]["request_id"]
+
+        source_thread.start()
+        time.sleep(0.05)
+        assert len(emitted) == 1
+
+        # Repeated detach ACK/replay must neither duplicate the queued source
+        # request nor overwrite the owner's currently visible clarify overlay.
+        for rid in ("ack-1", "ack-2"):
+            ack = server._methods["session.detach_turn_ack"](
+                rid, {"session_id": "owner-sid", "task_id": task_id}
+            )
+            assert ack["result"]["task"]["status"] == "running"
+        assert len(emitted) == 1
+
+        server._methods["clarify.respond"](
+            "owner-response",
+            {
+                "answer": "owner answer",
+                "request_id": owner_request_id,
+                "session_id": "owner-sid",
+            },
+        )
+        deadline = time.time() + 2
+        while len(emitted) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(emitted) == 2
+        assert emitted[1][0:2] == ("clarify.request", "owner-sid")
+        assert emitted[1][2]["question"] == "source question"
+        source_request_id = emitted[1][2]["request_id"]
+        assert source_request_id != owner_request_id
+
+        server._methods["clarify.respond"](
+            "source-response",
+            {
+                "answer": "source answer",
+                "request_id": source_request_id,
+                "session_id": "owner-sid",
+            },
+        )
+        owner_thread.join(2)
+        source_thread.join(2)
+        assert answers == {"owner": "owner answer", "source": "source answer"}
+        assert len(emitted) == 2
+    finally:
+        server._clear_pending()
+        owner_thread.join(2)
+        source_thread.join(2)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+
+
+def test_close_and_disconnect_reaper_cannot_teardown_detaching_source(monkeypatch):
+    entered_create = threading.Event()
+    release_create = threading.Event()
+    transport = object()
+    source_agent = types.SimpleNamespace(
+        close=lambda: (_ for _ in ()).throw(AssertionError("source agent closed"))
+    )
+    source = _session(
+        agent=source_agent,
+        close_on_disconnect=True,
+        running=True,
+        transport=transport,
+        turn_settled=False,
+    )
+    server._sessions["source-sid"] = source
+    real_create = server._create_session
+
+    def blocked_create(rid, params, *, routing=None):
+        entered_create.set()
+        assert release_create.wait(2)
+        return real_create(rid, params, routing=routing)
+
+    monkeypatch.setattr(server, "_create_session", blocked_create)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    responses = []
+    thread = threading.Thread(
+        target=lambda: responses.append(
+            server._methods["session.detach_turn"](
+                "detach", {"session_id": "source-sid"}
+            )
+        )
+    )
+    try:
+        thread.start()
+        assert entered_create.wait(2)
+        assert source.get("detaching_turn")
+        closed = server._methods["session.close"](
+            "close", {"session_id": "source-sid"}
+        )
+        assert closed["result"]["closed"] is False
+        reaped, parked = server._close_sessions_for_transport(transport)
+        assert reaped == 0
+        assert parked == 1
+        assert server._sessions["source-sid"]["agent"] is source_agent
+
+        release_create.set()
+        thread.join(2)
+        assert "result" in responses[0]
+        owner_sid = responses[0]["result"]["session_id"]
+        assert source.get("detached_turn_task_id")
+        assert "detaching_turn" not in source
+        assert server._close_session_by_id("source-sid") is False
+        assert owner_sid in server._sessions
+    finally:
+        release_create.set()
+        thread.join(2)
+        owner_sids = [
+            sid
+            for sid, session in server._sessions.items()
+            if session.get("restore_close_on_disconnect") is not None
+        ]
+        for sid in owner_sids + ["source-sid"]:
+            server._close_session_by_id(sid, allow_running_detached=True)
+        server._detached_turns.clear()
+
+
+@pytest.mark.real_agent_prewarm
+def test_detach_real_lazy_create_observes_source_profile_and_cwd(monkeypatch, tmp_path):
+    source_cwd = tmp_path / "project"
+    source_home = tmp_path / "profile-home"
+    source_cwd.mkdir()
+    source_home.mkdir()
+    source = _session(
+        cwd=str(source_cwd),
+        explicit_cwd=True,
+        profile_home=str(source_home),
+        running=True,
+        turn_settled=False,
+    )
+    server._sessions["source-sid"] = source
+    built = []
+    claimed_homes = []
+    build_seen = threading.Event()
+
+    def observe_build(sid, session):
+        built.append((sid, session["cwd"], session.get("profile_home")))
+        build_seen.set()
+
+    monkeypatch.setattr(server, "_start_agent_build", observe_build)
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot",
+        lambda *a, **k: claimed_homes.append(
+            str(server.get_hermes_home_override() or "")
+        )
+        or (None, None),
+    )
+    monkeypatch.setattr(server, "_resolve_model", lambda: "profile-model")
+    monkeypatch.setattr(
+        server,
+        "_current_profile_name",
+        lambda: "source-profile"
+        if str(server.get_hermes_home_override() or "") == str(source_home)
+        else "default",
+    )
+    try:
+        response = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )
+        assert "result" in response
+        result = response["result"]
+        owner_sid = result["session_id"]
+        replacement = server._sessions[owner_sid]
+        assert replacement["cwd"] == str(source_cwd)
+        assert replacement["profile_home"] == str(source_home)
+        assert replacement["close_on_disconnect"] is False
+        assert result["info"]["cwd"] == str(source_cwd)
+        assert result["info"]["profile_name"] == "source-profile"
+        assert claimed_homes == [str(source_home)]
+        assert not build_seen.is_set()
+        server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": owner_sid, "task_id": result["task_id"]}
+        )
+        assert build_seen.wait(2)
+        assert built == [(owner_sid, str(source_cwd), str(source_home))]
+    finally:
+        owner_sids = [
+            sid
+            for sid, session in server._sessions.items()
+            if session.get("restore_close_on_disconnect") is not None
+        ]
+        for sid in owner_sids + ["source-sid"]:
+            server._close_session_by_id(sid, allow_running_detached=True)
+        server._detached_turns.clear()
+
+
+@pytest.mark.real_agent_prewarm
+def test_detach_real_lazy_builder_succeeds_in_source_profile(monkeypatch, tmp_path):
+    source_home = tmp_path / "profile-home"
+    source_home.mkdir()
+    source = _session(
+        profile_home=str(source_home),
+        running=True,
+        turn_settled=False,
+    )
+    server._sessions["source-sid"] = source
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    closed_agents = []
+    seen_homes = []
+
+    class Agent:
+        model = "profile-model"
+
+        def close(self):
+            closed_agents.append("agent")
+
+    class Worker:
+        def __init__(self, *_args):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def make_agent(_sid, _key, **_kwargs):
+        seen_homes.append(str(server.get_hermes_home_override() or ""))
+        build_entered.set()
+        assert release_build.wait(2)
+        return Agent()
+
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", Worker)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_config_model_target", lambda: "profile-model")
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {"model": "profile-model"})
+    monkeypatch.setattr(server, "_probe_config_health", lambda *_a: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: True)
+    import tools.approval as approval
+
+    monkeypatch.setattr(approval, "register_gateway_notify", lambda *a, **k: None)
+    monkeypatch.setattr(approval, "unregister_gateway_notify", lambda *a, **k: None)
+    monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
+    try:
+        detached = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )["result"]
+        owner_sid = detached["session_id"]
+        owner = server._sessions[owner_sid]
+        assert not build_entered.is_set()
+        server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": owner_sid, "task_id": detached["task_id"]}
+        )
+        assert build_entered.wait(2)
+        assert owner["agent"] is None
+        assert owner["profile_home"] == str(source_home)
+
+        release_build.set()
+        assert owner["agent_ready"].wait(2)
+        assert owner["agent"].model == "profile-model"
+        assert server._sessions[owner_sid] is owner
+        assert seen_homes == [str(source_home)]
+        assert "detached_replacement_pending" not in source
+
+        assert server._methods["session.close"](
+            "close-owner", {"session_id": owner_sid}
+        )["result"]["closed"] is True
+        assert closed_agents == ["agent"]
+        assert source["detached_turn_abandoned"] is True
+    finally:
+        release_build.set()
+        for sid in list(server._sessions):
+            if sid == "source-sid" or server._sessions[sid].get(
+                "detach_source_session_id"
+            ):
+                server._close_session_by_id(sid, allow_running_detached=True)
+        server._detached_turns.clear()
+
+
+def test_detach_builder_failure_before_publication_rolls_back(monkeypatch, tmp_path):
+    source_home = tmp_path / "profile-home"
+    source_home.mkdir()
+    source = _session(
+        profile_home=str(source_home),
+        running=True,
+        turn_settled=False,
+    )
+    server._sessions["source-sid"] = source
+    seen_homes = []
+    real_create = server._create_session
+
+    def fail_make_agent(_sid, _key, **_kwargs):
+        seen_homes.append(str(server.get_hermes_home_override() or ""))
+        raise RuntimeError("builder exploded")
+
+    def create_and_wait_for_real_builder(rid, params, *, routing=None):
+        response = real_create(rid, params, routing=routing)
+        owner_sid = response["result"]["session_id"]
+        owner = server._sessions[owner_sid]
+        server._start_agent_build(owner_sid, owner)
+        assert owner["agent_ready"].wait(2)
+        return response
+
+    monkeypatch.setattr(server, "_create_session", create_and_wait_for_real_builder)
+    monkeypatch.setattr(server, "_make_agent", fail_make_agent)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: True)
+    monkeypatch.setattr(server, "_finalize_session", lambda *a, **k: None)
+    try:
+        response = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )
+        assert response["error"]["code"] == 5032
+        assert "builder exploded" in response["error"]["message"]
+        assert server._sessions.get("source-sid") is source
+        assert not any(
+            session.get("detach_source_session_id") == "source-sid"
+            for sid, session in server._sessions.items()
+            if sid != "source-sid"
+        )
+        assert source["running"] is True
+        assert "detaching_turn" not in source
+        assert "detached_turn_task_id" not in source
+        assert seen_homes == [str(source_home)]
+        assert server._detached_turns == {}
+    finally:
+        server._close_session_by_id(
+            "source-sid", allow_running_detached=True
+        )
+        server._detached_turns.clear()
+
+
+@pytest.mark.real_agent_prewarm
+def test_detach_builder_failure_after_publication_emits_source_recovery(
+    monkeypatch,
+):
+    source = _session(running=True, turn_settled=False, session_key="source-key")
+    server._sessions["source-sid"] = source
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    events = []
+
+    def fail_after_publication(_sid, _key, **_kwargs):
+        build_entered.set()
+        assert release_build.wait(2)
+        raise RuntimeError("late builder failure")
+
+    monkeypatch.setattr(server, "_make_agent", fail_after_publication)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: events.append((event, sid, payload)) or True,
+    )
+    monkeypatch.setattr(server, "_finalize_session", lambda *a, **k: None)
+    try:
+        detached = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )["result"]
+        owner_sid = detached["session_id"]
+        task_id = detached["task_id"]
+        assert not build_entered.is_set()
+        server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": owner_sid, "task_id": task_id}
+        )
+        assert build_entered.wait(2)
+        assert owner_sid in server._sessions
+        assert task_id in server._detached_turns
+
+        release_build.set()
+        deadline = time.time() + 2
+        while owner_sid in server._sessions and time.time() < deadline:
+            time.sleep(0.01)
+        assert owner_sid not in server._sessions
+        assert task_id not in server._detached_turns
+        assert "detached_turn_abandoned" not in source
+        assert source["detached_dispatch_active"] is True
+        assert source["detached_recovery_until"] > time.time()
+        assert (
+            "background.detach_recovery",
+            owner_sid,
+            {
+                "message": "late builder failure",
+                "source_session_id": "source-sid",
+                "source_session_key": "source-key",
+                "task_id": task_id,
+            },
+        ) in events
+        monkeypatch.setattr(
+            server, "_fallback_session_info", lambda _session: {"model": "source"}
+        )
+        activated = server._methods["session.activate"](
+            "recover-source", {"session_id": "source-sid"}
+        )
+        assert activated["result"]["session_id"] == "source-sid"
+        assert "detached_recovery_until" not in source
+    finally:
+        release_build.set()
+        server._close_session_by_id(
+            "source-sid", allow_running_detached=True
+        )
+        for sid in list(server._sessions):
+            server._close_session_by_id(sid, allow_running_detached=True)
+        server._detached_turns.clear()
+
+
+def _install_recovering_detach(source_sid="source-sid", owner_sid="owner-sid"):
+    task_id = "task-recover-interaction"
+    source = _session(
+        detached_dispatch_active=True,
+        detached_replacement_pending=True,
+        detached_turn_task_id=task_id,
+        running=True,
+        session_key="source-key",
+        turn_settled=False,
+    )
+    owner = _session(
+        detach_source_session_id=source_sid,
+        detached_replacement_published=True,
+        detached_replacement_source_key="source-key",
+        detached_replacement_task_id=task_id,
+        session_key="owner-key",
+    )
+    server._sessions.update({source_sid: source, owner_sid: owner})
+    server._detached_turns[task_id] = {
+        "owner_session_id": owner_sid,
+        "registered": True,
+        "source_session_id": source_sid,
+        "source_session_key": "source-key",
+        "status": "running",
+        "task_id": task_id,
+    }
+    return task_id, source, owner
+
+
+def test_detach_replacement_recovery_rehomes_clarify_without_answering(
+    monkeypatch,
+):
+    task_id, source, owner = _install_recovering_detach()
+    emitted = []
+    visible = threading.Event()
+    answer = {}
+
+    def emit(event, sid, payload=None):
+        emitted.append((event, sid, dict(payload or {})))
+        if event == "clarify.request":
+            visible.set()
+        return True
+
+    monkeypatch.setattr(server, "_emit", emit)
+    monkeypatch.setattr(server, "_finalize_session", lambda *a, **k: None)
+    waiter = threading.Thread(
+        target=lambda: answer.setdefault(
+            "value",
+            server._block(
+                "clarify.request",
+                "source-sid",
+                {"question": "keep waiting", "choices": []},
+                timeout=5,
+            ),
+        )
+    )
+    try:
+        waiter.start()
+        assert visible.wait(2)
+        first_request = next(
+            payload
+            for event, sid, payload in emitted
+            if event == "clarify.request" and sid == "owner-sid"
+        )
+
+        assert server._recover_failed_detached_replacement(
+            "owner-sid", owner, "replacement failed"
+        )
+        assert waiter.is_alive()
+        assert "detached_turn_abandoned" not in source
+        assert task_id not in server._detached_turns
+        with server._prompt_lock:
+            assert server._pending_prompt_presentations[
+                first_request["request_id"]
+            ] == "source-sid"
+        assert not any(
+            event == "clarify.request" and sid == "source-sid"
+            for event, sid, _payload in emitted
+        )
+
+        replay = server._methods["session.interactions.replay"](
+            "replay", {"session_id": "source-sid"}
+        )
+        assert replay["result"]["replayed"] == 1
+        replayed_request = [
+            payload
+            for event, sid, payload in emitted
+            if event == "clarify.request" and sid == "source-sid"
+        ][-1]
+        assert replayed_request["request_id"] == first_request["request_id"]
+
+        response = server._methods["clarify.respond"](
+            "answer",
+            {
+                "answer": "still healthy",
+                "request_id": replayed_request["request_id"],
+                "session_id": "source-sid",
+            },
+        )
+        assert response["result"]["status"] == "ok"
+        waiter.join(2)
+        assert answer == {"value": "still healthy"}
+    finally:
+        server._clear_pending()
+        waiter.join(2)
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+        with server._prompt_lock:
+            server._interactive_prompt_queues.clear()
+
+
+def test_detach_replacement_recovery_rehomes_approval_without_denial(
+    monkeypatch,
+):
+    task_id, source, owner = _install_recovering_detach()
+    emitted = []
+    resolutions = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append(
+            (event, sid, dict(payload or {}))
+        )
+        or True,
+    )
+    monkeypatch.setattr(server, "_finalize_session", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "tools.approval.resolve_gateway_approval",
+        lambda session_key, choice, resolve_all=False: resolutions.append(
+            (session_key, choice, resolve_all)
+        )
+        or 1,
+    )
+    try:
+        server._emit_approval_request(
+            "source-sid",
+            {"command": "dangerous", "description": "needs approval"},
+        )
+        request_id = next(
+            payload["request_id"]
+            for event, sid, payload in emitted
+            if event == "approval.request" and sid == "owner-sid"
+        )
+
+        assert server._recover_failed_detached_replacement(
+            "owner-sid", owner, "replacement failed"
+        )
+        assert resolutions == []
+        assert "detached_turn_abandoned" not in source
+        assert not any(
+            event == "approval.request" and sid == "source-sid"
+            for event, sid, _payload in emitted
+        )
+
+        replay = server._methods["session.interactions.replay"](
+            "replay", {"session_id": "source-sid"}
+        )
+        assert replay["result"]["replayed"] == 1
+        assert (
+            "approval.request",
+            "source-sid",
+            next(
+                payload
+                for event, sid, payload in emitted
+                if event == "approval.request" and sid == "source-sid"
+            ),
+        ) in emitted
+
+        response = server._methods["approval.respond"](
+            "approve",
+            {
+                "choice": "once",
+                "request_id": request_id,
+                "session_id": "source-sid",
+            },
+        )
+        assert response["result"]["resolved"] == 1
+        assert resolutions == [("source-key", "once", False)]
+    finally:
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+        with server._prompt_lock:
+            server._pending_approvals.clear()
+            server._interactive_prompt_queues.clear()
+
+
+def test_detach_capacity_failure_rolls_back_marker_without_replacement(monkeypatch):
+    before = set(server._sessions)
+    source = _session(running=True, turn_settled=False)
+    server._sessions["source-sid"] = source
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot",
+        lambda *a, **k: (None, "Hermes is at the active session limit (1/1)."),
+    )
+    try:
+        response = server._methods["session.detach_turn"](
+            "detach", {"session_id": "source-sid"}
+        )
+        assert response["error"]["code"] == 4090
+        assert "active session limit" in response["error"]["message"]
+        assert set(server._sessions) == before | {"source-sid"}
+        assert source["running"] is True
+        assert "detaching_turn" not in source
+        assert "detached_turn_task_id" not in source
+    finally:
+        server._sessions.pop("source-sid", None)
+
+
+def test_detached_owner_survives_disconnect_and_recovers_on_activation(monkeypatch):
+    task_id = "task-reconnect"
+    transport = object()
+    source = _session(
+        close_on_disconnect=True,
+        detached_turn_task_id=task_id,
+        running=True,
+        session_key="source-key",
+        transport=transport,
+    )
+    owner = _session(
+        close_on_disconnect=False,
+        restore_close_on_disconnect=True,
+        session_key="owner-key",
+        transport=transport,
+    )
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    server._detached_turns[task_id] = {
+        "notified": False,
+        "owner_session_id": "owner-sid",
+        "registered": False,
+        "source_session_id": "source-sid",
+        "source_session_key": "source-key",
+        "status": "running",
+        "task_id": task_id,
+    }
+    scheduled = []
+    monkeypatch.setattr(
+        server, "_schedule_ws_orphan_reap", lambda sid: scheduled.append(sid)
+    )
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "test"})
+    try:
+        reaped, parked = server._close_sessions_for_transport(transport)
+        assert reaped == 0
+        assert parked == 2
+        assert {"source-sid", "owner-sid"}.issubset(server._sessions)
+        assert source["transport"] is server._detached_ws_transport
+        assert owner["transport"] is server._detached_ws_transport
+
+        server._settle_detached_turn(source, "complete", "recovered result")
+        with source["history_lock"]:
+            source["running"] = False
+        server._reschedule_detached_orphans("source-sid")
+        assert "source-sid" in scheduled
+
+        activated = server._methods["session.activate"](
+            "activate", {"session_id": "owner-sid"}
+        )
+        assert activated["result"]["detached_tasks"] == [
+            {
+                "source_session_id": "source-sid",
+                "source_session_key": "source-key",
+                "status": "complete",
+                "task_id": task_id,
+                "text": "recovered result",
+            }
+        ]
+        ack = server._methods["session.detach_turn_ack"](
+            "ack", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert ack["result"]["task"]["status"] == "complete"
+        consumed = server._methods["session.detach_turn_consumed"](
+            "consume", {"session_id": "owner-sid", "task_id": task_id}
+        )
+        assert consumed["result"]["consumed"] is True
+        assert task_id not in server._detached_turns
+        assert owner["close_on_disconnect"] is True
+    finally:
+        server._sessions.pop("source-sid", None)
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+
+
+def test_explicit_owner_close_cleans_task_and_abandons_running_source(monkeypatch):
+    task_id = "task-owner-close"
+    source = _session(
+        detached_dispatch_active=True,
+        detached_turn_task_id=task_id,
+        running=True,
+        session_key="source-key",
+    )
+    owner = _session(session_key="owner-key")
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    server._detached_turns[task_id] = {
+        "owner_session_id": "owner-sid",
+        "source_session_id": "source-sid",
+        "source_session_key": "source-key",
+        "status": "running",
+        "task_id": task_id,
+    }
+    monkeypatch.setattr(server, "_finalize_session", lambda *a, **k: None)
+    try:
+        closed = server._methods["session.close"](
+            "close-owner", {"session_id": "owner-sid"}
+        )
+        assert closed["result"]["closed"] is True
+        assert "owner-sid" not in server._sessions
+        assert task_id not in server._detached_turns
+        assert "detached_turn_task_id" not in source
+        assert source["detached_turn_abandoned"] is True
+        assert server._close_session_by_id("source-sid") is False
+
+        source["running"] = False
+        server._finish_detached_dispatch("source-sid", source)
+        assert server._close_session_by_id("source-sid") is True
+    finally:
+        server._close_session_by_id(
+            "source-sid", allow_running_detached=True
+        )
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
+
+
+def test_disconnected_owner_reaps_after_grace_and_protects_abandoned_source(
+    monkeypatch,
+):
+    task_id = "task-owner-grace"
+    source = _session(
+        detached_dispatch_active=True,
+        detached_turn_task_id=task_id,
+        running=True,
+        session_key="source-key",
+        transport=server._detached_ws_transport,
+    )
+    owner = _session(
+        close_on_disconnect=False,
+        session_key="owner-key",
+        transport=server._detached_ws_transport,
+    )
+    server._sessions.update({"source-sid": source, "owner-sid": owner})
+    server._detached_turns[task_id] = {
+        "owner_session_id": "owner-sid",
+        "source_session_id": "source-sid",
+        "source_session_key": "source-key",
+        "status": "running",
+        "task_id": task_id,
+    }
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_finalize_session", lambda *a, **k: None)
+    try:
+        server._schedule_ws_orphan_reap("owner-sid")
+        deadline = time.time() + 2
+        while "owner-sid" in server._sessions and time.time() < deadline:
+            time.sleep(0.01)
+        assert "owner-sid" not in server._sessions
+        assert task_id not in server._detached_turns
+        assert source["detached_turn_abandoned"] is True
+        assert server._close_session_by_id("source-sid") is False
+
+        source["running"] = False
+        server._finish_detached_dispatch("source-sid", source)
+        assert "detached_turn_abandoned" not in source
+        deadline = time.time() + 2
+        while "source-sid" in server._sessions and time.time() < deadline:
+            time.sleep(0.01)
+        assert "source-sid" not in server._sessions
+    finally:
+        server._close_session_by_id(
+            "source-sid", allow_running_detached=True
+        )
+        server._sessions.pop("owner-sid", None)
+        server._detached_turns.pop(task_id, None)
 
 
 # ── session.most_recent ──────────────────────────────────────────────
@@ -10236,8 +12395,9 @@ def test_session_close_rpc_claims_then_tears_down(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)),
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
     # outlives the test; grace=0 short-circuits it so no thread lingers.
@@ -10248,7 +12408,17 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
-        assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
+        assert seen == [
+            (
+                {
+                    "_sid": "a",
+                    "close_on_disconnect": True,
+                    "transport": transport,
+                },
+                "ws_disconnect",
+            )
+        ]
+        assert "a" not in server._sessions
         assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
     finally:
         server._sessions.clear()
@@ -10286,15 +12456,18 @@ def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(
         server, "_close_session_by_id",
-        lambda sid, *, end_reason: seen.append((sid, end_reason)),
+        lambda sid, *, end_reason, allow_running_detached=False: seen.append(
+            (sid, end_reason, allow_running_detached)
+        ),
     )
     server._sessions.clear()
     server._sessions["a"] = {}
     server._sessions["b"] = {}
     try:
         server._shutdown_sessions()
-        assert sorted(sid for sid, _ in seen) == ["a", "b"]
-        assert {reason for _, reason in seen} == {"tui_shutdown"}
+        assert sorted(sid for sid, _, _ in seen) == ["a", "b"]
+        assert {reason for _, reason, _ in seen} == {"tui_shutdown"}
+        assert all(force for _, _, force in seen)
     finally:
         server._sessions.clear()
 

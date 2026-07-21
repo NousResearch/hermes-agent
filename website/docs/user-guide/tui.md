@@ -118,8 +118,11 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/details` | Toggle verbose tool-call details (global or per-section) |
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
+| Bare `/background` or `/detach` | Move the exact running turn into the background and open a fresh chat immediately. Hermes does not cancel or restart the work: the original session keeps its transcript, while the fresh chat tracks and displays the terminal result. `/background <prompt>`, `/bg <prompt>`, and `/btw <prompt>` still launch a separate isolated agent. |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
 | `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
+
+Detaching needs one free live-session slot for the fresh chat. If `max_concurrent_sessions` is already at capacity, Hermes reports the limit and leaves the original turn running in the foreground unchanged.
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
 

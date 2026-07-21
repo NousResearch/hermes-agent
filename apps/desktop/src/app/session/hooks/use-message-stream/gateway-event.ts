@@ -717,6 +717,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           void $gateway.get()?.request('terminal.read.respond', {
             request_id: requestId,
+            session_id: sessionId ?? undefined,
             text: result ? JSON.stringify(result) : ''
           })
         }

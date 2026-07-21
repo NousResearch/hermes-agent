@@ -643,7 +643,11 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', {
+        answer,
+        request_id: clarify.requestId,
+        session_id: ui.sid
+      }).then(r => {
         if (!r) {
           return
         }
@@ -671,7 +675,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ clarify: null })
       })
     },
-    [appendMessage, overlay.clarify, rpc]
+    [appendMessage, overlay.clarify, rpc, ui.sid]
   )
 
   const paste = useCallback(
@@ -763,6 +767,7 @@ export function useMainApp(gw: GatewayClient) {
         gateway,
         session: {
           STARTUP_RESUME_ID,
+          activateLiveSession: session.activateLiveSession,
           colsRef,
           newSession: session.newSession,
           recoverSidRef,
@@ -786,6 +791,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions.setInput,
       gateway,
       panel,
+      session.activateLiveSession,
       session.newSession,
       session.resetSession,
       session.resumeById,
@@ -871,6 +877,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         session: {
+          activateDetachedSession: session.activateDetachedSession,
           closeSession: session.closeSession,
           die,
           dieWithCode,
@@ -913,12 +920,16 @@ export function useMainApp(gw: GatewayClient) {
 
   const answerApproval = useCallback(
     (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+      respondWith(
+        'approval.respond',
+        { choice, request_id: overlay.approval?.requestId, session_id: ui.sid },
+        () => {
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
-      }),
-    [respondWith, ui.sid]
+        }
+      ),
+    [overlay.approval?.requestId, respondWith, ui.sid]
   )
 
   const answerSudo = useCallback(
@@ -933,12 +944,12 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ sudo: null })
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
+      return respondWith('sudo.respond', { password: pw, request_id: requestId, session_id: ui.sid }, () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
     },
-    [overlay.sudo, respondWith]
+    [overlay.sudo, respondWith, ui.sid]
   )
 
   const answerSecret = useCallback(
@@ -953,12 +964,12 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ secret: null })
       }
 
-      return respondWith('secret.respond', { request_id: requestId, value }, () => {
+      return respondWith('secret.respond', { request_id: requestId, session_id: ui.sid, value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })
     },
-    [overlay.secret, respondWith]
+    [overlay.secret, respondWith, ui.sid]
   )
 
   const onModelSelect = useCallback((value: string) => {

@@ -106,7 +106,8 @@ export function applyVoiceRecordResponse(
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo'>,
   rpc: GatewayRpc,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  sessionId: null | string = getUiState().sid
 ) {
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
@@ -114,7 +115,11 @@ export function dismissSensitivePrompt(
     patchOverlayState({ sudo: null })
     sys('sudo cancelled')
 
-    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+    return rpc<SudoRespondResponse>('sudo.respond', {
+      password: '',
+      request_id: requestId,
+      session_id: sessionId
+    })
   }
 
   if (overlay.secret) {
@@ -123,7 +128,11 @@ export function dismissSensitivePrompt(
     patchOverlayState({ secret: null })
     sys('secret entry cancelled')
 
-    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+    return rpc<SecretRespondResponse>('secret.respond', {
+      request_id: requestId,
+      session_id: sessionId,
+      value: ''
+    })
   }
 }
 
@@ -175,7 +184,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.approval) {
       return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
+        .rpc<ApprovalRespondResponse>('approval.respond', {
+          choice: 'deny',
+          request_id: overlay.approval.requestId,
+          session_id: getUiState().sid
+        })
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 

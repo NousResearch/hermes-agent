@@ -122,11 +122,15 @@ describe('dismissSensitivePrompt', () => {
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, 'owner-sid')
 
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', {
+      password: '',
+      request_id: 'sudo-1',
+      session_id: 'owner-sid'
+    })
     await pending
   })
 
@@ -136,11 +140,15 @@ describe('dismissSensitivePrompt', () => {
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, 'owner-sid')
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
-    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    expect(rpc).toHaveBeenCalledWith('secret.respond', {
+      request_id: 'secret-1',
+      session_id: 'owner-sid',
+      value: ''
+    })
     await pending
   })
 })

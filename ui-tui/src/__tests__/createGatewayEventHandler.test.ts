@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { resetDetachedTaskTrackingForTests } from '../app/detachedTasks.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -31,6 +32,7 @@ const buildCtx = (appended: Msg[]) =>
     },
     session: {
       STARTUP_RESUME_ID: '',
+      activateLiveSession: vi.fn(),
       colsRef: ref(80),
       newSession: vi.fn(),
       resetSession: vi.fn(),
@@ -63,6 +65,7 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     turnController.fullReset()
+    resetDetachedTaskTrackingForTests()
     patchUiState({ showReasoning: true })
   })
 
@@ -137,6 +140,145 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+  })
+
+  it('shows an owned detached completion once and drops it only after a confirmed ACK', async () => {
+    patchUiState({ bgTasks: new Set(['bg_turn_owned']), sid: 'fresh-sid' })
+    const ctx = buildCtx([])
+    ctx.gateway.rpc = vi.fn(async () => ({ consumed: true }))
+    const onEvent = createGatewayEventHandler(ctx)
+
+    const completion = {
+      payload: {
+        source_session_id: 'source-sid',
+        status: 'complete',
+        task_id: 'bg_turn_owned',
+        text: 'research finished'
+      },
+      session_id: 'fresh-sid',
+      type: 'background.complete'
+    } as const
+
+    onEvent(completion as any)
+    onEvent(completion as any)
+
+    await vi.waitFor(() => expect(getUiState().bgTasks.has('bg_turn_owned')).toBe(false))
+    expect(ctx.system.sys).toHaveBeenCalledTimes(1)
+    expect(ctx.system.sys).toHaveBeenCalledWith('[bg bg_turn_owned] research finished')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.detach_turn_consumed', {
+      session_id: 'fresh-sid',
+      task_id: 'bg_turn_owned'
+    })
+  })
+
+  it('keeps prompted background completion compatible without a detach-consumption RPC', () => {
+    patchUiState({ bgTasks: new Set(['bg_isolated']), sid: 'owner-sid' })
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { task_id: 'bg_isolated', text: 'isolated result' },
+      session_id: 'owner-sid',
+      type: 'background.complete'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('[bg bg_isolated] isolated result')
+    expect(getUiState().bgTasks.has('bg_isolated')).toBe(false)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalledWith('session.detach_turn_consumed', expect.anything())
+  })
+
+  it('ignores foreign/unregistered completions and ordinary cross-session stream events', () => {
+    patchUiState({ bgTasks: new Set(['bg_turn_owned']), sid: 'fresh-sid' })
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { source_session_id: 'other-source', task_id: 'bg_turn_foreign', text: 'foreign' },
+      session_id: 'fresh-sid',
+      type: 'background.complete'
+    } as any)
+    onEvent({ payload: { text: 'source delta' }, session_id: 'source-sid', type: 'message.delta' } as any)
+    onEvent({ payload: { text: 'source complete' }, session_id: 'source-sid', type: 'message.complete' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+    expect(appended).toEqual([])
+    expect(getUiState().bgTasks).toEqual(new Set(['bg_turn_owned']))
+  })
+
+  it('treats null-shaped or negative ACKs as failures and keeps the task retryable', async () => {
+    patchUiState({ bgTasks: new Set(['bg_turn_retry']), sid: 'fresh-sid' })
+    const ctx = buildCtx([])
+    ctx.gateway.rpc = vi
+      .fn()
+      .mockResolvedValueOnce({ consumed: false })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ consumed: true })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    const completion = {
+      payload: {
+        source_session_id: 'source-sid',
+        status: 'complete',
+        task_id: 'bg_turn_retry',
+        text: 'only show once'
+      },
+      session_id: 'fresh-sid',
+      type: 'background.complete'
+    } as const
+
+    onEvent(completion as any)
+    await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledTimes(3))
+    expect(ctx.system.sys).toHaveBeenCalledTimes(1)
+    expect(getUiState().bgTasks.has('bg_turn_retry')).toBe(true)
+
+    onEvent(completion as any)
+    await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledTimes(4))
+    await vi.waitFor(() => expect(getUiState().bgTasks.has('bg_turn_retry')).toBe(false))
+    expect(ctx.system.sys).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers to the exact source session when the replacement build fails', () => {
+    patchUiState({ sid: 'source-sid' })
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: {
+        message: 'provider initialization failed',
+        source_session_id: 'source-sid',
+        source_session_key: 'source-key',
+        task_id: 'bg_turn_failed'
+      },
+      session_id: 'fresh-sid',
+      type: 'background.detach_recovery'
+    } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+    expect(ctx.session.activateLiveSession).toHaveBeenCalledWith(
+      'source-sid',
+      'background detach recovered: provider initialization failed'
+    )
+  })
+
+  it('ignores a detach recovery event owned by an unrelated session', () => {
+    patchUiState({ sid: 'visible-sid' })
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: {
+        message: 'foreign replacement failed',
+        source_session_id: 'foreign-source',
+        task_id: 'foreign-task'
+      },
+      session_id: 'foreign-owner',
+      type: 'background.detach_recovery'
+    } as any)
+
+    expect(ctx.session.activateLiveSession).not.toHaveBeenCalled()
+    expect(ctx.system.sys).not.toHaveBeenCalled()
   })
 
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {

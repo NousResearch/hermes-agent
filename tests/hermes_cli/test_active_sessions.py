@@ -354,3 +354,137 @@ def test_pid_start_time_mismatch_prunes_reused_pid(tmp_path, monkeypatch):
         "new-session"
     ]
     lease.release()
+
+
+def _registry_entries_for(home: Path) -> list[dict]:
+    """Read the pruned registry for a specific profile home directly."""
+    return active_sessions._prune_dead(
+        active_sessions._read_entries(home / "runtime" / "active_sessions.json")
+    )
+
+
+def test_lease_pins_registry_paths_at_claim_time(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-1",
+        surface="tui",
+        config={"max_concurrent_sessions": 2},
+    )
+
+    assert message is None
+    assert lease is not None
+    expected_state = home / "runtime" / "active_sessions.json"
+    expected_lock = home / "runtime" / "active_sessions.lock"
+    assert lease.state_path == str(expected_state)
+    assert lease.lock_path == str(expected_lock)
+    assert lease.registry_state_path() == expected_state
+    assert lease.registry_lock_path() == expected_lock
+    lease.release()
+
+
+def test_lease_release_uses_claim_time_registry_under_home_override(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    claim_home = tmp_path / "profile-a"
+    other_home = tmp_path / "profile-b"
+    monkeypatch.setenv("HERMES_HOME", str(claim_home))
+
+    # Claim under profile A's ambient home.
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-1",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+    )
+    assert message is None
+    assert lease is not None
+    assert len(_registry_entries_for(claim_home)) == 1
+
+    # Release while a DIFFERENT profile home is the ambient override (as happens
+    # when a per-turn set_hermes_home_override for a resumed remote profile is
+    # active at teardown). The lease must still touch profile A's registry.
+    token = set_hermes_home_override(str(other_home))
+    try:
+        lease.release()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert _registry_entries_for(claim_home) == []
+    # Profile B's registry was never created/touched by the release.
+    assert not (other_home / "runtime" / "active_sessions.json").exists()
+
+
+def test_lease_transfer_uses_claim_time_registry_under_home_override(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    claim_home = tmp_path / "profile-a"
+    other_home = tmp_path / "profile-b"
+    monkeypatch.setenv("HERMES_HOME", str(claim_home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-old",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-1"},
+    )
+    assert message is None
+    assert lease is not None
+
+    token = set_hermes_home_override(str(other_home))
+    try:
+        transferred = active_sessions.transfer_active_session(
+            lease,
+            session_id="session-new",
+            metadata={"live_session_id": "ui-1"},
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert transferred is True
+    assert lease.session_id == "session-new"
+    entries = _registry_entries_for(claim_home)
+    assert [entry["session_id"] for entry in entries] == ["session-new"]
+    # The transfer stayed in the claim-time registry; no stray slot in B.
+    assert not (other_home / "runtime" / "active_sessions.json").exists()
+    lease.release()
+    assert _registry_entries_for(claim_home) == []
+
+
+def test_cap_is_isolated_per_profile_registry(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+    cfg = {"max_concurrent_sessions": 1}
+
+    # Fill profile A's single slot.
+    lease_a, message_a = active_sessions.try_acquire_active_session(
+        session_id="a-1", surface="tui", config=cfg
+    )
+    assert message_a is None and lease_a is not None
+
+    # A concurrent session under profile B has its own isolated registry, so it
+    # is NOT blocked by profile A being full.
+    token = set_hermes_home_override(str(home_b))
+    try:
+        lease_b, message_b = active_sessions.try_acquire_active_session(
+            session_id="b-1", surface="tui", config=cfg
+        )
+    finally:
+        reset_hermes_home_override(token)
+    assert message_b is None
+    assert lease_b is not None
+
+    # A second claim under profile A is still blocked by A's cap.
+    blocked, blocked_message = active_sessions.try_acquire_active_session(
+        session_id="a-2", surface="tui", config=cfg
+    )
+    assert blocked is None
+    assert blocked_message is not None
+
+    assert len(_registry_entries_for(home_a)) == 1
+    assert len(_registry_entries_for(home_b)) == 1
+    lease_a.release()
+    lease_b.release()

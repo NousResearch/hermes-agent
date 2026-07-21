@@ -207,6 +207,39 @@ def test_shell_c_without_git_remains_allowed(tmp_path):
 @pytest.mark.parametrize(
     "command",
     [
+        "bash -c 'echo ok;git commit -m attached'",
+        "zsh -c 'true&&git push'",
+        "sh -c 'printf ok|git add README.md'",
+    ],
+)
+def test_shell_c_attached_operator_git_payload_fails_closed(command, tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(command, bound_repo)
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is not None
+    assert "cannot verify" in error
+
+
+def test_shell_c_echoed_nested_shell_text_remains_allowed(tmp_path):
+    bound_repo = _git_repo(tmp_path / "bound")
+    tokens = _gateway_session(bound_repo)
+    try:
+        error = check_terminal_side_effect_allowed(
+            "bash -c \"echo sh -c 'git status'\"", bound_repo
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "git fetch origin",
         "git remote add origin https://example.org/project.git",
         "git remote set-url origin https://example.org/project.git",

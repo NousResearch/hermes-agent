@@ -2854,6 +2854,11 @@ def _toolset_needs_configuration_prompt(
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
     if ts_key == "image_gen":
+        image_cfg = config.get("image_gen", {})
+        if isinstance(image_cfg, dict) and is_truthy_value(
+            image_cfg.get("use_gateway"), default=False
+        ):
+            return False
         # Satisfied when the in-tree FAL backend is configured OR any
         # plugin-registered image gen provider is available.
         if fal_key_is_configured():
@@ -2873,6 +2878,11 @@ def _toolset_needs_configuration_prompt(
             pass
         return True
     if ts_key == "video_gen":
+        video_cfg = config.get("video_gen", {})
+        if isinstance(video_cfg, dict) and is_truthy_value(
+            video_cfg.get("use_gateway"), default=False
+        ):
+            return False
         # Satisfied when any plugin-registered video gen provider reports
         # available — no in-tree fallback (every backend is a plugin).
         try:
@@ -4287,14 +4297,17 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
                 print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
 
-            # Walk through ALL selected tools that have provider options or
-            # need API keys.  This ensures browser (Local vs Browserbase),
-            # TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when
-            # a free provider exists.
+            # Walk through selected tools that still need provider/API setup.
+            # Skip toolsets already satisfied (e.g. Tool Gateway defaults from
+            # `hermes model` / Nous onboarding) — same gate as the returning-user
+            # path below so full setup does not re-ask web/TTS/browser pickers.
             to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
                 and ts_key not in auto_configured
+                and _toolset_needs_configuration_prompt(
+                    ts_key, config, force_fresh=True
+                )
             ]
 
             if to_configure:

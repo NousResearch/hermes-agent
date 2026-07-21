@@ -1044,6 +1044,48 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     assert configured == []
 
 
+def test_first_install_skips_tools_already_configured_via_gateway(monkeypatch):
+    """Full setup must not re-prompt web/TTS/browser after Nous Tool Gateway.
+
+    Regression: the first-install path built ``to_configure`` from every
+    enabled toolset minus ``auto_configured``, but ignored
+    ``_toolset_needs_configuration_prompt``. Users who enabled tools during
+    ``hermes model`` / Nous onboarding were asked again in ``hermes setup``.
+    """
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    config = {
+        "model": {"provider": "nous"},
+        "platform_toolsets": {"cli": []},
+        "web": {"backend": "firecrawl", "use_gateway": True},
+        "tts": {"provider": "openai", "use_gateway": True},
+        "browser": {"cloud_provider": "browser-use", "use_gateway": True},
+        "image_gen": {"use_gateway": True},
+    }
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.apply_nous_managed_defaults",
+        lambda *args, **kwargs: set(),
+    )
+
+    configured = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config: configured.append(ts_key),
+    )
+
+    tools_command(first_install=True, config=config)
+
+    assert configured == []
+
+
 def test_first_install_nous_auto_configures_video_gen(monkeypatch):
     """When a Nous subscriber checks video_gen in the toolset checklist,
     apply_nous_managed_defaults must write video_gen.provider and
@@ -1181,6 +1223,11 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
+
+def test_image_gen_gateway_opt_in_skips_configuration_prompt():
+    config = {"image_gen": {"use_gateway": True}}
+    assert _toolset_needs_configuration_prompt("image_gen", config) is False
+
 
 def test_toolset_has_keys_treats_no_key_providers_as_configured():
     config = {}

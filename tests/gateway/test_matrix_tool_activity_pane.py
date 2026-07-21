@@ -97,7 +97,10 @@ async def test_matrix_send_and_edit_carry_html():
         adapter,
         "!room:ex",
         body,
-        metadata={"matrix_formatted_body": html},
+        metadata={
+            "matrix_formatted_body": html,
+            "matrix_formatted_body_unprefixed": True,
+        },
     )
     assert res.success
     assert sent["events"][0]["format"] == "org.matrix.custom.html"
@@ -109,7 +112,10 @@ async def test_matrix_send_and_edit_carry_html():
         "!room:ex",
         root_id,
         body,
-        metadata={"matrix_formatted_body": html},
+        metadata={
+            "matrix_formatted_body": html,
+            "matrix_formatted_body_unprefixed": True,
+        },
     )
     assert res2.success
     assert res2.message_id == root_id  # sticky root
@@ -119,6 +125,32 @@ async def test_matrix_send_and_edit_carry_html():
     assert not edit["formatted_body"].startswith("*")
     assert "```" not in edit["m.new_content"]["formatted_body"]
     assert "<details>" not in edit["m.new_content"]["formatted_body"]
+
+
+@pytest.mark.asyncio
+async def test_unflagged_rich_edit_keeps_matrix_replacement_prefix():
+    adapter = object.__new__(MatrixAdapter)
+    sent = {}
+
+    async def _send_evt(room, etype, content):
+        sent["content"] = content
+        return "$replacement"
+
+    adapter._client = MagicMock(send_message_event=_send_evt)
+    adapter.format_message = lambda c: c
+    adapter._build_text_message_content = lambda c: {"msgtype": "m.text", "body": c}
+
+    result = await MatrixAdapter.edit_message(
+        adapter,
+        "!room:ex",
+        "$root",
+        "Updated content",
+        metadata={"matrix_formatted_body": "<p>Updated content</p>"},
+    )
+
+    assert result.success
+    assert sent["content"]["formatted_body"].startswith("* ")
+    assert not sent["content"]["m.new_content"]["formatted_body"].startswith("* ")
 
 
 def test_edit_message_accepts_metadata():

@@ -506,6 +506,31 @@ def _claim_active_session_slot(
         return None, None
 
 
+def _claim_active_session_slot_for_profile(
+    session_key: str,
+    *,
+    live_session_id: str,
+    surface: str = "tui",
+    profile_home: str | Path | None = None,
+) -> tuple[Any, str | None]:
+    """Claim an active-session slot under the given profile's HERMES_HOME.
+
+    The registry claim must read the same profile's cap/config and create its
+    entry in that profile's registry, so the config override and the claim
+    itself have to share one profile for the duration of the call.
+    """
+    token = set_hermes_home_override(str(profile_home)) if profile_home else None
+    try:
+        return _claim_active_session_slot(
+            session_key,
+            live_session_id=live_session_id,
+            surface=surface,
+        )
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 def _release_active_session_slot(session: dict | None) -> None:
     if not session:
         return
@@ -6761,16 +6786,12 @@ def _create_session(
     # released/transferred against — that same profile registry (the lease now
     # pins its own state/lock path so this stays consistent even if a per-turn
     # override changes the ambient home before release).
-    _claim_token = (
-        set_hermes_home_override(str(profile_home)) if profile_home else None
+    lease, limit_message = _claim_active_session_slot_for_profile(
+        key,
+        live_session_id=sid,
+        surface=source,
+        profile_home=profile_home,
     )
-    try:
-        lease, limit_message = _claim_active_session_slot(
-            key, live_session_id=sid, surface=source
-        )
-    finally:
-        if _claim_token is not None:
-            reset_hermes_home_override(_claim_token)
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
 
@@ -7468,8 +7489,11 @@ def _(rid, params: dict) -> dict:
     if is_truthy_value(params.get("lazy", False)):
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
+        lease, limit_message = _claim_active_session_slot_for_profile(
+            target,
+            live_session_id=sid,
+            surface=source,
+            profile_home=profile_home,
         )
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
@@ -7536,8 +7560,11 @@ def _(rid, params: dict) -> dict:
     if not is_truthy_value(params.get("eager_build", False)):
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-        lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
+        lease, limit_message = _claim_active_session_slot_for_profile(
+            target,
+            live_session_id=sid,
+            surface=source,
+            profile_home=profile_home,
         )
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
@@ -7613,8 +7640,11 @@ def _(rid, params: dict) -> dict:
     # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
     sid = uuid.uuid4().hex[:8]
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
-    lease, limit_message = _claim_active_session_slot(
-        target, live_session_id=sid, surface=source
+    lease, limit_message = _claim_active_session_slot_for_profile(
+        target,
+        live_session_id=sid,
+        surface=source,
+        profile_home=profile_home,
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
@@ -10329,8 +10359,11 @@ def _(rid, params: dict) -> dict:
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
     source = _session_source(session)
-    lease, limit_message = _claim_active_session_slot(
-        new_key, live_session_id=new_sid, surface=source
+    lease, limit_message = _claim_active_session_slot_for_profile(
+        new_key,
+        live_session_id=new_sid,
+        surface=source,
+        profile_home=(session or {}).get("profile_home"),
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)

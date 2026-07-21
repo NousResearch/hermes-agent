@@ -452,15 +452,22 @@ class ComputeHost:
                 pass
             text = frame.get("text") if "text" in frame else frame.get("prompt", "")
             server._run_prompt_submit(request_id, sid, session, text)
-            run_thread = session.get("_run_thread")
-            if run_thread is not None and hasattr(run_thread, "join"):
-                run_thread.join()
-            with session["history_lock"]:
-                history_version = int(session.get("history_version", 0))
-                history = list(session.get("history") or [])
-                message_count = len(history)
-                interrupted = bool(session.get("_turn_cancel_requested"))
-                session_key = str(session.get("session_key") or "")
+            # server._run_prompt_submit runs the turn on session["_run_thread"]
+            # and, in that thread's tail, can chain a SUCCESSOR turn — a queued
+            # prompt, a /goal continuation, or a post-turn completion — by
+            # calling _run_prompt_submit again, which installs a fresh
+            # session["_run_thread"] and re-arms session["running"] before the
+            # observed thread exits. Joining that first thread once and
+            # snapshotting would race the live successor: we'd emit turn.end
+            # with partial history and mark the source idle while a newer turn
+            # is still writing. Wait for the whole chain to reach stable
+            # quiescence, snapshotting under the lock that proves it.
+            snapshot = self._await_turn_quiescence(session)
+            history_version = snapshot["history_version"]
+            history = snapshot["history"]
+            message_count = snapshot["message_count"]
+            interrupted = snapshot["interrupted"]
+            session_key = snapshot["session_key"]
             session_info = server._session_info(session.get("agent"), session)
             self._bump_progress()
             self.emit(
@@ -495,6 +502,83 @@ class ComputeHost:
             except Exception:
                 pass
             self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
+
+    def _await_turn_quiescence(self, session: dict) -> dict[str, Any]:
+        """Block until the session's turn-thread chain is *stably* settled,
+        then snapshot history under the lock that proves it.
+
+        A single ``prompt.submit`` can expand into a chain of turns: the
+        dispatch thread, in its tail, drains a queued prompt / fires a /goal
+        continuation / delivers a post-turn completion by calling
+        ``_run_prompt_submit`` again, each time replacing
+        ``session["_run_thread"]`` and re-setting ``session["running"]``
+        *before* the thread we observed exits. So one observe-join-snapshot is
+        not enough — we loop: observe the current thread, join it (never the
+        current thread, and never while holding ``history_lock`` so the turn
+        thread can still take it), then re-verify under the lock that the turn
+        is no longer running AND that no newer thread replaced the one we
+        joined. Only a state satisfying both is a real settle point. The loop
+        cannot busy-spin: every iteration either blocks in ``join()`` until a
+        thread finishes, advances to a newly installed successor thread, or
+        briefly yields during the assignment/start handoff. Shutdown does not
+        bypass this proof and emit an incomplete terminal frame; the host's
+        existing shutdown timeout bounds how long its supervisor waits.
+        """
+        current = threading.current_thread()
+        while True:
+            run_thread = session.get("_run_thread")
+            if run_thread is current:
+                raise RuntimeError("compute host cannot wait on its own turn thread")
+
+            can_join = run_thread is not None and hasattr(run_thread, "join")
+            if can_join:
+                try:
+                    run_thread.join()
+                except RuntimeError:
+                    # server._run_prompt_submit assigns session["_run_thread"]
+                    # a beat before it calls .start(). Observing a successor
+                    # thread inside that window makes join() raise "cannot join
+                    # thread before it is started" — yield briefly and
+                    # re-observe once it is started (or replaced again).
+                    time.sleep(0.005)
+                    continue
+
+            with session["history_lock"]:
+                latest = session.get("_run_thread")
+                running = bool(session.get("running"))
+                alive = (
+                    run_thread is not None
+                    and hasattr(run_thread, "is_alive")
+                    and run_thread.is_alive()
+                )
+                if latest is run_thread and not alive and not running:
+                    # Stable: the thread we observed is still the installed one,
+                    # it has exited (or there was none), and the turn is no
+                    # longer running — no successor took over.
+                    return self._snapshot_turn_state(session)
+
+            # A successor replaced the observed thread, or the dispatcher is in
+            # the brief running-without-a-started-thread handoff window. Recheck
+            # until the chain is genuinely idle. In particular, shutdown must
+            # not manufacture an incomplete turn.end while a daemon successor
+            # still owns history; the host's existing shutdown timeout controls
+            # how long the supervisor waits for this worker future.
+            if not can_join:
+                time.sleep(0.005)
+
+    def _snapshot_turn_state(self, session: dict) -> dict[str, Any]:
+        """Snapshot the fields ``turn.end`` needs.
+
+        MUST be called while holding ``session["history_lock"]``.
+        """
+        history = list(session.get("history") or [])
+        return {
+            "history_version": int(session.get("history_version", 0)),
+            "history": history,
+            "message_count": len(history),
+            "interrupted": bool(session.get("_turn_cancel_requested")),
+            "session_key": str(session.get("session_key") or ""),
+        }
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")

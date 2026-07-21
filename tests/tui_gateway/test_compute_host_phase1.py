@@ -295,6 +295,158 @@ def test_compute_host_real_turn_end_serializes_authoritative_history(monkeypatch
         host.close()
 
 
+def test_compute_host_real_turn_waits_for_chained_successor_before_settling(
+    monkeypatch,
+):
+    """turn.end must not snapshot until a chained successor turn settles.
+
+    server._run_prompt_submit runs a turn on session["_run_thread"] and, in
+    that thread's tail, can chain a successor (queued prompt / goal
+    continuation / post-turn completion) by calling _run_prompt_submit again —
+    installing a FRESH _run_thread and re-setting running=True before the first
+    thread exits. The old compute-host code joined the first thread once and
+    snapshotted immediately, racing the live successor: turn.end carried
+    partial history and the source was marked idle mid-successor. This test
+    installs+starts such a successor from the first dispatcher and asserts the
+    host does not emit turn.end / snapshot history until the successor settles,
+    and that the final history includes the successor's turn.
+    """
+    from tui_gateway import server
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+
+    session = {
+        "agent": object(),
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "chain-key",
+        "_run_thread": None,
+    }
+
+    first_dispatch_done = threading.Event()
+    release_successor = threading.Event()
+    first_may_proceed = threading.Event()
+
+    class JoinObservedThread(threading.Thread):
+        """Release the dispatcher only after the host starts joining it."""
+
+        def join(self, timeout=None):
+            first_may_proceed.set()
+            return super().join(timeout)
+
+    def run_prompt(_rid, _sid, target, text):
+        # Emulate server._run_prompt_submit: start the turn on a background
+        # thread, set session["_run_thread"], and return immediately.
+        def _first_turn():
+            # Hold session["_run_thread"] == first until the host has observed
+            # and begun joining it, so the buggy single-join path deterministically
+            # captures the FIRST thread (as it does in production, where the turn
+            # runs before the tail swaps in a successor).
+            first_may_proceed.wait(5)
+            with target["history_lock"]:
+                target["history"] = [
+                    *target["history"],
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": "first answer"},
+                ]
+                target["history_version"] += 1
+                # The first turn releases running in its finally...
+                target["running"] = False
+
+            # ...then, exactly like _drain_queued_prompt -> _run_prompt_submit,
+            # it claims running again and installs a SUCCESSOR thread that
+            # replaces session["_run_thread"] BEFORE this first thread exits.
+            def _successor_turn():
+                release_successor.wait(5)
+                with target["history_lock"]:
+                    target["history"] = [
+                        *target["history"],
+                        {"role": "user", "content": "successor"},
+                        {"role": "assistant", "content": "final answer"},
+                    ]
+                    target["history_version"] += 1
+                    target["running"] = False
+
+            with target["history_lock"]:
+                target["running"] = True
+            successor = threading.Thread(target=_successor_turn, daemon=True)
+            target["_run_thread"] = successor
+            successor.start()
+            first_dispatch_done.set()
+
+        first = JoinObservedThread(target=_first_turn, daemon=True)
+        target["_run_thread"] = first
+        first.start()
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _s, _f: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {"model": "test"})
+
+    real_turn = threading.Thread(
+        target=lambda: host._run_real_turn(
+            {
+                "sid": "chain-sid",
+                "request_id": "chain-turn",
+                "session_key": "chain-key",
+                "text": "hello",
+            }
+        ),
+        daemon=True,
+    )
+    try:
+        real_turn.start()
+
+        # Wait until the first dispatcher has installed + started the successor
+        # and exited. The OLD code would already have joined the first thread
+        # and emitted turn.end here.
+        assert first_dispatch_done.wait(5)
+        # Shutdown may stop waiting for the worker future, but it must not
+        # manufacture a terminal frame from partial history while the chained
+        # daemon thread still owns the turn.
+        host._closed.set()
+        # Give a buggy (settle-early) path a chance to wrongly emit turn.end.
+        time.sleep(0.15)
+        assert not any(
+            frame.get("type") == "turn.end"
+            and frame.get("request_id") == "chain-turn"
+            for frame in _json_lines(out)
+        ), "turn.end emitted before the chained successor settled"
+        assert session["running"] is True
+
+        # Let the successor finish; only now may the host settle.
+        release_successor.set()
+        end = _wait_for_frame(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "chain-turn",
+        )
+        # Final history includes BOTH the first turn and the successor turn,
+        # and reflects the successor's version.
+        decoded = json.loads(json.dumps(end))
+        assert decoded["history_version"] == 2
+        assert [message["role"] for message in decoded["history"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert decoded["history"][-1]["content"] == "final answer"
+        assert decoded["message_count"] == 4
+        assert decoded["interrupted"] is False
+        real_turn.join(5)
+        assert not real_turn.is_alive()
+    finally:
+        release_successor.set()
+        real_turn.join(5)
+        host.close()
+
+
 def test_compute_host_interrupt_control_is_not_queued_behind_turn():
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)

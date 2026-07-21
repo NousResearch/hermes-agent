@@ -2110,6 +2110,122 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
+def test_claim_active_session_slot_for_profile_pins_remote_registry(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_concurrent_sessions": 2})
+
+    lease, limit_message = server._claim_active_session_slot_for_profile(
+        "remote-session",
+        live_session_id="remote-live",
+        surface="tui",
+        profile_home=profile_home,
+    )
+
+    assert limit_message is None
+    assert lease is not None
+    assert lease.registry_state_path() == profile_home / "runtime" / "active_sessions.json"
+    assert lease.registry_lock_path() == profile_home / "runtime" / "active_sessions.lock"
+    assert server.get_hermes_home_override() is None
+
+    lease.release()
+    assert lease.released is True
+    assert json.loads(lease.registry_state_path().read_text())["entries"] == []
+
+
+@pytest.mark.parametrize(
+    "resume_params",
+    [
+        {"lazy": True},
+        {},
+    ],
+    ids=["lazy", "deferred"],
+)
+def test_session_resume_profile_claims_slot_in_remote_profile(
+    monkeypatch, tmp_path, resume_params
+):
+    target = "stored-profile-session"
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_cwd = tmp_path / "workspace"
+    profile_home.mkdir(parents=True)
+    profile_cwd.mkdir()
+    claimed_homes = []
+
+    class ProfileDB:
+        def get_session(self, _target):
+            return {"id": target, "cwd": str(profile_cwd)}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def resolve_resume_session_id(self, _target):
+            return target
+
+        def reopen_session(self, _target):
+            return None
+
+        def get_messages_as_conversation(
+            self, _target, include_ancestors=False, repair_alternation=False
+        ):
+            return []
+
+        def get_resume_conversations(self, _target):
+            return [], []
+
+        def get_ancestor_display_prefix(self, _target):
+            return []
+
+    def claim_for_profile(*_args, profile_home=None, **_kwargs):
+        claimed_homes.append(profile_home)
+        return None, None
+
+    monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: ProfileDB())
+    monkeypatch.setattr(server, "_claim_active_session_slot_for_profile", claim_for_profile)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    try:
+        params = {"session_id": target, "profile": "worker", **resume_params}
+        response = server._methods["session.resume"]("resume", params)
+
+        assert "error" not in response
+        sid = response["result"]["session_id"]
+        assert claimed_homes == [profile_home]
+        assert server._sessions[sid]["profile_home"] == str(profile_home)
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == target:
+                server._sessions.pop(sid, None)
+
+
+def test_session_branch_claims_slot_in_source_profile(monkeypatch, tmp_path):
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    source = _session(
+        history=[{"role": "user", "content": "hello"}],
+        profile_home=str(profile_home),
+    )
+    server._sessions["source-sid"] = source
+    claimed_homes = []
+
+    def reject_at_cap(*_args, profile_home=None, **_kwargs):
+        claimed_homes.append(profile_home)
+        return None, "Hermes is at the active session limit (1/1)."
+
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+    monkeypatch.setattr(server, "_claim_active_session_slot_for_profile", reject_at_cap)
+    try:
+        response = server._methods["session.branch"](
+            "branch", {"session_id": "source-sid"}
+        )
+        assert response["error"]["code"] == 4090
+        assert claimed_homes == [str(profile_home)]
+    finally:
+        server._sessions.pop("source-sid", None)
+
+
 def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     target = "stored-profile-session"
     launch_cwd = tmp_path / "launch"
@@ -2187,6 +2303,14 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setattr(approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot_for_profile",
+        lambda *args, profile_home=None, **kwargs: captured.setdefault(
+            "claim_profile_home", profile_home
+        )
+        and (None, None),
+    )
 
     try:
         # eager_build: asserts the synchronous build receives the profile's db
@@ -2202,6 +2326,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         assert "error" not in resp
         sid = resp["result"]["session_id"]
         assert captured["agent_db"] is profile_db
+        assert captured["claim_profile_home"] == profile_home
         assert server._sessions[sid]["cwd"] == str(profile_cwd)
         assert resp["result"]["info"]["cwd"] == str(profile_cwd)
         assert "launch_update" not in captured
@@ -10339,14 +10464,28 @@ def test_detach_replacement_recovery_rehomes_approval_without_denial(
             server._interactive_prompt_queues.clear()
 
 
-def test_detach_capacity_failure_rolls_back_marker_without_replacement(monkeypatch):
+def test_detach_capacity_failure_rolls_back_marker_without_replacement(
+    monkeypatch, tmp_path
+):
     before = set(server._sessions)
-    source = _session(running=True, turn_settled=False)
+    source_home = tmp_path / "profiles" / "worker"
+    source_home.mkdir(parents=True)
+    source = _session(
+        running=True,
+        turn_settled=False,
+        profile_home=str(source_home),
+    )
     server._sessions["source-sid"] = source
+    claimed_homes = []
+
+    def reject_at_profile_cap(*_args, **_kwargs):
+        claimed_homes.append(str(server.get_hermes_home_override() or ""))
+        return None, "Hermes is at the active session limit (1/1)."
+
     monkeypatch.setattr(
         server,
         "_claim_active_session_slot",
-        lambda *a, **k: (None, "Hermes is at the active session limit (1/1)."),
+        reject_at_profile_cap,
     )
     try:
         response = server._methods["session.detach_turn"](
@@ -10354,6 +10493,7 @@ def test_detach_capacity_failure_rolls_back_marker_without_replacement(monkeypat
         )
         assert response["error"]["code"] == 4090
         assert "active session limit" in response["error"]["message"]
+        assert claimed_homes == [str(source_home)]
         assert set(server._sessions) == before | {"source-sid"}
         assert source["running"] is True
         assert "detaching_turn" not in source

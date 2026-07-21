@@ -1435,8 +1435,14 @@ def run_conversation(
                     # No display/TTS consumer. Still prefer streaming for
                     # health checking, but skip for Mock clients in tests
                     # (mocks return SimpleNamespace, not stream iterators).
-                    from unittest.mock import Mock
-                    if isinstance(getattr(agent, "client", None), Mock):
+                    # Use duck-typing instead of importing unittest.mock to
+                    # avoid ImportError crashes in agent-based cron jobs
+                    # (stdlib import fails intermittently under thread-pool
+                    # dispatch — crondispatch-internal edge case). The
+                    # streaming path is the safe default when the check
+                    # can't run.
+                    _client = getattr(agent, "client", None)
+                    if _client is not None and hasattr(_client, "assert_called"):
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):

@@ -919,8 +919,17 @@ class TestIsStaleSessionRet:
     def test_unknown_error_case_insensitive(self):
         assert weixin._is_stale_session_ret(-2, None, "Unknown Error") is True
 
+    def test_ret_minus_2_with_rate_limited_is_stale(self):
+        # Regression for #35949: iLink also returns "rate limited" for an
+        # expired context_token, not just genuine throttling. The send loop's
+        # `retried_without_token` guard caps the false-positive cost at one
+        # tokenless retry before the rate-limit backoff branch takes over.
+        assert weixin._is_stale_session_ret(-2, None, "rate limited") is True
+        assert weixin._is_stale_session_ret(None, -2, "Rate Limited") is True
+        assert weixin._is_stale_session_ret(-2, None, "  rate limited  ") is True
+
     def test_ret_minus_2_with_freq_limit_is_not_stale(self):
-        # Genuine rate limit — must NOT be treated as stale session.
+        # Other rate-limit phrasings must NOT be treated as stale session.
         assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
 
     def test_ret_minus_2_with_no_errmsg_is_not_stale(self):

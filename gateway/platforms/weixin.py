@@ -97,15 +97,21 @@ RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
+_STALE_SESSION_ERRMSGS = frozenset({"unknown error", "rate limited"})
+
+
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink returns ret=-2 / errcode=-2 with an errmsg that iLink
+    reuses for stale ``context_token`` (same condition as errcode=-14) rather
+    than a genuine rate limit. iLink has been observed returning both
+    ``"unknown error"`` and ``"rate limited"`` for expired tokens; the caller's
+    one-shot tokenless retry guard keeps a real rate-limit from being retried
+    more than once before falling through to the rate-limit backoff branch."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    return (errmsg or "").strip().lower() in _STALE_SESSION_ERRMSGS
 
 
 MEDIA_IMAGE = 1

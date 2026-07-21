@@ -64,6 +64,32 @@ class TestWriteDenyExactPaths:
 
         assert _is_write_denied(str(global_env)) is True
 
+    def test_bws_cache_denied(self):
+        # Bitwarden Secrets Manager disk cache holds plaintext secret values.
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "cache" / "bws_cache.json")
+        assert _is_write_denied(path) is True
+
+    def test_google_oauth_denied(self):
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "auth" / "google_oauth.json")
+        assert _is_write_denied(path) is True
+
+    def test_hermes_root_bws_cache_and_google_oauth_when_running_under_profile(self, tmp_path, monkeypatch):
+        """``<root>/auth/google_oauth.json`` and ``<root>/cache/bws_cache.json``
+        stay write-denied even when running under a profile — same shape as the
+        ``<root>/.env`` widening (#15981). Both are read-blocked credential
+        stores; leaving them writable would let a prompt-injected write plant
+        fake tokens or keys that get loaded on the next run.
+        """
+        root = tmp_path / "hermes_root"
+        profile_home = root / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        assert _is_write_denied(str(root / "cache" / "bws_cache.json")) is True
+        assert _is_write_denied(str(root / "auth" / "google_oauth.json")) is True
+
     def test_shell_profiles_are_writable(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:

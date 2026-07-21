@@ -46,6 +46,15 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Google OAuth credentials and Bitwarden Secrets Manager disk cache:
+            # both are read-blocked by get_read_block_error(); keep writes
+            # blocked too so a prompt-injected write can't plant fake tokens or
+            # keys that get loaded on the next run (active profile + root, as
+            # for .env above).
+            str(hermes_home / "auth" / "google_oauth.json"),
+            str(hermes_root / "auth" / "google_oauth.json"),
+            str(hermes_home / "cache" / "bws_cache.json"),
+            str(hermes_root / "cache" / "bws_cache.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),

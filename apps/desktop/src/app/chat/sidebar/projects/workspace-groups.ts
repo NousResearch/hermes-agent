@@ -541,7 +541,17 @@ export function overlayRepoLanes(
       }
     }
 
+    const laneHasSession = lane.sessions.some(row => row.id === session.id)
+
+    const existsInAnotherLane =
+      !laneHasSession && lanes.some(g => g !== lane && g.sessions.some(row => row.id === session.id))
+
+    if (existsInAnotherLane) {
+      continue
+    }
+
     lane.sessions = upsertSession(lane.sessions, session)
+
     changed = true
   }
 

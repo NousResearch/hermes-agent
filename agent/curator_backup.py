@@ -632,11 +632,16 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
                     raise tarfile.TarError(
                         f"refusing to extract unsafe path: {name!r}"
                     )
+                if member.issym() or member.islnk():
+                    raise tarfile.TarError(
+                        f"refusing to extract link member: {name!r}"
+                    )
             try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
+                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]  # nosec B202  -- manual path/link guard above
             except TypeError:
-                # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+                # Python < 3.12 — no filter kwarg; the manual checks above
+                # (path traversal + link members) cover the main abuse classes.
+                tf.extractall(str(skills))  # nosec B202  -- manual path/link guard above
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
         for orig, dest in moved:

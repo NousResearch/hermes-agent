@@ -259,6 +259,40 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+@pytest.mark.parametrize(
+    ("member_type", "linkname"),
+    [
+        (tarfile.SYMTYPE, "/etc/passwd"),
+        (tarfile.LNKTYPE, "../../outside"),
+    ],
+)
+def test_rollback_rejects_link_member_tarball(backup_env, member_type, linkname):
+    """Rollback must refuse tar link members before the Python <3.12
+    unfiltered extractall fallback can materialize them."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    _write_skill(skills, "current")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        info = tarfile.TarInfo("link-member")
+        info.type = member_type
+        info.linkname = linkname
+        tf.addfile(info)
+
+    ok, msg, _ = cb.rollback()
+
+    assert not ok
+    assert "link member" in msg.lower() or "refus" in msg.lower()
+    assert (skills / "current").exists()
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------

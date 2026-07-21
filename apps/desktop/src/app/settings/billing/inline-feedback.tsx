@@ -1,19 +1,10 @@
 import { Button } from '@/components/ui/button'
 import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 
 import type { BillingRefusal } from './api'
 import { resolveRefusal } from './errors'
 import { useStepUpFlow } from './use-step-up'
-
-// Optional-arg convenience over the canonical opener — the billing rows pass
-// possibly-undefined URLs straight through from view models.
-export function openExternal(url?: string) {
-  if (url) {
-    openExternalLink(url)
-  }
-}
 
 export function StepUpInlineAction({ flow }: { flow: ReturnType<typeof useStepUpFlow> }) {
   if (flow.verification) {
@@ -69,24 +60,11 @@ export function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | nu
       </span>
       {resolved.action.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
-        <Button onClick={() => openExternal(portalUrl)} size="sm" type="button" variant="outline">
+        <Button onClick={() => openExternalLink(portalUrl)} size="sm" type="button" variant="outline">
           Open portal
           <ExternalLink className="size-3.5" />
         </Button>
       )}
-    </div>
-  )
-}
-
-export function InlineMessage({ children, kind }: { children: string; kind: 'error' | 'success' }) {
-  return (
-    <div
-      className={cn(
-        'mt-2 text-[length:var(--conversation-caption-font-size)]',
-        kind === 'error' ? 'text-destructive' : 'text-(--ui-text-tertiary)'
-      )}
-    >
-      {children}
     </div>
   )
 }

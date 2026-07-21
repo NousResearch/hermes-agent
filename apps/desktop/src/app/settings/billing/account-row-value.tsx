@@ -3,7 +3,7 @@ import { ExternalLink } from '@/lib/icons'
 
 import { Pill } from '../primitives'
 
-import { openExternal } from './inline-feedback'
+import { openExternal } from './open-external'
 import type { BillingAccountRowView } from './use-billing-state'
 
 export function RowValue({ onAction, row }: { onAction?: () => void; row: BillingAccountRowView }) {

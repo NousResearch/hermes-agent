@@ -11,7 +11,7 @@ import { RowValue } from './account-row-value'
 import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { initialAutoReloadAmount, validateAutoReloadInputs } from './billing-amounts'
-import { BillingRefusalInline, InlineMessage } from './inline-feedback'
+import { BillingRefusalInline } from './inline-feedback'
 import type { BillingAutoReload, BillingStateResponse } from './types'
 import type { BillingAccountRowView } from './use-billing-state'
 
@@ -271,6 +271,20 @@ export function AutoReloadRow({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// A one-line success/error note under the row — the only consumer of this shape.
+function InlineMessage({ children, kind }: { children: string; kind: 'error' | 'success' }) {
+  return (
+    <div
+      className={cn(
+        'mt-2 text-[length:var(--conversation-caption-font-size)]',
+        kind === 'error' ? 'text-destructive' : 'text-(--ui-text-tertiary)'
+      )}
+    >
+      {children}
     </div>
   )
 }

@@ -37,7 +37,7 @@ describe('useDowngradeFlow', () => {
 
     act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
 
-    await waitFor(() => expect(result.current.active?.preview?.effect).toBe('scheduled'))
+    await waitFor(() => expect(result.current.active?.phase.kind).toBe('ready'))
     expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('t_free')
 
     await act(async () => {
@@ -49,7 +49,7 @@ describe('useDowngradeFlow', () => {
     expect(result.current.active).toBeNull()
   })
 
-  it('records a preview refusal as failedOp "preview" and re-runs on retry', async () => {
+  it('records a preview refusal as the previewFailed phase and re-runs on retry', async () => {
     apiMocks.previewSubscriptionChange.mockResolvedValue({
       ok: false,
       refusal: { kind: 'insufficient_scope', message: 'billing:manage required' }
@@ -59,8 +59,14 @@ describe('useDowngradeFlow', () => {
 
     act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
 
-    await waitFor(() => expect(result.current.active?.failedOp).toBe('preview'))
-    expect(result.current.active?.refusal?.kind).toBe('insufficient_scope')
+    await waitFor(() => expect(result.current.active?.phase.kind).toBe('previewFailed'))
+    const phase = result.current.active?.phase
+
+    if (phase?.kind !== 'previewFailed') {
+      throw new Error('expected previewFailed phase')
+    }
+
+    expect(phase.refusal.kind).toBe('insufficient_scope')
 
     act(() => result.current.retryPreview())
 
@@ -76,7 +82,7 @@ describe('useDowngradeFlow', () => {
     const { result } = renderHook(() => useDowngradeFlow({ onScheduled: vi.fn() }), { wrapper })
 
     act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
-    await waitFor(() => expect(result.current.active?.preview).not.toBeNull())
+    await waitFor(() => expect(result.current.active?.phase.kind).toBe('ready'))
 
     act(() => result.current.cancel())
 
@@ -100,7 +106,7 @@ describe('useDowngradeFlow', () => {
     const { result } = renderHook(() => useDowngradeFlow({ onScheduled: vi.fn() }), { wrapper })
 
     act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
-    await waitFor(() => expect(result.current.active?.preview?.effect).toBe('scheduled'))
+    await waitFor(() => expect(result.current.active?.phase.kind).toBe('ready'))
     expect(result.current.mutating).toBe(false)
 
     act(() => {
@@ -122,7 +128,7 @@ describe('useDowngradeFlow', () => {
     const { result } = renderHook(() => useDowngradeFlow({ onScheduled: vi.fn() }), { wrapper })
 
     act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
-    await waitFor(() => expect(result.current.active?.preview?.effect).toBe('scheduled'))
+    await waitFor(() => expect(result.current.active?.phase.kind).toBe('ready'))
 
     // Two synchronous activations before React commits busy='schedule'.
     await act(async () => {

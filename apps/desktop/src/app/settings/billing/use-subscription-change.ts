@@ -10,13 +10,21 @@ export interface DowngradeTarget {
   tierName: string
 }
 
+/**
+ * The state machine for one downgrade attempt. Modeled as a discriminated union
+ * rather than four independent nullables so impossible combinations (a preview AND a
+ * refusal, a "ready" with no quote) simply cannot be represented, and the panel reads
+ * exactly one `kind`.
+ */
+export type DowngradePhase =
+  | { kind: 'previewFailed'; refusal: BillingRefusal }
+  | { kind: 'previewing' }
+  | { kind: 'ready'; preview: SubscriptionPreviewResponse }
+  | { kind: 'scheduleFailed'; preview: SubscriptionPreviewResponse; refusal: BillingRefusal }
+  | { kind: 'scheduling'; preview: SubscriptionPreviewResponse }
+
 export interface ActiveDowngrade {
-  /** Which RPC is in flight (drives the disabled/"…" states), else null. */
-  busy: 'preview' | 'schedule' | null
-  /** Which op the current refusal came from, so the retry button re-runs the right one. */
-  failedOp: 'preview' | 'schedule' | null
-  preview: null | SubscriptionPreviewResponse
-  refusal: BillingRefusal | null
+  phase: DowngradePhase
   target: DowngradeTarget
 }
 
@@ -55,18 +63,17 @@ export function useDowngradeFlow({ onScheduled }: { onScheduled: () => void }) {
       return
     }
 
-    setActive(
-      result.ok
-        ? { busy: null, failedOp: null, preview: result.data, refusal: null, target }
-        : { busy: null, failedOp: 'preview', preview: null, refusal: result.refusal, target }
-    )
+    setActive({
+      phase: result.ok ? { kind: 'ready', preview: result.data } : { kind: 'previewFailed', refusal: result.refusal },
+      target
+    })
   }
 
   const begin = (target: DowngradeTarget) => {
     const runId = runIdRef.current + 1
 
     runIdRef.current = runId
-    setActive({ busy: 'preview', failedOp: null, preview: null, refusal: null, target })
+    setActive({ phase: { kind: 'previewing' }, target })
     void runPreview(target, runId)
   }
 
@@ -77,16 +84,18 @@ export function useDowngradeFlow({ onScheduled }: { onScheduled: () => void }) {
   }
 
   const confirm = async () => {
-    if (!active || active.busy || schedulingRef.current) {
+    // Only a quoted state (ready, or a failed schedule being retried) can commit.
+    if (!active || schedulingRef.current || (active.phase.kind !== 'ready' && active.phase.kind !== 'scheduleFailed')) {
       return
     }
 
     schedulingRef.current = true
     const { target } = active
+    const { preview } = active.phase
     const runId = runIdRef.current + 1
 
     runIdRef.current = runId
-    setActive({ ...active, busy: 'schedule', failedOp: null, refusal: null })
+    setActive({ phase: { kind: 'scheduling', preview }, target })
 
     const result = await api.scheduleSubscriptionChange(target.tierId)
     schedulingRef.current = false
@@ -96,11 +105,11 @@ export function useDowngradeFlow({ onScheduled }: { onScheduled: () => void }) {
     }
 
     if (!result.ok) {
-      // A refusal (e.g. insufficient_scope → step-up) leaves the panel open with
-      // failedOp set, so the same button becomes a manual "Try again" AFTER the
+      // A refusal (e.g. insufficient_scope → step-up) leaves the panel open in
+      // scheduleFailed, so the same button becomes a manual "Try again" AFTER the
       // user elevates. We deliberately do NOT auto-replay the mutation on step-up
       // success — this matches the auto-reload save's manual-retry pattern.
-      setActive({ busy: null, failedOp: 'schedule', preview: active.preview, refusal: result.refusal, target })
+      setActive({ phase: { kind: 'scheduleFailed', preview, refusal: result.refusal }, target })
 
       return
     }
@@ -119,7 +128,7 @@ export function useDowngradeFlow({ onScheduled }: { onScheduled: () => void }) {
   // every other Downgrade tile + Back while one change is committing (the server
   // also 409s overlapping mutations per-org, so this is UI honesty, not the only
   // defense).
-  const mutating = active?.busy === 'schedule'
+  const mutating = active?.phase.kind === 'scheduling'
 
   return { active, begin, cancel, confirm, mutating, retryPreview }
 }

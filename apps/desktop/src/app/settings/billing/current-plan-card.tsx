@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/button'
 import { ExternalLink } from '@/lib/icons'
 
-import { BillingRefusalInline, openExternal } from './inline-feedback'
+import { BillingRefusalInline } from './inline-feedback'
+import { openExternal } from './open-external'
 import { TierArt } from './tier-art'
 import type { BillingPlanCardView } from './use-billing-state'
 import { useResumeFlow } from './use-subscription-change'

@@ -10,9 +10,42 @@ import { Pill } from '../primitives'
 import { BillingRefusalInline } from './inline-feedback'
 import { TierArt } from './tier-art'
 import { type BillingPlanTierView, formatBillingDate, formatMonthlyCreditsDelta } from './use-billing-state'
-import { useDowngradeFlow } from './use-subscription-change'
+import { type DowngradePhase, useDowngradeFlow } from './use-subscription-change'
 
 type DowngradeFlow = ReturnType<typeof useDowngradeFlow>
+
+// The human sentence for the panel body, derived purely from the phase. `null` while
+// a refusal is the only thing to show (BillingRefusalInline renders that separately).
+function previewMessage(phase: DowngradePhase, fallbackTierName: string): null | string {
+  if (phase.kind === 'previewing') {
+    return 'Checking this change…'
+  }
+
+  if (phase.kind === 'previewFailed') {
+    return null
+  }
+
+  const { preview } = phase
+  const targetName = preview.target_tier_name ?? fallbackTierName
+  const creditsDelta = formatMonthlyCreditsDelta(preview.monthly_credits_delta)
+
+  switch (preview.effect) {
+    case 'blocked':
+      return preview.reason ?? 'That change cannot be made here.'
+
+    case 'no_op':
+      return `You are already on ${targetName} — nothing to change.`
+
+    case 'scheduled':
+      return (
+        `Change to ${targetName} — takes effect ${formatBillingDate(preview.effective_at)}. No charge now; ` +
+        `you keep your current plan until then.${creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}`
+      )
+
+    default:
+      return 'This change cannot be scheduled here.'
+  }
+}
 
 // The in-card preview → confirm panel for a downgrade (mirrors the TUI confirm flow).
 function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierView }) {
@@ -32,11 +65,16 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
     return null
   }
 
-  const { busy, failedOp, preview, refusal } = active
-  const targetName = preview?.target_tier_name ?? tier.name
-  const effect = preview?.effect
-  const creditsDelta = formatMonthlyCreditsDelta(preview?.monthly_credits_delta)
-  const caption = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
+  const { phase } = active
+  const captionCn = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
+  const refusal = phase.kind === 'previewFailed' || phase.kind === 'scheduleFailed' ? phase.refusal : null
+  const busy = phase.kind === 'previewing' || phase.kind === 'scheduling'
+  const message = previewMessage(phase, tier.name)
+
+  const canConfirm =
+    (phase.kind === 'ready' && phase.preview.effect === 'scheduled') ||
+    phase.kind === 'scheduling' ||
+    phase.kind === 'scheduleFailed'
 
   return (
     <div
@@ -46,35 +84,21 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
       role="status"
       tabIndex={-1}
     >
-      {busy === 'preview' ? (
-        <div className={caption}>Checking this change…</div>
-      ) : effect === 'scheduled' ? (
-        <div className={caption}>
-          Change to {targetName} — takes effect {formatBillingDate(preview?.effective_at)}. No charge now; you keep your
-          current plan until then.
-          {creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}
-        </div>
-      ) : effect === 'no_op' ? (
-        <div className={caption}>You are already on {targetName} — nothing to change.</div>
-      ) : effect === 'blocked' ? (
-        <div className={caption}>{preview?.reason ?? 'That change cannot be made here.'}</div>
-      ) : !refusal ? (
-        <div className={caption}>This change cannot be scheduled here.</div>
-      ) : null}
+      {message && <div className={captionCn}>{message}</div>}
 
       <BillingRefusalInline refusal={refusal} />
 
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {failedOp === 'preview' ? (
-          <Button disabled={busy != null} onClick={flow.retryPreview} size="sm" type="button">
+        {phase.kind === 'previewFailed' ? (
+          <Button disabled={busy} onClick={flow.retryPreview} size="sm" type="button">
             Try again
           </Button>
-        ) : failedOp === 'schedule' || effect === 'scheduled' ? (
-          <Button disabled={busy != null} onClick={() => void flow.confirm()} size="sm" type="button">
-            {busy === 'schedule' ? 'Scheduling…' : failedOp === 'schedule' ? 'Try again' : 'Confirm downgrade'}
+        ) : canConfirm ? (
+          <Button disabled={busy} onClick={() => void flow.confirm()} size="sm" type="button">
+            {phase.kind === 'scheduling' ? 'Scheduling…' : phase.kind === 'scheduleFailed' ? 'Try again' : 'Confirm downgrade'}
           </Button>
         ) : null}
-        <Button disabled={busy != null} onClick={flow.cancel} size="sm" type="button" variant="outline">
+        <Button disabled={busy} onClick={flow.cancel} size="sm" type="button" variant="outline">
           Cancel
         </Button>
       </div>

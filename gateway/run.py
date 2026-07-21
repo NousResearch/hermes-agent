@@ -7481,7 +7481,10 @@ class GatewayRunner:
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
-        
+
+        if canonical == "jobs":
+            return await self._handle_jobs_command(event)
+
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -9881,6 +9884,34 @@ class GatewayRunner:
             return EphemeralReply(t("gateway.stop.stopped"))
         else:
             return t("gateway.stop.no_active")
+
+    async def _handle_jobs_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /jobs command - list running agent jobs.
+
+        Shows all active job_ids so the user can target them with STOP <job_id>.
+        When preemptive cancellation is disabled, reports that the feature is off.
+        """
+        try:
+            from agent.cancellation import get_job_manager, is_preemptive_cancellation_enabled
+            if not is_preemptive_cancellation_enabled():
+                return EphemeralReply(
+                    "Preemptive cancellation is disabled. "
+                    "Enable with HERMES_PREEMPTIVE_CANCELLATION=true "
+                    "or config agent.preemptive_cancellation: true"
+                )
+            mgr = get_job_manager()
+            jobs = mgr.list_running_jobs()
+            if not jobs:
+                return EphemeralReply("No running jobs.")
+            lines = [f"📋 Running jobs ({len(jobs)}):"]
+            for j in jobs:
+                step = f" | step: {j['current_step']}" if j.get("current_step") else ""
+                lines.append(f"  `{j['job_id']}` — {j['state']}{step}")
+            lines.append("")
+            lines.append("Use `STOP <job_id>` or `STOP ALL` to cancel.")
+            return EphemeralReply("\n".join(lines))
+        except Exception as e:
+            return EphemeralReply(f"Failed to list jobs: {e}")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and

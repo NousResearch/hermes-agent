@@ -1954,6 +1954,20 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+
+                # Preemptive cancellation: register the PID so the
+                # cancellation callback can kill the process tree on
+                # STOP <job_id> / STOP ALL. Safe no-op when feature flag
+                # is off (no _job_id on the agent).
+                try:
+                    from agent.cancellation import get_process_registry, is_preemptive_cancellation_enabled
+                    if is_preemptive_cancellation_enabled() and proc_session.pid:
+                        import threading
+                        _job_id = getattr(threading.current_thread(), "_hermes_job_id", None)
+                        if _job_id:
+                            get_process_registry().register_pid(_job_id, proc_session.pid)
+                except Exception:
+                    pass
                 if approval_note:
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:

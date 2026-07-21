@@ -892,6 +892,27 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    # Preemptive cancellation gate: block file writes after cancel.
+    # Safe no-op when feature flag is off (no _cancellation_token on agent).
+    try:
+        import threading
+        _job_id = getattr(threading.current_thread(), "_hermes_job_id", None)
+        if _job_id:
+            from agent.cancellation import get_job_manager
+            from agent.cancellation_gates import guard_file_write, OperationCancelled
+            _token = get_job_manager().get_token(_job_id)
+            if _token:
+                class _AgentStub:
+                    pass
+                _stub = _AgentStub()
+                _stub._cancellation_token = _token
+                _stub._interrupt_requested = False
+                guard_file_write(_stub, path)
+    except OperationCancelled:
+        return json.dumps({"error": f"File write cancelled by user request: {path}"})
+    except Exception:
+        pass
+
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)

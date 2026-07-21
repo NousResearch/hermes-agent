@@ -397,7 +397,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     )
             break
 
-        if agent._interrupt_requested:
+        if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
             # Force-close the in-flight worker-local HTTP connection to stop
             # token generation without poisoning the shared client used to
             # seed future retries.
@@ -1387,7 +1387,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     Falls back to _interruptible_api_call on provider errors indicating
     streaming is not supported.
     """
-    if agent._interrupt_requested:
+    if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
         raise InterruptedError("Agent interrupted before streaming API call")
 
     if agent.api_mode == "codex_responses":
@@ -1463,7 +1463,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         t.start()
         while t.is_alive():
             t.join(timeout=0.3)
-            if agent._interrupt_requested:
+            if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
                 raise InterruptedError("Agent interrupted during Bedrock API call")
         if result["error"] is not None:
             raise result["error"]
@@ -1631,7 +1631,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
 
-            if agent._interrupt_requested:
+            if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
                 break
 
             if not chunk.choices:
@@ -1861,7 +1861,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 except Exception:
                     pass
 
-                if agent._interrupt_requested:
+                if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
                     break
 
                 event_type = getattr(event, "type", None)
@@ -1907,7 +1907,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # interrupt entirely.  On slow providers (ollama-cloud) each
                 # retry can block for the full stream-read timeout (120s+),
                 # causing multi-minute delays between /stop and response.
-                if agent._interrupt_requested:
+                if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
                     raise InterruptedError("Agent interrupted before stream retry")
                 try:
                     if agent.api_mode == "anthropic_messages":
@@ -2225,7 +2225,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )
 
-        if agent._interrupt_requested:
+        if agent._interrupt_requested or (getattr(agent, '_cancellation_token', None) and agent._cancellation_token.is_cancelled):
             try:
                 if agent.api_mode == "anthropic_messages":
                     agent._anthropic_client.close()

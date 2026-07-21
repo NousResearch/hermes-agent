@@ -90,6 +90,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
+    CommandDef("jobs", "List running preemptive cancellation jobs", "Session",
+               gateway_only=True),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",

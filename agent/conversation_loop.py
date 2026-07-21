@@ -361,6 +361,11 @@ def run_conversation(
             _cancellation_token = _mgr.get_token(_job_id)
             agent._job_id = _job_id
             agent._cancellation_token = _cancellation_token
+            # Expose job_id on the current thread so terminal_tool can
+            # register spawned PIDs for this job without needing direct
+            # access to the agent instance.
+            import threading as _thr
+            _thr.current_thread()._hermes_job_id = _job_id
     except Exception:
         pass
     

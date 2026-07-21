@@ -5,6 +5,12 @@ Provides:
 - CancellationToken: per-job AbortController equivalent (thread-safe)
 - JobManager: tracks all running jobs, supports cancel_job() and cancel_all()
 - CancellationResult: metadata about a cancelled job
+- ProcessRegistry: tracks PIDs per job_id for process tree termination on cancel
+
+State transitions:
+  cancel_job() -> CANCEL_REQUESTED (signals token, fires callbacks)
+  callbacks -> CANCELLING (process tree kill, resource cleanup)
+  cleanup verified -> CANCELLED (final state, remaining_processes recorded)
 
 When the feature flag (HERMES_PREEMPTIVE_CANCELLATION) is off, the existing
 _interrupt_requested cooperative mechanism is preserved unchanged.
@@ -19,6 +25,12 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
+
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
 
 
 class JobState(Enum):
@@ -55,6 +67,9 @@ class CancellationToken:
         self._callbacks: list[Callable[[], None]] = []
         self._created_at = time.time()
         self._current_step: Optional[str] = None
+        # Event for cancellable sleep — allows instant wake on cancel
+        # without waiting for the full sleep duration.
+        self._cancel_event = threading.Event()
 
     @property
     def is_cancelled(self) -> bool:
@@ -75,12 +90,13 @@ class CancellationToken:
             self._current_step = step
 
     def request_cancel(self) -> None:
-        """Signal cancellation. Idempotent."""
+        """Signal cancellation. Idempotent. Sets state to CANCEL_REQUESTED."""
         with self._lock:
             if self._cancelled.is_set():
                 return
             self._state = JobState.CANCEL_REQUESTED
         self._cancelled.set()
+        self._cancel_event.set()
         # Fire callbacks outside lock to prevent deadlock
         for cb in self._callbacks:
             try:
@@ -115,12 +131,92 @@ class CancellationToken:
         return self._cancelled.is_set()
 
     async def sleep(self, seconds: float) -> None:
-        """Cancellable sleep. Raises CancelledError if cancelled during or after sleep."""
+        """Cancellable sleep using Event.wait — wakes instantly on cancel.
+
+        Unlike asyncio.sleep, this does NOT wait for the full duration when
+        cancelled. The cancel_event is set immediately on request_cancel().
+        """
         if self._cancelled.is_set():
             raise asyncio.CancelledError("Job cancelled during sleep")
-        await asyncio.sleep(seconds)
+        # Use the Event to wait — either the timeout expires or cancel fires
+        # We need to run the Event.wait in a thread since we're in async context
+        loop = asyncio.get_event_loop()
+        fired = await loop.run_in_executor(
+            None,
+            lambda: self._cancel_event.wait(timeout=seconds)
+        )
+        if fired:
+            raise asyncio.CancelledError("Job cancelled during sleep")
+
+    def sleep_sync(self, seconds: float) -> None:
+        """Synchronous cancellable sleep. Wakes instantly on cancel."""
         if self._cancelled.is_set():
-            raise asyncio.CancelledError("Job cancelled after sleep")
+            raise asyncio.CancelledError("Job cancelled during sleep")
+        self._cancel_event.wait(timeout=seconds)
+        if self._cancelled.is_set():
+            raise asyncio.CancelledError("Job cancelled during sleep")
+
+
+class ProcessRegistry:
+    """Tracks PIDs per job_id for process tree termination on cancel.
+
+    When a terminal command spawns a process, the PID is registered here
+    under the current job_id. When the job is cancelled, the CancellationToken
+    callback calls kill_process_tree for all registered PIDs.
+    """
+
+    def __init__(self) -> None:
+        self._pids: dict[str, list[int]] = {}
+        self._lock = threading.RLock()
+
+    def register_pid(self, job_id: str, pid: int) -> None:
+        """Associate a PID with a job."""
+        with self._lock:
+            self._pids.setdefault(job_id, []).append(pid)
+
+    def register_pgid(self, job_id: str, pgid: int) -> None:
+        """Associate a process group ID with a job."""
+        self.register_pid(job_id, pgid)
+
+    def get_pids(self, job_id: str) -> list[int]:
+        with self._lock:
+            return list(self._pids.get(job_id, []))
+
+    def clear(self, job_id: str) -> list[int]:
+        """Remove and return all PIDs for a job."""
+        with self._lock:
+            return self._pids.pop(job_id, [])
+
+    def get_remaining(self, job_id: str) -> list[dict]:
+        """Check which registered processes are still alive for a job."""
+        pids = self.get_pids(job_id)
+        remaining = []
+        if _HAS_PSUTIL:
+            for pid in pids:
+                try:
+                    proc = psutil.Process(pid)
+                    remaining.append({"pid": pid, "status": proc.status(), "name": proc.name()})
+                except Exception:
+                    pass  # Already dead
+        else:
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    remaining.append({"pid": pid, "status": "alive", "name": "unknown"})
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+        return remaining
+
+
+# Global process registry singleton
+_process_registry: Optional[ProcessRegistry] = None
+
+
+def get_process_registry() -> ProcessRegistry:
+    global _process_registry
+    if _process_registry is None:
+        _process_registry = ProcessRegistry()
+    return _process_registry
 
 
 class JobManager:
@@ -128,6 +224,11 @@ class JobManager:
 
     Thread-safe. The gateway Discord listener can call cancel_job() /
     cancel_all() from a different thread than the agent execution loop.
+
+    State transitions:
+      cancel_job() -> CANCEL_REQUESTED (signals token, fires callbacks)
+      callbacks -> CANCELLING (process tree kill, resource cleanup)
+      cleanup verified -> CANCELLED (final state, remaining_processes recorded)
     """
 
     def __init__(self) -> None:
@@ -135,9 +236,12 @@ class JobManager:
         self._lock = threading.RLock()
 
     def create_job(self, job_id: Optional[str] = None) -> str:
-        """Register a new job and return its ID."""
+        """Register a new job, wire cancellation callback, and return its ID."""
         jid = job_id or str(uuid.uuid4())
         token = CancellationToken()
+        # Wire the default cancellation callback: process tree kill + state progression.
+        # Pass `self` so the callback updates THIS manager instance, not the global singleton.
+        token.register(lambda: _cancel_callback(jid, token, self))
         with self._lock:
             self._jobs[jid] = (token, JobState.RUNNING)
         return jid
@@ -165,29 +269,48 @@ class JobManager:
         *,
         last_completed_step: Optional[str] = None,
         cancelled_step: Optional[str] = None,
-        remaining_processes: Optional[list] = None,
     ) -> Optional[CancellationResult]:
-        """Request cancellation of a specific job. Returns result or None if not found."""
+        """Request cancellation of a specific job.
+
+        Sets state to CANCEL_REQUESTED and fires the token. The token's
+        callbacks handle process tree termination and state progression:
+        CANCEL_REQUESTED -> CANCELLING -> CANCELLED.
+
+        For jobs already in CANCEL_REQUESTED or later, returns the current
+        state without re-declaring cancellation (idempotent).
+
+        Returns CancellationResult or None if job not found.
+        """
         with self._lock:
             entry = self._jobs.get(job_id)
             if not entry:
                 return None
-            token, _ = entry
+            token, current_state = entry
 
+            # If already past CANCEL_REQUESTED, return current state
+            # without re-declaring cancellation
+            if current_state in (JobState.CANCEL_REQUESTED, JobState.CANCELLING, JobState.CANCELLED):
+                return CancellationResult(
+                    job_id=job_id,
+                    state=current_state,
+                    last_completed_step=last_completed_step,
+                    cancelled_step=cancelled_step or token.current_step,
+                    remaining_processes=get_process_registry().get_remaining(job_id),
+                )
+
+        # Request cancel on the token — this fires callbacks which
+        # handle process tree kill and state progression
         token.request_cancel()
 
-        result = CancellationResult(
+        # Return result with CANCEL_REQUESTED state (not CANCELLED yet —
+        # the callback will progress to CANCELLING then CANCELLED)
+        return CancellationResult(
             job_id=job_id,
-            state=JobState.CANCELLED,
+            state=JobState.CANCEL_REQUESTED,
             last_completed_step=last_completed_step,
             cancelled_step=cancelled_step or token.current_step,
-            remaining_processes=remaining_processes or [],
+            remaining_processes=get_process_registry().get_remaining(job_id),
         )
-
-        with self._lock:
-            self._jobs[job_id] = (token, JobState.CANCELLED)
-
-        return result
 
     def cancel_all(self) -> list[CancellationResult]:
         """Cancel all running jobs. Returns results for each cancelled job."""
@@ -205,12 +328,18 @@ class JobManager:
         with self._lock:
             self._jobs.pop(job_id, None)
 
-    def list_running_jobs(self) -> list[str]:
+    def list_running_jobs(self) -> list[dict]:
+        """List all running jobs with their job_id, state, and current step."""
         with self._lock:
-            return [
-                jid for jid, (_, state) in self._jobs.items()
-                if state in (JobState.RUNNING, JobState.CANCEL_REQUESTED, JobState.CANCELLING)
-            ]
+            result = []
+            for jid, (token, state) in self._jobs.items():
+                if state in (JobState.RUNNING, JobState.CANCEL_REQUESTED, JobState.CANCELLING):
+                    result.append({
+                        "job_id": jid,
+                        "state": state.value,
+                        "current_step": token.current_step,
+                    })
+            return result
 
     def set_current_step(self, job_id: str, step: str) -> None:
         """Track the current step for cancellation metadata."""
@@ -219,6 +348,104 @@ class JobManager:
             if entry:
                 token = entry[0]
                 token.set_current_step(step)
+
+    def complete_cancellation(self, job_id: str, remaining_processes: list) -> None:
+        """Mark a job as fully cancelled after cleanup is verified.
+
+        Called by the cancellation callback after process tree termination
+        and resource cleanup are complete. Records remaining_processes and
+        transitions to CANCELLED.
+        """
+        with self._lock:
+            entry = self._jobs.get(job_id)
+            if entry:
+                token = entry[0]
+                self._jobs[job_id] = (token, JobState.CANCELLED)
+
+
+def _cancel_callback(
+    job_id: str,
+    token: CancellationToken,
+    mgr: "JobManager",
+    grace_timeout: float = 5.0,
+) -> None:
+    """Default cancellation callback: kill process tree, progress to CANCELLED.
+
+    This is registered on every CancellationToken when a job is created.
+    It runs in the thread that called request_cancel() (typically the
+    Discord listener thread), NOT the agent execution thread.
+    """
+    token.set_cancelling()
+
+    # Kill all registered processes for this job
+    registry = get_process_registry()
+    pids = registry.get_pids(job_id)
+
+    killed = []
+    survived = []
+
+    if _HAS_PSUTIL and pids:
+        for pid in pids:
+            try:
+                proc = psutil.Process(pid)
+                children = proc.children(recursive=True)
+                all_procs = children + [proc]
+                for p in reversed(all_procs):
+                    try:
+                        p.terminate()
+                        killed.append(p.pid)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                # Wait for graceful termination
+                deadline = time.time() + grace_timeout
+                for p in all_procs:
+                    remaining = max(0.1, deadline - time.time())
+                    try:
+                        p.wait(timeout=remaining)
+                    except psutil.TimeoutExpired:
+                        try:
+                            p.kill()
+                            p.wait(timeout=1.0)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                        except psutil.TimeoutExpired:
+                            survived.append(p.pid)
+                    except psutil.NoSuchProcess:
+                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    elif pids:
+        # Fallback without psutil
+        for pid in pids:
+            try:
+                if os.name == "nt":
+                    import subprocess as sp
+                    sp.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, timeout=grace_timeout)
+                    killed.append(pid)
+                else:
+                    try:
+                        os.killpg(os.getpgid(pid), 15)  # SIGTERM
+                        killed.append(pid)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    time.sleep(min(1.0, grace_timeout))
+                    try:
+                        os.killpg(os.getpgid(pid), 9)  # SIGKILL
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+            except Exception:
+                survived.append(pid)
+
+    # Check remaining
+    remaining = registry.get_remaining(job_id)
+
+    # Progress to CANCELLED
+    token.set_cancelled()
+
+    # Update JobManager state — use the mgr passed in (the one that created the job),
+    # NOT the global singleton (which may be a different instance in tests).
+    mgr.complete_cancellation(job_id, remaining)
 
 
 # Global singleton

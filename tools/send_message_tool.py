@@ -168,6 +168,26 @@ def _handle_list():
 
 def _handle_send(args):
     """Send a message to a platform target."""
+    # Preemptive cancellation gate: block external sends after cancel.
+    try:
+        import threading
+        _job_id = getattr(threading.current_thread(), "_hermes_job_id", None)
+        if _job_id:
+            from agent.cancellation import get_job_manager
+            from agent.cancellation_gates import guard_external_send, OperationCancelled
+            _token = get_job_manager().get_token(_job_id)
+            if _token:
+                target = args.get("target", "")
+                class _Stub: pass
+                _s = _Stub()
+                _s._cancellation_token = _token
+                _s._interrupt_requested = False
+                guard_external_send(_s, target)
+    except OperationCancelled:
+        return json.dumps({"error": "External send cancelled by user request"})
+    except Exception:
+        pass
+
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:

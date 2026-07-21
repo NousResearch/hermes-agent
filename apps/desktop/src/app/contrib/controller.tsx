@@ -5,6 +5,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { IdleMount } from '@/components/idle-mount'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -30,6 +31,7 @@ import {
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
@@ -90,6 +92,10 @@ import { ContribWiring, WiredPane } from './wiring'
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
 const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+
+// Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
+// them to idle so they're off the first-paint path, warm before reveal.
+const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
 // The main tab carries the same session context menu as tile tabs (targets
 // the loaded primary session; no menu on a fresh draft).
 const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
@@ -182,7 +188,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <FilesPane />
+    render: () => idle(<FilesPane />)
   },
   {
     id: 'preview',
@@ -200,7 +206,7 @@ registry.registerMany([
       minWidth: PREVIEW_RAIL_MIN_WIDTH,
       maxWidth: PREVIEW_RAIL_MAX_WIDTH
     },
-    render: () => <PreviewRailPane />
+    render: () => idle(<PreviewRailPane />)
   },
   {
     id: 'review',
@@ -216,7 +222,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <ReviewPaneContent />
+    render: () => idle(<ReviewPaneContent />)
   },
   {
     // Optional chrome — in NO default layout. Adoption stacks it with the
@@ -227,7 +233,7 @@ registry.registerMany([
     // revealOnPreset: the Quad layout places logs, so applying it turns the
     // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
-    render: () => <LogsPane />
+    render: () => idle(<LogsPane />)
   }
 ])
 
@@ -595,6 +601,26 @@ $filePreviewTarget.listen(target => target && revealPreview())
 
 // ---------------------------------------------------------------------------
 
+interface TitlebarSlotProps {
+  area: 'titleBar.center' | 'titleBar.left' | 'titleBar.right'
+  className: string
+  style?: CSSProperties
+}
+
+function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
+  const items = useContributions(area)
+
+  if (items.length === 0) {
+    return null
+  }
+
+  return (
+    <div className={className} style={style}>
+      <Slot area={area} />
+    </div>
+  )
+}
+
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
 
@@ -636,26 +662,25 @@ export function ContribController() {
               aria-hidden="true"
               className="pointer-events-none absolute inset-y-0 left-[calc(var(--titlebar-controls-left,14px)+(var(--titlebar-control-size,1.25rem)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,5.5rem)+0.75rem)] [-webkit-app-region:drag]"
             />
-            <div
+            <TitlebarSlot
+              area="titleBar.left"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 left: 'max(calc(var(--workspace-left, 0px) + 0.5rem), calc(var(--titlebar-controls-left, 14px) + 2 * var(--titlebar-control-size, 1.25rem) + 1rem))'
               }}
-            >
-              <Slot area="titleBar.left" />
-            </div>
-            <div className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]">
-              <Slot area="titleBar.center" />
-            </div>
-            <div
+            />
+            <TitlebarSlot
+              area="titleBar.center"
+              className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]"
+            />
+            <TitlebarSlot
+              area="titleBar.right"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 right:
                   'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 4 * (var(--titlebar-control-size, 1.25rem) + 0.25rem) + 0.5rem))'
               }}
-            >
-              <Slot area="titleBar.right" />
-            </div>
+            />
           </div>
 
           <LayoutTreeRoot />

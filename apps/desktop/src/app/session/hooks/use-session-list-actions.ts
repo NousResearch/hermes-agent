@@ -123,16 +123,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
   // after an agent turn surfaces a new job immediately; the interval poll keeps
-  // next-run/state fresh as the scheduler advances them.
+  // next-run/state fresh as the scheduler advances them. Jobs live per-profile
+  // on disk and the list endpoint aggregates 'all' by default, so scope the
+  // fetch to the sidebar's profile scope — a concrete profile sees only its
+  // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs()
+      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
 
       setCronJobs(jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
-  }, [])
+  }, [profileScope])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1

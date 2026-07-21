@@ -280,6 +280,18 @@ app.include_router(_memory_oauth_router)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_SSH_OWNER_NONCE: Optional[str] = None
+
+
+def _apply_ssh_session_token(token: str) -> None:
+    global _SESSION_TOKEN
+    if token:
+        _SESSION_TOKEN = token
+
+
+def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
+    global _SSH_OWNER_NONCE
+    _SSH_OWNER_NONCE = nonce
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -779,6 +791,11 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
     "telegram": "discord",
+    # `mcp.auto_reload_on_config_change` is the only schema-surfaced mcp
+    # runtime field (server definitions live under mcp_servers, edited via
+    # the MCP tab) — fold it into the agent tab rather than spawning a
+    # one-field orphan category.
+    "mcp": "agent",
     # `computer_use.cua_telemetry` is the only schema-surfaced computer_use
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
@@ -1043,6 +1060,17 @@ class MemoryProviderConfigUpdate(BaseModel):
 
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}
+
+
+class CustomEndpointUpdate(BaseModel):
+    id: str = ""
+    name: str
+    base_url: str
+    model: str
+    api_key: Optional[str] = None
+    context_length: Optional[int] = None
+    discover_models: bool = True
+    make_default: bool = False
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -1344,7 +1372,12 @@ def _apply_main_model_assignment(
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
-    elif model_cfg.get("api_key") and new_provider != prev_provider:
+    elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
+        # A stale endpoint secret can live under the legacy ``api`` alias with
+        # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
+        # the switch-clears-the-key path must trigger on either field — else the
+        # old endpoint's secret survives in config.yaml and contaminates a later
+        # custom resolution. clear_model_endpoint_credentials scrubs both.
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
@@ -2773,6 +2806,14 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         mode = "none"
 
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
+
+
+@app.get("/api/ssh/ownership")
+async def get_ssh_ownership(request: Request):
+    _require_token(request)
+    if not _SSH_OWNER_NONCE:
+        raise HTTPException(status_code=404, detail="SSH ownership is not active")
+    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
 @app.get("/api/status")
@@ -6420,9 +6461,24 @@ def _apply_model_assignment_sync(
         if not provider or not model:
             raise HTTPException(status_code=400, detail="provider and model required for main")
         provider, model = _normalize_main_model_assignment(provider, model)
+        providers_cfg = cfg.get("providers")
+        provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+        if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
+            base_url = str(provider_entry.get("base_url") or "").strip()
         model_cfg = _apply_main_model_assignment(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
+        # Fall back to the provider entry's stored key only when the request
+        # didn't carry one — same precedence as the base_url fill above. An
+        # unconditional overwrite silently discards a key the caller is
+        # rotating in, and model.api_key outranks the environment at client
+        # construction (#62269), so the stale key keeps authenticating.
+        if (
+            not api_key
+            and isinstance(provider_entry, dict)
+            and provider_entry.get("api_key")
+        ):
+            model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
         # When switching the main provider to Nous, mirror the CLI's
@@ -6948,6 +7004,280 @@ def _parse_model_ids(resp: "Any") -> List[str]:
         if mid:
             ids.append(mid)
     return ids
+
+
+def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", (raw or "").strip()).strip("-_").lower()
+    return slug or fallback
+
+
+def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
+    models: List[str] = []
+    raw_models = entry.get("models")
+    if isinstance(raw_models, dict):
+        models.extend(str(model).strip() for model in raw_models.keys())
+    elif isinstance(raw_models, list):
+        models.extend(str(model).strip() for model in raw_models)
+
+    default_model = str(entry.get("model") or entry.get("default_model") or "").strip()
+    if default_model:
+        models.insert(0, default_model)
+
+    seen: set[str] = set()
+    return [model for model in models if model and not (model in seen or seen.add(model))]
+
+
+def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    current_provider = str(model_cfg.get("provider", "") or "")
+    current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+    current_base_url = str(model_cfg.get("base_url", "") or "")
+
+    endpoints: List[Dict[str, Any]] = []
+    providers = cfg.get("providers")
+    if isinstance(providers, dict):
+        for provider_id, raw_entry in providers.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            base_url = str(raw_entry.get("base_url") or raw_entry.get("url") or raw_entry.get("api") or "").strip()
+            if not base_url:
+                continue
+            endpoint_id = str(provider_id)
+            models = _models_from_custom_endpoint_entry(raw_entry)
+            endpoint_model = str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else ""))
+            endpoints.append({
+                "id": endpoint_id,
+                "name": str(raw_entry.get("name") or endpoint_id),
+                "base_url": base_url,
+                "model": endpoint_model,
+                "models": models,
+                "context_length": raw_entry.get("context_length"),
+                "discover_models": bool(raw_entry.get("discover_models", True)),
+                "has_api_key": bool(str(raw_entry.get("api_key", "") or "").strip()),
+                "api_key_preview": redact_key(str(raw_entry.get("api_key", "") or "")) if raw_entry.get("api_key") else None,
+                "is_current": endpoint_id == current_provider,
+                "source": "providers",
+            })
+
+    if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
+        endpoints.insert(0, {
+            "id": "custom",
+            "name": "Custom",
+            "base_url": current_base_url,
+            "model": current_model,
+            "models": [current_model] if current_model else [],
+            "context_length": model_cfg.get("context_length"),
+            "discover_models": True,
+            "has_api_key": bool(str(model_cfg.get("api_key", "") or "").strip()),
+            "api_key_preview": redact_key(str(model_cfg.get("api_key", "") or "")) if model_cfg.get("api_key") else None,
+            "is_current": True,
+            "source": "direct-config",
+        })
+
+    return {
+        "endpoints": endpoints,
+        "current": {
+            "provider": current_provider,
+            "model": current_model,
+            "base_url": current_base_url,
+        },
+    }
+
+
+def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> None:
+    """Drop the main-slot mirror of a provider that no longer exists.
+
+    ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
+    ``api_key`` onto ``model``. That mirror outranks the environment at client
+    construction (#62269), so deleting the endpoint without clearing it leaves
+    the agent still authenticating to the deleted host with the deleted key —
+    and leaves that key sitting in config.yaml after the operator believes the
+    dashboard removed it.
+
+    Only touches ``model`` when it actually names the deleted provider, so an
+    endpoint deleted while a *different* provider is active is left alone.
+    """
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        return
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
+        return
+    for field in ("provider", "base_url", "api_key"):
+        model_cfg.pop(field, None)
+    cfg["model"] = model_cfg
+
+
+def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
+    endpoint_id = _custom_endpoint_id(body.id or body.name)
+    name = (body.name or "").strip()
+    base_url = (body.base_url or "").strip().rstrip("/")
+    model = (body.model or "").strip()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url required")
+    parsed = urllib.parse.urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="base_url must include scheme and host")
+    if not model:
+        raise HTTPException(status_code=400, detail="model required")
+
+    providers = cfg.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+    existing = providers.get(endpoint_id)
+    if not isinstance(existing, dict):
+        existing = {}
+
+    # Merge onto the existing entry rather than replacing it. A providers.<name>
+    # block is not owned by this panel: it can carry hand-written keys the
+    # dashboard has no field for — ``api_mode``, ``key_env``/``api_key_env``,
+    # ``extra_headers`` (which may themselves carry credentials),
+    # ``request_overrides`` — and rebuilding from scratch silently dropped every
+    # one of them on an unrelated edit, leaving a provider that no longer
+    # authenticates or speaks the right protocol.
+    entry: Dict[str, Any] = dict(existing)
+    entry.update({
+        "name": name,
+        "base_url": base_url,
+        "model": model,
+        "discover_models": bool(body.discover_models),
+    })
+    # Same for the model map: the panel names one default model, it does not
+    # enumerate the provider's catalogue. Keep the other models (and their
+    # context lengths) and just ensure this one is present.
+    existing_models = entry.get("models")
+    models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    current_model_entry = models_map.get(model)
+    models_map[model] = dict(current_model_entry) if isinstance(current_model_entry, dict) else {}
+    entry["models"] = models_map
+    if body.context_length and body.context_length > 0:
+        entry["context_length"] = int(body.context_length)
+        entry["models"][model]["context_length"] = int(body.context_length)
+    if body.api_key is not None and body.api_key.strip():
+        entry["api_key"] = body.api_key.strip()
+
+    providers[endpoint_id] = entry
+    cfg["providers"] = providers
+
+    if body.make_default:
+        cfg["model"] = _apply_main_model_assignment(
+            cfg.get("model", {}), endpoint_id, model, base_url
+        )
+        if entry.get("api_key") and isinstance(cfg["model"], dict):
+            cfg["model"]["api_key"] = entry["api_key"]
+
+    return endpoint_id, entry
+
+
+@app.get("/api/providers/custom-endpoints")
+def list_custom_endpoints():
+    """Return configured OpenAI-compatible custom endpoints for Desktop."""
+    try:
+        return _custom_endpoint_response(load_config())
+    except Exception:
+        _log.exception("GET /api/providers/custom-endpoints failed")
+        raise HTTPException(status_code=500, detail="Failed to list custom endpoints")
+
+
+@app.post("/api/providers/custom-endpoints")
+def upsert_custom_endpoint(body: CustomEndpointUpdate):
+    """Create or update a v12+ ``providers`` custom endpoint entry."""
+    try:
+        cfg = load_config()
+        endpoint_id, _entry = _write_custom_endpoint(cfg, body)
+        save_config(cfg)
+        response = _custom_endpoint_response(cfg)
+        response["ok"] = True
+        response["id"] = endpoint_id
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/providers/custom-endpoints failed")
+        raise HTTPException(status_code=500, detail="Failed to save custom endpoint")
+
+
+@app.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
+def activate_custom_endpoint(endpoint_id: str):
+    """Set a configured custom endpoint as the default model provider."""
+    try:
+        cfg = load_config()
+        provider_key = _custom_endpoint_id(endpoint_id)
+        providers = cfg.get("providers")
+        entry = providers.get(provider_key) if isinstance(providers, dict) else None
+        if not isinstance(entry, dict):
+            raise HTTPException(status_code=404, detail="custom endpoint not found")
+
+        models = _models_from_custom_endpoint_entry(entry)
+        model = str(entry.get("model") or (models[0] if models else "")).strip()
+        base_url = str(entry.get("base_url") or "").strip()
+        if not model or not base_url:
+            raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
+
+        model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
+        if entry.get("api_key"):
+            model_cfg["api_key"] = entry["api_key"]
+        cfg["model"] = model_cfg
+        save_config(cfg)
+        return {"ok": True, "provider": provider_key, "model": model}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/providers/custom-endpoints/%s/activate failed", endpoint_id)
+        raise HTTPException(status_code=500, detail="Failed to activate custom endpoint")
+
+
+@app.delete("/api/providers/custom-endpoints/{endpoint_id}")
+def delete_custom_endpoint(endpoint_id: str):
+    """Remove a configured custom endpoint from ``providers``."""
+    try:
+        cfg = load_config()
+        provider_key = _custom_endpoint_id(endpoint_id)
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict) or provider_key not in providers:
+            raise HTTPException(status_code=404, detail="custom endpoint not found")
+        providers.pop(provider_key, None)
+        cfg["providers"] = providers
+        _detach_main_model_from_provider(cfg, provider_key)
+        save_config(cfg)
+        response = _custom_endpoint_response(cfg)
+        response["ok"] = True
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("DELETE /api/providers/custom-endpoints/%s failed", endpoint_id)
+        raise HTTPException(status_code=500, detail="Failed to delete custom endpoint")
+
+
+@app.post("/api/providers/custom-endpoints/validate")
+async def validate_custom_endpoint(body: CustomEndpointUpdate):
+    """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
+    import httpx
+
+    base_url = (body.base_url or "").strip().rstrip("/")
+    if not base_url:
+        return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
+
+    url = base_url + "/models"
+    headers = {"Accept": "application/json"}
+    if body.api_key and body.api_key.strip():
+        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+            resp = client.get(url, headers=headers)
+    except Exception:
+        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
+
+    if resp.status_code in (401, 403):
+        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
+    if not resp.is_success:
+        return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
+
+    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
 
 
 @app.post("/api/providers/validate")
@@ -11248,11 +11578,31 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
         return _fallback_profile_dicts(profiles_mod)
 
 
+def _cron_default_profile() -> str:
+    """Profile to target when a cron request carries no explicit ``profile``.
+
+    A desktop pool backend runs one process per profile (HERMES_HOME already
+    scoped), but these cron endpoints deliberately route storage through the
+    profiles tree via ``_cron_profile_home`` — so a hardcoded ``"default"``
+    fallback would write a non-default profile's job into ``~/.hermes``.
+    Resolve the process's own profile instead. ``custom`` (an unrecognized
+    HERMES_HOME outside the profiles tree) has no profile-dir equivalent, so
+    it keeps the legacy ``default`` fallback.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = get_active_profile_name()
+    except Exception:
+        return "default"
+    return "default" if name in ("default", "custom") else name
+
+
 def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
     from hermes_cli import profiles as profiles_mod
 
-    raw = (profile or "default").strip() or "default"
+    raw = (profile or _cron_default_profile()).strip() or "default"
     try:
         canon = profiles_mod.normalize_profile_name(raw)
         profiles_mod.validate_profile_name(canon)
@@ -11408,7 +11758,7 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
 
 
-def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
+def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
     try:
         profile_name, profile_home = _cron_profile_home(profile)
         script = _normalize_dashboard_cron_script(body.script, profile_home)
@@ -11447,7 +11797,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
 
 
 @app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate, profile: str = "default"):
+async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
 
 
@@ -14884,6 +15234,12 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                     # the GUI can offer per-capability selection.
                     row["web_backend"] = prov["web_backend"]
                     row["capabilities"] = web_provider_capabilities(prov["web_backend"])
+                if name == "tts" and prov.get("tts_provider"):
+                    # The provider key written to tts.provider on selection.
+                    # Doubles as the config section holding the provider's
+                    # voice/model settings (tts.<key>.*) so the GUI can render
+                    # those fields inline in the Capabilities panel.
+                    row["tts_provider"] = prov["tts_provider"]
                 providers.append(row)
         if name == "web":
             # Resolve the per-capability active backends exactly the way the
@@ -18961,6 +19317,8 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    ssh_session_token: Optional[str] = None,
+    ssh_owner_nonce: Optional[str] = None,
 ):
     """Start the web UI server.
 
@@ -18972,7 +19330,13 @@ def start_server(
     ``headless`` is the ``serve`` path: the JSON-RPC/WS backend with no UI
     build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
     the banner announces the bind rather than a browser URL.
+
+    ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
+    bootstrap state. Neither is persisted or exported to child processes.
     """
+    _apply_ssh_session_token(ssh_session_token or "")
+    _apply_ssh_owner_nonce(ssh_owner_nonce)
+
     import uvicorn
 
     try:

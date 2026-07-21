@@ -71,7 +71,9 @@ import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
+import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
+import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
@@ -173,6 +175,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     openCommandCenterSection,
     openStarmap,
     profilesOpen,
+    resetOverlayReturnRoute,
     settingsOpen,
     starmapOpen,
     toggleCommandCenter
@@ -433,11 +436,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastGatewayProfileRef.current = activeGatewayProfile
-    // Force: the new profile has its own default, so reseed even if the
-    // composer already shows the previous profile's model.
+    // Force: the new profile has its own defaults, so reseed the selector even
+    // if the composer already shows values from the previous profile. Both
+    // refreshes carry an intent token so a picker click made in flight wins.
     void refreshCurrentModel(true)
+    void refreshHermesConfig(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel])
+  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
 
   // New session anchored to a workspace (sidebar "+" on a project/worktree).
   // Seeds cwd + branch from the clicked workspace; an explicit worktree path
@@ -630,6 +635,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   useGatewayBoot({
+    beforeConnectionSwitch: () => {
+      startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null })
+      resetOverlayReturnRoute()
+      resetProjectTreeState()
+      closeAllTerminals()
+    },
     handleGatewayEvent: handleGatewayEventWithPlugins,
     onConnectionReady: c => {
       connectionRef.current = c
@@ -650,6 +661,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
+    activeGatewayProfile,
     activeIsMessaging,
     activeSessionId,
     freshDraftReady,
@@ -916,7 +928,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               setCurrentProvider(provider)
               setCurrentModel(model)
               setCurrentModelSource('default')
-              updateModelOptionsCache(provider, model, true)
+              updateModelOptionsCache($activeSessionId.get(), provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}

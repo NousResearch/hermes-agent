@@ -1742,6 +1742,38 @@ and provider limits. Use
 `max_concurrent_sessions` separately to bound admission across
 CLI, TUI/dashboard, and messaging surfaces.
 
+To prevent a busy gateway from overwhelming the upstream model API, enable the
+process-wide model admission controller:
+
+```yaml
+model_admission:
+  enabled: true
+  max_in_flight: 8          # all primary and auxiliary model requests combined
+  per_target: 8             # initial cap per provider endpoint and model
+  min_per_target: 1         # lower bound after rate-limit backoff
+  queue_timeout_seconds: 600
+  additive_successes: 16    # successes required before raising a reduced cap
+  retry_after_max_seconds: 600
+  idle_state_ttl_seconds: 3600
+  max_target_states: 1024
+```
+
+The feature defaults to `enabled: false`. When enabled, it covers primary
+non-streaming calls, full Chat Completions and Anthropic streaming lifecycles,
+and auxiliary work such as compression, vision, and the real MoA advisor and
+aggregator requests. Each retry acquires a fresh permit, so capacity is not held
+during retry backoff. HTTP 429 responses reduce the affected target's limit and
+honor `Retry-After` (capped by `retry_after_max_seconds`); sustained successful
+requests restore capacity gradually. Streaming requests keep their permit until
+the iterator ends or closes.
+
+Targets are keyed by provider, normalized endpoint, and model. URL credentials,
+query strings, and fragments are excluded from admission diagnostics. The
+registry is process-local; it coordinates all callers inside one Hermes process,
+not multiple gateway hosts. **Restart Hermes after changing any
+`model_admission` setting** because the registry and its limits are initialized
+once per process.
+
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
 ```yaml

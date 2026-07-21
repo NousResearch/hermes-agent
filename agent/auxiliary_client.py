@@ -113,6 +113,229 @@ from utils import base_url_host_matches, base_url_hostname, env_float, model_for
 logger = logging.getLogger(__name__)
 
 
+# ── Process-wide model request admission ────────────────────────────────
+# The registry is initialized lazily from config.yaml on the first real model
+# request and then retained for the lifetime of the process.  That gives the
+# main agent and every auxiliary caller one shared global budget while making
+# the documented "restart required" behavior explicit and predictable.
+_MODEL_ADMISSION_LOCK = threading.Lock()
+_MODEL_ADMISSION_REGISTRY = None
+_MODEL_ADMISSION_DEFAULTS = {
+    "enabled": False,
+    "max_in_flight": 8,
+    "per_target": 8,
+    "min_per_target": 1,
+    "queue_timeout_seconds": 600.0,
+    "additive_successes": 16,
+    "retry_after_max_seconds": 600.0,
+    "idle_state_ttl_seconds": 3600.0,
+    "max_target_states": 1024,
+}
+
+
+def _model_admission_settings_from_config():
+    from agent.model_admission import ModelAdmissionSettings
+    from hermes_cli.config import load_config
+
+    values = dict(_MODEL_ADMISSION_DEFAULTS)
+    try:
+        configured = (load_config() or {}).get("model_admission") or {}
+        if isinstance(configured, dict):
+            values.update(
+                (key, configured[key]) for key in values if key in configured
+            )
+        if not isinstance(values["enabled"], bool):
+            raise ValueError("enabled must be a boolean")
+        return ModelAdmissionSettings(**values)
+    except (TypeError, ValueError) as error:
+        logger.warning(
+            "Ignoring invalid model_admission config; admission remains disabled: %s",
+            error,
+        )
+        return ModelAdmissionSettings(**_MODEL_ADMISSION_DEFAULTS)
+    except Exception as error:
+        # A config read failure must never strand all model traffic.  The
+        # feature is opt-in, so failing open here means "disabled", not
+        # "reject requests".
+        logger.debug("Could not load model_admission config: %s", error)
+        return ModelAdmissionSettings(**_MODEL_ADMISSION_DEFAULTS)
+
+
+def _get_model_admission_registry():
+    global _MODEL_ADMISSION_REGISTRY
+    registry = _MODEL_ADMISSION_REGISTRY
+    if registry is not None:
+        return registry
+    with _MODEL_ADMISSION_LOCK:
+        registry = _MODEL_ADMISSION_REGISTRY
+        if registry is None:
+            from agent.model_admission import ModelAdmissionRegistry
+
+            registry = ModelAdmissionRegistry(_model_admission_settings_from_config())
+            _MODEL_ADMISSION_REGISTRY = registry
+    return registry
+
+
+def _reset_model_admission_registry_for_tests() -> None:
+    """Clear the lazy singleton; production code never reloads it in place."""
+
+    global _MODEL_ADMISSION_REGISTRY
+    with _MODEL_ADMISSION_LOCK:
+        _MODEL_ADMISSION_REGISTRY = None
+
+
+def acquire_model_admission(
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+):
+    """Acquire one synchronous permit without retaining credentials."""
+
+    from agent.model_admission import ModelAdmissionPermit
+
+    if str(provider or "").strip().casefold() == "moa":
+        # MoA is an in-process virtual provider. Its real advisor and
+        # aggregator calls run through call_llm() below and are admitted there;
+        # taking an outer permit would double-count and can deadlock at limit 1.
+        return ModelAdmissionPermit.noop()
+    return _get_model_admission_registry().acquire(provider, base_url, model)
+
+
+async def acquire_model_admission_async(
+    provider: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+):
+    """Async counterpart that does not occupy a worker while queued."""
+
+    from agent.model_admission import ModelAdmissionPermit
+
+    if str(provider or "").strip().casefold() == "moa":
+        return ModelAdmissionPermit.noop()
+    return await _get_model_admission_registry().acquire_async(
+        provider, base_url, model
+    )
+
+
+class _SyncAdmissionCompletionsProxy:
+    def __init__(
+        self,
+        completions: Any,
+        *,
+        provider: Optional[str],
+        model: Optional[str],
+        base_url: Optional[str],
+    ) -> None:
+        self._completions = completions
+        self._provider = provider
+        self._model = model
+        self._base_url = base_url
+
+    def create(self, **kwargs) -> Any:
+        permit = acquire_model_admission(
+            self._provider,
+            self._base_url,
+            kwargs.get("model") or self._model,
+        )
+        try:
+            response = self._completions.create(**kwargs)
+        except BaseException as error:
+            permit.fail(error)
+            raise
+        if kwargs.get("stream"):
+            return permit.wrap_stream(response)
+        permit.succeed()
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._completions, name)
+
+
+class _AsyncAdmissionCompletionsProxy:
+    def __init__(
+        self,
+        completions: Any,
+        *,
+        provider: Optional[str],
+        model: Optional[str],
+        base_url: Optional[str],
+    ) -> None:
+        self._completions = completions
+        self._provider = provider
+        self._model = model
+        self._base_url = base_url
+
+    async def create(self, **kwargs) -> Any:
+        permit = await acquire_model_admission_async(
+            self._provider,
+            self._base_url,
+            kwargs.get("model") or self._model,
+        )
+        try:
+            response = await self._completions.create(**kwargs)
+        except BaseException as error:
+            permit.fail(error)
+            raise
+        if kwargs.get("stream"):
+            return permit.wrap_async_stream(response)
+        permit.succeed()
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._completions, name)
+
+
+class _AdmissionChatProxy:
+    def __init__(self, chat: Any, completions: Any) -> None:
+        self._chat = chat
+        self.completions = completions
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._chat, name)
+
+
+class _AuxiliaryAdmissionClientProxy:
+    _model_admission_wrapped = True
+
+    def __init__(self, client: Any, chat: Any) -> None:
+        self._client = client
+        self.chat = chat
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+def _wrap_auxiliary_client(
+    client: Any,
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    base_url: Optional[str],
+    async_mode: bool,
+) -> Any:
+    """Wrap one resolved client so every SDK attempt gets its own permit."""
+
+    if client is None or getattr(client, "_model_admission_wrapped", False) is True:
+        return client
+    actual_base_url = str(getattr(client, "base_url", "") or base_url or "")
+    chat = client.chat
+    proxy_type = (
+        _AsyncAdmissionCompletionsProxy
+        if async_mode
+        else _SyncAdmissionCompletionsProxy
+    )
+    completions = proxy_type(
+        chat.completions,
+        provider=provider,
+        model=model,
+        base_url=actual_base_url,
+    )
+    return _AuxiliaryAdmissionClientProxy(
+        client,
+        _AdmissionChatProxy(chat, completions),
+    )
+
+
 # ── resolve_provider_client fall-through dedup ───────────────────────────
 # Both fall-through warning sites in resolve_provider_client (the "unknown
 # provider" and "unhandled auth_type" branches) fire on every retry of a
@@ -3434,6 +3657,11 @@ def _evict_cached_client_instance(target: Any) -> bool:
     """
     if target is None:
         return False
+    # Admission wraps only the public chat surface and keeps the cached SDK
+    # client underneath. Eviction must compare that underlying identity, not
+    # the short-lived per-call proxy.
+    if getattr(target, "_model_admission_wrapped", False) is True:
+        target = target._client
     evicted = False
     with _client_cache_lock:
         for key in list(_client_cache.keys()):
@@ -3611,6 +3839,14 @@ def _retry_same_provider_sync(
             f"Auxiliary {task or 'call'}: provider {resolved_provider} could not be rebuilt after recovery"
         )
 
+    retry_client = _wrap_auxiliary_client(
+        retry_client,
+        provider=resolved_provider,
+        model=retry_model or final_model,
+        base_url=resolved_base_url,
+        async_mode=False,
+    )
+
     retry_base = str(getattr(retry_client, "base_url", "") or "")
     retry_kwargs = _build_call_kwargs(
         resolved_provider,
@@ -3669,6 +3905,14 @@ async def _retry_same_provider_async(
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: provider {resolved_provider} could not be rebuilt after recovery"
         )
+
+    retry_client = _wrap_auxiliary_client(
+        retry_client,
+        provider=resolved_provider,
+        model=retry_model or final_model,
+        base_url=resolved_base_url,
+        async_mode=True,
+    )
 
     retry_base = str(getattr(retry_client, "base_url", "") or "")
     retry_kwargs = _build_call_kwargs(
@@ -3856,6 +4100,13 @@ def _call_fallback_candidate_sync(
     fallback tuned differently from the primary is allowed its own budget
     (#62452).
     """
+    fb_client = _wrap_auxiliary_client(
+        fb_client,
+        provider=fb_label,
+        model=fb_model,
+        base_url=None,
+        async_mode=False,
+    )
     fb_timeout = _fallback_entry_timeout(task, fb_label)
     if fb_timeout is not None and fb_timeout != effective_timeout:
         logger.info(
@@ -3881,6 +4132,13 @@ def _call_fallback_candidate_sync(
         if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
             retry_client, retry_model = _get_cached_client(fb_provider, fb_model)
             if retry_client is not None:
+                retry_client = _wrap_auxiliary_client(
+                    retry_client,
+                    provider=fb_provider,
+                    model=retry_model or fb_model,
+                    base_url=fb_base,
+                    async_mode=False,
+                )
                 retry_kwargs = _build_call_kwargs(
                     fb_provider, retry_model or fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
@@ -3922,6 +4180,13 @@ async def _call_fallback_candidate_async(
     reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync`."""
+    fb_client = _wrap_auxiliary_client(
+        fb_client,
+        provider=fb_label,
+        model=fb_model,
+        base_url=None,
+        async_mode=True,
+    )
     fb_timeout = _fallback_entry_timeout(task, fb_label)
     if fb_timeout is not None and fb_timeout != effective_timeout:
         logger.info(
@@ -3948,6 +4213,13 @@ async def _call_fallback_candidate_async(
             retry_client, retry_model = _get_cached_client(
                 fb_provider, fb_model, async_mode=True)
             if retry_client is not None:
+                retry_client = _wrap_auxiliary_client(
+                    retry_client,
+                    provider=fb_provider,
+                    model=retry_model or fb_model,
+                    base_url=fb_base,
+                    async_mode=True,
+                )
                 retry_kwargs = _build_call_kwargs(
                     fb_provider, retry_model or fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
@@ -7041,6 +7313,13 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    client = _wrap_auxiliary_client(
+        client,
+        provider=resolved_provider,
+        model=final_model,
+        base_url=resolved_base_url,
+        async_mode=False,
+    )
     effective_timeout = _effective_aux_timeout(task, timeout)
 
     # Log what we're about to do — makes auxiliary operations visible
@@ -7243,6 +7522,13 @@ def call_llm(
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
+                refreshed_client = _wrap_auxiliary_client(
+                    refreshed_client,
+                    provider=resolved_provider or "nous",
+                    model=refreshed_model or final_model,
+                    base_url=resolved_base_url,
+                    async_mode=False,
+                )
                 logger.info(
                     "Auxiliary %s: refreshed Nous runtime credentials after paid account check, retrying",
                     task or "call",
@@ -7274,6 +7560,13 @@ def call_llm(
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
+                refreshed_client = _wrap_auxiliary_client(
+                    refreshed_client,
+                    provider=resolved_provider or "nous",
+                    model=refreshed_model or final_model,
+                    base_url=resolved_base_url,
+                    async_mode=False,
+                )
                 logger.info("Auxiliary %s: refreshed Nous runtime credentials after 401, retrying",
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
@@ -7663,6 +7956,13 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    client = _wrap_auxiliary_client(
+        client,
+        provider=resolved_provider,
+        model=final_model,
+        base_url=resolved_base_url,
+        async_mode=True,
+    )
     effective_timeout = _effective_aux_timeout(task, timeout)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
@@ -7805,6 +8105,13 @@ async def async_call_llm(
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
+                refreshed_client = _wrap_auxiliary_client(
+                    refreshed_client,
+                    provider=resolved_provider or "nous",
+                    model=refreshed_model or final_model,
+                    base_url=resolved_base_url,
+                    async_mode=True,
+                )
                 logger.info(
                     "Auxiliary %s (async): refreshed Nous runtime credentials after paid account check, retrying",
                     task or "call",
@@ -7835,6 +8142,13 @@ async def async_call_llm(
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
+                refreshed_client = _wrap_auxiliary_client(
+                    refreshed_client,
+                    provider=resolved_provider or "nous",
+                    model=refreshed_model or final_model,
+                    base_url=resolved_base_url,
+                    async_mode=True,
+                )
                 logger.info("Auxiliary %s (async): refreshed Nous runtime credentials after 401, retrying",
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):

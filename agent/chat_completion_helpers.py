@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -55,6 +56,28 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 # billing reasons keep their own 60s cooldown (set above); this is the
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+
+def _acquire_model_admission(agent, api_kwargs: dict):
+    """Use the process-wide registry shared with all auxiliary model calls."""
+
+    from agent.auxiliary_client import acquire_model_admission
+
+    return acquire_model_admission(
+        getattr(agent, "provider", None),
+        getattr(agent, "base_url", None),
+        api_kwargs.get("model") or getattr(agent, "model", None),
+    )
+
+
+@contextlib.contextmanager
+def _admitted_anthropic_stream(agent, api_kwargs: dict, request_client):
+    """Hold one permit through Anthropic manager exit and stream close."""
+
+    permit = _acquire_model_admission(agent, api_kwargs)
+    with permit:
+        with request_client.messages.stream(**api_kwargs) as stream:
+            yield stream
 
 
 def _ra():
@@ -385,51 +408,56 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     interrupt, abort, cancellation, and close semantics stay in the callers —
     this helper only issues the request.
     """
-    if agent.api_mode == "codex_responses":
-        request_client = make_client("codex_stream_request")
-        return agent._run_codex_stream(
-            api_kwargs,
-            client=request_client,
-            on_first_delta=getattr(agent, "_codex_on_first_delta", None),
-        )
-    if agent.api_mode == "anthropic_messages":
-        # #67142: use a request-local Anthropic client so the stale/interrupt
-        # watchdog aborts sockets from the stranger thread while the worker
-        # owns the SDK close — never closing the shared client mid-flight.
-        request_client = make_client(
-            "anthropic_messages_request", kind="anthropic_messages"
-        )
-        return agent._anthropic_messages_create(api_kwargs, client=request_client)
-    if agent.api_mode == "bedrock_converse":
-        # Bedrock uses boto3 directly — no OpenAI client needed.
-        # normalize_converse_response produces an OpenAI-compatible
-        # SimpleNamespace so the rest of the agent loop can treat
-        # bedrock responses like chat_completions responses.
-        from agent.bedrock_adapter import (
-            _get_bedrock_runtime_client,
-            invalidate_runtime_client,
-            is_stale_connection_error,
-            normalize_converse_response,
-        )
-        region = api_kwargs.pop("__bedrock_region__", "us-east-1")
-        api_kwargs.pop("__bedrock_converse__", None)
-        client = _get_bedrock_runtime_client(region)
-        try:
-            raw_response = client.converse(**api_kwargs)
-        except Exception as _bedrock_exc:
-            # Evict the cached client on stale-connection failures
-            # so the outer retry loop builds a fresh client/pool.
-            if is_stale_connection_error(_bedrock_exc):
-                invalidate_runtime_client(region)
-            raise
-        return normalize_converse_response(raw_response)
-    if agent.provider == "moa":
-        # MoA is a virtual chat-completions provider backed by the
-        # in-process MoAClient facade. Do not rebuild a request-local
-        # OpenAI client from the virtual runtime metadata.
-        return agent.client.chat.completions.create(**api_kwargs)
-    request_client = make_client("chat_completion_request")
-    return request_client.chat.completions.create(**api_kwargs)
+    permit = _acquire_model_admission(agent, api_kwargs)
+    try:
+        if agent.api_mode == "codex_responses":
+            request_client = make_client("codex_stream_request")
+            response = agent._run_codex_stream(
+                api_kwargs,
+                client=request_client,
+                on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+            )
+        elif agent.api_mode == "anthropic_messages":
+            # #67142: use a request-local Anthropic client so the stale/interrupt
+            # watchdog aborts sockets from the stranger thread while the worker
+            # owns the SDK close — never closing the shared client mid-flight.
+            request_client = make_client(
+                "anthropic_messages_request", kind="anthropic_messages"
+            )
+            response = agent._anthropic_messages_create(
+                api_kwargs, client=request_client
+            )
+        elif agent.api_mode == "bedrock_converse":
+            # Bedrock uses boto3 directly — no OpenAI client needed.
+            from agent.bedrock_adapter import (
+                _get_bedrock_runtime_client,
+                invalidate_runtime_client,
+                is_stale_connection_error,
+                normalize_converse_response,
+            )
+
+            region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+            api_kwargs.pop("__bedrock_converse__", None)
+            client = _get_bedrock_runtime_client(region)
+            try:
+                raw_response = client.converse(**api_kwargs)
+            except Exception as bedrock_error:
+                if is_stale_connection_error(bedrock_error):
+                    invalidate_runtime_client(region)
+                raise
+            response = normalize_converse_response(raw_response)
+        elif agent.provider == "moa":
+            # The virtual outer MoA call gets a no-op permit. Real advisor and
+            # aggregator requests are admitted independently in call_llm().
+            response = agent.client.chat.completions.create(**api_kwargs)
+        else:
+            request_client = make_client("chat_completion_request")
+            response = request_client.chat.completions.create(**api_kwargs)
+    except BaseException as error:
+        permit.fail(error)
+        raise
+    permit.succeed()
+    return response
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2087,7 +2115,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
-                summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
+                with _acquire_model_admission(agent, summary_kwargs):
+                    summary_response = agent._ensure_primary_openai_client(
+                        reason="iteration_limit_summary"
+                    ).chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
 
@@ -2130,7 +2161,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
-                summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
+                with _acquire_model_admission(agent, summary_kwargs):
+                    summary_response = agent._ensure_primary_openai_client(
+                        reason="iteration_limit_summary_retry"
+                    ).chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()
 
@@ -2679,7 +2713,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # ``request_client_holder["diag"]`` for closure access.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
-        stream = request_client.chat.completions.create(**stream_kwargs)
+        admission_permit = _acquire_model_admission(agent, stream_kwargs)
+        try:
+            stream = request_client.chat.completions.create(**stream_kwargs)
+        except BaseException as error:
+            admission_permit.fail(error)
+            raise
         # Claim the delta sink for THIS attempt (#65991). If a prior attempt's
         # stream is somehow still alive (a stale-stream reconnect whose socket
         # abort raced), this claim supersedes it so its late chunks are fenced
@@ -2701,6 +2740,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # the same.  A genuine provider stream (SDK ``Stream`` object,
         # generator) exposes no ``choices`` attribute, so it is left untouched.
         if hasattr(stream, "choices"):
+            admission_permit.succeed()
             logger.info(
                 "Streaming request returned a final response object instead of "
                 "an iterator; switching %s/%s to non-streaming for this session.",
@@ -2728,6 +2768,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     _fire_first_delta()
                     agent._fire_stream_delta(content)
             return stream
+
+        # The permit belongs to the complete response lifecycle, not merely
+        # the SDK's create() call. Exhaustion, iteration errors, and explicit
+        # close are all reported by this proxy.
+        stream = admission_permit.wrap_stream(stream)
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -2922,6 +2967,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
+        # A superseding attempt or user interrupt can break before iterator
+        # exhaustion. Close explicitly so capacity is released before retry or
+        # backoff rather than waiting for garbage collection.
+        if not admission_permit.is_finished:
+            stream.close()
+
         if _stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(
                 f"stream attempt {stream_attempt_id} was superseded"
@@ -3101,8 +3152,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
-        # Use the Anthropic SDK's streaming context manager
-        with request_client.messages.stream(**api_kwargs) as stream:
+        # Use the Anthropic SDK's streaming context manager. Stacking the
+        # permit around it holds capacity until context exit, including the
+        # final-message snapshot and any close-time transport error.
+        with _admitted_anthropic_stream(
+            agent, api_kwargs, request_client
+        ) as stream:
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the

@@ -1004,6 +1004,21 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # Process-wide admission control for outbound model API requests. This is
+    # opt-in for compatibility; once enabled it bounds both primary turns and
+    # auxiliary calls (compression, vision, MoA advisors/aggregator, etc.).
+    # The registry is created lazily and retained, so changes require restart.
+    "model_admission": {
+        "enabled": False,
+        "max_in_flight": 8,
+        "per_target": 8,
+        "min_per_target": 1,
+        "queue_timeout_seconds": 600.0,
+        "additive_successes": 16,
+        "retry_after_max_seconds": 600.0,
+        "idle_state_ttl_seconds": 3600.0,
+        "max_target_states": 1024,
+    },
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. When more than
     # this many are live, the gateway evicts the least-recently-active DETACHED
     # sessions (no live client) so accumulated agents don't pile up under memory

@@ -946,9 +946,12 @@ class MattermostAdapter(BasePlatformAdapter):
             message_id=post_id,
         )
 
-        # Per-channel ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        # Per-channel ephemeral prompt + working directory
+        from gateway.platforms.base import resolve_channel_cwd, resolve_channel_prompt
         _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
+        )
+        _channel_cwd = resolve_channel_cwd(
             self.config.extra, channel_id, None,
         )
 
@@ -961,6 +964,7 @@ class MattermostAdapter(BasePlatformAdapter):
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
             channel_prompt=_channel_prompt,
+            channel_cwd=_channel_cwd,
         )
 
         await self.handle_message(msg_event)

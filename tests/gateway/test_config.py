@@ -1513,6 +1513,68 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+    def test_bridges_discord_channel_cwds_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_cwds:\n"
+            "    \"123\": /tmp/research\n"
+            "    456: /tmp/docs\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["channel_cwds"] == {
+            "123": "/tmp/research",
+            "456": "/tmp/docs",
+        }
+
+    def test_bridges_telegram_channel_cwds_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  channel_cwds:\n"
+            '    "-1001234567": /tmp/research\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["channel_cwds"] == {
+            "-1001234567": "/tmp/research",
+        }
+
+    def test_channel_cwds_coexist_with_channel_prompts(self, tmp_path, monkeypatch):
+        """Existing channel_prompts configs keep working unchanged next to channel_cwds."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_prompts:\n"
+            "    \"123\": Research mode\n"
+            "  channel_cwds:\n"
+            "    \"123\": /tmp/research\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DISCORD].extra
+        assert extra["channel_prompts"] == {"123": "Research mode"}
+        assert extra["channel_cwds"] == {"123": "/tmp/research"}
+
     def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

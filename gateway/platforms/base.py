@@ -1802,6 +1802,12 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Per-channel working directory (e.g. Discord channel_cwds).  Pins the
+    # session's logical cwd so context files (AGENTS.md / HERMES.md /
+    # .cursorrules) and the terminal sandbox resolve against the channel's
+    # project folder instead of the gateway launch directory.
+    channel_cwd: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -2240,6 +2246,45 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_cwd(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel working directory from platform config.
+
+    Looks up ``channel_cwds`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent cwd).
+
+    Returns the expanded absolute path, or None if no match is found.
+    A configured path that is not an existing directory is ignored with a
+    warning so a typo in config.yaml is visible instead of silently skipped.
+    """
+    cwds = config_extra.get("channel_cwds") or {}
+    if not isinstance(cwds, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        raw = cwds.get(key)
+        if raw is None:
+            continue
+        raw = str(raw).strip()
+        if not raw:
+            continue
+        resolved = os.path.abspath(os.path.expanduser(raw))
+        if not os.path.isdir(resolved):
+            logger.warning(
+                "channel_cwds: working directory configured for channel %s "
+                "does not exist, ignoring: %s", key, raw,
+            )
+            continue
+        return resolved
     return None
 
 

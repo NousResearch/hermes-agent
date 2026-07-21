@@ -480,6 +480,7 @@ class AIAgent:
         chat_type: str = None,
         thread_id: str = None,
         gateway_session_key: str = None,
+        session_cwd: str = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
@@ -556,6 +557,7 @@ class AIAgent:
             chat_type=chat_type,
             thread_id=thread_id,
             gateway_session_key=gateway_session_key,
+            session_cwd=session_cwd,
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
@@ -619,7 +621,10 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
-                cwd=_launch_cwd_for_session(source),
+                # An explicit session cwd (e.g. a per-channel channel_cwds
+                # entry resolved by the gateway) wins over the launch-dir
+                # heuristic, which records nothing for gateway sessions.
+                cwd=getattr(self, "_session_cwd", None) or _launch_cwd_for_session(source),
                 profile_name=_profile_for_session,
             )
             self._session_db_created = True

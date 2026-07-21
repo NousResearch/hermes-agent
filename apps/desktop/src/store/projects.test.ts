@@ -292,6 +292,7 @@ describe('repository discovery policy', () => {
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
+
     return gateway
   }
 
@@ -301,6 +302,7 @@ describe('repository discovery policy', () => {
         ? { active_id: null, projects: [], scoped_session_ids: [] }
         : { accepted: false, repos: [] }
     )
+
     gatewayWith(request)
     const scanRepos = vi.fn()
     desktopGit.mockReturnValue({ scanRepos } as never)
@@ -327,6 +329,7 @@ describe('repository discovery policy', () => {
         ? { active_id: null, projects: [], scoped_session_ids: [] }
         : { accepted: true, repos: [] }
     )
+
     gatewayWith(request)
     const scanRepos = vi.fn().mockResolvedValue([{ label: 'repo', root: '/work/repo' }])
     desktopGit.mockReturnValue({ scanRepos } as never)
@@ -370,10 +373,13 @@ describe('repository discovery policy', () => {
 describe('project tree profile isolation', () => {
   it('does not publish a late response from the previous profile', async () => {
     let resolveA: ((value: unknown) => void) | undefined
+
     const responseA = new Promise(resolve => {
       resolveA = resolve
     })
+
     const gatewayA = { connectionState: 'open', request: vi.fn(() => responseA) }
+
     const gatewayB = {
       connectionState: 'open',
       request: vi.fn().mockResolvedValue({
@@ -382,6 +388,7 @@ describe('project tree profile isolation', () => {
         scoped_session_ids: []
       })
     }
+
     let current = gatewayA
     activeGateway.mockImplementation(() => current as never)
     gatewayAtom.set(gatewayA as never)

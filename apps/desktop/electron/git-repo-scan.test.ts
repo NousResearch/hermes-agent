@@ -11,11 +11,13 @@ const tempDirs: string[] = []
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-repo-scan-'))
   tempDirs.push(dir)
+
   return dir
 }
 
 function makeRepo(root: string, valid = true): void {
   fs.mkdirSync(path.join(root, '.git'), { recursive: true })
+
   if (valid) {
     fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
   }
@@ -23,6 +25,7 @@ function makeRepo(root: string, valid = true): void {
 
 afterEach(() => {
   vi.restoreAllMocks()
+
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { force: true, recursive: true })
   }

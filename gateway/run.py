@@ -10647,6 +10647,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
 
+            # Pending dangerous-command approval guard.
+            #
+            # If the agent thread is blocked inside tools/approval.py waiting
+            # for /approve or /deny, a plain text follow-up cannot resolve the
+            # approval — it would be interrupted/queued/steered into the busy
+            # path and the approval would still time out with the confusing
+            # "BLOCKED: Command timed out. Do NOT retry this command." error.
+            #
+            # /approve and /deny are already dispatched directly above (line
+            # ~6235); /yolo (line ~6285) can unblock approvals; /stop, /new,
+            # /restart, /queue, /steer, /goal, /agents etc. are handled by
+            # their own branches.  Anything that falls through to here while
+            # an approval is live is a normal user message that does NOT
+            # resolve the prompt — tell the user so explicitly instead of
+            # silently dropping it into the busy-input pipeline (#27352).
+            if _tool_approval_live and event.message_type == MessageType.TEXT:
+                logger.debug(
+                    "PRIORITY pending-approval reply for session %s — text follow-up cannot resolve approval",
+                    _quick_key,
+                )
+                return EphemeralReply(
+                    "⏳ A dangerous-command approval is waiting for `/approve` "
+                    "or `/deny`. Your message was not treated as an approval "
+                    "and the command is still blocked — reply with `/approve` "
+                    "or `/deny` first, or `/stop` to cancel."
+                )
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)

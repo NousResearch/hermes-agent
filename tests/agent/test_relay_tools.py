@@ -21,12 +21,68 @@ def relay_turn(tmp_path, monkeypatch):
         turn_id="turn-1",
         task_id="task-1",
     )
+    lease.host.retain_managed_execution("test.relay_tools")
     try:
         yield lease.host.relay
     finally:
+        lease.host.release_managed_execution("test.relay_tools")
         relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
         relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
         relay_runtime._reset_for_tests()
+
+
+def test_tool_adapter_bypasses_relay_without_an_active_consumer(
+    relay_turn, monkeypatch
+):
+    relay = relay_turn
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    runtime.release_managed_execution("test.relay_tools")
+    args = {"command": "pwd"}
+
+    monkeypatch.setattr(
+        relay.tools,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inactive Relay must not manage the tool call")
+        ),
+    )
+
+    result, final_args = relay_tools.execute(
+        "terminal",
+        args,
+        lambda value: value,
+        session_id="session-1",
+    )
+
+    assert result is args
+    assert final_args is args
+
+
+def test_tool_request_intercepts_bypass_relay_without_an_active_consumer(
+    relay_turn, monkeypatch
+):
+    relay = relay_turn
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    runtime.release_managed_execution("test.relay_tools")
+    args = {"command": "pwd"}
+
+    monkeypatch.setattr(
+        relay.tools,
+        "request_intercepts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inactive Relay must not run tool request intercepts")
+        ),
+    )
+
+    final_args = runtime.apply_tool_request_intercepts(
+        session_id="session-1",
+        tool_name="terminal",
+        args=args,
+    )
+
+    assert final_args is args
 
 
 def test_request_rewrite_reaches_authorized_callback_once(relay_turn):

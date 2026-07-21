@@ -188,8 +188,8 @@ execution boundary.
 
 ### Dynamic Plugins
 
-Hermes feature-detects the dynamic-plugin activation API available in NeMo Relay
-0.6 and later. Configure native or worker plugins with Hermes-owned
+Hermes uses the dynamic-plugin activation API available in NeMo Relay 0.6 and
+later. Configure native or worker plugins with Hermes-owned
 `[[dynamic_plugins]]` entries that match the Python binding's activation-spec
 fields:
 
@@ -237,12 +237,6 @@ execution middleware and retains the activation for the runtime lifetime.
 During shutdown it closes session exporters, flushes Relay subscribers, and
 then closes the activation so callbacks are removed before plugin code is
 unloaded.
-
-NeMo Relay 0.5 does not expose dynamic activation through its Python binding.
-When dynamic plugin configuration is present with a binding that lacks the
-activation API, Hermes logs an actionable warning and continues with the
-ordinary static component configuration, so ATOF and ATIF observability remain
-available. No dynamic plugin is loaded in that degraded mode.
 
 For the full generic Hermes middleware contract, see
 [`docs/middleware/README.md`](../../../docs/middleware/README.md).
@@ -492,8 +486,8 @@ produces one Relay lifecycle.
 
 This example enables both NeMo Relay observability export and adaptive execution
 middleware for a local Hermes run. This path requires a NeMo Relay runtime that
-supports `[components.config.tool_parallelism]`, as provided by the supported
-0.x release range beginning with 0.5.
+supports `[components.config.tool_parallelism]`, as provided by NeMo Relay 0.6
+and later.
 
 ```bash
 export HERMES_HOME=/tmp/hermes-middleware-test/hermes-home

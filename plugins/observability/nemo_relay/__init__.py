@@ -75,12 +75,30 @@ class _Runtime:
         self.subagent_contexts: dict[str, _SubagentContext] = {}
         self.atof_exporter: Any = None
         self._atof_subscriber_name = f"hermes.nemo_relay.atof.{self.host.runtime_id}"
+        self._execution_consumer_name = (
+            f"hermes.nemo_relay.rich_observability.{self.host.runtime_id}"
+        )
+        self._execution_consumer_retained = False
         self._plugin_activation: Any = None
         self._shutdown_registered = False
         self._plugin_config_initialized = self._configure_plugins_toml()
         self._plugin_config_needs_reinit = False
         if not self._plugin_config_initialized:
             self._activate_direct_fallbacks()
+        self._sync_managed_execution()
+
+    def _sync_managed_execution(self) -> None:
+        required = bool(
+            self._plugin_config_initialized
+            or self.atof_exporter is not None
+            or self.settings.atif_enabled
+        )
+        if required and not self._execution_consumer_retained:
+            self.host.retain_managed_execution(self._execution_consumer_name)
+            self._execution_consumer_retained = True
+        elif not required and self._execution_consumer_retained:
+            self.host.release_managed_execution(self._execution_consumer_name)
+            self._execution_consumer_retained = False
 
     def _configure_plugins_toml(self) -> bool:
         if not self.settings.plugins_config:
@@ -179,9 +197,11 @@ class _Runtime:
         self._plugin_config_initialized = self._configure_plugins_toml()
         if not self._plugin_config_initialized:
             self._activate_direct_fallbacks()
+            self._sync_managed_execution()
             return
         self._clear_atof()
         self._plugin_config_needs_reinit = False
+        self._sync_managed_execution()
 
     def _plugins_toml_owns_exporter(self, exporter_name: str) -> bool:
         return self._plugin_config_initialized and _observability_exporter_enabled(
@@ -233,6 +253,7 @@ class _Runtime:
             except Exception:
                 logger.debug("NeMo Relay ATOF deregister failed", exc_info=True)
         self.atof_exporter = None
+        self._sync_managed_execution()
 
     def prepare_session(self, kwargs: dict[str, Any]) -> _SessionState:
         """Register per-session subscribers without opening the core scope."""
@@ -380,6 +401,9 @@ class _Runtime:
             except Exception as exc:
                 failures.append(f"plugin runtime close failed: {exc}")
         self._clear_atof()
+        if self._execution_consumer_retained:
+            self.host.release_managed_execution(self._execution_consumer_name)
+            self._execution_consumer_retained = False
         if self._shutdown_registered and self._plugin_activation is None:
             atexit.unregister(self.shutdown)
             self._shutdown_registered = False

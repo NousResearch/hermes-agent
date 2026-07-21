@@ -52,6 +52,64 @@ class TestInterpreterShuttingDownHelper:
             assert _interpreter_shutting_down(exc) is False
 
 
+class TestDispatchSkipsDuringShutdown:
+    def test_preflight_skip_does_not_claim_running_or_submit(self):
+        import cron.scheduler as scheduler
+
+        job = {"id": "shutdown-job", "name": "shutdown"}
+        pool = MagicMock()
+        runner = MagicMock()
+        scheduler._running_job_ids.clear()
+
+        with (
+            patch("cron.scheduler._interpreter_shutting_down", return_value=True),
+            patch("cron.scheduler.create_execution") as create_execution,
+        ):
+            future = scheduler._submit_with_guard(job, pool, runner)
+
+        assert future is None
+        assert "shutdown-job" not in scheduler._running_job_ids
+        create_execution.assert_not_called()
+        pool.submit.assert_not_called()
+
+    def test_submit_shutdown_race_releases_all_local_ownership(self):
+        import cron.scheduler as scheduler
+
+        job = {"id": "shutdown-race", "name": "shutdown race"}
+        pool = MagicMock()
+        pool.submit.side_effect = RuntimeError(
+            "cannot schedule new futures after interpreter shutdown"
+        )
+        scheduler._running_job_ids.clear()
+
+        def shutting_down(exc=None):
+            return exc is not None
+
+        with (
+            patch(
+                "cron.scheduler._interpreter_shutting_down",
+                side_effect=shutting_down,
+            ),
+            patch(
+                "cron.scheduler.create_execution",
+                return_value={"id": "execution-1"},
+            ),
+            patch("cron.scheduler.finish_execution") as finish_execution,
+        ):
+            future = scheduler._submit_with_guard(job, pool, MagicMock())
+
+        assert future is None
+        assert "shutdown-race" not in scheduler._running_job_ids
+        finish_execution.assert_called_once_with(
+            "execution-1",
+            success=False,
+            error=(
+                "Executor dispatch failed: cannot schedule new futures after "
+                "interpreter shutdown"
+            ),
+        )
+
+
 class TestStandaloneDeliverySkipsDuringShutdown:
     def _telegram_cfg(self):
         from gateway.config import Platform

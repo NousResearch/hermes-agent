@@ -602,7 +602,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a cron job immediately, outside the scheduler tick.
+    """Dispatch a cron job immediately, outside the scheduler tick.
 
     Atomically claims the job first via ``claim_job_for_fire`` — the same
     at-most-once CAS the scheduler/external-provider fire path uses — so a
@@ -610,16 +610,17 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
     If the claim is lost (another fire is in flight), this is a no-op.
 
-    The actual firing is delegated to ``run_one_job`` — the single shared
-    execute→save→deliver→mark body the ticker and external providers use — so
-    failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
-    identical across paths and can't drift.
+    The actual firing is queued through ``dispatch_job`` so manual runs share
+    the ticker's pool selection, in-flight guard, execution ledger, ContextVar
+    isolation, and interpreter-shutdown protections without blocking the
+    calling agent turn.
 
-    Returns {"claimed": bool, "success": bool, "error": str|None}.
+    Returns {"claimed": bool, "started": bool, "pending": bool,
+    "success": bool|None, "error": str|None}.
     """
     job_id = job["id"]
     try:
-        from cron.scheduler import run_one_job
+        from cron.scheduler import dispatch_job
 
         # At-most-once claim: bail without running if a tick/other fire owns it.
         if not claim_job_for_fire(job_id):
@@ -634,17 +635,32 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
                 reason = "Job is paused/disabled; resume it before running."
             else:
                 reason = "Job is already being fired by the scheduler; not run again."
-            return {"claimed": False, "success": False, "error": reason}
+            return {
+                "claimed": False,
+                "started": False,
+                "pending": False,
+                "success": False,
+                "error": reason,
+            }
 
-        # run_one_job records last_run_at/last_status via mark_job_run (which
-        # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
-        refreshed = get_job(job_id) or {}
-        ok = refreshed.get("last_status") == "ok"
+        future = dispatch_job(job)
+        if future is None:
+            return {
+                "claimed": True,
+                "started": False,
+                "pending": False,
+                "success": False,
+                "error": (
+                    "Job was not dispatched; it may already be running or the "
+                    "scheduler may be shutting down."
+                ),
+            }
         return {
             "claimed": True,
-            "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "started": True,
+            "pending": True,
+            "success": None,
+            "error": None,
         }
 
     except Exception as e:
@@ -653,7 +669,13 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             mark_job_run(job_id, False, str(e))
         except Exception:
             pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        return {
+            "claimed": True,
+            "started": False,
+            "pending": False,
+            "success": False,
+            "error": str(e),
+        }
 
 
 def cronjob(
@@ -836,20 +858,22 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
-            # Execute the job immediately rather than only scheduling it for the
+            # Start the job immediately rather than only scheduling it for the
             # next scheduler tick — a manual `run` should actually run, even when
-            # no gateway/ticker is active (the #41037 case). The claim inside
-            # _execute_job_now advances next_run_at and blocks a concurrent tick
-            # from double-firing.
+            # no gateway/ticker is active (the #41037 case) — but queue it on
+            # the scheduler pools so a long run does not block the calling agent
+            # turn (#52705).
             exec_result = _execute_job_now(job)
-            # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
-            result["executed"] = exec_result.get("claimed", False)
-            result["execution_success"] = exec_result.get("success", False)
-            if not exec_result.get("claimed", False):
-                result["execution_skipped"] = exec_result.get("error") or (
-                    "Already being fired by the scheduler; not run again."
-                )
+            result["executed"] = exec_result.get("started", False)
+            if exec_result.get("pending", False):
+                result["execution_pending"] = True
+                result["execution_mode"] = "background"
+            success = exec_result.get("success")
+            if success is not None:
+                result["execution_success"] = success
+            if not exec_result.get("started", False) and exec_result.get("error"):
+                result["execution_skipped"] = exec_result["error"]
             elif exec_result.get("error"):
                 result["execution_error"] = exec_result["error"]
             return json.dumps({"success": True, "job": result}, indent=2)

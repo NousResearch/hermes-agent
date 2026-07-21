@@ -576,6 +576,100 @@ def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
     return False
 
 
+def _submit_with_guard(
+    job: dict,
+    pool: concurrent.futures.ThreadPoolExecutor,
+    runner,
+    *,
+    execution_source: str = "builtin",
+) -> Optional[concurrent.futures.Future]:
+    """Submit one cron job with the shared lifecycle protections.
+
+    Both ticker dispatch and one-off manual runs use this path so running-job
+    dedupe, execution-ledger ownership, ContextVar isolation, and interpreter
+    shutdown handling cannot drift between callers.
+    """
+    job_id = job["id"]
+    if _interpreter_shutting_down():
+        logger.warning(
+            "Job '%s' not dispatched — interpreter is shutting down",
+            job.get("name", job_id),
+        )
+        return None
+
+    with _running_lock:
+        if job_id in _running_job_ids:
+            logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+            return None
+        _running_job_ids.add(job_id)
+
+    execution = create_execution(job_id, source=execution_source)
+    dispatched_job = dict(job, execution_id=execution["id"])
+    ctx = contextvars.copy_context()
+
+    def _run_and_release(j=dispatched_job, run_ctx=ctx):
+        try:
+            return run_ctx.run(runner, j)
+        finally:
+            with _running_lock:
+                _running_job_ids.discard(j["id"])
+
+    try:
+        return pool.submit(_run_and_release)
+    except Exception as submit_err:
+        with _running_lock:
+            _running_job_ids.discard(job_id)
+        finish_execution(
+            execution["id"],
+            success=False,
+            error=f"Executor dispatch failed: {submit_err}",
+        )
+        if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
+            logger.warning(
+                "Job '%s' not dispatched — interpreter is shutting down",
+                job.get("name", job_id),
+            )
+            return None
+        logger.error(
+            "Job '%s' not dispatched: %s",
+            job.get("name", job_id),
+            submit_err,
+        )
+        return None
+
+
+def dispatch_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    max_workers: Optional[int] = None,
+    execution_source: str = "direct",
+) -> Optional[concurrent.futures.Future]:
+    """Queue one authorized cron job without blocking the caller."""
+
+    def _process_job(one_job: dict) -> bool:
+        return run_one_job(
+            one_job,
+            adapters=adapters,
+            loop=loop,
+            verbose=verbose,
+        )
+
+    pool = (
+        _get_sequential_pool()
+        if (job.get("workdir") or "").strip()
+        else _get_parallel_pool(max_workers)
+    )
+    return _submit_with_guard(
+        job,
+        pool,
+        _process_job,
+        execution_source=execution_source,
+    )
+
+
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
@@ -3975,13 +4069,6 @@ def tick(
                 _max_workers if _max_workers else "unbounded",
             )
 
-        def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end. Thin wrapper around the shared
-            module-level ``run_one_job`` so ``tick`` and external providers
-            (Chronos ``fire_due``) use the identical execute→save→deliver→mark
-            body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
-
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
         # they queue on the single-thread sequential pool to run one at a time.
@@ -3994,68 +4081,6 @@ def tick(
         _results: list = []
         _all_futures: list = []
 
-        def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor):
-            """Submit a job fire-and-forget with the in-flight dedup guard.
-
-            Returns the future, or None if the job was skipped because a prior
-            tick's run of the same job is still in flight.  The running-set
-            membership is released in the worker's finally block.
-            """
-            job_id = job["id"]
-            # A tick can race gateway teardown: once the interpreter is
-            # finalizing, ``pool.submit`` raises "cannot schedule new futures
-            # after interpreter shutdown" and crashes the tick. Skip cleanly —
-            # the job stays due and will fire on the next healthy tick
-            # (#58720, #55924).
-            if _interpreter_shutting_down():
-                logger.warning(
-                    "Job '%s' not dispatched — interpreter is shutting down",
-                    job.get("name", job_id),
-                )
-                return None
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
-                _running_job_ids.add(job_id)
-            # Record the attempt before executor dispatch. Recovery classifies
-            # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
-            dispatched_job = dict(job, execution_id=execution["id"])
-            _ctx = contextvars.copy_context()
-
-            def _run_and_release(j=dispatched_job, ctx=_ctx):
-                try:
-                    return ctx.run(_process_job, j)
-                finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
-
-            try:
-                return pool.submit(_run_and_release)
-            except Exception as submit_err:
-                with _running_lock:
-                    _running_job_ids.discard(job_id)
-                finish_execution(
-                    execution["id"],
-                    success=False,
-                    error=f"Executor dispatch failed: {submit_err}",
-                )
-                # Interpreter began finalizing between the guard above and the
-                # submit — release the in-flight claim we just took and skip.
-                if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
-                    logger.warning(
-                        "Job '%s' not dispatched — interpreter is shutting down",
-                        job.get("name", job_id),
-                    )
-                    return None
-                logger.error(
-                    "Job '%s' not dispatched: %s",
-                    job.get("name", job_id),
-                    submit_err,
-                )
-                return None
-
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time
         # WITHOUT blocking the ticker thread — a long workdir job no
@@ -4063,9 +4088,14 @@ def tick(
         # pass, just serialized).  The in-flight guard prevents a still-running
         # job from being re-queued on the next tick.
         if sequential_jobs:
-            seq_pool = _get_sequential_pool()
             for job in sequential_jobs:
-                fut = _submit_with_guard(job, seq_pool)
+                fut = dispatch_job(
+                    job,
+                    adapters=adapters,
+                    loop=loop,
+                    verbose=verbose,
+                    execution_source="builtin",
+                )
                 if fut is None:
                     continue
                 _all_futures.append(fut)
@@ -4078,9 +4108,15 @@ def tick(
         # after completion finds the job due again naturally.  No catch-up
         # queue needed.
         if parallel_jobs:
-            pool = _get_parallel_pool(_max_workers)
             for job in parallel_jobs:
-                fut = _submit_with_guard(job, pool)
+                fut = dispatch_job(
+                    job,
+                    adapters=adapters,
+                    loop=loop,
+                    verbose=verbose,
+                    max_workers=_max_workers,
+                    execution_source="builtin",
+                )
                 if fut is None:
                     continue
                 _all_futures.append(fut)

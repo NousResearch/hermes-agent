@@ -197,7 +197,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
         <Text color={t.color.muted}>
           Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
-          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+          {isMac ? 'Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
         </Text>
       </Box>
     )

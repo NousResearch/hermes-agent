@@ -115,6 +115,14 @@ Print mode (`-p`) skips this dialog entirely.
 
 Subcommands: `mcp`, `skills`, `hooks`, `agents`, `plugins`, `login`, `commit`, `rollback`, `update`, `status`, `wiki`.
 
+### Context window consideration
+
+Models default to a limited context window (e.g., 131k tokens) unless extended context is explicitly configured. When Hermes performs multi-file edits directly, raw file contents accumulate in its prompt context. Delegating to `qodercli` offloads file ingestion to Qoder's own workspace — Hermes sees only the delegation command and the summary result, preserving its context for orchestration and verification.
+
+```
+terminal(command="qodercli -p 'Refactor src/db/ to SQLAlchemy' -m <model> --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
+```
+
 ## Procedure
 
 1. Verify binary resolves (see Binary Resolution above) and `qodercli --version` succeeds.

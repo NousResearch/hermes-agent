@@ -5088,6 +5088,49 @@ def run_conversation(
                 # entire conversation.
                 truncated_tool_call_retries = 0
 
+                # Mid-turn MCP tool refresh: when an MCP server changes its
+                # tool set while handling a call (e.g. a server that swaps
+                # between a minimal and a full toolset when a mode-change
+                # tool is called), the registry updates via ToolListChanged
+                # but agent.tools still holds the stale snapshot from the
+                # start of this run_conversation() call.  Worse, the
+                # notification races
+                # the tool-call response it follows and often lands AFTER
+                # this checkpoint, so a snapshot rebuild alone still misses
+                # the change and the next API request advertises tools that
+                # no longer exist (issue #65428).  The helper closes both
+                # gaps: it re-polls tools/list on the just-called servers
+                # whose lists are known dynamic (deterministic — the poll is
+                # processed after the tool handler finished), then rebuilds
+                # agent.tools from the registry.  No-op for static servers
+                # and unchanged tool sets, preserving the prompt-cache
+                # prefix in the common case.
+                try:
+                    if not getattr(agent, "_skip_mcp_refresh", False):
+                        # Import-cost gate: avoid pulling in the mcp package
+                        # (~0.4s) when no MCP servers are configured.  See
+                        # turn_context.py for the full rationale.  Especially
+                        # important here since this runs on every tool-loop
+                        # iteration, not just once per turn.
+                        import sys as _sys
+                        if "tools.mcp_tool" in _sys.modules:
+                            from tools.mcp_tool import (
+                                has_registered_mcp_tools,
+                                refresh_agent_tools_after_mcp_calls,
+                            )
+                            if has_registered_mcp_tools():
+                                _called_names = {
+                                    tc.function.name
+                                    for tc in assistant_message.tool_calls
+                                }
+                                _mcp_added = refresh_agent_tools_after_mcp_calls(
+                                    agent, _called_names, quiet_mode=True
+                                )
+                                if _mcp_added:
+                                    logger.info("Mid-turn MCP tool refresh: added %s", _mcp_added)
+                except Exception:
+                    logger.debug("mid-turn MCP tool refresh failed", exc_info=True)
+
                 # Signal that a paragraph break is needed before the next
                 # streamed text.  We don't emit it immediately because
                 # multiple consecutive tool iterations would stack up

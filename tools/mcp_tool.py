@@ -1730,7 +1730,7 @@ class MCPServerTask:
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
-        "_reconnect_retries",
+        "_reconnect_retries", "_tool_list_changed_seen",
     )
 
     def __init__(self, name: str):
@@ -1791,6 +1791,14 @@ class MCPServerTask:
         # back to ``list_tools`` (the pre-ping probe) so we neither spam pings
         # nor reconnect-loop. Reset on each fresh transport connection.
         self._ping_unsupported: bool = False
+        # Latched True the first time this server sends a
+        # ``notifications/tools/list_changed``. Together with the
+        # ``tools.listChanged`` capability it decides whether the mid-turn
+        # manifest sync re-polls this server after a tool call (see
+        # ``refresh_agent_tools_after_mcp_calls``). Never reset: once a server
+        # has proven its tool list is dynamic, it stays on the re-poll path
+        # even across reconnects.
+        self._tool_list_changed_seen: bool = False
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1815,6 +1823,35 @@ class MCPServerTask:
         if caps is None:
             return True
         return getattr(caps, "tools", None) is not None
+
+    def _advertises_tool_list_changed(self) -> bool:
+        """Whether the server declares the ``tools.listChanged`` capability.
+
+        Per the MCP spec, a server that may change its tool list at runtime
+        (and emit ``notifications/tools/list_changed``) declares
+        ``capabilities.tools.listChanged: true`` at initialize.
+
+        Unlike ``_advertises_tools`` this defaults to **False** when no
+        capability info was captured: that gate *skips* an RPC that legacy
+        behavior always made, so defaulting True preserves compatibility —
+        this gate *adds* a ``tools/list`` re-poll per tool call, so an
+        unknown server must not silently pay for it. Servers that emit
+        list_changed without declaring the capability are still caught by
+        the ``_tool_list_changed_seen`` latch.
+        """
+        init_result = self.initialize_result
+        caps = getattr(init_result, "capabilities", None) if init_result is not None else None
+        tools_cap = getattr(caps, "tools", None) if caps is not None else None
+        return bool(getattr(tools_cap, "listChanged", False))
+
+    def _has_dynamic_tool_list(self) -> bool:
+        """Whether this server's tool list is known to change at runtime.
+
+        True when the server either declared ``tools.listChanged`` at
+        initialize or has actually sent a list_changed notification on this
+        process's watch (noncompliant servers that notify without declaring).
+        """
+        return self._tool_list_changed_seen or self._advertises_tool_list_changed()
 
     def _is_recycled_stdio(self) -> bool:
         """Return True when a stdio server was intentionally recycled."""
@@ -1943,6 +1980,7 @@ class MCPServerTask:
                             # subsequent tool calls time out. Do the refresh in
                             # a separate task and let the handler return
                             # promptly.
+                            self._tool_list_changed_seen = True
                             self._schedule_tools_refresh()
                             # Yield one loop tick so tests and short-lived
                             # notification contexts can observe the scheduled
@@ -5634,6 +5672,93 @@ def refresh_agent_mcp_tools(
             engine_names.update(staged_engine_names)
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         return new_names - current
+
+
+def refresh_agent_tools_after_mcp_calls(
+    agent,
+    called_tool_names,
+    *,
+    quiet_mode: bool = True,
+    poll_timeout: float = 10.0,
+) -> set:
+    """Mid-turn tool-manifest sync after a batch of tool calls.
+
+    ``ToolListChanged`` notifications race the tool-call response they follow:
+    a server that swaps its tool set while handling a call (e.g. one that
+    replaces its full toolset with a minimal one when a mode-change tool is
+    called) may send the response first and the notification milliseconds
+    later. At the conversation loop's post-execution checkpoint the
+    notification often hasn't even been READ off the transport yet, so a
+    registry-snapshot rebuild alone sees no change and the next API request
+    advertises a stale manifest — every model then calls a tool that no
+    longer exists (see issue #65428).
+
+    Waiting on pending notification tasks can't close that window (there is
+    nothing pending until the notification arrives). What IS deterministic is
+    re-polling: a ``tools/list`` request sent after the tool-call response was
+    received is necessarily processed by the server after its tool handler
+    finished mutating the tool set. So for each *just-called* server whose
+    tool list is known to be dynamic (``_has_dynamic_tool_list``), run its
+    ``_refresh_tools`` — the same fetch-diff-register used by the notification
+    path, sharing ``_refresh_lock`` so a concurrently arriving notification
+    refresh serializes instead of duplicating — and then rebuild the agent
+    snapshot from the registry.
+
+    Static servers (no ``listChanged``, never notified) are never re-polled,
+    so the common case costs nothing beyond the generation-cached
+    ``refresh_agent_mcp_tools`` no-op and their conversations keep a stable
+    ``tools=`` prefix (the prompt-cache invariant). A dynamic server that
+    actually changed its list invalidates the cached prefix by definition —
+    refreshing mid-turn spends the invalidation the next turn would pay
+    anyway, instead of buying a guaranteed unknown-tool failure round first.
+
+    Fail-soft: a poll error (timeout, dead session) is logged and skipped —
+    the snapshot rebuild still runs against whatever the registry holds. A
+    user interrupt aborts remaining polls; the interrupt flag stays set for
+    the conversation loop's own checkpoint.
+
+    Returns the set of newly-added tool names, like
+    ``refresh_agent_mcp_tools``.
+    """
+    # ``_mcp_tool_server_names`` stores SANITIZED server names (see
+    # ``_track_mcp_tool_server``) while ``_servers`` is keyed by the original
+    # config name — e.g. a server configured as ``my-server`` registers tools
+    # mapped to ``my_server``, but its task lives under ``my-server``.  Match
+    # through the sanitizer, or any server whose name needs sanitizing
+    # silently never gets polled.
+    with _lock:
+        called_server_names = {
+            _mcp_tool_server_names[name]
+            for name in called_tool_names
+            if name in _mcp_tool_server_names
+        }
+        servers = [
+            srv
+            for srv_name, srv in sorted(_servers.items())
+            if sanitize_mcp_name_component(srv_name) in called_server_names
+        ]
+
+    for server in servers:
+        if server.session is None or not server._has_dynamic_tool_list():
+            continue
+        try:
+            logger.debug(
+                "MCP server '%s': post-call tools/list re-poll", server.name
+            )
+            _run_on_mcp_loop(server._refresh_tools, timeout=poll_timeout)
+        except InterruptedError:
+            logger.debug(
+                "MCP server '%s': post-call tools/list re-poll interrupted",
+                server.name,
+            )
+            break
+        except Exception:
+            logger.debug(
+                "MCP server '%s': post-call tools/list re-poll failed",
+                server.name, exc_info=True,
+            )
+
+    return refresh_agent_mcp_tools(agent, quiet_mode=quiet_mode)
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

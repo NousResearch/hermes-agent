@@ -8,8 +8,6 @@ from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
-_CACHE: list[str] | None = None
-
 # Anthropic model families that still accept an explicit "disable thinking"
 # request (the manual ``thinking: {type: "disabled"}`` form OpenRouter emits
 # for ``reasoning: {enabled: false}``). Everything Claude 4.6 and newer —
@@ -60,14 +58,12 @@ class OpenRouterProfile(ProviderProfile):
         provider preferences, privacy settings, and guardrails. Tool-call
         capability filtering remains in hermes_cli/models.py for the picker.
         """
-        global _CACHE  # noqa: PLW0603
-        if _CACHE is not None:
-            return _CACHE
         try:
-            result = super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
-            if result is not None:
-                _CACHE = result
-            return result
+            # Do not add a profile-local cache here. The canonical picker cache
+            # in hermes_cli.models is policy-aware, TTL-bounded, and partitioned
+            # by API-key fingerprint; a second unkeyed cache can leak account A's
+            # catalog after credentials rotate to account B.
+            return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
         except Exception as exc:
             logger.debug("fetch_models(openrouter): %s", exc)
             return None

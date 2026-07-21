@@ -1,5 +1,7 @@
 """Tests for the provider module registry and profiles."""
 
+from unittest.mock import patch
+
 from providers import get_provider_profile, _REGISTRY
 from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
@@ -97,6 +99,20 @@ class TestKimiProfile:
 
 
 class TestOpenRouterProfile:
+    def test_fetch_models_does_not_cache_across_api_keys(self):
+        p = get_provider_profile("openrouter")
+        with patch.object(
+            ProviderProfile,
+            "fetch_models",
+            side_effect=[["account-a/model"], ["account-b/model"]],
+        ) as fetch:
+            first = p.fetch_models(api_key="key-a")
+            second = p.fetch_models(api_key="key-b")
+
+        assert first == ["account-a/model"]
+        assert second == ["account-b/model"]
+        assert [call.kwargs["api_key"] for call in fetch.call_args_list] == ["key-a", "key-b"]
+
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")
         body = p.build_extra_body(provider_preferences={"allow": ["anthropic"]})

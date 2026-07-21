@@ -2834,8 +2834,27 @@ def _run_approval_gate(
             ),
         }
 
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=display_target,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+    )
     choice = prompt_dangerous_approval(display_target, description,
                                        approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=display_target,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
 
     if choice == "deny":
         return {

@@ -862,6 +862,44 @@ class TestPreToolCallBlocking:
 class TestPreToolCallDirective:
     """Tests for the extended (block | approve) directive helper."""
 
+    def test_first_party_observer_receives_pre_tool_call(self, monkeypatch):
+        from hermes_cli import observability
+        from hermes_cli.plugins import get_pre_tool_call_directive
+
+        observed = []
+        monkeypatch.setattr(
+            observability,
+            "observe_lifecycle",
+            lambda hook_name, **kwargs: observed.append((hook_name, kwargs)),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        assert get_pre_tool_call_directive(
+            "write_file",
+            {"path": "README.md"},
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+        ) == (None, None)
+        assert observed == [
+            (
+                "pre_tool_call",
+                {
+                    "tool_name": "write_file",
+                    "args": {"path": "README.md"},
+                    "task_id": "task-1",
+                    "session_id": "session-1",
+                    "tool_call_id": "call-1",
+                    "turn_id": "",
+                    "api_request_id": "",
+                    "middleware_trace": [],
+                },
+            )
+        ]
+
     def test_approve_directive_returned(self, monkeypatch):
         from hermes_cli.plugins import get_pre_tool_call_directive
         monkeypatch.setattr(
@@ -954,6 +992,33 @@ class TestResolvePreToolBlock:
             lambda *a, **k: {"approved": True, "message": None},
         )
         assert resolve_pre_tool_block("write_file", {}) is None
+
+    def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+        from tools import approval
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "why"}
+            ],
+        )
+
+        def _approve(*args, **kwargs):
+            seen["turn_id"] = approval._approval_turn_id.get()
+            seen["tool_call_id"] = approval._approval_tool_call_id.get()
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+
+        assert resolve_pre_tool_block(
+            "write_file",
+            {},
+            turn_id="turn-1",
+            tool_call_id="call-1",
+        ) is None
+        assert seen == {"turn_id": "turn-1", "tool_call_id": "call-1"}
 
     def test_approve_passes_plugin_rule_key_to_gate(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block

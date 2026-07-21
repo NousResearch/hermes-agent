@@ -2460,11 +2460,18 @@ class TestExecuteToolCalls:
         assert post_calls[0]["error_type"] == "keyboard_interrupt"
         assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
 
-    def test_interrupt_skips_remaining(self, agent):
+    def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
+        hook_calls = []
+
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
 
         with patch("run_agent._set_interrupt"):
             agent.interrupt()
@@ -2476,13 +2483,22 @@ class TestExecuteToolCalls:
             "cancelled" in messages[0]["content"].lower()
             or "interrupted" in messages[0]["content"].lower()
         )
+        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
+        assert [call["tool_call_id"] for call in post_calls] == ["c1", "c2"]
+        assert all(call["status"] == "cancelled" for call in post_calls)
 
-    def test_invalid_json_args_are_rejected_without_dispatch(self, agent):
+    def test_invalid_json_args_are_rejected_without_dispatch(self, agent, monkeypatch):
         tc = _mock_tool_call(
             name="web_search", arguments="not valid json", call_id="c1"
         )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             mock_hfc.assert_not_called()
@@ -2491,6 +2507,34 @@ class TestExecuteToolCalls:
         assert messages[0]["tool_call_id"] == "c1"
         assert "valid json object" in messages[0]["content"].lower()
         assert "tool was not executed" in messages[0]["content"].lower()
+        [post_call] = [
+            kwargs for name, kwargs in hook_calls if name == "post_tool_call"
+        ]
+        assert post_call["tool_call_id"] == "c1"
+        assert post_call["status"] == "error"
+        assert post_call["error_type"] == "invalid_tool_arguments"
+
+    def test_concurrent_invalid_json_args_emit_terminal_hook(self, agent, monkeypatch):
+        tc = _mock_tool_call(
+            name="web_search", arguments="not valid json", call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        [post_call] = [
+            kwargs for name, kwargs in hook_calls if name == "post_tool_call"
+        ]
+        assert post_call["tool_call_id"] == "c1"
+        assert post_call["status"] == "error"
+        assert post_call["error_type"] == "invalid_tool_arguments"
 
     def test_none_args_rejected_without_dispatch(self, agent):
         """None arguments must not crash the dispatch path. Current contract:

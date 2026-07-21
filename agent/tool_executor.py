@@ -585,12 +585,27 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
+            cancelled_result = (
+                f"[Tool execution cancelled — {tc.function.name} was skipped "
+                "due to user interrupt]"
+            )
             messages.append(make_tool_result_message(
                 tc.function.name,
-                f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
+                cancelled_result,
                 tc.id,
                 effect_disposition="none",
             ))
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=tc.function.name,
+                function_args={},
+                result=cancelled_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tc, "id", "") or "",
+                status="cancelled",
+                error_type="user_interrupt",
+                error_message="Tool execution skipped due to user interrupt",
+            )
             _flush_session_db_after_tool_progress(
                 agent,
                 messages,
@@ -1082,6 +1097,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
             name = function_name
             args = function_args
+            if _parse_error is not None:
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=function_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tc, "id", "") or "",
+                    status="error",
+                    error_type="invalid_tool_arguments",
+                    error_message="Tool arguments must be a valid JSON object",
+                    middleware_trace=list(middleware_trace),
+                )
             if blocked:
                 effect_disposition = "none"
 
@@ -1241,12 +1269,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
+                cancelled_result = (
+                    f"[Tool execution cancelled — {skipped_name} was skipped "
+                    "due to user interrupt]"
+                )
                 messages.append(make_tool_result_message(
                     skipped_name,
-                    f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                    cancelled_result,
                     skipped_tc.id,
                     effect_disposition="none",
                 ))
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=skipped_name,
+                    function_args={},
+                    result=cancelled_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(skipped_tc, "id", "") or "",
+                    status="cancelled",
+                    error_type="user_interrupt",
+                    error_message="Tool execution skipped due to user interrupt",
+                )
                 _flush_session_db_after_tool_progress(
                     agent,
                     messages,
@@ -1260,6 +1303,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call.function.arguments
         )
         if malformed_args_result is not None:
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=malformed_args_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="error",
+                error_type="invalid_tool_arguments",
+                error_message="Tool arguments must be a valid JSON object",
+            )
             messages.append(
                 make_tool_result_message(
                     function_name,

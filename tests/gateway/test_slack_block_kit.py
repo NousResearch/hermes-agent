@@ -159,8 +159,9 @@ class TestTables:
         )
         blocks = render_blocks(md)
         cs = blocks[0]["column_settings"]
-        # left is default -> null; center/right emitted
-        assert cs[0] is None
+        # Slack requires each column setting to be an object; an explicit
+        # left alignment is valid while null entries are rejected by the API.
+        assert cs[0] == {"align": "left"}
         assert cs[1] == {"align": "center"}
         assert cs[2] == {"align": "right"}
 

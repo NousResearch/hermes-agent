@@ -285,12 +285,12 @@ def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
         return None
 
     aligns = _parse_alignment(sep_line)
-    column_settings: List[Optional[Dict[str, Any]]] = []
+    column_settings: List[Dict[str, Any]] = []
     for c in range(min(ncols, MAX_TABLE_COLS)):
         align = aligns[c] if c < len(aligns) else "left"
-        # Only emit a setting when it differs from the default (left, no wrap);
-        # use null to skip a column, per the Slack schema.
-        column_settings.append({"align": align} if align != "left" else None)
+        # Slack validates every array entry as an object; emitting ``null`` for
+        # default-left columns makes the whole table payload invalid.
+        column_settings.append({"align": align})
 
     block: Block = {
         "type": "table",

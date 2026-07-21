@@ -255,14 +255,35 @@ vars, no code changes needed:
 | `HERMES_ACP_{NAME}_ARGS` | Override just the arguments for a registry agent |
 | `CLAUDE_ACP_BASE_URL` / `CODEX_ACP_BASE_URL` / … | Override the `acp://{agent}` backend marker per provider |
 
+#### Permission requests (`approvals.acp_mode`)
+
+ACP agents ask their client for permission before running commands they consider
+sensitive — Claude Code, for example, gates ordinary state-changing commands like
+`docker start`. Hermes answers those requests according to `approvals.acp_mode`:
+
+| Mode | Behaviour |
+|------|-----------|
+| `bridge` *(default)* | Route the request through the same approval gate Hermes uses for its own terminal tool. Safe commands pass through; dangerous ones honour your deny rules, allowlists, `/yolo`, and — in a gateway session — an interactive approval prompt. |
+| `deny` | Refuse every request. Use when ACP backends should have no side effects at all. |
+| `allow` | Approve every request. For sandboxed deployments that already trust whatever the agent can reach. |
+
+```yaml
+approvals:
+  acp_mode: bridge
+```
+
+`HERMES_ACP_PERMISSION_MODE` overrides the config value for one process.
+Unrecognised values fall back to `bridge`, and any failure in the approval layer
+denies — an ACP backend never gets more privilege than Hermes's own terminal tool.
+
 :::note Trade-offs vs. API providers
 ACP backends run one subprocess per request: no streaming, and Hermes tool use is
 emulated through prompt-injected `<tool_call>` blocks rather than native function
 calling. They shine for delegating to an agent you already pay for via subscription
 (Claude Pro/Max, ChatGPT, Copilot) — as the always-on gateway default, a native API
-provider is usually the better fit. Permission requests from the agent are denied by
-Hermes (no auto-approve), and its file access is confined to the session working
-directory.
+provider is usually the better fit. The agent's file access is confined to the
+session working directory, and its permission requests follow `approvals.acp_mode`
+(above).
 :::
 
 ### First-Class API-Key Providers

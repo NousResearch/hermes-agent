@@ -144,3 +144,129 @@ def test_copilot_early_exit_hook_detects_deprecated_extension():
     message = client._early_exit_error(stderr)
     assert message and "deprecated" in message
     assert client._early_exit_error("unrelated stderr noise") is None
+
+
+# ── session/request_permission ──────────────────────────────────────────
+# Regression cover for the blanket-deny posture that made every gated
+# command fail with "Tool use aborted" under claude-acp.
+
+_PERMISSION_OPTIONS = [
+    {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"},
+    {"optionId": "allow_always", "kind": "allow_always", "name": "Allow always"},
+    {"optionId": "deny", "kind": "reject_once", "name": "Deny"},
+]
+
+
+def _permission_params(command="docker start c1", options=None):
+    return {
+        "options": _PERMISSION_OPTIONS if options is None else options,
+        "toolCall": {
+            "title": "Bash",
+            "kind": "execute",
+            "rawInput": {"command": command, "description": "start a container"},
+        },
+    }
+
+
+def _outcome(response):
+    return response["result"]["outcome"]
+
+
+def _client():
+    return ACPClient(agent_name="claude", acp_cwd="/tmp")
+
+
+def test_extract_permission_command_prefers_raw_input():
+    from agent.acp_client import _extract_permission_command
+
+    command, description = _extract_permission_command(
+        {"title": "Bash", "rawInput": {"command": "ls -la", "description": "list"}}
+    )
+    assert command == "ls -la"
+    assert description == "list"
+
+
+def test_extract_permission_command_falls_back_to_title():
+    from agent.acp_client import _extract_permission_command
+
+    command, _ = _extract_permission_command({"title": "git push", "kind": "execute"})
+    assert command == "git push"
+    assert _extract_permission_command({}) == ("", "")
+    assert _extract_permission_command(None) == ("", "")
+
+
+def test_permission_deny_mode_cancels():
+    with patch("agent.acp_client._acp_permission_mode", return_value="deny"):
+        response = _client()._decide_permission(1, _permission_params())
+    assert _outcome(response) == {"outcome": "cancelled"}
+
+
+def test_permission_allow_mode_selects_allow_option():
+    with patch("agent.acp_client._acp_permission_mode", return_value="allow"):
+        response = _client()._decide_permission(1, _permission_params())
+    assert _outcome(response) == {"outcome": "selected", "optionId": "allow_once"}
+
+
+def test_permission_bridge_mode_approves_via_hermes_policy():
+    with patch("agent.acp_client._acp_permission_mode", return_value="bridge"), patch(
+        "tools.approval.check_dangerous_command", return_value={"approved": True}
+    ) as gate:
+        response = _client()._decide_permission(1, _permission_params())
+    assert _outcome(response) == {"outcome": "selected", "optionId": "allow_once"}
+    # Guards must stay on: a sandboxed env_type would auto-approve everything.
+    assert gate.call_args.args == ("docker start c1", "local")
+
+
+def test_permission_bridge_mode_denies_via_hermes_policy():
+    with patch("agent.acp_client._acp_permission_mode", return_value="bridge"), patch(
+        "tools.approval.check_dangerous_command",
+        return_value={"approved": False, "message": "blocked"},
+    ):
+        response = _client()._decide_permission(1, _permission_params())
+    assert _outcome(response) == {"outcome": "selected", "optionId": "deny"}
+
+
+def test_permission_denial_cancels_when_no_reject_option_offered():
+    only_allow = [{"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}]
+    with patch("agent.acp_client._acp_permission_mode", return_value="bridge"), patch(
+        "tools.approval.check_dangerous_command", return_value={"approved": False}
+    ):
+        response = _client()._decide_permission(
+            1, _permission_params(options=only_allow)
+        )
+    assert _outcome(response) == {"outcome": "cancelled"}
+
+
+def test_permission_without_identifiable_command_denies():
+    with patch("agent.acp_client._acp_permission_mode", return_value="bridge"):
+        response = _client()._decide_permission(1, {"options": _PERMISSION_OPTIONS})
+    assert _outcome(response) == {"outcome": "cancelled"}
+
+
+def test_permission_failure_is_fail_safe():
+    with patch("agent.acp_client._acp_permission_mode", return_value="bridge"), patch(
+        "tools.approval.check_dangerous_command", side_effect=RuntimeError("boom")
+    ):
+        response = _client()._decide_permission(1, _permission_params())
+    assert _outcome(response) == {"outcome": "cancelled"}
+
+
+def test_acp_permission_mode_defaults_to_bridge(monkeypatch):
+    from agent.acp_client import _acp_permission_mode
+
+    monkeypatch.delenv("HERMES_ACP_PERMISSION_MODE", raising=False)
+    with patch("tools.approval._get_approval_config", return_value={}):
+        assert _acp_permission_mode() == "bridge"
+    with patch("tools.approval._get_approval_config", return_value={"acp_mode": "DENY"}):
+        assert _acp_permission_mode() == "deny"
+    # Unrecognised values fall back to the default rather than failing open.
+    with patch("tools.approval._get_approval_config", return_value={"acp_mode": "nope"}):
+        assert _acp_permission_mode() == "bridge"
+
+
+def test_acp_permission_mode_env_override_wins(monkeypatch):
+    from agent.acp_client import _acp_permission_mode
+
+    monkeypatch.setenv("HERMES_ACP_PERMISSION_MODE", "allow")
+    with patch("tools.approval._get_approval_config", return_value={"acp_mode": "deny"}):
+        assert _acp_permission_mode() == "allow"

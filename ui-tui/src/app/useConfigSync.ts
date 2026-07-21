@@ -259,6 +259,11 @@ export function useConfigSync({
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
+      // Seed the MCP revision baseline too: after a normal boot mtime is
+      // already non-zero, so the poller's baseline branch never runs, and an
+      // unset mcpRevRef would make the FIRST cosmetic write (mtime bump, same
+      // mcp_rev) look like an MCP change and fire a needless reload.mcp.
+      mcpRevRef.current = String(r?.mcp_rev ?? '')
     })
     void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
   }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])

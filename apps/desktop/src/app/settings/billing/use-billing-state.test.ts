@@ -412,9 +412,70 @@ describe('derivePlanCard (current-plan card)', () => {
     expect(view.plan).toMatchObject({
       action: { label: 'Change plan' },
       caption: 'Changes to Free on Aug 15.',
-      pending: { tierName: 'Free', when: 'Aug 15' },
+      pending: { kind: 'downgrade', tierName: 'Free', when: 'Aug 15' },
       tierName: 'Plus'
     })
+  })
+
+  it('surfaces a scheduled cancellation as "Cancels on …" with the same undo and no grid marker', () => {
+    const fixture = billingDevFixtures['pending-cancellation']
+    const view = deriveBillingView(fixture.billing, fixture.subscription)
+
+    expect(view.plan).toMatchObject({
+      action: { label: 'Change plan' },
+      caption: 'Cancels on Aug 15.',
+      pending: { kind: 'cancellation', when: 'Aug 15' },
+      tierName: 'Plus'
+    })
+    // A cancellation has no target tier → nothing to mark in the grid.
+    expect(view.tiers.some(tier => tier.state === 'scheduled')).toBe(false)
+  })
+
+  it('lets a pending downgrade win over a cancellation when both are set', () => {
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: {
+          ...todaySubscriptionState.current,
+          cancel_at_period_end: true,
+          cancellation_effective_at: '2026-09-01T00:00:00Z',
+          cancellation_effective_display: 'Sep 1',
+          pending_downgrade_at: '2026-08-15T00:00:00Z',
+          pending_downgrade_display: 'Aug 15',
+          pending_downgrade_tier_name: 'Free',
+          tier_id: 'plus',
+          tier_name: 'Plus'
+        },
+        tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 'free',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$20',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 1
+          }
+        ]
+      })
+    )
+
+    // Downgrade wins (names a concrete target); card + grid agree on it.
+    expect(view.plan?.pending).toMatchObject({ kind: 'downgrade', tierName: 'Free' })
+    expect(view.plan?.caption).toBe('Changes to Free on Aug 15.')
+    expect(view.tiers.find(tier => tier.name === 'Free')?.state).toBe('scheduled')
   })
 
   it('offers only the portal link when the tier catalog is empty', () => {

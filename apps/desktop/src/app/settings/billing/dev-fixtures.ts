@@ -328,6 +328,23 @@ export const pendingDowngradeSubscriptionState = {
   })
 } satisfies SubscriptionStateResponse
 
+// Personal subscriber on Plus with a cancellation (not a downgrade) scheduled at
+// period end: exercises the plan-card "Cancels on …" copy + undo, with NO Scheduled
+// grid marker (a cancellation has no target tier).
+export const pendingCancellationSubscriptionState = {
+  ...subscriberPersonalSubscriptionState,
+  current: current({
+    cancel_at_period_end: true,
+    cancellation_effective_at: '2026-08-15T00:00:00Z',
+    cancellation_effective_display: 'Aug 15',
+    credits_remaining: '12',
+    cycle_ends_at: '2026-08-15T00:00:00Z',
+    monthly_credits: '22',
+    tier_id: 'cltier111plus1111personal',
+    tier_name: 'Plus'
+  })
+} satisfies SubscriptionStateResponse
+
 const okBilling = (data: BillingStateResponse): BillingResult<BillingStateResponse> => ({ data, ok: true })
 
 const okSubscription = (data: SubscriptionStateResponse): BillingResult<SubscriptionStateResponse> => ({
@@ -398,6 +415,10 @@ export const billingDevFixtures = {
   'subscriber-personal': {
     billing: okBilling(subscriberPersonalBillingState),
     subscription: okSubscription(subscriberPersonalSubscriptionState)
+  },
+  'pending-cancellation': {
+    billing: okBilling(subscriberPersonalBillingState),
+    subscription: okSubscription(pendingCancellationSubscriptionState)
   },
   'pending-downgrade': {
     billing: okBilling(subscriberPersonalBillingState),

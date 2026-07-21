@@ -68,6 +68,15 @@ export interface BillingAccountRowView {
 }
 
 /**
+ * A change scheduled at period end that `subscription.resume` can undo. A downgrade
+ * names its target tier (and marks it in the grid); a cancellation has no target
+ * (the whole plan lapses), so the grid shows no marker for it.
+ */
+export type PendingPlanTransition =
+  | { kind: 'cancellation'; when: string }
+  | { kind: 'downgrade'; tierName: string; when: string }
+
+/**
  * The current-plan summary that replaces the old subscription row. Carries EITHER
  * one in-app `action` (View plans / Change plan) OR a portal `link` ("Adjust plan
  * ↗"), never both — a discriminated pair so consumers don't guard for the impossible
@@ -76,7 +85,7 @@ export interface BillingAccountRowView {
 export type BillingPlanCardView = {
   caption: string
   /** A scheduled downgrade / cancellation waiting at period end (drives the undo). */
-  pending?: { tierName: string; when: string }
+  pending?: PendingPlanTransition
   price?: string
   tierName: string
 } & ({ action: { label: string }; link?: undefined } | { action?: undefined; link: { label: string; url: string } })
@@ -197,12 +206,15 @@ export function deriveBillingView(
   // link) and the grid (whether upgrade tiles are actionable) so the invariant lives
   // in one place.
   const capable = plansCapable(subscription, subscriptionResult)
-  const tiers = derivePlanTiers(subscription, billing.portal_url, capable)
+  // Computed once and threaded to both the card (caption + undo) and the grid
+  // (Scheduled marker), so the two never disagree about what's pending.
+  const pending = pendingTransition(subscription?.current)
+  const tiers = derivePlanTiers(subscription, billing.portal_url, capable, pending)
 
   return {
     notice: undefined,
     paymentRow: paymentMethodRow(billing),
-    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable),
+    plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable, pending),
     refillRow: autoReloadRow(billing),
     status: 'normal',
     summary: [
@@ -366,7 +378,8 @@ function derivePlanCard(
   subscription: null | SubscriptionStateResponse,
   subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined,
   tiers: BillingPlanTierView[],
-  capable: boolean
+  capable: boolean,
+  pending: PendingPlanTransition | undefined
 ): BillingPlanCardView {
   const current = subscription?.current
   const tierName = current?.tier_name ?? billing.usage?.plan_name ?? 'Free'
@@ -375,12 +388,13 @@ function derivePlanCard(
   const price = findCurrentTier(subscription)?.dollars_per_month_display
   const renewal = formatBillingDate(current?.cycle_ends_at ?? billing.usage?.renews_at)
   const unavailable = subscriptionResult ? !subscriptionResult.ok : false
-  const pending = pendingDowngrade(current)
 
   const caption = unavailable
     ? 'Subscription details are unavailable; opening the portal is still available.'
     : pending
-      ? `Changes to ${pending.tierName} on ${pending.when}.`
+      ? pending.kind === 'downgrade'
+        ? `Changes to ${pending.tierName} on ${pending.when}.`
+        : `Cancels on ${pending.when}.`
       : current
         ? `Renews ${renewal}`
         : 'No active subscription — paid models draw down top-up credits.'
@@ -407,20 +421,30 @@ function derivePlanCard(
   }
 }
 
-// A scheduled downgrade waiting at period end, as a target + when it lands. NAS
-// carries only the tier NAME (no id) for the pending target, so the grid matches
-// the "Scheduled" marker by name.
-function pendingDowngrade(
+// The change scheduled at period end (undoable via subscription.resume). NAS may
+// carry a pending downgrade (`pending_downgrade_*`, with a target tier name) and/or a
+// scheduled cancellation (`cancel_at_period_end` + `cancellation_effective_*`).
+// Precedence: a downgrade WINS if both are somehow set — it names a concrete target
+// tier, the stronger, more specific signal, and is what the grid marks.
+function pendingTransition(
   current: null | undefined | NonNullable<SubscriptionStateResponse['current']>
-): { tierName: string; when: string } | undefined {
-  if (!current?.pending_downgrade_tier_name || !current.pending_downgrade_at) {
-    return undefined
+): PendingPlanTransition | undefined {
+  if (current?.pending_downgrade_tier_name && current.pending_downgrade_at) {
+    return {
+      kind: 'downgrade',
+      tierName: current.pending_downgrade_tier_name,
+      when: current.pending_downgrade_display ?? formatBillingDate(current.pending_downgrade_at)
+    }
   }
 
-  return {
-    tierName: current.pending_downgrade_tier_name,
-    when: current.pending_downgrade_display ?? formatBillingDate(current.pending_downgrade_at)
+  if (current?.cancel_at_period_end && current.cancellation_effective_at) {
+    return {
+      kind: 'cancellation',
+      when: current.cancellation_effective_display ?? formatBillingDate(current.cancellation_effective_at)
+    }
   }
+
+  return undefined
 }
 
 /**
@@ -441,7 +465,8 @@ function pendingDowngrade(
 function derivePlanTiers(
   subscription: null | SubscriptionStateResponse,
   fallbackPortalUrl: null | string,
-  capable: boolean
+  capable: boolean,
+  pending: PendingPlanTransition | undefined
 ): BillingPlanTierView[] {
   if (!capable || !subscription) {
     return []
@@ -468,7 +493,8 @@ function derivePlanTiers(
   const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
   const currentOrder = currentTier?.tier_order
   const manageBase = subscription.portal_url ?? fallbackPortalUrl
-  const pendingName = current?.pending_downgrade_at ? current.pending_downgrade_tier_name : null
+  // Only a downgrade has a target tier to mark; a cancellation has none.
+  const pendingName = pending?.kind === 'downgrade' ? pending.tierName : null
 
   return gridTiers.map((tier): BillingPlanTierView => {
     const base: BillingPlanTierBase = {

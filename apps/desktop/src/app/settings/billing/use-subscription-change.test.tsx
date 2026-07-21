@@ -143,6 +143,27 @@ describe('useDowngradeFlow', () => {
     act(() => settleSchedule({ data: { ok: true }, ok: true }))
     await waitFor(() => expect(result.current.mutating).toBe(false))
   })
+
+  it('fires a single schedule RPC when confirm is double-activated in the same tick', async () => {
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+    apiMocks.scheduleSubscriptionChange.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    const { result } = renderHook(() => useDowngradeFlow({ onScheduled: vi.fn() }), { wrapper })
+
+    act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
+    await waitFor(() => expect(result.current.active?.preview?.effect).toBe('scheduled'))
+
+    // Two synchronous activations before React commits busy='schedule'.
+    await act(async () => {
+      void result.current.confirm()
+      void result.current.confirm()
+    })
+
+    expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('useResumeFlow', () => {

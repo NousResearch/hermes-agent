@@ -63,6 +63,10 @@ export function useDowngradeFlow({
   const [active, setActive] = useState<ActiveDowngrade | null>(null)
   // Monotonic run id discards results from a superseded/cancelled attempt.
   const runIdRef = useRef(0)
+  // Synchronous mutex: two clicks in the same tick both see active.busy === null
+  // (React hasn't committed the 'schedule' state yet), so guard on a ref too — no
+  // double schedule RPC. Cleared on every confirm() exit (below).
+  const schedulingRef = useRef(false)
   const simulated = simulationEnabled(simulate)
 
   const runPreview = async (target: DowngradeTarget, runId: number) => {
@@ -117,10 +121,11 @@ export function useDowngradeFlow({
   }
 
   const confirm = async () => {
-    if (!active || active.busy) {
+    if (!active || active.busy || schedulingRef.current) {
       return
     }
 
+    schedulingRef.current = true
     const { target } = active
     const runId = runIdRef.current + 1
 
@@ -129,6 +134,7 @@ export function useDowngradeFlow({
 
     if (simulated) {
       await delay(SIMULATED_DELAY_MS)
+      schedulingRef.current = false
 
       if (runIdRef.current !== runId) {
         return
@@ -141,6 +147,7 @@ export function useDowngradeFlow({
     }
 
     const result = await api.scheduleSubscriptionChange(target.tierId)
+    schedulingRef.current = false
 
     if (runIdRef.current !== runId) {
       return
@@ -207,16 +214,20 @@ export function useResumeFlow(simulate = false) {
 
     const result = await api.resumeSubscription()
 
-    runningRef.current = false
-    setBusy(false)
-
     if (!result.ok) {
+      // Refusal → unlock immediately so the user can retry / step up.
+      runningRef.current = false
+      setBusy(false)
       setRefusal(result.refusal)
 
       return
     }
 
+    // Success → hold the lock (Undo stays disabled) THROUGH the refetch, so the
+    // button never re-enables against the stale, still-pending card.
     await invalidateBilling(queryClient)
+    runningRef.current = false
+    setBusy(false)
   }
 
   return { busy, refusal, resume }

@@ -363,6 +363,22 @@ describe('BillingSettings', () => {
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
   })
 
+  it('undoes a scheduled cancellation from the plan card via resume', async () => {
+    const fixture = billingDevFixtures['pending-cancellation']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.resumeSubscription.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    renderBilling()
+
+    expect(await screen.findByText('Cancels on Aug 15.')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    await waitFor(() => expect(apiMocks.resumeSubscription).toHaveBeenCalledTimes(1))
+  })
+
   it('locks out the other downgrade tiles and Back while a schedule is in flight', async () => {
     // Current = Ultra so Free/Plus/Super are all downgrades (three tiles).
     apiMocks.fetchBillingState.mockResolvedValue(billingDevFixtures['subscriber-personal'].billing)

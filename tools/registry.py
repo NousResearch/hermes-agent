@@ -16,6 +16,7 @@ Import chain (circular-import safe):
 
 import ast
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -91,6 +92,7 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "_accepts_kwargs",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
@@ -114,6 +116,16 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Pre-compute whether the handler accepts **kwargs so dispatch()
+        # doesn't have to call inspect.signature() on every tool call.
+        try:
+            sig = inspect.signature(handler)
+            self._accepts_kwargs = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+        except (ValueError, TypeError):
+            self._accepts_kwargs = True  # safe default
 
 
 # ---------------------------------------------------------------------------
@@ -624,11 +636,25 @@ class ToolRegistry:
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
-            if entry.is_async:
-                from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
+            # Filter kwargs against what the handler actually accepts, so
+            # plugin handlers (typically ``def handle_xxx(args: dict)``) keep
+            # working without every plugin author having to add **kwargs.
+            # The check is cached on ToolEntry._accepts_kwargs to avoid
+            # calling inspect.signature() on every dispatch.
+            handler = entry.handler
+
+            if entry._accepts_kwargs:
+                if entry.is_async:
+                    from model_tools import _run_async
+                    result = _run_async(handler(args, **kwargs))
+                else:
+                    result = handler(args, **kwargs)
             else:
-                result = entry.handler(args, **kwargs)
+                if entry.is_async:
+                    from model_tools import _run_async
+                    result = _run_async(handler(args))
+                else:
+                    result = handler(args)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)

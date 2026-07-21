@@ -26,6 +26,7 @@ CHAT_PLATFORMS = [
     "qqbot",
     "homeassistant",
     "sms",
+    "twitter",
 ]
 
 NOISY_STATUS_MESSAGES = [
@@ -35,6 +36,7 @@ NOISY_STATUS_MESSAGES = [
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
+    "ℹ Codex gpt-5.6-sol caps context at 272K, so auto-compaction was raised to 85% (from 50%) to use more of the window before summarizing.",
 ]
 
 

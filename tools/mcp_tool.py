@@ -169,7 +169,16 @@ def _get_mcp_stderr_log() -> Any:
             fh.fileno()
             _mcp_stderr_log_fh = fh
         except Exception as exc:  # pragma: no cover — best-effort fallback
-            logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
+            # Emit a WARNING (not just DEBUG) so operators who check logs
+            # know that all MCP server output is being silently discarded.
+            # This is especially important when debugging why an MCP server
+            # fails to start — without this warning the logs are invisible.
+            logger.warning(
+                "Failed to open MCP stderr log (%s); MCP server output will be "
+                "discarded to /dev/null. Check that %s is writable.",
+                exc,
+                "~/.hermes/logs/mcp-stderr.log",
+            )
             try:
                 _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
             except Exception:

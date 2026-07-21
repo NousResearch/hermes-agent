@@ -104,6 +104,10 @@ See the [Messaging Gateway overview](/user-guide/messaging) for the platform com
 - **[Plugin System](/user-guide/features/plugins)** — Extend Hermes with custom tools, lifecycle hooks, and CLI commands without modifying core code. Plugins are discovered from `~/.hermes/plugins/`, project-local `.hermes/plugins/`, and pip-installed entry points.
 - **[Build a Plugin](/developer-guide/plugins)** — Step-by-step guide for creating Hermes plugins with tools, hooks, and CLI commands.
 
+## Security & Auditability
+
+- **[PiQrypt](https://github.com/piqrypt/piqrypt/tree/main/bridges/hermes)** — Cryptographic audit trail for every Hermes tool call. Ed25519-signed, hash-chained, local-first. Uses `pre_tool_call`, `post_tool_call`, and `pre_llm_call` plugin hooks — no core changes required. EU AI Act Art. 12 compliant. Install: `pip install piqrypt` then `hermes plugins enable piqrypt-audit`.
+  
 ## Training & Evaluation
 
 - **[Batch Processing](/user-guide/features/batch-processing)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.

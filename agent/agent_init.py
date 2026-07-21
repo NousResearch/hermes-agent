@@ -68,18 +68,28 @@ def _ra():
     return run_agent
 
 
-def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
+def _build_codex_gpt5_autoraise_notice(
+    autoraise: Dict[str, Any], context_length: Optional[int] = None
+) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
     ``autoraise`` is ``{"model": <slug>, "from": <old_ratio>, "to": <new_ratio>}``.
-    The same text is printed inline for CLI users and replayed via
+    ``context_length`` is the live-resolved window from the context compressor
+    (Codex's /models catalog is authoritative and can change server-side, e.g.
+    the gpt-5.6 family's 272K → 372K → 272K shifts in July 2026), so the banner
+    reports what this session actually got rather than a hardcoded cap. The
+    same text is printed inline for CLI users and replayed via
     ``status_callback`` for gateway users, so it must be self-contained and
     include the exact opt-back-out command.
     """
     model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6 family
-    # is capped at 272K by the Codex OAuth backend.
-    cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
+    if isinstance(context_length, int) and context_length > 0:
+        cap = f"{round(context_length / 1000)}K"
+    else:
+        # Static fallback when the resolved window isn't available:
+        # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6
+        # family is capped at 272K by the Codex OAuth backend.
+        cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
@@ -743,6 +753,25 @@ def init_agent(
     # commentary when the provider later returns it as a completed interim
     # assistant message.
     agent._current_streamed_assistant_text = ""
+    # Completed interim messages delivered during the current user turn.
+    # Unlike token-stream tracking, this spans Codex continuation/tool calls so
+    # repeated commentary is not re-sent before normalization can deduplicate it.
+    agent._delivered_interim_texts: set[str] = set()
+
+    # Single-writer guard for the streaming delta sink (#65991). A stale/
+    # superseded stream (e.g. one the stale-stream detector reconnected past,
+    # whose socket abort raced and never actually stopped the old worker) must
+    # NOT keep writing tokens into the turn alongside the retry's stream —
+    # otherwise two coherent responses interleave token-by-token into one
+    # transcript. Every streaming attempt claims a monotonic writer token; the
+    # delta sink drops chunks whose calling thread holds a stale token. The
+    # threading.local means threads that never claimed (non-streaming callers)
+    # are never fenced, so the guard can only ever drop a superseded stream,
+    # never the single legitimate writer.
+    agent._stream_writer_lock = threading.Lock()
+    agent._stream_writer_token = 0
+    agent._stream_writer_tls = threading.local()
+    agent._stream_writer_dropped = 0
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
@@ -1354,6 +1383,40 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    # Codex commentary visibility (display.show_commentary, default true).
+    # When true, completed Codex phase=commentary messages are delivered as
+    # visible mid-turn updates through the interim message path. When false,
+    # commentary falls back to the reasoning channel (visible only with
+    # show_reasoning enabled).
+    agent.show_commentary = True
+    try:
+        _display_section = _agent_cfg.get("display", {})
+        if isinstance(_display_section, dict):
+            agent.show_commentary = bool(_display_section.get("show_commentary", True))
+    except Exception:
+        agent.show_commentary = True
+
+    # LM Studio can either be explicitly preloaded through LM Studio's
+    # management API (the historical Hermes behavior) or left to LM Studio's
+    # just-in-time / Auto-Evict chat-completions path.  Keep the default
+    # explicit for backward compatibility; users with LM Studio Auto-Evict can
+    # opt into JIT via ``model.lmstudio_load_mode: jit``.
+    agent.lmstudio_load_mode = "explicit"
+    try:
+        _model_section = _agent_cfg.get("model", {})
+        if isinstance(_model_section, dict):
+            _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
+            if _load_mode in {"explicit", "jit"}:
+                agent.lmstudio_load_mode = _load_mode
+            else:
+                logger.warning(
+                    "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
+                    _model_section.get("lmstudio_load_mode"),
+                )
+    except Exception:
+        agent.lmstudio_load_mode = "explicit"
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
@@ -2063,7 +2126,7 @@ def init_agent(
     # autoraised model) updates the marker state and re-notifies once. The
     # config display gate (compression.codex_gpt55_autoraise_notice) still
     # suppresses the banner entirely without disabling the threshold autoraise.
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None) or {}
     _show_autoraise_notice = (
         bool(_autoraise)
         and compression_enabled
@@ -2086,7 +2149,10 @@ def init_agent(
         # for CLI users; gateway users get the same text replayed via
         # _compression_warning on turn 1 (set below).
         if _show_autoraise_notice:
-            print(_build_codex_gpt5_autoraise_notice(_autoraise))
+            print(_build_codex_gpt5_autoraise_notice(
+                _autoraise,
+                context_length=getattr(agent.context_compressor, "context_length", None),
+            ))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
@@ -2096,7 +2162,10 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     if _show_autoraise_notice:
-        agent._compression_warning = _build_codex_gpt5_autoraise_notice(_autoraise)
+        agent._compression_warning = _build_codex_gpt5_autoraise_notice(
+            _autoraise,
+            context_length=getattr(agent.context_compressor, "context_length", None),
+        )
 
     # Mark shown so repeated inits in this profile (e.g. every gateway message)
     # stay silent. Recorded once, whether the notice went to the CLI print or

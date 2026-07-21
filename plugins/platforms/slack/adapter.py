@@ -36,6 +36,7 @@ from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -420,6 +421,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    # Slack's typing indicator is a text status line (assistant.threads
+    # .setStatus), so the gateway feeds it live per-tool phrases.
+    supports_status_text = True
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
@@ -972,7 +976,17 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
         raw_token = self.config.token
-        app_token = os.getenv("SLACK_APP_TOKEN")
+        # Multiplex: profile secrets live in the secret scope, not process
+        # os.environ. When a scope is installed (secondary-profile connect),
+        # it is AUTHORITATIVE — do not fall through to os.getenv, or a
+        # secondary profile missing SLACK_APP_TOKEN silently inherits the
+        # default profile's Socket Mode app (#59739). Only an UNSCOPED read
+        # under multiplex (default-profile startup loop, background reconnect
+        # rebuild) falls back to process env, which is that profile's own.
+        try:
+            app_token = get_secret("SLACK_APP_TOKEN")
+        except UnscopedSecretError:
+            app_token = os.getenv("SLACK_APP_TOKEN")
 
         if not raw_token:
             logger.error("[Slack] SLACK_BOT_TOKEN not set")
@@ -1563,7 +1577,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 
-        Displays "is thinking..." next to the bot name in a thread.
+        Displays "is thinking..." next to the bot name in a thread, or the
+        platform's ``typing_status_text`` config value when set.
         Requires the assistant:write or chat:write scope.
         Auto-clears when the bot sends a reply to the thread.
         """
@@ -1588,10 +1603,15 @@ class SlackAdapter(BasePlatformAdapter):
                 "team_id": str(team_id) if team_id else "",
             }
         try:
+            _status = (
+                getattr(self, "_status_text", {}).get(str(chat_id))
+                or getattr(self.config, "typing_status_text", None)
+                or "is thinking..."
+            )
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status="is thinking...",
+                status=_status,
             )
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
@@ -3986,18 +4006,32 @@ class SlackAdapter(BasePlatformAdapter):
         if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
 
+        def _env(name: str) -> str:
+            # Multiplex: profile .env is in secret_scope, not process environ.
+            try:
+                from agent.secret_scope import get_secret
+
+                val = get_secret(name)
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+            except Exception:
+                pass
+            return (os.getenv(name) or "").strip()
+
         allowed_ids = set()
-        platform_allowlist = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        platform_allowlist = _env("SLACK_ALLOWED_USERS")
         if platform_allowlist:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        global_allowlist = _env("GATEWAY_ALLOWED_USERS")
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
 
-        return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
+            return True
+        return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
         """Handle a slash-confirm button click from Block Kit."""
@@ -4189,6 +4223,26 @@ class SlackAdapter(BasePlatformAdapter):
         if self._approval_resolved.pop(msg_ts, True):
             return
 
+        # Resolve the approval FIRST — this unblocks the agent thread. Render
+        # after, so a click that lands past the approval timeout (count == 0)
+        # shows "expired" instead of falsely claiming the command was approved.
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count,
+                session_key,
+                choice,
+                user_name,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve gateway approval from Slack button: %s", exc
+            )
+            count = 0
+
         # Update the message to show the decision and remove buttons
         label_map = {
             "once": f"✅ Approved once by {user_name}",
@@ -4197,6 +4251,11 @@ class SlackAdapter(BasePlatformAdapter):
             "deny": f"❌ Denied by {user_name}",
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
+        if not count:
+            decision_text = (
+                "⌛ Approval expired — command was not run "
+                "(already timed out or resolved elsewhere)"
+            )
 
         # Get original text from the section block
         original_text = ""
@@ -4231,24 +4290,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[Slack] Failed to update approval message: %s", e)
 
-        # Resolve the approval — this unblocks the agent thread
-        try:
-            from tools.approval import resolve_gateway_approval
-
-            count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count,
-                session_key,
-                choice,
-                user_name,
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to resolve gateway approval from Slack button: %s", exc
-            )
-
-        # (approval state already consumed by atomic pop above)
+        # (approval already resolved above; state consumed by atomic pop)
 
     # ----- Thread context fetching -----
 

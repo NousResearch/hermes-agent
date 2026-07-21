@@ -270,8 +270,13 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     thought_signature = _tool_call_extra_signature(tool_call)
-    if thought_signature:
-        part["thoughtSignature"] = thought_signature
+    # Gemini 3 requires every model-side functionCall replay to carry a
+    # thought signature. Calls made before switching to Gemini cannot have a
+    # genuine Google signature; the API documentation explicitly reserves
+    # this sentinel for manually created / cross-provider function calls.
+    part["thoughtSignature"] = (
+        thought_signature or "skip_thought_signature_validator"
+    )
     return part
 
 

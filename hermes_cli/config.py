@@ -457,7 +457,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    
+
     # detect git repo installs (normal installer, development env)
     git_path = root / ".git"
     if git_path.is_dir():
@@ -1856,6 +1856,7 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        "vi_mode": False,                # vi-style keybindings in CLI (prompt_toolkit)
         # When busy_input_mode="steer", suppress only the visible
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.

@@ -62,6 +62,8 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
+from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer, WindowAlign
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
@@ -511,6 +513,7 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            "vi_mode": False,
             # Print a one-line summary of resolved modal prompts (approval /
             # clarify) into scrollback so the decision survives the repaint.
             "persist_prompts": True,
@@ -9363,9 +9366,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 else:
                     _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
                     _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
-        
+
         return True
-    
+
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -12778,20 +12781,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         level = min(rms, 8000) * 7 // 8000
         return _LEVEL_BARS[level]
 
+    def _get_cli_vim_mode_fragment(self):
+        """Return a prompt fragment showing prompt_toolkit vi insert/normal mode."""
+        if not CLI_CONFIG.get("display", {}).get("vi_mode", False):
+            return []
+        try:
+            app = getattr(self, "_app", None)
+            mode = getattr(getattr(app, "vi_state", None), "input_mode", None)
+        except Exception:
+            mode = None
+
+        # prompt_toolkit starts in INSERT before Esc enters NAVIGATION/NORMAL.
+        if mode == InputMode.NAVIGATION:
+            return [("class:vim-normal", "NORMAL ")]
+        if mode == InputMode.REPLACE:
+            return [("class:vim-replace", "REPLACE ")]
+        if mode == InputMode.REPLACE_SINGLE:
+            return [("class:vim-replace", "REPLACE1 ")]
+        return [("class:vim-insert", "INSERT ")]
+
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
         compact = self._use_minimal_tui_chrome(width=self._get_tui_terminal_width())
+        vim_fragment = self._get_cli_vim_mode_fragment()
 
         def _state_fragment(style: str, icon: str, extra: str = ""):
             if compact:
                 text = icon
                 if extra:
                     text = f"{text} {extra.strip()}".rstrip()
-                return [(style, text + " ")]
+                return vim_fragment + [(style, text + " ")]
             if extra:
-                return [(style, f"{icon} {extra} {state_suffix}")]
-            return [(style, f"{icon} {state_suffix}")]
+                return vim_fragment + [(style, f"{icon} {extra} {state_suffix}")]
+            return vim_fragment + [(style, f"{icon} {state_suffix}")]
 
         if self._voice_recording:
             bar = self._audio_level_bar()
@@ -12816,7 +12839,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
-        return [("class:prompt", symbol)]
+        return vim_fragment + [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
         """Return the visible prompt text for width calculations."""
@@ -14813,6 +14836,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'placeholder': '#888888 italic',
             'prompt': '',
             'prompt-working': '#888888 italic',
+            'vim-normal': '#87CEEB bold',
+            'vim-insert': '#888888 bold',
+            'vim-replace': '#FFA500 bold',
             'hint': '#888888 italic',
             'status-bar': 'bg:#1a1a2e #C0C0C0',
             'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',
@@ -14867,12 +14893,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
         # Create the application
+        vi_mode = CLI_CONFIG.get("display", {}).get("vi_mode", False)
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
             full_screen=False,
             mouse_support=False,
+            editing_mode=EditingMode.VI if vi_mode else EditingMode.EMACS,
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
             # Read from display.cli_refresh_interval (default 0 = disabled).
             # When non-zero, prompt_toolkit redraws the UI on this cadence

@@ -1,8 +1,11 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import { recordVimInsertEdit } from '../app/vimMode.js'
+import { $vimEnabled, $vimMode, $vimPendingCursor } from '../app/vimModeStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
@@ -540,7 +543,8 @@ export function TextInput({
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
-  focus = true
+  focus = true,
+  vimModeTarget = false
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
@@ -684,6 +688,24 @@ export function TextInput({
     return () => setInputSelection(null)
   }, [cur, focus, selected])
 
+  // Watch for external cursor movement requests from vim mode.
+  // Uses a counter state to force re-render when the store changes,
+  // because useEffect itself doesn't react to nanostore set() calls.
+  const pendingCursor = useStore($vimPendingCursor)
+  useEffect(() => {
+    if (pendingCursor === null || pendingCursor < 0 || pendingCursor > vRef.current.length) {
+      return
+    }
+
+    const snapped = snapPos(vRef.current, pendingCursor)
+    // Move cursor without tracking (no undo push) and without
+    // syncing to parent (text hasn't changed).
+    cancelLocalRender()
+    setCur(snapped)
+    curRef.current = snapped
+    $vimPendingCursor.set(null)
+  }, [pendingCursor])
+
   useEffect(
     () => () => {
       if (keyBurstTimer.current) {
@@ -771,6 +793,10 @@ export function TextInput({
     }
 
     if (track && next !== prev) {
+      if (vimModeTarget && $vimEnabled.get() && $vimMode.get() === 'insert') {
+        recordVimInsertEdit(prev)
+      }
+
       undo.current.push({ cursor: curRef.current, value: prev })
 
       if (undo.current.length > 200) {
@@ -1005,6 +1031,16 @@ export function TextInput({
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
+
+      // Vim normal mode: the main composer delegates keys to the global
+      // vim handler so hjkl/dd/yy/etc. don't insert text. Keep this opt-in:
+      // prompts/secret inputs are also TextInput instances, and their overlay
+      // handlers run while global vim processing is intentionally blocked.
+      if (shouldDelegateNormalModeToVim(vimModeTarget, $vimEnabled.get(), $vimMode.get())) {
+        flushKeyBurst()
+        return
+      }
+
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
         flushKeyBurst()
 
@@ -1388,6 +1424,8 @@ interface TextInputProps {
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string
+  /** Opt into delegating normal-mode keys to the global vim composer handler. */
+  vimModeTarget?: boolean
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
@@ -1432,6 +1470,9 @@ export const shouldPassThroughToGlobalHandler = (
   key.pageDown ||
   key.escape ||
   isVoiceToggleKey(key, input, voiceRecordKey)
+
+export const shouldDelegateNormalModeToVim = (vimModeTarget: boolean, vimEnabled: boolean, vimMode: string): boolean =>
+  vimModeTarget && vimEnabled && vimMode === 'normal'
 
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void

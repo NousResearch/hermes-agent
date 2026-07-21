@@ -6,8 +6,10 @@ import {
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
+  shouldConsumePlainVimNormalEscape,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
+import { parseVoiceRecordKey } from '../lib/platform.js'
 
 const baseKey = {
   downArrow: false,
@@ -46,6 +48,28 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+describe('shouldConsumePlainVimNormalEscape', () => {
+  it('consumes plain Escape in vim normal mode', () => {
+    expect(
+      shouldConsumePlainVimNormalEscape(
+        { ctrl: false, escape: true, meta: false },
+        '',
+        parseVoiceRecordKey('ctrl+escape')
+      )
+    ).toBe(true)
+  })
+
+  it('lets configured Escape voice chords reach the voice handler', () => {
+    expect(
+      shouldConsumePlainVimNormalEscape(
+        { ctrl: true, escape: true, meta: false },
+        '',
+        parseVoiceRecordKey('ctrl+escape')
+      )
+    ).toBe(false)
   })
 })
 

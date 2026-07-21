@@ -27,6 +27,8 @@ import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
+import { processVimKey } from './vimMode.js'
+import { setVimMode, $vimEnabled, $vimMode, requestCursorMove } from './vimModeStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
@@ -81,6 +83,14 @@ export function shouldFallThroughForScroll(key: {
   }
 
   return false
+}
+
+export function shouldConsumePlainVimNormalEscape(
+  key: { alt?: boolean; ctrl: boolean; escape?: boolean; meta: boolean; shift?: boolean; super?: boolean },
+  ch: string,
+  voiceRecordKey: Parameters<typeof isVoiceToggleKey>[2]
+): boolean {
+  return !!key.escape && !isVoiceToggleKey(key, ch, voiceRecordKey)
 }
 
 export function applyVoiceRecordResponse(
@@ -315,6 +325,39 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   useInput((ch, key) => {
     const live = getUiState()
 
+    // Vim mode: process keys when enabled and in normal mode.
+    // Do not intercept while overlays/pagers are active: their handlers need
+    // j/k/g/G/arrows for navigation before input-editing commands see them.
+    if (!isBlocked && $vimEnabled.get() && $vimMode.get() === 'normal') {
+      // Plain Escape is a no-op in normal mode. Modifier Escape chords may be
+      // configured voice shortcuts, so let those reach the voice branch below.
+      if (shouldConsumePlainVimNormalEscape(key, ch, voice.recordKey)) {
+        return
+      }
+
+      // Get current cursor from input selection store
+      const inputSel = getInputSelection()
+      const cursor = inputSel?.start ?? cState.input.length
+      const input = cState.input
+
+      const result = processVimKey(ch, key, input, cursor, 1)
+
+      if (result.consumed) {
+        if (result.input !== undefined) {
+          cActions.setInput(result.input)
+        }
+        if (result.mode !== undefined) {
+          setVimMode(result.mode)
+        }
+        if (result.cursor !== undefined) {
+          // Signal textInput to move cursor to the new position
+          requestCursorMove(result.cursor)
+        }
+        return
+      }
+      // Fall through — key not handled by vim, let normal processing handle it
+    }
+
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
       // handlers must receive keystrokes (arrow keys, numbers, Enter).  Only
@@ -487,6 +530,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.escape && terminal.hasSelection) {
       return clearSelection()
+    }
+
+    // Vim mode: Escape switches from insert mode to normal mode
+    if (key.escape && $vimEnabled.get() && $vimMode.get() === 'insert') {
+      setVimMode('normal')
+      return
     }
 
     if (key.upArrow && !cState.inputBuf.length) {

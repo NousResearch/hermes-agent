@@ -93,8 +93,12 @@ export interface ConfigDisplayConfig {
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
+  /** TUI-only vim-style editing mode. Falls back to vi_mode when unset. */
+  tui_vi_mode?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
+  /** Vim-style editing mode for CLI */
+  vi_mode?: boolean
   // Forward-compat: backend may send styles this client doesn't know yet —
   // `normalizeIndicatorStyle` falls back to 'kaomoji' for those — but the
   // wire type is documented as `string` so consumers don't get a false

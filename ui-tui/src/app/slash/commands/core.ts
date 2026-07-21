@@ -20,6 +20,8 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { getVimEnabled, setVimEnabled, toggleVimEnabled, setVimMode } from '../../vimModeStore.js'
+import { resetVimState } from '../../vimMode.js'
 import type { SlashCommand } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
@@ -677,5 +679,28 @@ export const coreCommands: SlashCommand[] = [
         })
       )
     }
-  }
+  },
+
+  {
+    help: 'toggle vim mode (normal/insert mode editing)',
+    name: 'vim',
+    run: (arg, ctx) => {
+      if (!arg || arg.trim().toLowerCase() === 'toggle') {
+        toggleVimEnabled()
+      } else if (arg.trim().toLowerCase() === 'on') {
+        setVimEnabled(true)
+      } else if (arg.trim().toLowerCase() === 'off') {
+        setVimEnabled(false)
+      } else {
+        return ctx.transcript.sys('usage: /vim [on|off|toggle]')
+      }
+
+      resetVimState()
+      setVimMode('normal')
+      const enabled = getVimEnabled()
+      // Persist TUI vim mode separately so TUI toggles don't disable CLI vim mode.
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'tui_vi_mode', value: enabled ? 'true' : 'false' }).catch(() => {})
+      ctx.transcript.sys(`vim mode ${enabled ? 'on (NORMAL)' : 'off'}`)
+    }
+  },
 ]

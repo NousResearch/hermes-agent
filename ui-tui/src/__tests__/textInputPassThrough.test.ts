@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
+import {
+  shouldDelegateNormalModeToVim,
+  shouldPassThroughToGlobalHandler,
+  shouldPreserveCtrlJNewline
+} from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
@@ -29,6 +33,9 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(
       shouldPassThroughToGlobalHandler('', key({ ctrl: true, return: true }), parseVoiceRecordKey('ctrl+enter'))
     ).toBe(true)
+    expect(
+      shouldPassThroughToGlobalHandler('', key({ ctrl: true, escape: true }), parseVoiceRecordKey('ctrl+escape'))
+    ).toBe(true)
   })
 
   it('keeps the legacy default pass-through when no custom key is provided', () => {
@@ -48,5 +55,19 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+  })
+})
+
+describe('shouldDelegateNormalModeToVim', () => {
+  it('only delegates normal-mode keys for the opt-in composer input', () => {
+    expect(shouldDelegateNormalModeToVim(true, true, 'normal')).toBe(true)
+    // Overlay prompts also use TextInput; they must keep accepting ordinary
+    // text while global vim handling is blocked.
+    expect(shouldDelegateNormalModeToVim(false, true, 'normal')).toBe(false)
+  })
+
+  it('does not delegate when vim is disabled or insert mode is active', () => {
+    expect(shouldDelegateNormalModeToVim(true, false, 'normal')).toBe(false)
+    expect(shouldDelegateNormalModeToVim(true, true, 'insert')).toBe(false)
   })
 })

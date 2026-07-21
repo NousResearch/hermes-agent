@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
+import { $vimEnabled, $vimMode, setVimEnabled, setVimMode } from '../app/vimModeStore.js'
+import { resetVimState } from '../app/vimMode.js'
 import {
   applyDisplay,
   hydrateFullConfig,
@@ -442,5 +444,63 @@ describe('hydrateFullConfig', () => {
     // display flags (round-2 / round-8 invariant).
     await expect(hydrateFullConfig(gw, setBell)).resolves.toBeTruthy()
     expect(setBell).toHaveBeenCalledWith(true)
+  })
+
+  // ── Vim mode persistence tests ──────────────────────────────────────
+
+  describe('vim mode from config', () => {
+    beforeEach(() => {
+      resetUiState()
+      resetVimState()
+      setVimEnabled(false)
+      setVimMode('insert')
+    })
+
+    it('enables vim when tui_vi_mode is true', () => {
+      applyDisplay({ config: { display: { tui_vi_mode: true } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(true)
+      expect($vimMode.get()).toBe('normal')
+    })
+
+    it('disables vim when tui_vi_mode is false', () => {
+      setVimEnabled(true)
+      setVimMode('normal')
+      applyDisplay({ config: { display: { tui_vi_mode: false } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(false)
+      expect($vimMode.get()).toBe('insert')
+    })
+
+    it('falls back to legacy vi_mode when tui_vi_mode is absent', () => {
+      applyDisplay({ config: { display: { vi_mode: true } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(true)
+    })
+
+    it('prefers tui_vi_mode over legacy vi_mode', () => {
+      // tui_vi_mode = false should win over vi_mode = true
+      applyDisplay({ config: { display: { vi_mode: true, tui_vi_mode: false } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(false)
+
+      // tui_vi_mode = true should win over vi_mode = false
+      applyDisplay({ config: { display: { vi_mode: false, tui_vi_mode: true } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(true)
+    })
+
+    it('defaults to disabled when neither key is present', () => {
+      applyDisplay({ config: { display: {} } }, vi.fn())
+      expect($vimEnabled.get()).toBe(false)
+    })
+
+    it('only resets mode when effective vim enabled setting changes', () => {
+      applyDisplay({ config: { display: { tui_vi_mode: true } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(true)
+      expect($vimMode.get()).toBe('normal')
+
+      // Simulate the user currently editing in insert mode. A later config
+      // refresh with the same vim-enabled value should not force normal mode.
+      setVimMode('insert')
+      applyDisplay({ config: { display: { tui_vi_mode: true, show_cost: true } } }, vi.fn())
+      expect($vimEnabled.get()).toBe(true)
+      expect($vimMode.get()).toBe('insert')
+    })
   })
 })

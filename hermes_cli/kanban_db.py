@@ -2930,13 +2930,8 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        # Execution completion is not outcome acceptance.
+                        if any(not task_outcome_accepted(conn, parent) for parent in parents):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -3160,11 +3155,8 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # A linked parent releases its child only after outcome acceptance.
+        if not task_outcome_accepted(conn, parent_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -3724,10 +3716,72 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+_REQUIRED_CLASSIFICATION_RE = re.compile(
+    r"^\s*(?:required classification|terminal acceptance|terminal classification)"
+    r"\s*:\s*([A-Z][A-Z0-9_-]*)\s*\.?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_REQUIRED_EVIDENCE_TYPE_RE = re.compile(
+    r"^\s*required evidence type\s*:\s*([a-z][a-z0-9_-]*)\s*\.?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def task_outcome_accepted(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a completed task has an explicit accepted outcome.
+
+    Execution completion remains ``tasks.status = 'done'``. Dependency
+    release is a separate fail-closed decision derived from the task's
+    declared classification and the closing run's verifier evidence.
+    """
+    row = conn.execute(
+        "SELECT status, body FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] == "archived":
+        return True
+    if row["status"] != "done":
+        return False
+    required_match = _REQUIRED_CLASSIFICATION_RE.search(row["body"] or "")
+    if required_match is None:
+        # Backward-compatible rollout: existing cards without an acceptance
+        # contract retain legacy completion semantics. Cards that declare a
+        # classification opt into the fail-closed gate.
+        return True
+    evidence_type_match = _REQUIRED_EVIDENCE_TYPE_RE.search(row["body"] or "")
+    required_evidence_type = (
+        evidence_type_match.group(1).lower() if evidence_type_match else "implementation"
+    )
+    run = conn.execute(
+        "SELECT metadata FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if run is None or not run["metadata"]:
+        return False
+    try:
+        metadata = json.loads(run["metadata"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    evidence_refs = metadata.get("evidence_refs")
+    return (
+        str(metadata.get("outcome_classification", "")).upper()
+        == required_match.group(1).upper()
+        and str(metadata.get("verifier_verdict", "")).upper() == "PASS"
+        and isinstance(evidence_refs, list)
+        and bool(evidence_refs)
+        and all(isinstance(ref, str) and ref.strip() for ref in evidence_refs)
+        and str(metadata.get("evidence_type", "")).lower()
+        == required_evidence_type
+    )
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote tasks only when every parent has an accepted outcome.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -3773,12 +3827,12 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(task_outcome_accepted(conn, p["id"]) for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3839,13 +3893,13 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
+        parent_rows = conn.execute(
+            "SELECT p.id FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ?",
             (task_id,),
-        ).fetchone()
-        if undone:
+        ).fetchall()
+        if any(not task_outcome_accepted(conn, row["id"]) for row in parent_rows):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",

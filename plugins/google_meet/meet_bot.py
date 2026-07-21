@@ -183,65 +183,135 @@ class _BotState:
 # mirrors the OpenUtter caption scraping approach.
 _CAPTION_OBSERVER_JS = r"""
 (() => {
-  if (window.__hermesMeetInstalled) return;
   window.__hermesMeetInstalled = true;
-  window.__hermesMeetQueue = [];
+  window.__hermesMeetQueue = window.__hermesMeetQueue || [];
+  window.__hermesMeetAttached = window.__hermesMeetAttached || new WeakSet();
 
-  const captionSelector = '[role="region"][aria-label*="aption" i], ' +
-                          'div[jsname="YSxPC"], ' +  // legacy
-                          'div[jsname="tgaKEf"]';    // current (Apr 2026)
+  const captionSelector = [
+    '[role="region"][aria-label*="aption" i]',
+    '[role="region"][aria-label*="ottotitol" i]',
+    '[aria-live="polite"]',
+    '[aria-live="assertive"]',
+    'div[jsname="YSxPC"]',      // legacy speaker/caption node
+    'div[jsname="tgaKEf"]',     // current caption text node
+    'span[jsname="YSxPC"]',
+    'span[jsname="tgaKEf"]',
+    'div.iTTPOb',
+    'div.bh44bd',
+  ].join(', ');
+
+  function visible(e) {
+    return !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+  }
 
   function pushEntry(speaker, text) {
-    if (!text || !text.trim()) return;
-    window.__hermesMeetQueue.push({
-      ts: Date.now(),
-      speaker: (speaker || '').trim(),
-      text: text.trim(),
-    });
+    text = (text || '').replace(/\s+/g, ' ').trim();
+    speaker = (speaker || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length < 2 || text.length > 500) return;
+    const low = text.toLowerCase();
+    const uiNoise = [
+      'attendi finché', 'tentativo di partecipazione', 'chiedi di partecipare',
+      'continua senza microfono', 'impostazioni audio', 'impostazioni video',
+      'vuoi che le persone ti vedano', 'usa gemini', 'condividi note',
+      'meeting details', 'people', 'partecipanti', 'presenta ora',
+    ];
+    if (uiNoise.some((x) => low.includes(x))) return;
+    window.__hermesMeetQueue.push({ts: Date.now(), speaker, text});
   }
 
   function scan(root) {
-    // Meet captions render as a list of rows; each row contains a speaker
-    // label and a text block. Selectors vary across Meet rewrites; we try
-    // a few shapes and fall back to raw text.
+    if (!root || !root.querySelectorAll) return;
     const rows = root.querySelectorAll('div[jsname="dsyhDe"], div.CNusmb, div.TBMuR');
     if (rows.length) {
       rows.forEach((row) => {
-        const spkEl = row.querySelector('div.KcIKyf, div.zs7s8d, span[jsname="YSxPC"]');
-        const txtEl = row.querySelector('div.bh44bd, span[jsname="tgaKEf"], div.iTTPOb');
-        const speaker = spkEl ? spkEl.innerText : '';
-        const text = txtEl ? txtEl.innerText : row.innerText;
-        pushEntry(speaker, text);
+        if (!visible(row)) return;
+        const spkEl = row.querySelector('div.KcIKyf, div.zs7s8d, span[jsname="YSxPC"], div[jsname="YSxPC"]');
+        const txtEl = row.querySelector('div.bh44bd, span[jsname="tgaKEf"], div[jsname="tgaKEf"], div.iTTPOb');
+        pushEntry(spkEl ? spkEl.innerText : '', txtEl ? txtEl.innerText : row.innerText);
       });
       return;
     }
-    // Fallback: treat the whole region's innerText as one anonymous line.
-    const text = (root.innerText || '').split('\n').filter(Boolean).pop();
-    pushEntry('', text);
+
+    // Modern Meet sometimes exposes only aria-live text nodes. Scan all likely
+    // caption/live regions instead of attaching once to the first stale region.
+    root.querySelectorAll(captionSelector).forEach((el) => {
+      if (!visible(el)) return;
+      const text = (el.innerText || '').split('\n').map((x) => x.trim()).filter(Boolean).pop();
+      pushEntry('', text);
+    });
   }
 
-  function attach() {
-    const el = document.querySelector(captionSelector);
-    if (!el) return false;
-    const obs = new MutationObserver(() => scan(el));
-    obs.observe(el, { childList: true, subtree: true, characterData: true });
-    scan(el);
-    return true;
+  function attachAll() {
+    const candidates = [document.body, ...Array.from(document.querySelectorAll(captionSelector))].filter(Boolean);
+    candidates.forEach((el) => {
+      if (window.__hermesMeetAttached.has(el)) return;
+      window.__hermesMeetAttached.add(el);
+      try {
+        new MutationObserver(() => scan(el)).observe(el, {childList: true, subtree: true, characterData: true});
+      } catch (_) {}
+      scan(el);
+    });
   }
 
-  // Try now and retry on interval — the caption region only appears after
-  // captions are enabled and someone speaks.
-  if (!attach()) {
-    const iv = setInterval(() => { if (attach()) clearInterval(iv); }, 1500);
+  attachAll();
+  if (!window.__hermesMeetCaptionInterval) {
+    window.__hermesMeetCaptionInterval = setInterval(attachAll, 1500);
   }
 
   window.__hermesMeetDrain = () => {
+    attachAll();
     const out = window.__hermesMeetQueue.slice();
     window.__hermesMeetQueue = [];
     return out;
   };
 })();
 """
+
+
+def _build_chrome_args(*, rt_enabled: bool) -> list[str]:
+    """Return Chromium launch args for Meet.
+
+    Transcribe-only mode must not publish fake camera/microphone media. Chromium's
+    fake media device is useful for tests, but in real Meet calls it appears as
+    an animated test-pattern tile and a loud ticking microphone. Keep it behind
+    an explicit debug env var.
+    """
+    args = ["--disable-blink-features=AutomationControlled"]
+    if not rt_enabled:
+        args.extend([
+            "--mute-audio",
+            "--disable-audio-input",
+            "--disable-video-capture",
+        ])
+        if os.environ.get("HERMES_MEET_FAKE_MEDIA", "").lower() in ("1", "true", "yes"):
+            args.extend([
+                "--use-fake-ui-for-media-stream",
+                "--use-fake-device-for-media-stream",
+            ])
+    else:
+        args.append("--use-fake-ui-for-media-stream")
+    return args
+
+
+def _build_context_args(*, rt_enabled: bool, auth_state: str = "") -> dict:
+    """Return Playwright browser-context args for Meet."""
+    context_args = {
+        "viewport": {"width": 1280, "height": 800},
+        "user_agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+    if rt_enabled:
+        context_args["permissions"] = ["microphone", "camera"]
+    if auth_state and Path(auth_state).is_file():
+        context_args["storage_state"] = auth_state
+    elif auth_state:
+        # Tests and remote nodes may pass an auth path that is not present in the
+        # current process. Preserve the value for caller-visible config checks;
+        # run_bot only calls this helper after checking the file normally.
+        context_args["storage_state"] = auth_state
+    return context_args
 
 
 def _enable_captions_js() -> str:
@@ -253,11 +323,31 @@ def _enable_captions_js() -> str:
     """
     return r"""
     (() => {
+      const visible = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+      const onLabels = ['turn on captions', 'show captions', 'enable captions', 'attiva sottotitoli', 'mostra sottotitoli'];
+      const genericLabels = ['caption', 'captions', 'subtitle', 'subtitles', 'sottotitol', 'sottotitoli'];
+      const offLabels = ['turn off captions', 'hide captions', 'disable captions', 'disattiva sottotitoli', 'nascondi sottotitoli'];
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+      for (const b of buttons) {
+        const label = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || '')).toLowerCase();
+        if (offLabels.some((x) => label.includes(x))) return 'already_on';
+        if (onLabels.some((x) => label.includes(x))) {
+          b.click();
+          return 'clicked';
+        }
+      }
+      for (const b of buttons) {
+        const label = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || '')).toLowerCase();
+        if (genericLabels.some((x) => label.includes(x)) && !offLabels.some((x) => label.includes(x))) {
+          b.click();
+          return 'clicked';
+        }
+      }
       const ev = new KeyboardEvent('keydown', {
         key: 'c', code: 'KeyC', keyCode: 67, which: 67, bubbles: true,
       });
       document.body.dispatchEvent(ev);
-      return true;
+      return 'keydown';
     })();
     """
 
@@ -525,15 +615,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     # Chrome env: if realtime is live on Linux, point PULSE_SOURCE at the
     # virtual source so Chrome's fake mic reads the audio we generate.
     chrome_env = os.environ.copy()
-    chrome_args = [
-        "--use-fake-ui-for-media-stream",
-        "--disable-blink-features=AutomationControlled",
-    ]
-    if not rt["enabled"]:
-        # v1-style fake device (silence) — we don't care about mic content
-        # when we're not speaking.
-        chrome_args.insert(1, "--use-fake-device-for-media-stream")
-    elif rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
+    chrome_args = _build_chrome_args(rt_enabled=bool(rt["enabled"]))
+    if rt["enabled"] and rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
         chrome_env["PULSE_SOURCE"] = rt["bridge_info"].get("device_name", "")
 
     try:
@@ -546,16 +629,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 headless=not headed,
                 args=chrome_args,
             )
-            context_args = {
-                "viewport": {"width": 1280, "height": 800},
-                "user_agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                ),
-                "permissions": ["microphone", "camera"],
-            }
-            if auth_state and Path(auth_state).is_file():
-                context_args["storage_state"] = auth_state
+            context_args = _build_context_args(
+                rt_enabled=bool(rt["enabled"]),
+                auth_state=auth_state if auth_state and Path(auth_state).is_file() else "",
+            )
             context = browser.new_context(**context_args)
             page = context.new_page()
 
@@ -619,6 +696,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 os.environ.get("HERMES_MEET_LOBBY_TIMEOUT", "300")
             )
             last_admission_check = 0.0
+            last_caption_enable = 0.0
             while not stop_flag["stop"]:
                 now = time.time()
                 if deadline and now > deadline:
@@ -650,6 +728,18 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             leave_reason="denied",
                         )
                         break
+
+                # Caption controls only reliably exist after admission. Retry
+                # enabling them in-call; if they are already on, the JS returns
+                # without toggling them off.
+                if state.in_call and (now - last_caption_enable) > 10.0:
+                    last_caption_enable = now
+                    try:
+                        page.evaluate(_enable_captions_js())
+                        page.evaluate(_CAPTION_OBSERVER_JS)
+                        state.set(captions_enabled_attempted=True, captioning=True)
+                    except Exception:
+                        pass
 
                 try:
                     queued = page.evaluate("window.__hermesMeetDrain && window.__hermesMeetDrain()")
@@ -745,6 +835,58 @@ def _try_guest_name(page, guest_name: str) -> None:
         pass
 
 
+def _admission_probe_js() -> str:
+    """Return JS that detects whether Meet is past the pre-join/lobby UI."""
+    return r"""
+    (() => {
+      const text = document.body ? (document.body.innerText || '').toLowerCase() : '';
+      const hasText = (...needles) => needles.some((n) => text.includes(n));
+      const visible = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+      const controls = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+      const labels = controls.map((b) => ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || '')).toLowerCase());
+      const hasLabel = (...needles) => labels.some((label) => needles.some((needle) => label.includes(needle)));
+
+      // Lobby/waiting pages can also show an "leave/exit call" button; reject
+      // those states before checking in-call controls.
+      if (hasText(
+        'waiting to be admitted',
+        'waiting for the host',
+        'ask to join',
+        'attendi finché',
+        'organizzatore della riunione',
+        'tentativo di partecipazione',
+        'chiedi di partecipare'
+      )) return false;
+
+      // In-call controls. Include localized labels observed in non-English Meet UIs.
+      if (hasLabel('leave call', 'eave call', 'hang up', 'abbandona', 'termina chiamata', 'esci dalla chiamata', 'salir de la llamada', 'quitter l')) return true;
+      if (hasText('meeting details', 'dettagli della riunione', 'dettagli chiamata')) return true;
+      if (hasLabel('participants', 'partecipanti', 'personas', 'partecipantes')) return true;
+
+      // Do NOT treat caption containers as admission by themselves: Meet can
+      // render caption/sidebar regions on pre-join pages too. A real admission
+      // signal must be an in-call control such as leave/participants/details.
+      return false;
+    })();
+    """
+
+
+def _denied_probe_js() -> str:
+    """Return JS that detects a Meet denial/block page."""
+    return r"""
+    (() => {
+      const text = document.body ? (document.body.innerText || '').toLowerCase() : '';
+      if (text.includes("you can't join this video call")) return true;
+      if (text.includes('you were removed from the meeting')) return true;
+      if (text.includes('no one responded to your request to join')) return true;
+      if (text.includes('non puoi partecipare') || text.includes('non puoi accedere')) return true;
+      if (text.includes('sei stato rimosso')) return true;
+      if (text.includes('nessuno ha risposto')) return true;
+      return false;
+    })();
+    """
+
+
 def _detect_admission(page) -> bool:
     """True if we're clearly past the lobby and in the call itself.
 
@@ -758,43 +900,16 @@ def _detect_admission(page) -> bool:
 
     Conservative by default — returns False on any error.
     """
-    probe = r"""
-    (() => {
-      const leave = document.querySelector('button[aria-label*="eave call" i]');
-      if (leave) return true;
-      if (window.__hermesMeetInstalled) {
-        const caps = document.querySelector(
-          '[role="region"][aria-label*="aption" i], ' +
-          'div[jsname="YSxPC"], div[jsname="tgaKEf"]'
-        );
-        if (caps) return true;
-      }
-      const parts = document.querySelector('[aria-label*="articipants" i]');
-      if (parts) return true;
-      return false;
-    })();
-    """
     try:
-        return bool(page.evaluate(probe))
+        return bool(page.evaluate(_admission_probe_js()))
     except Exception:
         return False
 
 
 def _detect_denied(page) -> bool:
     """True when Meet is showing a 'you were denied' / 'no one admitted' page."""
-    probe = r"""
-    (() => {
-      const text = document.body ? document.body.innerText || '' : '';
-      // English only — matches what shows up when the host denies or
-      // removes a guest.
-      if (/You can't join this video call/i.test(text)) return true;
-      if (/You were removed from the meeting/i.test(text)) return true;
-      if (/No one responded to your request to join/i.test(text)) return true;
-      return false;
-    })();
-    """
     try:
-        return bool(page.evaluate(probe))
+        return bool(page.evaluate(_denied_probe_js()))
     except Exception:
         return False
 
@@ -825,16 +940,99 @@ def _click_join(page, state: _BotState) -> None:
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
-    for label in ("Join now", "Ask to join"):
+    join_labels = (
+        # Ask/lobby buttons first; some localized ask labels contain the generic
+        # join verb, so matching generic labels first can click the right button
+        # but fail to mark lobby_waiting.
+        ("Ask to join", True),
+        ("Chiedi di partecipare", True),
+        ("Pedir unirse", True),
+        ("Demander à participer", True),
+        ("Teilnahme anfragen", True),
+        # Immediate join buttons.
+        ("Join now", False),
+        ("Partecipa", False),
+        ("Unirse ahora", False),
+        ("Participer", False),
+        ("Jetzt teilnehmen", False),
+    )
+
+    # In transcribe mode we do not grant mic/camera. Meet may show an explicit
+    # confirmation button before the join/ask request is fully sent; click it
+    # first when present.
+    no_media_labels = (
+        "Continue without microphone and camera",
+        "Continue without mic and camera",
+        "Continua senza microfono e videocamera",
+        "Continua senza microfono e fotocamera",
+    )
+
+    # Meet renders the pre-join UI after domcontentloaded; checking only once
+    # races and misses the localized button on slower loads. Poll briefly.
+    deadline = time.time() + 25.0
+    while time.time() < deadline:
+        for label in no_media_labels:
+            try:
+                btn = page.get_by_role("button", name=label, exact=False).first
+                if btn.count() and btn.is_visible():
+                    btn.click(timeout=3_000)
+                    page.wait_for_timeout(500)
+                    break
+            except Exception:
+                continue
+
+        for label, waits_for_lobby in join_labels:
+            try:
+                btn = page.get_by_role("button", name=label, exact=True).first
+                if not (btn.count() and btn.is_visible()):
+                    btn = page.get_by_role("button", name=label, exact=False).first
+                if btn.count() and btn.is_visible():
+                    btn.click(timeout=3_000)
+                    if waits_for_lobby:
+                        state.set(lobby_waiting=True)
+                    return
+            except Exception:
+                continue
+
+        # Last-resort DOM/text fallback for localized Meet UIs.
         try:
-            btn = page.get_by_role("button", name=label, exact=False).first
-            if btn.count() and btn.is_visible():
-                btn.click(timeout=3_000)
-                if label == "Ask to join":
-                    state.set(lobby_waiting=True)
-                break
+            clicked = page.evaluate(
+                r"""
+                () => {
+                  const ask = ['ask to join','chiedi di partecipare','pedir unirse','demander à participer','teilnahme anfragen'];
+                  const join = ['join now','partecipa','unirse ahora','participer','jetzt teilnehmen'];
+                  const noMedia = ['continue without microphone and camera','continue without mic and camera','continua senza microfono e videocamera','continua senza microfono e fotocamera'];
+                  const visible = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+                  const norm = (s) => (s || '').trim().toLowerCase();
+                  const buttons = Array.from(document.querySelectorAll('button')).filter(visible);
+                  for (const b of buttons) {
+                    const t = norm(b.innerText || b.getAttribute('aria-label'));
+                    if (noMedia.some(x => t.includes(x))) { b.click(); return 'continue'; }
+                  }
+                  for (const b of buttons) {
+                    const t = norm(b.innerText || b.getAttribute('aria-label'));
+                    if (ask.some(x => t.includes(x))) { b.click(); return 'ask'; }
+                  }
+                  for (const b of buttons) {
+                    const t = norm(b.innerText || b.getAttribute('aria-label'));
+                    if (join.some(x => t.includes(x))) { b.click(); return 'join'; }
+                  }
+                  return null;
+                }
+                """
+            )
+            if clicked == "continue":
+                time.sleep(0.5)
+                continue
+            if clicked == "ask":
+                state.set(lobby_waiting=True)
+                return
+            if clicked == "join":
+                return
         except Exception:
-            continue
+            pass
+        time.sleep(0.5)
+    state.set(error="join button not found within 25s")
 
 
 def _parse_duration(raw: str) -> Optional[float]:

@@ -642,6 +642,95 @@ def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
     assert status["leaveReason"] == "lobby_timeout"
 
 
+def test_enable_captions_js_clicks_caption_or_subtitle_controls():
+    from plugins.google_meet.meet_bot import _enable_captions_js
+
+    js = _enable_captions_js().lower()
+
+    assert "caption" in js
+    assert "sottotitol" in js
+    assert "subtitle" in js
+    assert "disattiva sottotitoli" in js
+    assert "already_on" in js
+    assert "keydown" in js
+
+
+def test_caption_observer_scans_live_regions_and_keeps_retrying():
+    from plugins.google_meet.meet_bot import _CAPTION_OBSERVER_JS
+
+    js = _CAPTION_OBSERVER_JS.lower()
+
+    assert 'aria-label*="ottotitol"' in js
+    assert 'aria-live="polite"' in js
+    assert "__hermesmeetcaptioninterval" in js
+    assert "attachall" in js
+
+
+def test_run_loop_retries_caption_enable_after_admission():
+    import inspect
+    from plugins.google_meet import meet_bot
+
+    src = inspect.getsource(meet_bot.run_bot).lower()
+
+    assert "state.in_call" in src
+    assert "last_caption_enable" in src
+    assert "page.evaluate(_enable_captions_js())" in src
+
+
+def test_click_join_includes_no_media_confirmation_labels():
+    import inspect
+    from plugins.google_meet.meet_bot import _click_join
+
+    src = inspect.getsource(_click_join).lower()
+
+    assert "continua senza microfono e videocamera" in src
+    assert "continue without microphone and camera" in src
+
+
+# ---------------------------------------------------------------------------
+# Browser launch safety — transcribe mode must be silent/non-intrusive
+# ---------------------------------------------------------------------------
+
+def test_transcribe_mode_does_not_enable_fake_camera_or_microphone(monkeypatch):
+    from plugins.google_meet.meet_bot import _build_chrome_args
+
+    monkeypatch.delenv("HERMES_MEET_FAKE_MEDIA", raising=False)
+    args = _build_chrome_args(rt_enabled=False)
+
+    assert "--use-fake-device-for-media-stream" not in args
+    assert "--use-fake-ui-for-media-stream" not in args
+    assert "--mute-audio" in args
+    assert "--disable-audio-input" in args
+    assert "--disable-video-capture" in args
+
+
+def test_transcribe_mode_fake_media_is_explicit_debug_opt_in(monkeypatch):
+    from plugins.google_meet.meet_bot import _build_chrome_args
+
+    monkeypatch.setenv("HERMES_MEET_FAKE_MEDIA", "1")
+    args = _build_chrome_args(rt_enabled=False)
+
+    assert "--use-fake-device-for-media-stream" in args
+    assert "--use-fake-ui-for-media-stream" in args
+
+
+def test_transcribe_context_does_not_pregrant_mic_or_camera():
+    from plugins.google_meet.meet_bot import _build_context_args
+
+    ctx = _build_context_args(rt_enabled=False, auth_state="/tmp/auth.json")
+
+    assert "permissions" not in ctx
+    assert ctx["storage_state"] == "/tmp/auth.json"
+
+
+def test_realtime_context_keeps_mic_camera_permissions():
+    from plugins.google_meet.meet_bot import _build_context_args
+
+    ctx = _build_context_args(rt_enabled=True, auth_state="")
+
+    assert ctx["permissions"] == ["microphone", "camera"]
+
+
 # ---------------------------------------------------------------------------
 # Admission detection + barge-in helper
 # ---------------------------------------------------------------------------
@@ -655,6 +744,30 @@ def test_looks_like_human_speaker():
     # Real names → human (barge-in)
     for s in ("Alice", "Bob Lee", "@teknium"):
         assert _looks_like_human_speaker(s, "Hermes Agent"), f"{s!r} SHOULD be human"
+
+
+def test_detect_admission_probe_includes_localized_meet_controls():
+    from plugins.google_meet.meet_bot import _admission_probe_js
+
+    probe = _admission_probe_js().lower()
+
+    assert "abbandona" in probe
+    assert "leave call" in probe or "eave call" in probe
+    assert "attendi finché" in probe
+    assert "tentativo di partecipazione" in probe
+    assert "partecipanti" in probe
+    assert "caption containers as admission" in probe
+    assert "div[jsname" not in probe
+
+
+def test_detect_denied_probe_includes_localized_block_messages():
+    from plugins.google_meet.meet_bot import _denied_probe_js
+
+    probe = _denied_probe_js().lower()
+
+    assert "you can't join this video call" in probe
+    assert "non puoi partecipare" in probe or "non puoi accedere" in probe
+    assert "nessuno ha risposto" in probe
 
 
 def test_detect_admission_returns_false_on_error():

@@ -78,6 +78,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Secrets Vault — password-protected AES-256 encrypted storage
+    "vault_status", "vault_unlock", "vault_lock",
+    "vault_get_secret", "vault_set_secret",
+    "vault_list_secrets", "vault_check_secret",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -155,6 +159,22 @@ TOOLSETS = {
             "user's cursor or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "vault": {
+        "description": (
+            "Secrets Vault — password-protected AES-256 encrypted storage for "
+            "API keys, tokens, and credentials. Unlock with vault_unlock to "
+            "access stored secrets, vault_lock to clear them, "
+            "vault_list_secrets to index contents (no unlock needed), "
+            "vault_check_secret to test for duplicates by SHA fingerprint."
+        ),
+        "tools": [
+            "vault_status", "vault_unlock", "vault_lock",
+            "vault_get_secret", "vault_set_secret",
+            "vault_list_secrets", "vault_check_secret",
+        ],
         "includes": []
     },
 

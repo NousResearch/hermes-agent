@@ -2523,7 +2523,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "gateway reconnect." % stuck_for,
                             retryable=True,
                         )
-                        await self._notify_fatal_error()
+                        await self._handoff_polling_fatal_error()
                         return
                 else:
                     stuck_task_ref = None
@@ -2988,15 +2988,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """Notify the runner without letting child teardown cancel this owner.
 
         The runner bounds adapter cleanup in a child task.  ``disconnect()``
-        cancels the tracked polling-recovery task, so retaining the current
-        notifier in ``_polling_error_task`` would cancel the fatal callback
-        before the runner can finish its reconnect or shutdown decision.
-        Release only the current owner; unrelated recovery tasks remain under
-        teardown control.
+        cancels the tracked polling-recovery task and the heartbeat task, so
+        retaining the current notifier in either field would cancel the fatal
+        callback before the runner can finish its reconnect or shutdown
+        decision.  Release only the current owner from whichever field tracks
+        it; unrelated tasks remain under teardown control.
         """
         current_task = asyncio.current_task()
         if self._polling_error_task is current_task:
             self._polling_error_task = None
+        if getattr(self, "_polling_heartbeat_task", None) is current_task:
+            self._polling_heartbeat_task = None
         await self._notify_fatal_error()
 
     async def _create_dm_topic(

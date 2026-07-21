@@ -46,9 +46,14 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
-def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkeypatch):
+def test_list_authenticated_providers_skip_probe_via_discover_models_false(monkeypatch):
+    """A custom provider can still skip live discovery via ``discover_models:
+    false`` — the real opt-out. Even with ``probe_custom_providers=False`` and no
+    explicit ``models:`` list, an un-narrowed endpoint would otherwise be probed;
+    ``discover_models: false`` must suppress it and keep the singular ``model``.
+    """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected probe"))
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
 
@@ -60,6 +65,7 @@ def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkey
                 "base_url": "http://127.0.0.1:8080/v1",
                 "api_key": "sk-local",
                 "model": "local-model",
+                "discover_models": False,
             }
         ],
         probe_custom_providers=False,
@@ -70,9 +76,14 @@ def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkey
     assert row["total_models"] == 1
 
 
-def test_list_authenticated_providers_can_probe_only_current_custom_provider(monkeypatch):
+def test_list_authenticated_providers_probes_unnarrowed_non_current_custom_provider(monkeypatch):
+    """When a custom provider has no explicit ``models:`` list, the /model menu
+    must probe its full /v1/models catalog even for NON-current providers —
+    regardless of ``probe_custom_providers=False``. This is the requested fix:
+    a provider configured without a models: tag should show every available model.
+    """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
 
     calls = []
 
@@ -80,6 +91,8 @@ def test_list_authenticated_providers_can_probe_only_current_custom_provider(mon
         calls.append(api_url)
         if api_url == "http://active.local/v1":
             return ["active-a", "active-b"]
+        if api_url == "http://offline.local/v1":
+            return ["offline-a", "offline-b"]
         raise AssertionError(f"unexpected probe for {api_url}")
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
@@ -105,12 +118,13 @@ def test_list_authenticated_providers_can_probe_only_current_custom_provider(mon
         probe_current_custom_provider=True,
     )
 
+    # Both un-narrowed providers are probed (no explicit models: list).
+    assert set(calls) == {"http://active.local/v1", "http://offline.local/v1"}
     active = next(p for p in providers if p["slug"] == "custom:active-proxy")
     offline = next(p for p in providers if p["slug"] == "custom:offline-proxy")
-    assert calls == ["http://active.local/v1"]
     assert active["is_current"] is True
     assert active["models"] == ["active-a", "active-b"]
-    assert offline["models"] == ["configured-offline"]
+    assert offline["models"] == ["offline-a", "offline-b"]
 
 
 def test_resolve_provider_full_finds_named_custom_provider():
@@ -433,8 +447,12 @@ def test_custom_provider_group_explicit_duplicate_skips_probe(monkeypatch):
     assert row["models"] == ["llama3"]
 
 
-def test_custom_provider_current_only_probe_respects_explicit_catalog(monkeypatch):
-    """Normal GUI opens probe only the active singular-only provider."""
+def test_custom_provider_probes_unnarrowed_providers_regardless_of_current(monkeypatch):
+    """Un-narrowed custom providers (no explicit ``models:`` list) are probed
+    for their full catalog on a normal GUI open — even the non-current ones —
+    because the user wants to see every available model. An explicit ``models:``
+    list is still honored verbatim and never probed.
+    """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     calls = []
@@ -471,10 +489,15 @@ def test_custom_provider_current_only_probe_respects_explicit_catalog(monkeypatc
         probe_current_custom_provider=True,
     )
 
-    assert calls == [("", "http://active.local/v1", {"headers": None})]
+    # Both un-narrowed providers (Active + Offline) are probed; Static (explicit
+    # list) is not.
+    assert sorted(calls) == [
+        ("", "http://active.local/v1", {"headers": None}),
+        ("", "http://offline.local/v1", {"headers": None}),
+    ]
     rows = {row["name"]: row for row in providers if row.get("is_user_defined")}
     assert rows["Active"]["models"] == ["live-a", "live-b"]
-    assert rows["Offline"]["models"] == ["offline-seed"]
+    assert rows["Offline"]["models"] == ["live-a", "live-b"]
     assert rows["Static"]["models"] == ["only"]
 
 
@@ -933,13 +956,13 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
 
 
 def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch):
-    """Custom providers with api_key + base_url should prefer live /models.
+    """Custom providers with api_key + base_url and NO explicit ``models:`` list
+    should prefer the live /v1/models catalog.
 
     Custom providers (section 4 of list_authenticated_providers) point at
-    gateways like Bifrost that expose hundreds of models.  Reading only the
-    static ``models:`` dict from config.yaml leaves the /model picker with
-    a stale subset.  Live discovery fills the picker with all available
-    models from the endpoint.
+    gateways like Bifrost that expose hundreds of models.  When the user has
+    not declared an explicit ``models:`` subset, live discovery fills the
+    picker with every available model from the endpoint.
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
@@ -955,13 +978,9 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
     custom_providers = [
         {
             "name": "my-gateway",
-            "api_key": "sk-gateway-key",
+            "api_key": "***",
             "base_url": "https://gateway.example.com/v1",
-            "model": "gateway-model-a",
-            "models": {
-                "gateway-model-a": {"context_length": 128000},
-                "gateway-model-b": {"context_length": 128000},
-            },
+            # No explicit ``models:`` list — discovery must run.
         }
     ]
 
@@ -983,13 +1002,13 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     assert gateway_prov is not None, "Custom provider group not found in results"
     assert calls == [
-        ("sk-gateway-key", "https://gateway.example.com/v1", {"headers": None})
+        ("***", "https://gateway.example.com/v1", {"headers": None})
     ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",
         "gateway-model-b",
         "gateway-model-c",
-    ], "Live models must replace the static subset"
+    ], "Live models must fill the picker when no explicit subset is configured"
     assert gateway_prov["total_models"] == 3
 
 
@@ -1332,8 +1351,9 @@ def test_discovered_models_auto_saved_to_cache(monkeypatch):
     """Discovered models are persisted to config so ``discover_models: false``
     has a populated cache on the next read (#65652).
 
-    When a successful probe returns live models, ``_save_discovered_models_to_config``
-    must be called with the provider's base_url and the discovered model list.
+    When a provider has NO explicit ``models:`` list, the picker probes the
+    live /v1/models endpoint and, on success, ``_save_discovered_models_to_config``
+    is called with the provider's base_url and the discovered model list.
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
@@ -1355,8 +1375,8 @@ def test_discovered_models_auto_saved_to_cache(monkeypatch):
             "api_key": "***",
             "base_url": "https://gateway.example.com/v1",
             "discover_models": True,
-            "model": "only-model",
-            "models": {"only-model": {"context_length": 128000}},
+            # No explicit ``models:`` list — this is the un-narrowed case that
+            # should be probed and cached.
         }
     ]
 

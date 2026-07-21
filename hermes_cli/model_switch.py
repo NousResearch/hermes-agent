@@ -2176,12 +2176,16 @@ def list_authenticated_providers(
             # Prefer the endpoint's live /models list when discoverable,
             # unless the provider explicitly opts out via discover_models: false.
             # Policy mirrors Section 4's should_probe logic:
-            # - With an api_key: always probe (user opted into the endpoint).
-            # - Without an api_key but with explicit models: skip — the user
-            #   is narrowing a public endpoint to a specific subset.
-            # - Without an api_key AND no explicit models: probe anyway so
-            #   bare-endpoint providers (local llama.cpp / Ollama servers)
-            #   still show their full model catalog.
+            # - An explicit ``models:`` list is the user narrowing the endpoint
+            #   to a curated subset — keep it verbatim and do NOT probe. This is
+            #   the only case where the picker shows fewer than the endpoint's
+            #   full catalog, honoring an intentional configuration choice.
+            # - No ``models:`` list declared (whether or not a ``default_model``
+            #   is set): probe the live /v1/models endpoint and surface ALL
+            #   available models. A bare ``default_model``-only provider should
+            #   not show a one-line picker — the user asked to see everything.
+            #   This covers local llama.cpp / Ollama / vLLM servers (no api_key)
+            #   as well as keyed aggregators/gateways.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -2189,7 +2193,7 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            has_explicit_models = bool(models_list)
+            has_explicit_models = bool(ep_cfg.get("models"))
             _ep_url_norm = str(api_url).strip().rstrip("/").lower()
             _ep_slug_norm = str(ep_name).strip().lower()
             _ep_custom_slug_norm = custom_provider_slug(display_name).lower()
@@ -2202,9 +2206,14 @@ def list_authenticated_providers(
                     and _ep_url_norm == _current_base_url_norm
                 )
             )
-            should_probe = _can_probe_custom_provider(row_is_current=_ep_is_current) and bool(api_url) and discover and (
-                bool(api_key) or not has_explicit_models
-            )
+            # Probe the live /v1/models endpoint whenever the user has NOT
+            # declared an explicit ``models:`` list (and discovery is on). This
+            # is independent of the ``probe_custom_providers`` flag: when the
+            # endpoint is un-narrowed the user wants to see its FULL catalog, so
+            # we discover it for every row — not just the current one. When an
+            # explicit ``models:`` list IS declared we keep it verbatim and
+            # never probe (enforced by the ``not has_explicit_models`` gate).
+            should_probe = bool(api_url) and discover and not has_explicit_models
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
@@ -2214,9 +2223,16 @@ def list_authenticated_providers(
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
+                        # No explicit ``models:`` list declared: show the full
+                        # live catalog (the gate guarantees has_explicit_models
+                        # is False, so there is nothing to preserve/merge).
                         models_list = live_models
                 except Exception:
                     pass
+
+            # Sort auto-discovered models alphabetically (preserve config order for explicit lists)
+            if models_list and not has_explicit_models:
+                models_list = sorted(models_list, key=str.lower)
 
             results.append({
                 "slug": ep_name,
@@ -2442,33 +2458,23 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
-            # Live model discovery from custom provider endpoints (matches
-            # Section 3 behavior for user ``providers:`` entries).
-            # Also probes when no api_key is set (e.g. local llama.cpp /
-            # Ollama servers) — the /models endpoint often works without
-            # auth.  The CLI's _model_flow_named_custom always probes, so
-            # the Telegram/Discord picker should do the same for parity.
-            # Live-discovery policy:
-            # - With an api_key, the user has explicitly opted into the
-            #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
-            #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list,
-            #   the user is narrowing a public endpoint to a specific subset
-            #   (e.g. ollama.com /v1/models returns 35 models but the user
-            #   only wants 4). Preserve the explicit list and skip live
-            #   discovery. The singular ``model:`` field is only the current
-            #   active selection and must not suppress discovery on local
-            #   no-key endpoints.
-            # - Without an api_key AND no explicit models, fall through to
-            #   live discovery so bare-endpoint custom providers (local
-            #   llama.cpp / Ollama servers) still appear populated.
-            # - When discover_models: false is set, skip live discovery and
-            #   keep the explicit ``models:`` list regardless of whether an
-            #   api_key is present. This supports endpoints that expose a
-            #   full aggregator catalog via /models but only serve a subset
-            #   (parity with section 3's user ``providers:`` behaviour).
+            # Live model discovery from custom provider endpoints (mirrors
+            # Section 3's user ``providers:`` entries).
+            # Policy:
+            # - No explicit ``models:`` list declared (whether or not a
+            #   singular ``model:`` / default_model is set): probe the live
+            #   /v1/models endpoint and surface the FULL catalog. This covers
+            #   local llama.cpp / Ollama / vLLM servers (no api_key) as well
+            #   as keyed aggregators/gateways — the user asked to see every
+            #   available model for an un-narrowed endpoint, so discovery runs
+            #   for every row regardless of the ``probe_custom_providers`` flag.
+            # - An explicit ``models:`` list is the user narrowing the endpoint
+            #   to a curated subset: keep it verbatim and do NOT probe/replace.
+            #   This is the only case the picker shows fewer than the endpoint's
+            #   full catalog, honoring an intentional configuration choice
+            #   (e.g. a gateway exposing 35 models but the user only wants 4).
+            # - discover_models: false is a hard opt-out of live discovery that
+            #   keeps whatever list is configured (explicit or singular).
             _grp_is_current = slug.lower() == _current_provider_norm or (
                 _current_provider_norm == "custom"
                 and bool(_current_base_url_norm)
@@ -2476,9 +2482,8 @@ def list_authenticated_providers(
                 and _current_base_url_group_count == 1
             )
             should_probe = (
-                _can_probe_custom_provider(row_is_current=_grp_is_current)
-                and bool(api_url)
-                and (bool(api_key) or not grp.get("has_explicit_models"))
+                bool(api_url)
+                and not grp.get("has_explicit_models")
                 and grp.get("discover_models", True)
             )
             if should_probe:

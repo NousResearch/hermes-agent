@@ -131,12 +131,13 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     ]
 
 
-def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeypatch):
-    """User-defined OpenAI-compatible providers should prefer live /models.
+def test_list_authenticated_providers_keeps_explicit_models_verbatim_for_user_provider(monkeypatch):
+    """A user-defined provider with an explicit ``models:`` list must keep that
+    list verbatim and NOT probe the live endpoint — the user intentionally
+    narrowed the endpoint to a curated subset.
 
-    Regression: CRS-style providers with a stale config ``models:`` dict kept
-    showing only the configured subset in the /model picker, even though their
-    /v1/models endpoint exposed newly added models.
+    Regression for the new policy: an explicit ``models:`` tag is the only case
+    where the /model picker shows fewer than the endpoint's full catalog.
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
@@ -146,7 +147,7 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
 
     def fake_fetch_api_models(api_key, base_url, **kwargs):
         calls.append((api_key, base_url, kwargs))
-        return ["old-configured-model", "new-live-model"]
+        return ["new-live-model"]
 
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
 
@@ -155,9 +156,9 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
             "name": "CRS Henkee",
             "base_url": "http://127.0.0.1:3000/api/v1",
             "key_env": "CRS_TEST_KEY",
-            "model": "old-configured-model",
+            "model": "configured-model",
             "models": {
-                "old-configured-model": {"context_length": 200000},
+                "configured-model": {"context_length": 200000},
             },
         }
     }
@@ -175,9 +176,10 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     )
 
     assert user_prov is not None
-    assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1", {"headers": None})]
-    assert user_prov["models"] == ["old-configured-model", "new-live-model"]
-    assert user_prov["total_models"] == 2
+    # Explicit list must be preserved verbatim; live probe must NOT run.
+    assert calls == [], "explicit models: list must suppress live discovery"
+    assert user_prov["models"] == ["configured-model"]
+    assert user_prov["total_models"] == 1
 
 
 def test_user_provider_live_model_probe_uses_extra_headers(monkeypatch):

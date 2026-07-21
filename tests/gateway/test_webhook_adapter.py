@@ -1905,3 +1905,116 @@ class TestCustomSignatureHeader:
         with patch.object(adapter, "_reload_dynamic_routes"):
             with pytest.raises(ValueError, match="signature_header"):
                 await adapter.connect()
+
+
+# ===================================================================
+# Custom event type header (route-configurable)
+# ===================================================================
+
+
+class TestCustomEventHeader:
+    """Routes can pin the header carrying the event type via event_header."""
+
+    @pytest.mark.asyncio
+    async def test_event_header_drives_events_filter(self):
+        """A matching event type in the custom header passes the filter."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["pledge_created"],
+                "prompt": "event: {event_type}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={"X-Provider-Event": "pledge_created"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "pledge_created"
+
+    @pytest.mark.asyncio
+    async def test_event_header_non_matching_ignored(self):
+        """A non-matching event type in the custom header is filtered out."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["pledge_created"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={"X-Provider-Event": "pledge_deleted"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+
+    @pytest.mark.asyncio
+    async def test_event_header_takes_priority_over_builtin(self):
+        """When both the custom and a built-in event header are present,
+        the route-configured one wins."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["pledge_created"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={
+                    "X-Provider-Event": "pledge_created",
+                    "X-GitHub-Event": "push",
+                },
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "pledge_created"
+
+    @pytest.mark.asyncio
+    async def test_event_header_missing_falls_back_to_builtin(self):
+        """If the custom header is absent, resolution falls back to the
+        built-in headers and payload fields."""
+        routes = {
+            "custom": {
+                "secret": _INSECURE_NO_AUTH,
+                "event_header": "X-Provider-Event",
+                "events": ["push"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/custom",
+                json={"data": {"id": 1}},
+                headers={"X-GitHub-Event": "push"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "push"

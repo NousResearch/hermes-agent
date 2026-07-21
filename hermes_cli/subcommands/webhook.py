@@ -66,6 +66,13 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "Requires --signature-header.",
     )
     wh_sub.add_argument(
+        "--event-header",
+        default="",
+        help="Custom header name carrying the event type (e.g. "
+        "X-Gitea-Event). Checked before the built-in X-GitHub-Event / "
+        "X-GitLab-Event headers and payload fields.",
+    )
+    wh_sub.add_argument(
         "--signature-prefix",
         default="",
         help="Prefix the provider puts before the signature value (e.g. "

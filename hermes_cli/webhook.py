@@ -198,6 +198,10 @@ def _cmd_subscribe(args):
         if signature_prefix:
             route["signature_prefix"] = signature_prefix
 
+    event_header = (getattr(args, "event_header", "") or "").strip()
+    if event_header:
+        route["event_header"] = event_header
+
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
             print(
@@ -233,6 +237,8 @@ def _cmd_subscribe(args):
         prefix = route.get("signature_prefix", "")
         detail = f"{scheme}" + (f", prefix '{prefix}'" if prefix else "")
         print(f"  Signature header: {route['signature_header']} ({detail})")
+    if route.get("event_header"):
+        print(f"  Event header: {route['event_header']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
@@ -324,6 +330,8 @@ def _cmd_test(args):
         "Content-Type": "application/json",
         "X-GitHub-Event": "test",
     }
+    if route.get("event_header"):
+        headers[route["event_header"]] = "test"
     signature_header = route.get("signature_header", "")
     if signature_header:
         # Route pins a custom header — the adapter only accepts that one.

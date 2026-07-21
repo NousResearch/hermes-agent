@@ -8,6 +8,9 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
+  - event_header: name of the header carrying the event type, for
+    providers with their own header (checked before the built-in
+    X-GitHub-Event / X-GitLab-Event / payload fallbacks)
   - secret: HMAC secret for signature validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
@@ -664,9 +667,16 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Cannot parse body"}, status=400
                 )
 
-        # Check event type filter
+        # Check event type filter. A route-configured event_header is
+        # consulted first; the built-in headers and payload fields remain
+        # as fallback.
+        custom_event = ""
+        event_header = route_config.get("event_header", "")
+        if event_header:
+            custom_event = request.headers.get(event_header, "")
         event_type = (
-            request.headers.get("X-GitHub-Event", "")
+            custom_event
+            or request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
             or payload.get("type", "")

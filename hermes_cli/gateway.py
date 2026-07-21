@@ -5274,7 +5274,7 @@ def _all_platforms() -> list[dict]:
     return platforms
 
 
-def _platform_status(platform: dict) -> str:
+def _platform_status(platform: dict, gateway_config=None) -> str:
     """Return a plain-text status string for a platform.
 
     Returns uncolored text so it can safely be embedded in
@@ -5287,10 +5287,16 @@ def _platform_status(platform: dict) -> str:
         # check_fn (typically just dependency / env presence).
         if entry.is_connected is not None:
             try:
-                from gateway.config import PlatformConfig
+                from gateway.config import Platform, PlatformConfig
 
-                synthetic = PlatformConfig(enabled=True)
-                configured = bool(entry.is_connected(synthetic))
+                if gateway_config is None:
+                    gateway_config = load_gateway_config()
+                saved = getattr(gateway_config, "platforms", {}).get(
+                    Platform(entry.name)
+                )
+                configured = bool(
+                    entry.is_connected(saved or PlatformConfig(enabled=True))
+                )
             except Exception:
                 configured = False
         else:
@@ -6277,9 +6283,11 @@ def gateway_setup():
         print_header("Messaging Platforms")
 
         platforms = _all_platforms()
+        status_config = load_gateway_config()
 
         menu_items = [
-            f"{p['emoji']} {p['label']}  ({_platform_status(p)})" for p in platforms
+            f"{p['emoji']} {p['label']}  ({_platform_status(p, status_config)})"
+            for p in platforms
         ]
         menu_items.append("Done")
 
@@ -6304,7 +6312,10 @@ def gateway_setup():
             or s.startswith("plugin disabled")
         )
 
-    any_configured = any(_is_progress(_platform_status(p)) for p in _all_platforms())
+    status_config = load_gateway_config()
+    any_configured = any(
+        _is_progress(_platform_status(p, status_config)) for p in _all_platforms()
+    )
 
     if any_configured:
         print()

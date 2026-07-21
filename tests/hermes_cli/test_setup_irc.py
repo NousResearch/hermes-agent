@@ -8,6 +8,7 @@ interactive setup menus.
 import os
 from types import SimpleNamespace
 
+from gateway.config import Platform, PlatformConfig
 from gateway.platform_registry import PlatformEntry, platform_registry
 
 
@@ -120,6 +121,26 @@ class TestIRCFreshInstallDiscovery:
 
             status = gateway_mod._platform_status(plat)
             assert status == "not configured"
+        finally:
+            _unregister_irc_platform()
+
+    def test_plugin_status_uses_saved_platform_config(self, monkeypatch):
+        """Setup status passes plugins their config loaded from config.yaml."""
+        import hermes_cli.gateway as gateway_mod
+
+        saved = PlatformConfig(enabled=True, extra={"server": "saved.example"})
+        seen = []
+        plat = _register_irc_platform(
+            is_connected=lambda config: seen.append(config) or bool(config.extra)
+        )
+        monkeypatch.setattr(
+            gateway_mod,
+            "load_gateway_config",
+            lambda: SimpleNamespace(platforms={Platform("irc"): saved}),
+        )
+        try:
+            assert gateway_mod._platform_status(plat) == "configured"
+            assert seen == [saved]
         finally:
             _unregister_irc_platform()
 

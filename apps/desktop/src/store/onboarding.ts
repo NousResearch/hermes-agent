@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import {
   cancelOAuthSession,
+  getGlobalModelInfo,
   getGlobalModelOptions,
   getRecommendedDefaultModel,
   listOAuthProviders,
@@ -225,9 +226,10 @@ function notifyGatewayTools(tools: string[] | undefined) {
 }
 
 // After credentials are persisted, ask the backend which provider+models
-// are now authenticated. Pick the first curated model for the matching
-// provider as a sensible default, persist it via /api/model/set, and
-// transition to the model-confirmation step. If anything goes wrong
+// are now authenticated. For first-time setup, pick a recommended model for
+// the matching provider and persist it via /api/model/set. Reauthentication
+// keeps that provider's configured model. Then transition to the
+// model-confirmation step. If anything goes wrong
 // fetching options (no providers returned, network error), the caller
 // falls through to completing onboarding without showing the confirm
 // card — the user gets the undefined-model auto-selection behaviour
@@ -291,6 +293,26 @@ async function fetchProviderDefaultModel(
   }
 }
 
+async function fetchExistingProviderModel(
+  preferredSlugs: string[]
+): Promise<null | { providerSlug: string; defaultModel: string }> {
+  try {
+    const current = await getGlobalModelInfo()
+    const providerSlug = current.provider.trim()
+    const defaultModel = current.model.trim()
+    const preferred = preferredSlugs.map(slug => slug.toLowerCase())
+
+    if (providerSlug && defaultModel && preferred.includes(providerSlug.toLowerCase())) {
+      return { providerSlug, defaultModel }
+    }
+  } catch {
+    // Older/unavailable backends may not expose model info. Fall back to the
+    // existing first-time setup behavior below.
+  }
+
+  return null
+}
+
 // After OAuth/API-key success: reload the backend env, verify runtime,
 // then either show the model-confirm step or fall straight through to
 // completion if we can't determine a default.
@@ -310,9 +332,13 @@ async function completeWithModelConfirm(
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
 
-  const defaults = await fetchProviderDefaultModel(preferredSlugs)
+  // A successful sign-in can be either first-time setup or reauthentication.
+  // In the latter case the configured model is already the user's choice, so
+  // keep it instead of replacing it with today's recommended catalog entry.
+  const existing = await fetchExistingProviderModel(preferredSlugs)
+  const defaults = existing ?? (await fetchProviderDefaultModel(preferredSlugs))
 
-  if (defaults) {
+  if (defaults && !existing) {
     // Persist the chosen provider/model before the runtime gate so a stale
     // config provider (e.g. anthropic from a prior failed setup) cannot make
     // setup.runtime_check validate the wrong backend after a fresh OAuth login.

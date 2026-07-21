@@ -542,6 +542,18 @@ class TestClarifyEagerReseed:
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.01)
 
+    async def _wait_until(self, predicate, timeout=2.0):
+        """Poll ``predicate()`` until true or timeout — robust against CPU
+        contention (a fixed _drain sleep flakes under the 24-worker suite).
+        Returns the predicate's final value so callers can assert on it.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(0.01)
+        return predicate()
+
     async def _to_reopen_pending(self, consumer, adapter):
         """Run to the point right after a clarify boundary: native still on,
         no stream open, awaiting a re-seed.  Returns nothing; leaves the run
@@ -622,7 +634,7 @@ class TestClarifyEagerReseed:
             "eager re-seed must emit exactly one new empty seed frame before "
             f"any delta (before={seeds_before}, after={seeds_after})"
         )
-        assert consumer._native_stream_opened is True
+        assert await self._wait_until(lambda: consumer._native_stream_opened)
         assert consumer._awaiting_reopen_after_boundary is False
         assert consumer._reopen_seeded_eagerly is True
 
@@ -649,7 +661,9 @@ class TestClarifyEagerReseed:
         task = await self._to_reopen_pending(consumer, adapter)
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)
-        assert consumer._native_stream_opened is True  # eager seed opened it
+        assert await self._wait_until(
+            lambda: consumer._native_stream_opened
+        ), "eager seed must open the stream"
 
         frames_before = len(adapter.frames)
 
@@ -768,7 +782,9 @@ class TestClarifyEagerReseed:
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)  # process _REOPEN_SEED → seed fails
 
-        assert consumer._use_native_streaming is False
+        assert await self._wait_until(
+            lambda: consumer._use_native_streaming is False
+        ), "failed eager seed must disable native streaming"
         assert consumer.cfg.buffer_only is True
         assert consumer._native_stream_opened is False
 
@@ -795,7 +811,7 @@ class TestClarifyEagerReseed:
 
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)  # eager seed opens the stream
-        assert consumer._native_stream_opened is True
+        assert await self._wait_until(lambda: consumer._native_stream_opened)
 
         # Now the LLM produces post-answer content.
         consumer.on_delta("根据你的选择，这是后续的完整回答内容，足够长以触发一次刷新。")
@@ -837,7 +853,7 @@ class TestClarifyEagerReseed:
         task = await self._to_reopen_pending(consumer, adapter)
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)
-        assert consumer._native_stream_opened is True
+        assert await self._wait_until(lambda: consumer._native_stream_opened)
 
         frames_before = len(adapter.frames)
 
@@ -860,3 +876,201 @@ class TestClarifyEagerReseed:
         assert consumer.final_content_delivered is False
         assert consumer.final_response_sent is False
         assert consumer._native_stream_opened is False
+
+    # === ROUND 2, POINT 1: 降级后 post-answer 内容落地为单气泡（补强 Point 5）===
+
+    @pytest.mark.asyncio
+    async def test_degraded_post_answer_lands_single_bubble(self):
+        """eager 再次 seed 失败降级（_use_native_streaming=False + buffer_only=True）
+        后，继续喂 post-answer 内容并 finish，内容必须以恰好一次 send() 落地为单气泡，
+        且绝不重发 pre-clarify 的旧内容（boundary 时 _reset_segment_state 已清空 buffer）。
+
+        直接验证 review (b).4 的结论。
+        """
+        # 复用 Point 5 的降级 adapter：第一次空 seed 成功、第二次（eager 再 seed）失败。
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        NativeStreamingAdapter = type(
+            "NativeStreamingAdapter2b",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "SUPPORTS_MESSAGE_EDITING": False,
+                "SUPPORTS_NATIVE_STREAMING": True,
+            },
+        )
+        NativeStreamingAdapter.__abstractmethods__ = frozenset()
+        adapter = NativeStreamingAdapter.__new__(NativeStreamingAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        adapter.frames = []
+        adapter.supports_native_streaming = (
+            lambda chat_type=None, metadata=None: True
+        )
+
+        empty_seed_count = {"n": 0}
+
+        async def _send_stream_frame(
+            text, *, finalize=False, chat_id=None, reply_to=None, **kwargs
+        ):
+            adapter.frames.append({
+                "text": text, "finalize": finalize,
+                "chat_id": chat_id, "reply_to": reply_to,
+            })
+            if finalize:
+                return True
+            if text == "":
+                empty_seed_count["n"] += 1
+                # 初始 seed（run-start）成功；第二次空 seed（eager 再 seed）失败。
+                return empty_seed_count["n"] == 1
+            return True
+        adapter.send_stream_frame = _send_stream_frame
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="fallback_msg"),
+        )
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)  # _REOPEN_SEED → 第二次 seed 失败 → 降级
+
+        assert await self._wait_until(
+            lambda: consumer._use_native_streaming is False
+        ), "eager seed 失败必须关闭 native streaming"
+        assert consumer.cfg.buffer_only is True
+
+        # 降级后继续产出 post-answer 内容 → 应以一次 send() 单气泡投递。
+        consumer.on_delta("根据你的选择，这是完整的后续答复内容。")
+        await self._drain(consumer, 0.05)
+        consumer.finish()
+        await task
+
+        # send() 恰好一次。
+        adapter.send.assert_awaited_once()
+        # 取出该次 send 的内容（在 _send_or_edit 首发路径以 content= kwarg 传入）。
+        sent_call = adapter.send.await_args
+        sent_content = sent_call.kwargs.get("content")
+        if sent_content is None and sent_call.args:
+            # 兼容位置参数写法（其它 boundary fallback 用 send(chat_id, text)）。
+            sent_content = sent_call.args[-1]
+        assert sent_content is not None
+        assert "完整的后续答复" in sent_content
+        # 绝不重发 pre-clarify 内容（boundary 已 finalize 成稳定气泡并清空 buffer）。
+        assert "提问前已经流式出去的一段内容。" not in sent_content
+
+    # === ROUND 2, POINT 2: 短内容不被误判为「无内容」而走 hole-A 空关闭 ===
+
+    @pytest.mark.asyncio
+    async def test_eager_seed_short_content_not_hole_a(self):
+        """eager seed 开流后只产出一段不足 60 char 节流阈值的短内容（中途不推帧），
+        finish 时该短内容必须随 finalize 帧落地，而不是走 hole-A 的空关闭（空 finalize
+        或 "✅"）。因为 _accumulated 非空，hole-A 条件 `not _accumulated` 不成立。
+        """
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)
+        assert await self._wait_until(
+            lambda: consumer._native_stream_opened
+        ), "eager seed 应已开流"
+
+        frames_before = len(adapter.frames)
+
+        # 只产出一个 1-char 短内容（远不足 60 char 节流阈值 → 中途不推帧）。
+        consumer.on_delta("短")
+        consumer.finish()
+        await task
+
+        new_frames = adapter.frames[frames_before:]
+        finalize_frames = [f for f in new_frames if f["finalize"]]
+        # 收尾恰好一个 finalize 帧，且携带短内容。
+        assert len(finalize_frames) == 1, (
+            f"eager seed 后短内容应恰好 finalize 一次，got {finalize_frames}"
+        )
+        assert "短" in finalize_frames[0]["text"], (
+            f"finalize 帧必须携带短内容，got {finalize_frames[0]!r}"
+        )
+        # 未走 hole-A：没有空 finalize 收尾，也没有 "✅" 占位。
+        assert finalize_frames[0]["text"] != "", "不应是 hole-A 的空 finalize"
+        assert not any(f["text"] == "✅" for f in adapter.frames), (
+            f"短内容不应被误判为无内容而发 '✅'，frames={adapter.frames}"
+        )
+        # _accumulated 非空 → hole-A 条件 `not _accumulated` 不成立，佐证走的是内容收尾。
+        assert consumer._accumulated == "短"
+
+    # === ROUND 2, POINT 3: 双 clarify 边界链路自洽、无残留误判 ===
+
+    @pytest.mark.asyncio
+    async def test_double_clarify_boundary_reseed_chain(self):
+        """eager seed → 内容 → 第二轮 clarify boundary → 第二轮 eager seed。
+
+        验证多边界链路自洽：第二轮 boundary 后回到 reopen-pending 状态
+        （_awaiting_reopen_after_boundary=True、_native_stream_opened=False），
+        再次 request_reopen_seed() 仍能成功 eager seed，标志无残留导致误判。
+
+        覆盖 review (b).2。
+        """
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        # 第一轮：boundary → eager seed → 内容。
+        task = await self._to_reopen_pending(consumer, adapter)
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)
+        assert await self._wait_until(lambda: consumer._native_stream_opened)
+        assert consumer._reopen_seeded_eagerly is True
+
+        consumer.on_delta("根据你的选择，这是后续的完整回答内容，足够长以触发一次流式刷新的补充。")
+        await self._drain(consumer, 0.05)
+
+        seeds_before_second_boundary = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+
+        # 第二轮 clarify boundary（reopen=True）。
+        boundary = consumer.close_for_approval_prompt(
+            "💬 等待你的选择...", reason="Clarify", reopen=True,
+        )
+        fut = boundary[0] if isinstance(boundary, tuple) else boundary
+        await asyncio.wait_for(fut, timeout=1.0)
+
+        # 第二轮 boundary 后：回到 reopen-pending，stream 已关。
+        assert consumer._awaiting_reopen_after_boundary is True
+        assert consumer._native_stream_opened is False
+        assert consumer._use_native_streaming is True
+        # NOTE: 与 task 预期不同 —— 产品代码在 boundary 处理里并不重置
+        # _reopen_seeded_eagerly（见 code-review 观察点 O2：consumer 每 turn 新建，
+        # 残留无害）。这里断言真实行为（残留 True），并在下方证明该残留不会
+        # 导致第二轮 eager seed 误判 —— 链路仍自洽。
+        assert consumer._reopen_seeded_eagerly is True
+
+        # 第二轮 eager seed：即便标志有残留，仍能正确再次开流。
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)
+
+        seeds_after = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+        assert seeds_after == seeds_before_second_boundary + 1, (
+            "第二轮 eager seed 必须再发一个新的空 seed 帧 "
+            f"(before={seeds_before_second_boundary}, after={seeds_after})"
+        )
+        assert await self._wait_until(lambda: consumer._native_stream_opened)
+        assert consumer._reopen_seeded_eagerly is True
+        assert consumer._awaiting_reopen_after_boundary is False
+
+        consumer.finish()
+        await task

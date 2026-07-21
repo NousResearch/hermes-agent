@@ -21,6 +21,11 @@ interface PendingRequest {
 
 export class ShikiWorkerRetryableError extends Error {
   readonly retryable = true
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'ShikiWorkerRetryableError'
+  }
 }
 
 let nextGenerationId = 0
@@ -59,12 +64,20 @@ function retireGeneration(generation: WorkerGeneration, error: Error) {
 }
 
 function createGeneration(): WorkerGeneration {
+  let worker: Worker
+
+  try {
+    worker = new Worker(new URL('./shiki-worker.ts', import.meta.url), { type: 'module' })
+  } catch (cause) {
+    throw new ShikiWorkerRetryableError('Shiki worker construction failed', { cause })
+  }
+
   const generation: WorkerGeneration = {
     id: ++nextGenerationId,
     leases: 0,
     pendingIds: new Set(),
     retired: false,
-    worker: new Worker(new URL('./shiki-worker.ts', import.meta.url), { type: 'module' })
+    worker
   }
 
   generation.worker.onmessage = (event: MessageEvent<ShikiWorkerResponse>) => {
@@ -98,8 +111,10 @@ function getGeneration(): WorkerGeneration {
 }
 
 export function isShikiWorkerRetryableError(error: unknown): error is ShikiWorkerRetryableError {
-  return error instanceof ShikiWorkerRetryableError ||
+  return (
+    error instanceof ShikiWorkerRetryableError ||
     (error instanceof Error && 'retryable' in error && error.retryable === true)
+  )
 }
 
 /** Narrow behavior seam for lifecycle tests; never exposes worker instances. */
@@ -138,10 +153,7 @@ export function startShikiHighlight(code: string, language: string): ShikiHighli
     try {
       generation.worker.postMessage({ code, id, language } satisfies ShikiWorkerRequest)
     } catch (error) {
-      retireGeneration(
-        generation,
-        new ShikiWorkerRetryableError(error instanceof Error ? error.message : String(error))
-      )
+      retireGeneration(generation, new ShikiWorkerRetryableError('Shiki worker postMessage failed', { cause: error }))
     }
   })
 

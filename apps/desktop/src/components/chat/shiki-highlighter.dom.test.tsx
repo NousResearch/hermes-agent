@@ -3,9 +3,21 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ShikiWorkerToken } from './shiki-worker'
+import type { ShikiHighlightJob } from './shiki-worker-client'
+
+interface ActualShikiWorkerClient {
+  getShikiWorkerClientSnapshotForTests: () => {
+    activeGeneration: number | null
+    activeLeases: number
+    pending: number
+  }
+  startShikiHighlight: (code: string, language: string) => ShikiHighlightJob
+}
+
 const CODE = 'export const answer = 42'
 
-const TOKENS = [
+const TOKENS: ShikiWorkerToken[][] = [
   [
     { content: 'export', htmlStyle: { '--shiki-light': '#6E7781', color: '#6E7781' } },
     { content: ' const answer = 42', htmlStyle: { color: '#ff0000' } }
@@ -17,10 +29,12 @@ const { disposeHighlight, startShikiHighlight } = vi.hoisted(() => {
 
   return {
     disposeHighlight,
-    startShikiHighlight: vi.fn(() => ({
-      dispose: disposeHighlight,
-      promise: Promise.resolve(TOKENS)
-    }))
+    startShikiHighlight: vi.fn<(code: string, language: string) => ShikiHighlightJob>(
+      (_code: string, _language: string) => ({
+        dispose: disposeHighlight,
+        promise: Promise.resolve(TOKENS)
+      })
+    )
   }
 })
 
@@ -58,7 +72,7 @@ const components = {
 beforeEach(() => {
   disposeHighlight.mockClear()
   startShikiHighlight.mockClear()
-  startShikiHighlight.mockImplementation(() => ({
+  startShikiHighlight.mockImplementation((_code: string, _language: string) => ({
     dispose: disposeHighlight,
     promise: Promise.resolve(TOKENS)
   }))
@@ -81,10 +95,7 @@ describe('SyntaxHighlighter viewport and worker lifecycle', () => {
     expect(intersectionCallback).not.toBeNull()
 
     act(() => {
-      intersectionCallback?.(
-        [{ isIntersecting: true } as IntersectionObserverEntry],
-        {} as IntersectionObserver
-      )
+      intersectionCallback?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
     })
 
     await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledWith(CODE, 'ts'))
@@ -98,10 +109,7 @@ describe('SyntaxHighlighter viewport and worker lifecycle', () => {
     render(<SyntaxHighlighter code={CODE} components={components} language="ts" />)
 
     act(() => {
-      intersectionCallback?.(
-        [{ isIntersecting: true } as IntersectionObserverEntry],
-        {} as IntersectionObserver
-      )
+      intersectionCallback?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
     })
     await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledTimes(1))
 
@@ -121,10 +129,7 @@ describe('SyntaxHighlighter viewport and worker lifecycle', () => {
 
     const view = render(<SyntaxHighlighter code={CODE} components={components} language="ts" />)
     act(() => {
-      intersectionCallback?.(
-        [{ isIntersecting: true } as IntersectionObserverEntry],
-        {} as IntersectionObserver
-      )
+      intersectionCallback?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
     })
     await waitFor(() => expect(startShikiHighlight).toHaveBeenCalledTimes(1))
 
@@ -197,5 +202,101 @@ describe('SyntaxHighlighter viewport and worker lifecycle', () => {
 
     expect(startShikiHighlight).toHaveBeenCalledTimes(2)
     expect(view.container.querySelector('code')?.textContent).toBe(CODE)
+  })
+
+  it('shares one replacement generation after a transient Worker constructor failure', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const constructorCause = new Error('transient constructor detail')
+
+    class ConstructorRetryWorker {
+      static constructorCalls = 0
+      static instances: ConstructorRetryWorker[] = []
+      messages: Array<{ code: string; id: number; language: string }> = []
+      onerror: ((event: ErrorEvent) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      terminateCalls = 0
+
+      constructor() {
+        ConstructorRetryWorker.constructorCalls += 1
+
+        if (ConstructorRetryWorker.constructorCalls === 1) {
+          throw constructorCause
+        }
+
+        ConstructorRetryWorker.instances.push(this)
+      }
+
+      postMessage(message: { code: string; id: number; language: string }) {
+        this.messages.push(message)
+      }
+
+      terminate() {
+        this.terminateCalls += 1
+      }
+    }
+
+    vi.stubGlobal('Worker', ConstructorRetryWorker)
+    const client = await vi.importActual<ActualShikiWorkerClient>('./shiki-worker-client')
+    startShikiHighlight.mockImplementation(client.startShikiHighlight)
+
+    const view = render(
+      <>
+        <SyntaxHighlighter code="first block" components={components} language="ts" />
+        <SyntaxHighlighter code="second block" components={components} language="ts" />
+      </>
+    )
+
+    await waitFor(() => expect(ConstructorRetryWorker.instances).toHaveLength(1))
+    const worker = ConstructorRetryWorker.instances[0]
+    await waitFor(() => expect(worker.messages).toHaveLength(2))
+
+    for (const message of worker.messages) {
+      worker.onmessage?.({ data: { id: message.id, tokens: TOKENS } } as MessageEvent)
+    }
+
+    await waitFor(() => expect(view.container.querySelectorAll('span[style*="#57606a"]')).toHaveLength(2))
+    expect(ConstructorRetryWorker.constructorCalls).toBe(2)
+    expect(client.getShikiWorkerClientSnapshotForTests()).toMatchObject({ activeLeases: 2, pending: 0 })
+
+    view.unmount()
+
+    expect(worker.terminateCalls).toBe(1)
+    expect(client.getShikiWorkerClientSnapshotForTests()).toEqual({
+      activeGeneration: null,
+      activeLeases: 0,
+      pending: 0
+    })
+  })
+
+  it('falls back without looping when both Worker constructor attempts fail', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const constructorCauses = [new Error('first constructor detail'), new Error('second constructor detail')]
+
+    class AlwaysFailingConstructorWorker {
+      static constructorCalls = 0
+
+      constructor() {
+        const cause = constructorCauses[AlwaysFailingConstructorWorker.constructorCalls]
+        AlwaysFailingConstructorWorker.constructorCalls += 1
+        throw cause
+      }
+    }
+
+    vi.stubGlobal('Worker', AlwaysFailingConstructorWorker)
+    const client = await vi.importActual<ActualShikiWorkerClient>('./shiki-worker-client')
+    startShikiHighlight.mockImplementation(client.startShikiHighlight)
+
+    const view = render(<SyntaxHighlighter code={CODE} components={components} language="ts" />)
+
+    await waitFor(() => expect(AlwaysFailingConstructorWorker.constructorCalls).toBe(2))
+    await act(async () => Promise.resolve())
+
+    expect(AlwaysFailingConstructorWorker.constructorCalls).toBe(2)
+    expect(view.container.querySelector('code')?.textContent).toBe(CODE)
+    expect(client.getShikiWorkerClientSnapshotForTests()).toEqual({
+      activeGeneration: null,
+      activeLeases: 0,
+      pending: 0
+    })
   })
 })

@@ -23,7 +23,9 @@ class TestResizeObserver {
 
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
 vi.stubGlobal('CSS', { escape: (value: string) => value })
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 0))
+vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+  window.setTimeout(() => callback(performance.now()), 0)
+)
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
 
 Element.prototype.scrollTo = function scrollTo() {}
@@ -54,7 +56,9 @@ function makeFixture(): ChatMessage[] {
     messages.push({
       id: `fixture-user-${turn}`,
       role: 'user',
-      parts: [{ type: 'text', text: `Inspect module ${turn} and explain the observed behavior without omitting evidence.` }],
+      parts: [
+        { type: 'text', text: `Inspect module ${turn} and explain the observed behavior without omitting evidence.` }
+      ],
       timestamp: turn * 2
     })
 
@@ -185,7 +189,11 @@ function makeMinimalTurns(count: number, withLatestHeavyTools = 0): ChatMessage[
         : [{ type: 'text', text: `Answer ${turn}` }]
 
     return [
-      { id: `minimal-user-${turn}`, role: 'user' as const, parts: [{ type: 'text' as const, text: `Question ${turn}` }] },
+      {
+        id: `minimal-user-${turn}`,
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: `Question ${turn}` }]
+      },
       { id: `minimal-assistant-${turn}`, role: 'assistant' as const, parts: assistantParts, pending: false }
     ]
   }).flat()

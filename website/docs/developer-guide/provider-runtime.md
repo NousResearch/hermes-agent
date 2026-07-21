@@ -158,11 +158,11 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 
 ## Fallback models
 
-Hermes supports a configured fallback provider chain — a list of `(provider, model)` entries tried in order when the primary model encounters errors. The legacy single-pair `fallback_model` dict is still accepted for back-compat (and migrated on first write).
+Hermes supports a configured fallback provider chain — a top-level `fallback_providers:` list of `(provider, model)` entries tried in order when the primary model encounters errors. The legacy single-pair `fallback_model` dict is still accepted for back-compat.
 
 ### How it works internally
 
-1. **Storage**: `AIAgent.__init__` stores the `fallback_model` dict and sets `_fallback_activated = False`.
+1. **Storage**: `AIAgent.__init__` normalizes the incoming config into `_fallback_chain`, stores the first entry in `_fallback_model` for compatibility, and sets `_fallback_activated = False`.
 
 2. **Trigger points**: `_try_activate_fallback()` is called from three places in the main retry loop in `run_agent.py`:
    - After max retries on invalid API responses (None choices, missing content)
@@ -180,9 +180,9 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
    - Resets retry count to 0 and continues the loop
 
 4. **Config flow**:
-   - CLI: `cli.py` reads `CLI_CONFIG["fallback_model"]` → passes to `AIAgent(fallback_model=...)`
-   - Gateway: `gateway/run.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
-   - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
+   - CLI: `cli.py` reads `CLI_CONFIG["fallback_providers"]` first, then falls back to `CLI_CONFIG["fallback_model"]`
+   - Gateway: `gateway/run.py._load_fallback_model()` reads `fallback_providers` first and falls back to the legacy key
+   - Validation: each fallback entry must have non-empty `provider` and `model` keys, or that entry is ignored
 
 ### What does NOT support fallback
 

@@ -19112,7 +19112,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        _progress_adapter = self._adapter_for_source(source)
+        _native_slack_task_cards = False
+        if (
+            source.platform == Platform.SLACK
+            and _progress_adapter is not None
+            and hasattr(_progress_adapter, "native_task_cards_enabled")
+        ):
+            try:
+                _native_slack_task_cards = bool(
+                    _progress_adapter.native_task_cards_enabled()
+                )
+            except Exception:
+                logger.debug("Slack native task-card config check failed", exc_info=True)
+        # The native flag is itself an explicit progress opt-in. Slack keeps
+        # ordinary text tool_progress off by default, so requiring both flags
+        # would silently leave the native feature inactive.
+        needs_progress_queue = (
+            tool_progress_enabled
+            or _thinking_enabled
+            or _native_slack_task_cards
+        )
 
 
         # Queue for progress messages (thread-safe)
@@ -19270,6 +19290,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 msg = f"💬 {thinking_text}" if thinking_text else None
                 if msg:
                     progress_queue.put(msg)
+                return
+
+            # Native progress consumes the authoritative ID-bearing
+            # tool_start/tool_complete callbacks below. Do not also enqueue
+            # name-correlated text events, which would duplicate cards and
+            # mispair concurrent calls to the same tool.
+            if _native_slack_task_cards and event_type in {
+                "tool.started",
+                "tool.completed",
+            }:
                 return
 
             # If tool_progress is off, only _thinking passes through (above).
@@ -19447,11 +19477,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        if _native_slack_task_cards:
+            _progress_metadata = dict(_progress_metadata or {})
+            if source.scope_id:
+                _progress_metadata.setdefault("recipient_team_id", source.scope_id)
+                _progress_metadata.setdefault("slack_team_id", source.scope_id)
+            if source.user_id:
+                _progress_metadata.setdefault("recipient_user_id", source.user_id)
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
             else None
         )
+
+        def _native_tool_start_callback(call_id, tool_name, args):
+            """Queue an ID-correlated native progress start from the agent thread."""
+            if not progress_queue or not _run_still_current():
+                return
+            try:
+                _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                if _agent_for_interrupt is not None and getattr(
+                    _agent_for_interrupt, "is_interrupted", False
+                ):
+                    return
+            except Exception:
+                pass
+            from agent.display import build_tool_preview
+
+            progress_queue.put(
+                {
+                    "type": "tool.started",
+                    "tool_call_id": str(call_id or ""),
+                    "tool_name": str(tool_name or "tool"),
+                    "preview": build_tool_preview(
+                        str(tool_name or "tool"), args or {}, max_len=64
+                    )
+                    or "",
+                }
+            )
+
+        def _native_tool_complete_callback(call_id, tool_name, args, result):
+            """Queue the matching native completion using the real tool-call ID."""
+            if not progress_queue or not _run_still_current():
+                return
+            try:
+                _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                if _agent_for_interrupt is not None and getattr(
+                    _agent_for_interrupt, "is_interrupted", False
+                ):
+                    return
+            except Exception:
+                pass
+            from agent.display import _detect_tool_failure
+
+            is_error, _ = _detect_tool_failure(str(tool_name or "tool"), result)
+            progress_queue.put(
+                {
+                    "type": "tool.completed",
+                    "tool_call_id": str(call_id or ""),
+                    "tool_name": str(tool_name or "tool"),
+                    "is_error": bool(is_error),
+                }
+            )
+
+        def _combined_tool_start_callback(call_id, tool_name, args):
+            if _voice_ack_guild[0] is not None:
+                voice_ack_callback(call_id, tool_name, args)
+            if _native_slack_task_cards:
+                _native_tool_start_callback(call_id, tool_name, args)
 
         async def write_tool_log():
             """Drain log_queue and append tool-call lines to tool_calls.log.
@@ -19515,6 +19608,187 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter = self._adapter_for_source(source)
             if not adapter:
                 return
+
+            if (
+                _native_slack_task_cards
+                and hasattr(adapter, "send_native_task_card_progress")
+            ):
+                tasks: Dict[str, Dict[str, str]] = {}
+                task_order: List[str] = []
+                fallback_msg_id: Optional[str] = None
+                native_failed = False
+                anonymous_seq = 0
+
+                def _compact(value: Any, limit: int = 120) -> str:
+                    text = re.sub(r"\s+", " ", str(value or "")).strip()
+                    if len(text) <= limit:
+                        return text
+                    return text[: limit - 3].rstrip() + "..."
+
+                def _visible_tasks() -> List[Dict[str, str]]:
+                    return [tasks[task_id] for task_id in task_order[-8:]]
+
+                def _fallback_text() -> str:
+                    labels = {
+                        "in_progress": "running",
+                        "complete": "complete",
+                        "error": "error",
+                    }
+                    lines = [
+                        f"- {task['title']} - {labels.get(task['status'], task['status'])}"
+                        for task in _visible_tasks()
+                    ]
+                    return "Hermes is working\n" + "\n".join(lines)
+
+                def _apply_native_event(raw: Any) -> bool:
+                    nonlocal anonymous_seq
+                    if not isinstance(raw, dict):
+                        return False
+                    event_type = raw.get("type")
+                    if event_type not in {"tool.started", "tool.completed"}:
+                        return False
+                    call_id = str(raw.get("tool_call_id") or "")
+                    if not call_id:
+                        anonymous_seq += 1
+                        call_id = f"anonymous_{anonymous_seq}"
+                    tool_name = str(raw.get("tool_name") or "tool")
+
+                    if event_type == "tool.started":
+                        title = tool_name
+                        preview = _compact(raw.get("preview"), 64)
+                        if preview:
+                            title = f"{tool_name} - {preview}"
+                        if call_id not in tasks:
+                            task_order.append(call_id)
+                        tasks[call_id] = {
+                            "id": call_id,
+                            "title": _compact(title),
+                            "status": "in_progress",
+                        }
+                        return True
+
+                    task = tasks.get(call_id)
+                    if task is None:
+                        # Completion-only events are rare but valid on some
+                        # runtimes. Keep their real ID instead of guessing a
+                        # same-name pending call.
+                        task = {
+                            "id": call_id,
+                            "title": _compact(tool_name),
+                            "status": "in_progress",
+                        }
+                        tasks[call_id] = task
+                        task_order.append(call_id)
+                    task["status"] = "error" if raw.get("is_error") else "complete"
+                    return True
+
+                async def _send_or_edit_fallback() -> None:
+                    nonlocal fallback_msg_id
+                    text = _fallback_text()
+                    if fallback_msg_id:
+                        result = await adapter.edit_message(
+                            chat_id=source.chat_id,
+                            message_id=fallback_msg_id,
+                            content=text,
+                            metadata=_progress_metadata,
+                        )
+                        if getattr(result, "success", False):
+                            return
+                    result = await adapter.send(
+                        chat_id=source.chat_id,
+                        content=text,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
+                    if getattr(result, "success", False) and getattr(
+                        result, "message_id", None
+                    ):
+                        fallback_msg_id = str(result.message_id)
+                        if _cleanup_progress:
+                            _cleanup_msg_ids.append(fallback_msg_id)
+
+                async def _publish_native_progress() -> None:
+                    nonlocal native_failed
+                    if not tasks:
+                        return
+                    if not native_failed:
+                        result = await adapter.send_native_task_card_progress(
+                            chat_id=source.chat_id,
+                            tasks=_visible_tasks(),
+                            title="Hermes is working",
+                            reply_to=_progress_reply_to,
+                            metadata=_progress_metadata,
+                            fallback_text=_fallback_text(),
+                        )
+                        if getattr(result, "success", False):
+                            return
+                        native_failed = True
+                        logger.warning(
+                            "Slack native task-card progress failed; falling back "
+                            "to an editable text update: %s",
+                            getattr(result, "error", "unknown error"),
+                        )
+                    # Once the native rail fails, every later lifecycle event
+                    # edits the same fallback message so progress remains live.
+                    await _send_or_edit_fallback()
+
+                def _drain_native_queue() -> bool:
+                    changed = False
+                    while True:
+                        try:
+                            changed = _apply_native_event(
+                                progress_queue.get_nowait()
+                            ) or changed
+                        except queue.Empty:
+                            return changed
+                        except Exception:
+                            logger.debug(
+                                "Slack native progress queue drain failed",
+                                exc_info=True,
+                            )
+                            return changed
+
+                try:
+                    while True:
+                        if not _run_still_current():
+                            return
+                        try:
+                            raw = progress_queue.get_nowait()
+                        except queue.Empty:
+                            await asyncio.sleep(0.1)
+                            continue
+
+                        try:
+                            _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                            if _agent_for_interrupt is not None and getattr(
+                                _agent_for_interrupt, "is_interrupted", False
+                            ):
+                                continue
+                        except Exception:
+                            pass
+
+                        if _apply_native_event(raw):
+                            await _publish_native_progress()
+                except asyncio.CancelledError:
+                    if _drain_native_queue() and _run_still_current():
+                        try:
+                            _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                            _interrupted = bool(
+                                _agent_for_interrupt is not None
+                                and getattr(_agent_for_interrupt, "is_interrupted", False)
+                            )
+                        except Exception:
+                            _interrupted = False
+                        if not _interrupted:
+                            await _publish_native_progress()
+                    return
+                finally:
+                    if hasattr(adapter, "stop_native_task_card_progress"):
+                        await adapter.stop_native_task_card_progress(
+                            source.chat_id,
+                            reply_to=_progress_reply_to,
+                            metadata=_progress_metadata,
+                        )
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
@@ -20405,10 +20679,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 else None
             )
-            # Discord voice verbal-ack hook (fires once per turn on first tool
-            # call; armed only when in a voice channel with the mixer running).
+            # Compose ID-bearing lifecycle consumers: Discord's one-time voice
+            # ack and Slack's native task cards both use the authoritative
+            # start callback, so neither has to infer identity from tool names.
             agent.tool_start_callback = (
-                voice_ack_callback if _voice_ack_guild[0] is not None else None
+                _combined_tool_start_callback
+                if _voice_ack_guild[0] is not None or _native_slack_task_cards
+                else None
+            )
+            agent.tool_complete_callback = (
+                _native_tool_complete_callback if _native_slack_task_cards else None
             )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb

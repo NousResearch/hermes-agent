@@ -85,6 +85,18 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+@dataclass
+class _NativeTaskCardStream:
+    """Serialized state for one workspace-scoped Slack progress stream."""
+
+    team_id: str
+    channel: str
+    thread_ts: str
+    stream_ts: str = ""
+    stopped: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -486,6 +498,12 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active Assistant statuses by (team_id, channel_id, thread_ts)
         # so cleanup cannot clear an overlapping Slack Connect workspace.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+        # Native progress streams share Slack's workspace/thread isolation.
+        # Each stream owns a lock so concurrent start/append/stop calls cannot
+        # race into duplicate streams or append after finalization.
+        self._native_task_card_streams: Dict[
+            Tuple[str, str, str], _NativeTaskCardStream
+        ] = {}
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
@@ -1369,6 +1387,12 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Watchdog task raised during disconnect", exc_info=True
                 )
 
+        # Finalize native streams while workspace clients are still live. The
+        # gateway normally stops each turn's stream first; this is the shutdown
+        # safety net for cancellation/reconnect races.
+        for key, stream in list(self._native_task_card_streams.items()):
+            await self._stop_native_task_card_stream(key, stream)
+
         await self._stop_socket_mode_handler()
         self._app = None
         self._app_token = None
@@ -1398,6 +1422,183 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
+
+    @staticmethod
+    def _truthy_config(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def native_task_cards_enabled(self) -> bool:
+        """Return whether Slack-native tool progress is explicitly enabled."""
+        extra = self.config.extra if isinstance(self.config.extra, dict) else {}
+        direct = extra.get("native_task_cards", extra.get("nativeTaskCards"))
+        if direct is not None:
+            return self._truthy_config(direct)
+
+        streaming = extra.get("streaming")
+        if isinstance(streaming, dict):
+            progress = streaming.get("progress")
+            if isinstance(progress, dict):
+                nested = progress.get(
+                    "native_task_cards", progress.get("nativeTaskCards")
+                )
+                if nested is not None:
+                    return self._truthy_config(nested)
+        return False
+
+    def _native_task_card_key(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[str, str, str]]:
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        if not thread_ts:
+            return None
+        return self._workspace_thread_key(
+            self._metadata_team_id(metadata), chat_id, str(thread_ts)
+        )
+
+    async def send_native_task_card_progress(
+        self,
+        chat_id: str,
+        tasks: List[Dict[str, str]],
+        *,
+        title: str = "Hermes is working",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        fallback_text: Optional[str] = None,
+    ) -> SendResult:
+        """Start or update a Slack-native plan/task progress stream."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        if not tasks:
+            return SendResult(success=False, error="No tasks")
+
+        key = self._native_task_card_key(chat_id, reply_to, metadata)
+        if key is None:
+            return SendResult(success=False, error="No Slack thread target")
+
+        stream = self._native_task_card_streams.get(key)
+        if stream is None or stream.stopped:
+            stream = _NativeTaskCardStream(
+                team_id=key[0],
+                channel=chat_id,
+                thread_ts=key[2],
+            )
+            # There is no await between lookup and assignment, so competing
+            # coroutines on this event loop will observe this same lock.
+            self._native_task_card_streams[key] = stream
+
+        async with stream.lock:
+            if stream.stopped:
+                return SendResult(success=False, error="Progress stream already stopped")
+            try:
+                client = self._get_client(chat_id, team_id=stream.team_id)
+                if not stream.stream_ts:
+                    start_payload: Dict[str, Any] = {
+                        "channel": chat_id,
+                        "thread_ts": stream.thread_ts,
+                        "task_display_mode": "plan",
+                    }
+                    md = metadata or {}
+                    recipient_team_id = (
+                        md.get("recipient_team_id")
+                        or md.get("team_id")
+                        or md.get("slack_team_id")
+                    )
+                    recipient_user_id = md.get("recipient_user_id") or md.get("user_id")
+                    if recipient_team_id:
+                        start_payload["recipient_team_id"] = recipient_team_id
+                    if recipient_user_id:
+                        start_payload["recipient_user_id"] = recipient_user_id
+
+                    result = await client.api_call(
+                        "chat.startStream", json=start_payload
+                    )
+                    if hasattr(result, "get"):
+                        stream.stream_ts = str(
+                            result.get("ts") or result.get("message_ts") or ""
+                        )
+                    if not stream.stream_ts:
+                        raise RuntimeError("Slack startStream returned no stream timestamp")
+
+                chunks: List[Dict[str, Any]] = [
+                    {"type": "plan_update", "title": str(title)[:256]}
+                ]
+                for task in tasks:
+                    status = str(task.get("status") or "in_progress")
+                    if status not in {"in_progress", "complete", "error"}:
+                        status = "in_progress"
+                    task_id = str(task.get("id") or task.get("task_id") or "task")
+                    chunks.append(
+                        {
+                            "type": "task_update",
+                            "id": task_id,
+                            "title": str(task.get("title") or task_id)[:256],
+                            "status": status,
+                        }
+                    )
+
+                append_payload: Dict[str, Any] = {
+                    "channel": chat_id,
+                    "ts": stream.stream_ts,
+                    "chunks": chunks,
+                }
+                if fallback_text:
+                    append_payload["markdown_text"] = fallback_text
+                await client.api_call("chat.appendStream", json=append_payload)
+                return SendResult(success=True, message_id=stream.stream_ts)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "[Slack] Native task-card progress error: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def _stop_native_task_card_stream(
+        self,
+        key: Tuple[str, str, str],
+        stream: _NativeTaskCardStream,
+    ) -> None:
+        async with stream.lock:
+            if stream.stopped:
+                return
+            stream.stopped = True
+            try:
+                if self._app and stream.stream_ts:
+                    await self._get_client(
+                        stream.channel, team_id=stream.team_id
+                    ).api_call(
+                        "chat.stopStream",
+                        json={"channel": stream.channel, "ts": stream.stream_ts},
+                    )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.debug(
+                    "[Slack] Native task-card stopStream failed: %s", exc
+                )
+            finally:
+                if self._native_task_card_streams.get(key) is stream:
+                    self._native_task_card_streams.pop(key, None)
+
+    async def stop_native_task_card_progress(
+        self,
+        chat_id: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Finalize an active Slack-native progress stream exactly once."""
+        key = self._native_task_card_key(chat_id, reply_to, metadata)
+        if key is None:
+            return
+        stream = self._native_task_card_streams.get(key)
+        if stream is not None:
+            await self._stop_native_task_card_stream(key, stream)
 
     async def send(
         self,

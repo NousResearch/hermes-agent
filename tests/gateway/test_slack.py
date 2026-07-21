@@ -4995,3 +4995,126 @@ class TestThreadContextUnverifiedTagging:
         # Renders successfully without trust tag (exception → unknown trust).
         assert "U_X: hello" in content
         assert "[unverified]" not in content
+
+
+class TestNativeTaskCardProgress:
+    def test_native_flag_is_an_explicit_opt_in(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="xoxb-fake-token",
+            extra={"native_task_cards": "true"},
+        )
+
+        assert SlackAdapter(config).native_task_cards_enabled() is True
+        assert SlackAdapter(
+            PlatformConfig(enabled=True, token="xoxb-fake-token")
+        ).native_task_cards_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_native_updates_are_serialized_and_workspace_scoped(self, adapter):
+        team_client = AsyncMock()
+        start_count = 0
+
+        async def api_call(method, *, json):
+            nonlocal start_count
+            if method == "chat.startStream":
+                start_count += 1
+                await asyncio.sleep(0)
+                return {"ts": "stream-1"}
+            return {"ok": True}
+
+        team_client.api_call.side_effect = api_call
+        adapter._team_clients["T1"] = team_client
+        metadata = {
+            "thread_id": "thread-1",
+            "slack_team_id": "T1",
+            "recipient_team_id": "T1",
+            "recipient_user_id": "U1",
+        }
+        first = [{"id": "call-1", "title": "terminal", "status": "in_progress"}]
+        second = [{"id": "call-1", "title": "terminal", "status": "complete"}]
+
+        results = await asyncio.gather(
+            adapter.send_native_task_card_progress("C1", first, metadata=metadata),
+            adapter.send_native_task_card_progress("C1", second, metadata=metadata),
+        )
+
+        assert all(result.success for result in results)
+        assert start_count == 1
+        calls = team_client.api_call.await_args_list
+        assert [call.args[0] for call in calls] == [
+            "chat.startStream",
+            "chat.appendStream",
+            "chat.appendStream",
+        ]
+        assert calls[0].kwargs["json"] == {
+            "channel": "C1",
+            "thread_ts": "thread-1",
+            "task_display_mode": "plan",
+            "recipient_team_id": "T1",
+            "recipient_user_id": "U1",
+        }
+        adapter._app.client.api_call.assert_not_awaited()
+
+        await adapter.stop_native_task_card_progress("C1", metadata=metadata)
+
+        assert team_client.api_call.await_args.args[0] == "chat.stopStream"
+        assert adapter._native_task_card_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_same_channel_thread_isolated_between_workspaces(self, adapter):
+        clients = {"T1": AsyncMock(), "T2": AsyncMock()}
+
+        def api_call_for(team_id):
+            async def api_call(method, *, json):
+                if method == "chat.startStream":
+                    return {"ts": f"stream-{team_id}"}
+                return {"ok": True}
+
+            return api_call
+
+        for team_id, client in clients.items():
+            client.api_call.side_effect = api_call_for(team_id)
+        adapter._team_clients.update(clients)
+        tasks = [{"id": "call-1", "title": "search", "status": "in_progress"}]
+
+        await asyncio.gather(
+            *(
+                adapter.send_native_task_card_progress(
+                    "C-shared",
+                    tasks,
+                    metadata={"thread_id": "thread-shared", "slack_team_id": team_id},
+                )
+                for team_id in clients
+            )
+        )
+
+        assert set(adapter._native_task_card_streams) == {
+            ("T1", "C-shared", "thread-shared"),
+            ("T2", "C-shared", "thread-shared"),
+        }
+        for client in clients.values():
+            assert client.api_call.await_args_list[0].args[0] == "chat.startStream"
+
+    @pytest.mark.asyncio
+    async def test_disconnect_stops_active_native_streams(self, adapter):
+        client = adapter._app.client
+        client.api_call.side_effect = [
+            {"ts": "stream-1"},
+            {"ok": True},
+            {"ok": True},
+        ]
+        await adapter.send_native_task_card_progress(
+            "C1",
+            [{"id": "call-1", "title": "terminal", "status": "in_progress"}],
+            metadata={"thread_id": "thread-1"},
+        )
+
+        await adapter.disconnect()
+
+        assert [call.args[0] for call in client.api_call.await_args_list] == [
+            "chat.startStream",
+            "chat.appendStream",
+            "chat.stopStream",
+        ]
+        assert adapter._native_task_card_streams == {}

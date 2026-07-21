@@ -500,6 +500,20 @@ def get_label(provider_id: str) -> str:
     if pdef:
         return pdef.name
 
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+
+        profile = _get_provider_profile(canonical) or _get_provider_profile(provider_id)
+        if profile is not None:
+            label = (
+                str(getattr(profile, "display_name", "") or "").strip()
+                or str(getattr(profile, "description", "") or "").strip()
+            )
+            if label:
+                return label
+    except Exception:
+        pass
+
     return canonical
 
 
@@ -737,7 +751,7 @@ def resolve_provider_full(
     user_providers: Optional[Dict[str, Any]] = None,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[ProviderDef]:
-    """Full resolution chain: built-in → models.dev → user config.
+    """Full resolution chain: built-in → user config → provider plugins → models.dev.
 
     This is the main entry point for --provider flag resolution.
 
@@ -816,7 +830,39 @@ def resolve_provider_full(
     if custom_pdef is not None:
         return custom_pdef
 
-    # 3. Try models.dev directly (for providers not in our ALIASES)
+    # 3. Model-provider plugins registered via providers/__init__.py.
+    # The /model switch pipeline reaches this function for explicit provider
+    # selection, so plugin-only providers must resolve here too.
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+
+        profile = _get_provider_profile(canonical) or _get_provider_profile(name.strip())
+        if profile is not None and getattr(profile, "auth_type", "") == "api_key":
+            api_mode = str(getattr(profile, "api_mode", "") or "").strip()
+            transport = {
+                "chat_completions": "openai_chat",
+                "anthropic_messages": "anthropic_messages",
+                "codex_responses": "codex_responses",
+                "bedrock_converse": "bedrock_converse",
+            }.get(api_mode, "openai_chat")
+            return ProviderDef(
+                id=str(getattr(profile, "name", "") or canonical),
+                name=(
+                    str(getattr(profile, "display_name", "") or "").strip()
+                    or str(getattr(profile, "description", "") or "").strip()
+                    or str(getattr(profile, "name", "") or canonical)
+                ),
+                transport=transport,
+                api_key_env_vars=tuple(getattr(profile, "env_vars", ()) or ()),
+                base_url=str(getattr(profile, "base_url", "") or ""),
+                is_aggregator=False,
+                auth_type="api_key",
+                source="plugin",
+            )
+    except Exception:
+        pass
+
+    # 4. Try models.dev directly (for providers not in our ALIASES)
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
         mdev_info = _mdev_provider(canonical)

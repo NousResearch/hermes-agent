@@ -1699,7 +1699,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import PROVIDER_REGISTRY, has_usable_secret
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
@@ -2228,6 +2228,78 @@ def list_authenticated_providers(
         })
         seen_slugs.add(_cp.slug.lower())
         _record_builtin_endpoint(_cp.slug)
+
+    # --- 2c. Plugin-only provider profiles ---
+    # Model-provider plugins register ProviderProfile objects but may not also
+    # appear in models.dev, HERMES_OVERLAYS, CANONICAL_PROVIDERS, or
+    # auth.py's PROVIDER_REGISTRY. Surface API-key plugin providers here so
+    # runtime-discoverable providers also appear in /model.
+    try:
+        from providers import list_providers as _list_provider_profiles
+    except Exception:
+        _list_provider_profiles = None
+
+    if _list_provider_profiles is not None:
+        for _profile in _list_provider_profiles():
+            _slug = str(getattr(_profile, "name", "") or "").strip()
+            if not _slug or _slug.lower() in seen_slugs:
+                continue
+            if str(getattr(_profile, "auth_type", "") or "").strip() != "api_key":
+                continue
+
+            _env_vars = tuple(
+                str(ev or "").strip()
+                for ev in (getattr(_profile, "env_vars", ()) or ())
+            )
+            _key_env_vars = tuple(
+                ev
+                for ev in _env_vars
+                if ev and not ev.endswith("_BASE_URL") and not ev.endswith("_URL")
+            )
+            try:
+                from hermes_cli.config import get_env_value_prefer_dotenv as _get_env_value
+
+                _has_creds = any(
+                    has_usable_secret((_get_env_value(ev) or "").strip())
+                    for ev in _key_env_vars
+                )
+            except Exception:
+                _has_creds = any(
+                    has_usable_secret(os.environ.get(ev, ""))
+                    for ev in _key_env_vars
+                )
+            if not _has_creds:
+                continue
+
+            try:
+                _model_ids = provider_model_ids(_slug)
+            except Exception:
+                _model_ids = list(getattr(_profile, "fallback_models", ()) or ())
+
+            _total = len(_model_ids)
+            _top = _model_ids[:max_models]
+            if not _top and not str(getattr(_profile, "base_url", "") or "").strip():
+                continue
+
+            _display_name = (
+                str(getattr(_profile, "display_name", "") or "").strip()
+                or str(getattr(_profile, "description", "") or "").strip()
+                or _slug
+            )
+
+            results.append({
+                "slug": _slug,
+                "name": _display_name,
+                "is_current": _slug == current_provider,
+                "is_user_defined": False,
+                "models": _top,
+                "total_models": _total,
+                "source": "plugin",
+            })
+            seen_slugs.add(_slug.lower())
+            _base_url = _norm_url(getattr(_profile, "base_url", "") or "")
+            if _base_url:
+                _builtin_endpoints.add(_base_url)
 
     # --- 3. User-defined endpoints from config ---
     # Track (name, base_url) of what section 3 emits so section 4 can skip

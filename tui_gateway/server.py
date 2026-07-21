@@ -10594,6 +10594,27 @@ _IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 
+def _attach_caller_is_local() -> bool:
+    """Whether the current RPC arrived from a local (loopback/stdio) caller.
+
+    The TUI gateway is a local-IPC surface (SECURITY.md §2.6): resolving a HOST
+    filesystem path for an attachment is only meaningful for, and safe to hand
+    to, a *local* caller. When the dispatch surface is reached over the network
+    (the dashboard ``/api/ws`` bridge) from a non-loopback peer, host-path
+    resolution must be refused — remote clients upload bytes via
+    ``content_base64`` instead. Mirrors the ``/api/media`` root-confinement in
+    ``hermes_cli/web_server.py`` for the attach direction.
+
+    Returns ``True`` for the Ink stdio transport (no peer) and for WebSocket
+    peers on the loopback interface; ``False`` for any non-loopback WS peer.
+    """
+    peer = getattr(current_transport(), "_peer", None)  # only WSTransport carries a peer label
+    if peer is None:
+        return True  # stdio / in-process transport -> local Ink CLI
+    host = str(peer).rsplit(":", 1)[0].strip().strip("[]").lower()
+    return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+
+
 def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
     """Decode a base64 (optionally data-URL-wrapped) payload.
 
@@ -10773,6 +10794,18 @@ def _(rid, params: dict) -> dict:
             pdf_path.write_bytes(pdf_bytes)
             display_name = str(params.get("filename", "") or "uploaded.pdf")
         else:
+            # Host-path resolution is local-only: the TUI gateway is a local-IPC
+            # surface (SECURITY.md §2.6), so a host filesystem path is only safe
+            # for a local caller. A remote caller over /api/ws must upload bytes
+            # via content_base64 (as the desktop already does in remote mode);
+            # otherwise an authed remote client could read arbitrary host PDFs.
+            if not _attach_caller_is_local():
+                return _err(
+                    rid,
+                    4016,
+                    "host-path attach is not available over a remote connection; "
+                    "upload the PDF bytes via content_base64 instead",
+                )
             try:
                 from cli import _resolve_attachment_path
 

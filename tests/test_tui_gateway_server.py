@@ -10119,6 +10119,60 @@ def test_pdf_attach_requires_path_or_bytes(monkeypatch, tmp_path):
     assert resp["error"]["code"] == 4015
 
 
+class _PeerWS:
+    """Minimal WSTransport stand-in carrying a peer label (host:port)."""
+
+    def __init__(self, peer):
+        self._peer = peer
+
+    def write(self, _obj):
+        return True
+
+
+def test_pdf_attach_host_path_refused_over_remote_connection(monkeypatch, tmp_path):
+    """A non-loopback (remote) WS caller must NOT be able to use pdf.attach's
+    host ``path`` branch to read arbitrary host PDFs — it has to upload bytes
+    via content_base64. Regression guard for the /api/media-style confinement
+    gap on the attach direction (the TUI gateway is a local-IPC surface)."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdfr"] = _session()
+
+    resp = server.dispatch(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdfr", "path": "/etc/anything.pdf"},
+        },
+        transport=_PeerWS("203.0.113.9:54321"),
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4016
+    assert "remote connection" in resp["error"]["message"]
+
+
+def test_pdf_attach_host_path_allowed_for_local_caller(monkeypatch, tmp_path):
+    """A local (loopback) caller keeps the host-path fast path: the remote guard
+    does not fire, so resolution proceeds normally (it fails here as a plain
+    "not found", NOT as the remote-connection refusal)."""
+    _attach_bytes_cli(monkeypatch)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/pdftoppm")
+    server._sessions["pdfl"] = _session()
+
+    resp = server.dispatch(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "pdfl", "path": "/nonexistent/file.pdf"},
+        },
+        transport=_PeerWS("127.0.0.1:54321"),
+    )
+    assert "error" in resp
+    assert "remote connection" not in resp["error"]["message"]
+
+
 def test_decode_attach_base64_helper():
     import base64 as _b64
 

@@ -335,6 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Geri alınacak bir şey yok."
     removed:               "↩️ {turns} tur geri alındı ({count} mesaj).\nYedeklendiği yer: \"{preview}\"\nYukarıdaki metni kopyalayıp/düzenleyip göndererek buradan yeniden sorabilirsiniz."
     invalid_count:         "Geçersiz sayı \"{arg}\" — /undo veya /undo N kullanın."
+    telegram_cleanup_partial: "Telegram temizliği {deleted}/{attempted} görünür mesajı sildi. Bazı mesajlar çok eski olabilir veya bot silme izinleri gerektirebilir."
 
   update:
     platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."

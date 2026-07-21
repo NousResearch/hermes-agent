@@ -335,6 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Niks om ongedaan te maak nie."
     removed:               "↩️ {turns} beurt(e) ongedaan gemaak ({count} boodskap(pe)).\nGerugsteun na: \"{preview}\"\nKopieer/wysig die teks hierbo en stuur dit om van hier af weer te vra."
     invalid_count:         "Ongeldige getal \"{arg}\" — gebruik /undo of /undo N."
+    telegram_cleanup_partial: "Telegram-opruiming het {deleted}/{attempted} sigbare boodskap(pe) geskrap. Sommige boodskappe mag te oud wees of bot-skrapregte vereis."
 
   update:
     platform_not_messaging:  "✗ /update is slegs beskikbaar vanaf boodskapplatforms. Voer `hermes update` vanaf die terminale uit."

@@ -347,6 +347,7 @@ gateway:
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    telegram_cleanup_partial: "Telegram cleanup deleted {deleted}/{attempted} visible message(s). Some messages may be too old or require bot delete permissions."
 
   update:
     platform_not_messaging:  "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."

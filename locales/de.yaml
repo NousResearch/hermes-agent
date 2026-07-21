@@ -335,6 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Nichts zum Rückgängigmachen."
     removed:               "↩️ {turns} Zug/Züge rückgängig gemacht ({count} Nachricht(en)).\nGesichert nach: \"{preview}\"\nKopieren/bearbeiten Sie den obigen Text und senden Sie ihn, um von hier aus erneut zu fragen."
     invalid_count:         "Ungültige Anzahl \"{arg}\" — verwenden Sie /undo oder /undo N."
+    telegram_cleanup_partial: "Telegram-Bereinigung hat {deleted}/{attempted} sichtbare Nachricht(en) gelöscht. Manche Nachrichten sind möglicherweise zu alt oder erfordern Bot-Löschrechte."
 
   update:
     platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."

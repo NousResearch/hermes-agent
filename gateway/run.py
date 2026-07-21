@@ -12012,6 +12012,103 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    @staticmethod
+    def _delivery_message_ids_from_result(result: Any) -> list[str]:
+        ids: list[str] = []
+
+        def _add(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _add(item)
+                return
+            text = str(value).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+
+        _add(getattr(result, "continuation_message_ids", None))
+        raw = getattr(result, "raw_response", None)
+        if isinstance(raw, dict):
+            _add(raw.get("message_ids"))
+        _add(getattr(result, "message_id", None))
+        return ids
+
+    async def _record_telegram_assistant_delivery(
+        self,
+        session_id: str,
+        message_ids: Any,
+    ) -> None:
+        if not session_id or not self._session_db:
+            return
+        try:
+            await self._session_db.set_latest_assistant_platform_message_ids(
+                session_id,
+                message_ids,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist Telegram assistant delivery ids for %s",
+                session_id,
+                exc_info=True,
+            )
+
+    def _attach_telegram_delivery_recorder(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_id: str,
+        initial_message_ids: Any = None,
+    ) -> None:
+        if not event or not source or source.platform != Platform.TELEGRAM:
+            return
+        recorded_ids: list[str] = []
+        initial_values = (
+            initial_message_ids
+            if isinstance(initial_message_ids, (list, tuple, set))
+            else (initial_message_ids,)
+        )
+        for message_id in initial_values:
+            text = str(message_id or "").strip()
+            if text and text != "__no_edit__" and text not in recorded_ids:
+                recorded_ids.append(text)
+
+        def _recorder(result: Any) -> None:
+            changed = False
+            for message_id in self._delivery_message_ids_from_result(result):
+                if message_id not in recorded_ids:
+                    recorded_ids.append(message_id)
+                    changed = True
+            if not changed:
+                return
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            loop.create_task(
+                self._record_telegram_assistant_delivery(session_id, list(recorded_ids))
+            )
+
+        try:
+            setattr(event, "_hermes_delivery_recorder", _recorder)
+        except Exception:
+            logger.debug("Failed to attach Telegram delivery recorder", exc_info=True)
+
+    async def _record_streamed_telegram_delivery(
+        self,
+        source: SessionSource,
+        session_id: str,
+        stream_consumer: Any,
+    ) -> None:
+        if not source or source.platform != Platform.TELEGRAM or stream_consumer is None:
+            return
+        message_ids = getattr(stream_consumer, "message_ids", None)
+        if callable(message_ids):
+            message_ids = message_ids()
+        if message_ids is None:
+            message_ids = getattr(stream_consumer, "message_id", None)
+        await self._record_telegram_assistant_delivery(session_id, message_ids)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -13517,6 +13614,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key, session_entry.session_id
             )
 
+            if agent_result.get("delivery_message_ids"):
+                await self._record_telegram_assistant_delivery(
+                    session_entry.session_id,
+                    agent_result.get("delivery_message_ids"),
+                )
+
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
             # still persisted in session history so later turns keep normal
@@ -13549,6 +13652,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
+                        self._attach_telegram_delivery_recorder(
+                            event,
+                            source,
+                            session_entry.session_id,
+                            initial_message_ids=agent_result.get("delivery_message_ids"),
+                        )
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
@@ -13569,6 +13678,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            if response and not agent_result.get("failed") and not _intentional_silence:
+                self._attach_telegram_delivery_recorder(
+                    event,
+                    source,
+                    session_entry.session_id,
+                )
             return response
             
         except Exception as e:
@@ -14628,6 +14743,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from pathlib import Path
         from urllib.parse import quote as _quote
 
+        def _record_delivery(result: Any) -> None:
+            if not getattr(result, "success", False):
+                return
+            recorder = getattr(event, "_hermes_delivery_recorder", None)
+            if not callable(recorder):
+                return
+            try:
+                recorder(result)
+            except Exception:
+                logger.debug("Post-stream delivery recorder failed", exc_info=True)
+
         try:
             # Capture [[as_document]] before extract_media strips it, so the
             # dispatch partition below can route image-extension files
@@ -14681,11 +14807,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    _record_delivery(result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
@@ -14693,23 +14820,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    _record_delivery(result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -14717,17 +14845,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    _record_delivery(result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
 
@@ -18782,6 +18911,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
             proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
         )
+        delivery_message_ids = (
+            tuple(getattr(_stream_consumer, "message_ids", ()) or ())
+            if _stream_consumer and full_response
+            else ()
+        )
+        if delivery_message_ids:
+            await self._record_streamed_telegram_delivery(
+                source,
+                session_id,
+                _stream_consumer,
+            )
 
         return {
             "final_response": full_response or "(No response from remote agent)",
@@ -18794,6 +18934,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "history_offset": len(history),
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
+            "delivery_message_ids": delivery_message_ids,
         }
 
     # ------------------------------------------------------------------
@@ -22152,6 +22293,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _previewed,
                     _content_delivered,
                 )
+                if _sc is not None:
+                    await self._record_streamed_telegram_delivery(source, session_id, _sc)
+                    response["delivery_message_ids"] = tuple(
+                        getattr(_sc, "message_ids", ()) or ()
+                    )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
@@ -22166,6 +22312,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             finalize=True,
                         )
                         response["already_sent"] = True
+                        await self._record_streamed_telegram_delivery(source, session_id, _sc)
+                        response["delivery_message_ids"] = tuple(
+                            getattr(_sc, "message_ids", ()) or ()
+                        )
                         logger.info(
                             "Edited streamed message %s for session %s to include plugin-transformed content.",
                             _sc_msg_id, session_key or "?",

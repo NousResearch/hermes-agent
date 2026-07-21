@@ -271,6 +271,20 @@ class GatewayStreamConsumer:
         return self._message_id
 
     @property
+    def message_ids(self) -> tuple[str, ...]:
+        """All visible platform message ids that make up the streamed reply."""
+        ids: list[str] = []
+        for mid in self._preview_message_ids:
+            text = str(mid).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+        if self._message_id:
+            text = str(self._message_id).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+        return tuple(ids)
+
+    @property
     def final_content_delivered(self) -> bool:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
@@ -1134,6 +1148,7 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            self._track_preview_ids_from_result(result)
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()

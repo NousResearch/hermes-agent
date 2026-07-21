@@ -134,12 +134,15 @@ class TestTelegramMultiImage:
         # Make InputMediaPhoto a concrete class that records its args
         telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media, "caption": caption})
 
-        _run(adapter.send_multiple_images("12345", images))
+        result = _run(adapter.send_multiple_images("12345", images))
 
         adapter._bot.send_media_group.assert_awaited_once()
         call_kwargs = adapter._bot.send_media_group.call_args.kwargs
         assert call_kwargs["chat_id"] == 12345
         assert len(call_kwargs["media"]) == 3
+        assert result.success is True
+        assert result.message_id == "1"
+        assert result.raw_response["message_ids"] == ("1",)
 
     def test_batch_over_10_chunks(self, adapter):
         """15 photos → two send_media_group calls (10 + 5)."""

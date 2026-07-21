@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -33,7 +34,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter, EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -2498,6 +2499,101 @@ class GatewaySlashCommandsMixin:
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
 
+    @staticmethod
+    def _undo_platform_message_ids(value: Any) -> list[str]:
+        ids: list[str] = []
+
+        def _add(item: Any) -> None:
+            if item is None:
+                return
+            if isinstance(item, (list, tuple, set)):
+                for nested in item:
+                    _add(nested)
+                return
+            text = str(item).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+
+        if value is None:
+            return ids
+        if isinstance(value, (list, tuple, set)):
+            _add(value)
+            return ids
+
+        text = str(value).strip()
+        if not text:
+            return ids
+
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = None
+        if parsed is not None:
+            _add(parsed)
+            return ids
+
+        if "," in text:
+            for part in text.split(","):
+                _add(part)
+            return ids
+
+        _add(text)
+        return ids
+
+    def _rewound_platform_message_ids(self, rewind_result: dict[str, Any]) -> list[str]:
+        ids: list[str] = []
+        for row in rewind_result.get("rewound_messages") or ():
+            if not isinstance(row, dict):
+                continue
+            if row.get("role") not in {"user", "assistant"}:
+                continue
+            raw_id = row.get("platform_message_id") or row.get("message_id")
+            for message_id in self._undo_platform_message_ids(raw_id):
+                if message_id not in ids:
+                    ids.append(message_id)
+        return ids
+
+    @staticmethod
+    def _adapter_overrides_delete_message(adapter: Any) -> bool:
+        if adapter is None:
+            return False
+        delete_fn = getattr(adapter, "delete_message", None)
+        if not callable(delete_fn):
+            return False
+        try:
+            class_delete = inspect.getattr_static(type(adapter), "delete_message")
+        except Exception:
+            return True
+        return class_delete is not BasePlatformAdapter.delete_message
+
+    async def _delete_telegram_rewound_messages(
+        self,
+        event: MessageEvent,
+        rewind_result: dict[str, Any],
+    ) -> dict[str, int]:
+        source = event.source
+        if not source or source.platform != Platform.TELEGRAM or not source.chat_id:
+            return {"attempted": 0, "deleted": 0}
+
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if not self._adapter_overrides_delete_message(adapter):
+            return {"attempted": 0, "deleted": 0}
+
+        message_ids = self._rewound_platform_message_ids(rewind_result)
+        deleted = 0
+        for message_id in message_ids:
+            try:
+                if await adapter.delete_message(str(source.chat_id), str(message_id)):
+                    deleted += 1
+            except Exception as exc:
+                logger.debug(
+                    "undo: Telegram delete_message failed chat=%s message=%s: %s",
+                    source.chat_id,
+                    message_id,
+                    exc,
+                )
+        return {"attempted": len(message_ids), "deleted": deleted}
+
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting
         the truncated rows on disk and echoing the backed-up message text so
@@ -2538,14 +2634,25 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
 
+        delete_stats = await self._delete_telegram_rewound_messages(event, result)
+
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
-        return t(
+        response = t(
             "gateway.undo.removed",
             turns=result["turns_undone"],
             count=result["rewound_count"],
             preview=preview,
         )
+        attempted = delete_stats.get("attempted", 0)
+        deleted = delete_stats.get("deleted", 0)
+        if attempted and deleted < attempted:
+            response += "\n\n" + t(
+                "gateway.undo.telegram_cleanup_partial",
+                deleted=deleted,
+                attempted=attempted,
+            )
+        return response
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

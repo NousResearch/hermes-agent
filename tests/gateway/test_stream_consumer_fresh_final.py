@@ -98,6 +98,7 @@ class TestFreshFinalForLongLivedPreviews:
         adapter.delete_message.assert_awaited_once_with("chat", "initial_preview")
         # State was updated to the new message id.
         assert consumer._message_id == "fresh_final"
+        assert consumer.message_ids == ("fresh_final",)
         assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
@@ -385,6 +386,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
         )
         assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
+        assert consumer.message_ids == ("initial_preview",)
 
     @pytest.mark.asyncio
     async def test_cancel_best_effort_failure_keeps_gateway_resend_possible(self):
@@ -515,6 +517,7 @@ class TestGotDoneOverflowSplitNotRefinalized:
         )
         assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
+        assert set(consumer.message_ids) == {"initial_preview", "cont_2"}
 
     @pytest.mark.asyncio
     async def test_non_split_finalize_edit_still_gets_explicit_refinalize(self):

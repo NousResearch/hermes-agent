@@ -796,8 +796,16 @@ class TestSegmentBreakOnToolBoundary:
         adapter = MagicMock()
         adapter.send = AsyncMock(side_effect=[
             SimpleNamespace(success=True, message_id="msg_1"),
-            SimpleNamespace(success=True, message_id="msg_2"),
-            SimpleNamespace(success=True, message_id="msg_3"),
+            SimpleNamespace(
+                success=True,
+                message_id="msg_2",
+                continuation_message_ids=("msg_2b",),
+            ),
+            SimpleNamespace(
+                success=True,
+                message_id="msg_3",
+                raw_response={"message_ids": ("msg_3", "msg_3b")},
+            ),
         ])
         adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
         adapter.MAX_MESSAGE_LENGTH = 610
@@ -819,6 +827,13 @@ class TestSegmentBreakOnToolBoundary:
         assert len(sent_texts) == 3
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
+        assert set(consumer.message_ids) == {
+            "msg_1",
+            "msg_2",
+            "msg_2b",
+            "msg_3",
+            "msg_3b",
+        }
 
     @pytest.mark.asyncio
     async def test_fallback_final_sends_full_text_at_tool_boundary(self):

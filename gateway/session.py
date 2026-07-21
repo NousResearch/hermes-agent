@@ -2731,8 +2731,9 @@ class SessionStore:
         survive for audit and stay hidden from re-prompts and search. Mirrors
         the CLI/TUI ``/undo [N]`` behavior via ``SessionDB.rewind_to_message``.
 
-        Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
-        success, or ``None`` if there's no DB or no user message to back up to.
+        Returns a dict ``{"rewound_count", "turns_undone", "target_text",
+        "rewound_messages"}`` on success, or ``None`` if there's no DB or no
+        user message to back up to.
         ``n`` clamps to the oldest user turn when it exceeds the turn count.
         """
         if not self._db:
@@ -2774,6 +2775,7 @@ class SessionStore:
             "rewound_count": result.get("rewound_count", 0),
             "turns_undone": target_idx + 1,
             "target_text": target_text,
+            "rewound_messages": result.get("rewound_messages", []),
         }
 
 

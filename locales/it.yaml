@@ -335,6 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Niente da annullare."
     removed:               "↩️ Annullati {turns} turno/i ({count} messaggio/i).\nSalvato in: \"{preview}\"\nCopia/modifica il testo qui sopra e invialo per ripartire da qui."
     invalid_count:         "Conteggio non valido \"{arg}\" — usa /undo o /undo N."
+    telegram_cleanup_partial: "La pulizia di Telegram ha eliminato {deleted}/{attempted} messaggio/i visibile/i. Alcuni messaggi potrebbero essere troppo vecchi o richiedere i permessi di eliminazione del bot."
 
   update:
     platform_not_messaging:  "✗ /update è disponibile solo dalle piattaforme di messaggistica. Esegui `hermes update` dal terminale."

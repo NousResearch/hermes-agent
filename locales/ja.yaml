@@ -335,6 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "元に戻せる操作がありません。"
     removed:               "↩️ {turns} ターンを取り消しました（{count} 件のメッセージ）。\nバックアップ先: 「{preview}」\n上のテキストをコピー／編集して送信すると、ここから再入力できます。"
     invalid_count:         "無効な数値「{arg}」— /undo または /undo N を使用してください。"
+    telegram_cleanup_partial: "Telegram のクリーンアップは {deleted}/{attempted} 件の表示メッセージを削除しました。一部のメッセージは古すぎるか、ボットの削除権限が必要な場合があります。"
 
   update:
     platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"

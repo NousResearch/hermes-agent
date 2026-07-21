@@ -4649,6 +4649,57 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def set_latest_assistant_platform_message_ids(
+        self,
+        session_id: str,
+        message_ids: Any,
+    ) -> bool:
+        """Attach platform delivery id(s) to the latest active assistant row.
+
+        ``platform_message_id`` is a single text column for compatibility with
+        older transcript consumers. Store a plain scalar for the common
+        one-message case and a JSON array when the platform split the assistant
+        reply across multiple visible messages.
+        """
+        if not session_id:
+            return False
+
+        ids: List[str] = []
+
+        def _collect(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _collect(item)
+                return
+            text = str(value).strip()
+            if text and text != "__no_edit__" and text not in ids:
+                ids.append(text)
+
+        _collect(message_ids)
+        if not ids:
+            return False
+        stored_value = ids[0] if len(ids) == 1 else json.dumps(ids)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND role = 'assistant' AND active = 1 "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            row_id = row["id"] if hasattr(row, "keys") else row[0]
+            conn.execute(
+                "UPDATE messages SET platform_message_id = ? WHERE id = ?",
+                (stored_value, row_id),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
+
     def get_messages_around(
         self,
         session_id: str,
@@ -5274,7 +5325,8 @@ class SessionDB:
             {
                 "rewound_count": int,    # number of rows newly flipped to active=0
                 "target_message": dict,  # full row dict of the target
-                "new_head_id":   int|None  # id of the last still-active row, or None
+                "new_head_id":   int|None, # id of the last still-active row, or None
+                "rewound_messages": list[dict]  # id/role/platform ids just rewound
             }
 
         Raises ``ValueError`` if the target message does not exist in
@@ -5307,15 +5359,18 @@ class SessionDB:
         # Decode content for callers (prefill the prompt buffer).
         target_row["content"] = self._decode_content(target_row.get("content"))
 
-        rewound: List[int] = []
+        rewound_messages: List[Dict[str, Any]] = []
 
         def _do(conn):
             cursor = conn.execute(
-                "SELECT id FROM messages "
-                "WHERE session_id = ? AND id >= ? AND active = 1",
+                "SELECT id, role, platform_message_id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 1 "
+                "ORDER BY id",
                 (session_id, target_message_id),
             )
-            ids = [r[0] for r in cursor.fetchall()]
+            rows = cursor.fetchall()
+            row_dicts = [dict(r) for r in rows]
+            ids = [r["id"] for r in row_dicts]
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 conn.execute(
@@ -5327,9 +5382,9 @@ class SessionDB:
                 "WHERE id = ?",
                 (session_id,),
             )
-            return ids
+            return row_dicts
 
-        rewound = self._execute_write(_do)
+        rewound_messages = self._execute_write(_do)
 
         # 2) Compute new head id (largest still-active row id in session).
         with self._lock:
@@ -5340,9 +5395,10 @@ class SessionDB:
         new_head_id = head_row[0] if head_row and head_row[0] is not None else None
 
         return {
-            "rewound_count": len(rewound),
+            "rewound_count": len(rewound_messages),
             "target_message": target_row,
             "new_head_id": new_head_id,
+            "rewound_messages": rewound_messages,
         }
 
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:

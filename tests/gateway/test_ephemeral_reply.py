@@ -300,6 +300,33 @@ async def test_process_message_ephemeral_reply_does_not_auto_upload_bare_paths(t
 
 
 @pytest.mark.asyncio
+async def test_process_message_calls_delivery_recorder_for_successful_send():
+    adapter = _delete_adapter()
+    send_result = SendResult(
+        success=True,
+        message_id="sent-1",
+        continuation_message_ids=("sent-2",),
+    )
+    adapter._send_with_retry = AsyncMock(return_value=send_result)
+    recorded = []
+
+    async def _handler(evt):
+        setattr(evt, "_hermes_delivery_recorder", recorded.append)
+        return "hello"
+
+    adapter.set_message_handler(_handler)
+
+    event = _make_event(text="hello")
+    session_key = "agent:main:telegram:private:42"
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+
+    assert recorded == [send_result]
+
+
+@pytest.mark.asyncio
 async def test_process_message_incapable_platform_does_not_schedule_delete():
     adapter = _no_delete_adapter()
     adapter._send_with_retry = AsyncMock(

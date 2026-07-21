@@ -80,3 +80,43 @@ def test_rewind_clamps_negative_count_to_one(store):
     res = store.rewind_session(sid, -5)
     assert res["turns_undone"] == 1
     assert res["target_text"] == "q3"
+
+
+def test_rewind_returns_platform_message_ids_for_gateway_cleanup(store):
+    sid = "gw-platform-ids"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "user", "q1", platform_message_id="101")
+    store._db.append_message(sid, "assistant", "a1", platform_message_id="102")
+    store._db.append_message(sid, "user", "q2", platform_message_id="201")
+    store._db.append_message(
+        sid,
+        "assistant",
+        "a2",
+        platform_message_id='["202", "203"]',
+    )
+
+    res = store.rewind_session(sid, 1)
+
+    assert res["rewound_count"] == 2
+    assert res["rewound_messages"] == [
+        {"id": 3, "role": "user", "platform_message_id": "201"},
+        {"id": 4, "role": "assistant", "platform_message_id": '["202", "203"]'},
+    ]
+
+
+def test_set_latest_assistant_platform_message_ids_uses_scalar_or_json(store):
+    sid = "gw-delivery-ids"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "user", "q1")
+    store._db.append_message(sid, "assistant", "a1")
+
+    assert store._db.set_latest_assistant_platform_message_ids(sid, ["301"])
+    rows = store._db.get_messages(sid)
+    assert rows[-1]["platform_message_id"] == "301"
+
+    assert store._db.set_latest_assistant_platform_message_ids(
+        sid,
+        ["301", "302", "302", None, "__no_edit__"],
+    )
+    rows = store._db.get_messages(sid)
+    assert rows[-1]["platform_message_id"] == '["301", "302"]'

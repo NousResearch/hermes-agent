@@ -335,6 +335,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     nothing:               "Немає чого скасовувати."
     removed:               "↩️ Скасовано ходів: {turns} (повідомлень: {count}).\nРезервна копія: «{preview}»\nСкопіюйте/відредагуйте текст вище та надішліть його, щоб запитати знову звідси."
     invalid_count:         "Недійсне число «{arg}» — використовуйте /undo або /undo N."
+    telegram_cleanup_partial: "Очищення Telegram видалило {deleted}/{attempted} видимих повідомлень. Деякі повідомлення можуть бути застарілими або потребувати прав бота на видалення."
 
   update:
     platform_not_messaging:  "✗ /update доступний лише на платформах обміну повідомленнями. Виконайте `hermes update` у терміналі."

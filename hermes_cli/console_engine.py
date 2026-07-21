@@ -1523,10 +1523,11 @@ def _profile_status(_engine: HermesConsoleEngine, args: list[str]) -> str:
 def _cron_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     parser = _ArgumentParser(prog="cron list", add_help=False)
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--compact", action="store_true")
     ns = parser.parse_args(args)
     from hermes_cli.cron import cron_list
 
-    return _capture_output(lambda: cron_list(show_all=ns.all))
+    return _capture_output(lambda: cron_list(show_all=ns.all, compact=ns.compact))
 
 
 def _cron_status(_engine: HermesConsoleEngine, args: list[str]) -> str:

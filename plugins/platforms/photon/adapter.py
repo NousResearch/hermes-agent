@@ -578,7 +578,11 @@ class PhotonAdapter(BasePlatformAdapter):
             self._set_fatal_error(
                 "UPSTREAM_STREAM_DEGRADED",
                 message,
-                retryable=True,
+                # The sidecar process stops after this error (see the
+                # `received stdin EOF` log). Background reconnection can't
+                # revive a dead sidecar — the gateway must exit so launchd /
+                # systemd KeepAlive restarts the whole process (#68693).
+                retryable=False,
             )
             try:
                 await self._notify_fatal_error()

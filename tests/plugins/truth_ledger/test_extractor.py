@@ -210,13 +210,13 @@ def test_extract_canonicalizes_workflow_and_rollout_aliases():
     extractor = _load_extractor_module()
     raw_facts = []
     for key, value, scope, kind in (
-        ("proposals.presentation_order", "options_first", "user", "workflow"),
-        ("proposals.delivery_format", "google_docs_with_links", "user", "workflow"),
+        ("proposals.presentation_order", "options_first", "user", "preference"),
+        ("proposals.delivery_format", "google_docs_with_links", "user", "preference"),
         (
             "rollout.review_requirement",
             "An independent exact-commit review is required before rollout.",
             "project",
-            "constraint",
+            "workflow",
         ),
         (
             "merge.approval_requirement",
@@ -251,6 +251,13 @@ def test_extract_canonicalizes_workflow_and_rollout_aliases():
         ("rollout.merge_requires_explicit_approval", True),
         ("rollout.default_profile_change_requires_explicit_approval", True),
     ]
+    assert [fact["kind"] for fact in out["facts"]] == [
+        "workflow",
+        "workflow",
+        "constraint",
+        "constraint",
+        "constraint",
+    ]
 
 
 def test_extract_canonicalizes_negative_requirements_and_contextual_styles():
@@ -275,8 +282,8 @@ def test_extract_canonicalizes_negative_requirements_and_contextual_styles():
             "project",
             "constraint",
         ),
-        ("response.style.engineering_review", "detailed by default", "user", "preference"),
-        ("response.style.slack_progress", "concise by default", "user", "preference"),
+        ("response.style.engineering_review", "detailed by default", "user", "workflow"),
+        ("response.style.slack_progress", "concise by default", "user", "constraint"),
     ):
         candidate = _candidate(value=value)
         candidate["fact"].update({"key": key, "scope": scope, "kind": kind})
@@ -297,6 +304,13 @@ def test_extract_canonicalizes_negative_requirements_and_contextual_styles():
         ("rollout.default_profile_change_requires_explicit_approval", False),
         ("response.style.engineering_review", "detailed"),
         ("response.style.slack_progress", "concise"),
+    ]
+    assert [fact["kind"] for fact in out["facts"]] == [
+        "constraint",
+        "constraint",
+        "constraint",
+        "preference",
+        "preference",
     ]
 
 
@@ -349,7 +363,8 @@ def test_extractor_prompt_declares_response_style_value_contract():
     assert "rollout.default_profile_change_requires_explicit_approval" in instructions
     assert "Requirement values must be JSON booleans true or false" in instructions
     assert "Context-specific response.style.* values must also be exactly concise or detailed" in instructions
-    assert out["extraction"]["prompt_version"] == 5
+    assert "Canonical keys determine their canonical fact kinds" in instructions
+    assert out["extraction"]["prompt_version"] == 6
 
 
 def test_default_timeout_is_bounded_above_observed_structured_latency():

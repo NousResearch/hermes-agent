@@ -29,7 +29,14 @@ _KEY_ALIASES = {
 }
 _KIND_BY_KEY = {
     "response.style": "preference",
+    "response.style.engineering_review": "preference",
+    "response.style.slack_progress": "preference",
     "timezone": "preference",
+    "proposal.presentation_order": "workflow",
+    "proposal.delivery_format": "workflow",
+    "rollout.independent_exact_commit_review_required": "constraint",
+    "rollout.merge_requires_explicit_approval": "constraint",
+    "rollout.default_profile_change_requires_explicit_approval": "constraint",
 }
 _VALUE_ALIASES_BY_KEY = {
     "proposal.presentation_order": {
@@ -104,7 +111,7 @@ class ExtractorSettings:
     max_attempts: int = 6
     base_delay_ms: int = 500
     max_delay_ms: int = 60_000
-    prompt_version: int = 5
+    prompt_version: int = 6
     override_mode: str = "off"  # off | explicit
     provider_override: str | None = None
     model_override: str | None = None
@@ -273,6 +280,8 @@ async def extract_candidates(
         "rollout.merge_requires_explicit_approval, and "
         "rollout.default_profile_change_requires_explicit_approval. "
         "Requirement values must be JSON booleans true or false. "
+        "Canonical keys determine their canonical fact kinds: response-style and timezone keys are "
+        "preferences, proposal keys are workflows, and rollout requirement keys are constraints. "
         "Use canonical key timezone for timezone preferences. "
         "User-scoped subjects are derived from trusted origin metadata after extraction. "
         "Conversational gratitude, acknowledgements, pleasantries, and transient remarks are not durable facts. "

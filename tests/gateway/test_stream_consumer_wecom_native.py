@@ -518,3 +518,345 @@ class TestClarifyReopenBoundary:
 
         consumer.finish()
         await task
+
+
+class TestClarifyEagerReseed:
+    """EAGER re-seed after a clarify answer.
+
+    WeCom typing is driven by the stream seed frame (send_typing is a no-op),
+    so the clarify-reopen path used to re-seed LAZILY — only when the LLM
+    emitted its first post-answer delta — leaving up to ~48s of dead air after
+    the user replied.  The eager path seeds the moment the user answers, via
+    ``request_reopen_seed()`` → ``_REOPEN_SEED`` → the run-loop handler, so the
+    typing bubble reappears instantly.
+
+    Each test below maps to one of the 7 verification points.  Breakage map for
+    the destructive checks:
+      * Remove the run-loop eager-seed branch  → test_reopen_seed_opens_stream_before_any_delta turns red.
+      * Remove the _suppress_silence_marker native-close patch → test_eager_seed_then_silence_marker_closes_stream turns red.
+      * Remove got_done hole A branch → test_eager_seed_no_content_finalizes_once turns red (or a "✅" leaks).
+    """
+
+    async def _drain(self, consumer, seconds=0.15):
+        deadline = asyncio.get_event_loop().time() + seconds
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+
+    async def _to_reopen_pending(self, consumer, adapter):
+        """Run to the point right after a clarify boundary: native still on,
+        no stream open, awaiting a re-seed.  Returns nothing; leaves the run
+        task attached on ``consumer._task`` for the caller to finish()/await.
+        """
+        task = asyncio.create_task(consumer.run())
+        await self._drain(consumer, 0.03)  # initial seed
+
+        consumer.on_delta("提问前已经流式出去的一段内容。")
+        await self._drain(consumer, 0.05)
+
+        boundary = consumer.close_for_approval_prompt(
+            "💬 等待你的选择...", reason="Clarify", reopen=True,
+        )
+        fut = boundary[0] if isinstance(boundary, tuple) else boundary
+        await asyncio.wait_for(fut, timeout=1.0)
+        return task
+
+    # === POINT 1: timing — the boundary itself does NOT eager-seed ===
+
+    @pytest.mark.asyncio
+    async def test_boundary_alone_does_not_eager_seed(self):
+        """Processing the clarify boundary (reopen=True) must not emit a fresh
+        seed frame on its own — the eager seed only happens once the user
+        answers and request_reopen_seed() is called."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+
+        # State: reopen-pending, no stream open, native still live.
+        assert consumer._awaiting_reopen_after_boundary is True
+        assert consumer._native_stream_opened is False
+        assert consumer._use_native_streaming is True
+        # No eager seed yet (request_reopen_seed not called).  Only the initial
+        # seed + the boundary finalize should exist — no NEW empty seed.
+        seed_frames = [
+            f for f in adapter.frames if f["text"] == "" and not f["finalize"]
+        ]
+        assert len(seed_frames) == 1, (
+            f"boundary must not eager-seed on its own, seeds={len(seed_frames)}"
+        )
+
+        consumer.finish()
+        await task
+
+    # === POINT 2: latency decoupling (core) — seed lands BEFORE any delta ===
+
+    @pytest.mark.asyncio
+    async def test_reopen_seed_opens_stream_before_any_delta(self):
+        """After the boundary, request_reopen_seed() → the run loop opens a
+        fresh empty seed frame BEFORE the LLM produces any post-answer delta.
+
+        DESTRUCTIVE: remove the run-loop `_REOPEN_SEED` handler and this fails.
+        """
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        seeds_before = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+
+        # User answered → request an eager re-seed.  NO on_delta yet.
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)  # let run() process _REOPEN_SEED
+
+        seeds_after = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+        assert seeds_after == seeds_before + 1, (
+            "eager re-seed must emit exactly one new empty seed frame before "
+            f"any delta (before={seeds_before}, after={seeds_after})"
+        )
+        assert consumer._native_stream_opened is True
+        assert consumer._awaiting_reopen_after_boundary is False
+        assert consumer._reopen_seeded_eagerly is True
+
+        consumer.finish()
+        await task
+
+    # === POINT 3: no-content wrap-up (hole A) — one finalize, no "✅" ===
+
+    @pytest.mark.asyncio
+    async def test_eager_seed_no_content_finalizes_once(self):
+        """After an eager seed, if the agent produces NO content, got_done must
+        close the empty typing bubble with exactly one finalize and never emit
+        a lone '✅'.
+
+        DESTRUCTIVE: remove got_done hole-A branch and this fails (the bubble
+        hangs / a '✅' placeholder leaks).
+        """
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)
+        assert consumer._native_stream_opened is True  # eager seed opened it
+
+        frames_before = len(adapter.frames)
+
+        # No post-answer content — just finish.
+        consumer.finish()
+        await task
+
+        new_frames = adapter.frames[frames_before:]
+        finalize_frames = [f for f in new_frames if f["finalize"]]
+        assert len(finalize_frames) == 1, (
+            f"eager-seed empty stream must finalize exactly once, "
+            f"got {len(finalize_frames)}: {new_frames}"
+        )
+        # No lone "✅" anywhere.
+        assert not any(f["text"] == "✅" for f in adapter.frames), (
+            f"must not emit a lone '✅' placeholder, frames={adapter.frames}"
+        )
+        # The finalize is an empty close, not content.
+        assert finalize_frames[0]["text"] == ""
+        assert consumer._native_stream_opened is False
+
+    # === POINT 4: no seed while merely waiting (guard B) ===
+
+    @pytest.mark.asyncio
+    async def test_no_seed_while_awaiting_user_answer(self):
+        """After the boundary but WITHOUT request_reopen_seed() and without any
+        delta, no fresh seed frame may appear — typing must not light up while
+        the user has not yet replied."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        seeds_before = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+
+        # Sit in the reopen-pending state; do NOT answer.
+        await self._drain(consumer, 0.1)
+
+        seeds_after = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+        assert seeds_after == seeds_before, (
+            "no new seed may fire while waiting for the user's clarify answer "
+            f"(before={seeds_before}, after={seeds_after})"
+        )
+        assert consumer._native_stream_opened is False
+        assert consumer._awaiting_reopen_after_boundary is True
+
+        consumer.finish()
+        await task
+
+    # === POINT 5: seed failure degrades to single buffered send ===
+
+    @pytest.mark.asyncio
+    async def test_eager_seed_failure_degrades_to_buffer_only(self):
+        """If the eager re-seed frame fails, native is disabled and buffer_only
+        is set so post-answer content lands as one buffered send() rather than
+        per-tick fragments on a non-editable platform."""
+        # Make the SECOND seed (the eager re-seed) fail while the initial seed
+        # succeeds, so we actually reach the reopen-pending state first.
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        NativeStreamingAdapter = type(
+            "NativeStreamingAdapter2",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "SUPPORTS_MESSAGE_EDITING": False,
+                "SUPPORTS_NATIVE_STREAMING": True,
+            },
+        )
+        NativeStreamingAdapter.__abstractmethods__ = frozenset()
+        adapter = NativeStreamingAdapter.__new__(NativeStreamingAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        adapter.frames = []
+        adapter.supports_native_streaming = (
+            lambda chat_type=None, metadata=None: True
+        )
+
+        empty_seed_count = {"n": 0}
+
+        async def _send_stream_frame(
+            text, *, finalize=False, chat_id=None, reply_to=None, **kwargs
+        ):
+            adapter.frames.append({
+                "text": text, "finalize": finalize,
+                "chat_id": chat_id, "reply_to": reply_to,
+            })
+            if finalize:
+                return True
+            if text == "":
+                empty_seed_count["n"] += 1
+                # First empty seed (run-start) succeeds; second (eager re-seed)
+                # fails to exercise the degrade path.
+                return empty_seed_count["n"] == 1
+            return True
+        adapter.send_stream_frame = _send_stream_frame
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="fallback_msg"),
+        )
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        assert consumer._use_native_streaming is True  # still on after boundary
+
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)  # process _REOPEN_SEED → seed fails
+
+        assert consumer._use_native_streaming is False
+        assert consumer.cfg.buffer_only is True
+        assert consumer._native_stream_opened is False
+
+        consumer.finish()
+        await task
+
+    # === POINT 6: single-bubble invariant (core) — eager + lazy don't stack ===
+
+    @pytest.mark.asyncio
+    async def test_eager_seed_then_delta_does_not_double_seed(self):
+        """After an eager seed opens the stream, a subsequent post-answer delta
+        must flow into that SAME stream — the lazy re-seed path must NOT open a
+        second bubble (it's gated on _native_stream_opened being False)."""
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        seeds_before = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)  # eager seed opens the stream
+        assert consumer._native_stream_opened is True
+
+        # Now the LLM produces post-answer content.
+        consumer.on_delta("根据你的选择，这是后续的完整回答内容，足够长以触发一次刷新。")
+        await self._drain(consumer, 0.05)
+        consumer.finish()
+        await task
+
+        seeds_after = len(
+            [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
+        )
+        # Exactly ONE new empty seed total (the eager one) — the lazy path did
+        # not add a second.
+        assert seeds_after == seeds_before + 1, (
+            f"lazy re-seed must not stack a second bubble on top of the eager "
+            f"seed (before={seeds_before}, after={seeds_after})"
+        )
+        finalize_frames = [f for f in adapter.frames if f["finalize"]]
+        # The post-answer content lands in the final (reopened) finalize.
+        assert "后续的完整回答" in finalize_frames[-1]["text"]
+        adapter.send.assert_not_awaited()
+
+    # === POINT 7: silence marker closes the eager stream (hole B) ===
+
+    @pytest.mark.asyncio
+    async def test_eager_seed_then_silence_marker_closes_stream(self):
+        """After an eager seed, if the agent's whole reply is an intentional
+        silence marker (NO_REPLY), the open native stream must be finalized
+        (closed) rather than left hanging — and the delivery flags stay False.
+
+        DESTRUCTIVE: remove the _suppress_silence_marker native-close patch and
+        this fails (the stream never gets a finalize).
+        """
+        adapter = _make_native_streaming_adapter()
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+
+        task = await self._to_reopen_pending(consumer, adapter)
+        consumer.request_reopen_seed()
+        await self._drain(consumer, 0.05)
+        assert consumer._native_stream_opened is True
+
+        frames_before = len(adapter.frames)
+
+        # Agent emits only a bare silence marker.
+        consumer.on_delta("NO_REPLY")
+        consumer.finish()
+        await task
+
+        new_frames = adapter.frames[frames_before:]
+        finalize_frames = [f for f in new_frames if f["finalize"]]
+        assert len(finalize_frames) >= 1, (
+            f"silence marker after eager seed must finalize/close the open "
+            f"native stream, new_frames={new_frames}"
+        )
+        # The marker text must never have been streamed as content.
+        assert not any("NO_REPLY" in f["text"] for f in adapter.frames), (
+            "silence marker must not leak into any frame"
+        )
+        # Nothing was delivered — flags stay False.
+        assert consumer.final_content_delivered is False
+        assert consumer.final_response_sent is False
+        assert consumer._native_stream_opened is False

@@ -3,10 +3,10 @@ class HermesAgent < Formula
 
   desc "Self-improving AI agent that creates skills from experience"
   homepage "https://hermes-agent.nousresearch.com"
-  # Stable source should point at the semver-named sdist asset attached by
-  # scripts/release.py, not the CalVer tag tarball.
-  url "https://github.com/NousResearch/hermes-agent/releases/download/v2026.3.30/hermes_agent-0.6.0.tar.gz"
-  sha256 "<replace-with-release-asset-sha256>"
+  # Release asset URL is currently unavailable; use the latest tagged archive
+  # until the sdist package artifact is attached again.
+  url "https://github.com/NousResearch/hermes-agent/archive/refs/tags/v2026.4.30.tar.gz"
+  sha256 "3743db721cf6c93631f8446bdc8b77fd53e0c439ee8c42ec821ebfd6874c3949"
   license "MIT"
 
   depends_on "certifi" => :no_linkage

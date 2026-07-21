@@ -252,6 +252,37 @@ class TestDomainBlocklist:
         assert "rest_command" in _BLOCKED_DOMAINS
 
 
+class TestSafeActionPolicy:
+    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    @patch("tools.homeassistant_tool.request_tool_approval")
+    @patch("tools.homeassistant_tool._get_action_policy", return_value=("safe", set()))
+    def test_exact_light_action_does_not_prompt(self, policy, approval, run_async):
+        _handle_call_service({
+            "domain": "light", "service": "turn_on", "entity_id": "light.office"
+        })
+        approval.assert_not_called()
+        run_async.assert_called_once()
+
+    @patch("tools.homeassistant_tool._run_async")
+    @patch(
+        "tools.homeassistant_tool.request_tool_approval",
+        return_value={"approved": False, "message": "denied"},
+    )
+    @patch("tools.homeassistant_tool._get_action_policy", return_value=("safe", set()))
+    def test_sensitive_action_is_strictly_approved_before_dispatch(
+        self, policy, approval, run_async
+    ):
+        result = json.loads(_handle_call_service({
+            "domain": "lock", "service": "unlock", "entity_id": "lock.front_door"
+        }))
+        approval.assert_called_once()
+        assert approval.call_args.kwargs["allow_yolo"] is False
+        assert approval.call_args.kwargs["allow_headless"] is False
+        assert approval.call_args.kwargs["allow_permanent"] is False
+        run_async.assert_not_called()
+        assert result["error"] == "denied"
+
+
 # ---------------------------------------------------------------------------
 # Security: entity_id validation
 # ---------------------------------------------------------------------------

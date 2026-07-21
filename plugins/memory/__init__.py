@@ -39,6 +39,26 @@ _MEMORY_PLUGINS_DIR = Path(__file__).parent
 _USER_NAMESPACE = "_hermes_user_memory"
 
 
+def _get_disabled_provider_names() -> set[str]:
+    """Return profile-scoped memory providers blocked by ``plugins.disabled``.
+
+    Memory providers are exclusive plugins and bypass the general plugin
+    scanner, so they must enforce the same explicit deny-list here.  This lets
+    a restricted profile block a bundled provider even if somebody later
+    changes ``memory.provider`` to that name.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
+        if not isinstance(disabled, list):
+            return set()
+        return {str(name).strip() for name in disabled if str(name).strip()}
+    except Exception:
+        return set()
+
+
 def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
     """Register an empty package shell in sys.modules.
 
@@ -93,6 +113,7 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     Scans bundled first, then user-installed.  Bundled takes precedence
     on name collisions (first-seen wins via ``seen`` set).
     """
+    disabled = _get_disabled_provider_names()
     seen: set = set()
     dirs: List[Tuple[str, Path]] = []
 
@@ -102,6 +123,8 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
             if not (child / "__init__.py").exists():
+                continue
+            if child.name in disabled or f"memory/{child.name}" in disabled:
                 continue
             seen.add(child.name)
             dirs.append((child.name, child))
@@ -114,6 +137,8 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
                 continue
             if child.name in seen:
                 continue  # bundled takes precedence
+            if child.name in disabled or f"memory/{child.name}" in disabled:
+                continue
             if not _is_memory_provider_dir(child):
                 continue  # skip non-memory plugins
             dirs.append((child.name, child))
@@ -126,6 +151,10 @@ def find_provider_dir(name: str) -> Optional[Path]:
 
     Checks bundled first, then user-installed.
     """
+    disabled = _get_disabled_provider_names()
+    if name in disabled or f"memory/{name}" in disabled:
+        logger.info("Memory provider '%s' is blocked by plugins.disabled", name)
+        return None
     # Bundled
     bundled = _MEMORY_PLUGINS_DIR / name
     if bundled.is_dir() and (bundled / "__init__.py").exists():

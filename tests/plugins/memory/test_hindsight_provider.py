@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _materialize_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -416,6 +417,50 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_incomplete_config_preserves_existing_llm_settings(self):
+        env = _build_embedded_profile_env(
+            {},
+            existing={
+                "HINDSIGHT_API_LLM_PROVIDER": "ollama",
+                "HINDSIGHT_API_LLM_API_KEY": "ollama",
+                "HINDSIGHT_API_LLM_MODEL": "qwen2.5:7b",
+            },
+        )
+
+        assert env["HINDSIGHT_API_LLM_PROVIDER"] == "ollama"
+        assert env["HINDSIGHT_API_LLM_API_KEY"] == "ollama"
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "qwen2.5:7b"
+
+    def test_materialize_merges_without_erasing_unowned_settings(self, tmp_path, monkeypatch):
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.parent.mkdir(parents=True)
+        profile_env.write_text(
+            "# retained comment\n"
+            "HINDSIGHT_API_LLM_PROVIDER=ollama\n"
+            "HINDSIGHT_API_LLM_API_KEY=ollama\n"
+            "HINDSIGHT_API_LLM_MODEL=qwen2.5:7b\n"
+            "HINDSIGHT_API_REFLECT_MAX_ITERATIONS=1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        _materialize_embedded_profile_env({"profile": "hermes"})
+
+        text = profile_env.read_text(encoding="utf-8")
+        assert "# retained comment" in text
+        assert "HINDSIGHT_API_LLM_PROVIDER=ollama" in text
+        assert "HINDSIGHT_API_LLM_MODEL=qwen2.5:7b" in text
+        assert "HINDSIGHT_API_REFLECT_MAX_ITERATIONS=1" in text
+
+    def test_materialize_refuses_new_incomplete_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+
+        with pytest.raises(ValueError, match="requires non-empty llm_provider and llm_model"):
+            _materialize_embedded_profile_env({"profile": "hermes"})
+
+        assert not profile_env.exists()
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

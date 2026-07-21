@@ -1237,7 +1237,20 @@ def compress_context(
                     # session before ending it, so they survive in the preserved
                     # parent transcript (#47202). (In-place skips this — see above.)
                     try:
-                        agent._flush_messages_to_session_db(messages)
+                        # On cold resume, the preflush index points past the
+                        # already-durable prefix. Pass it as conversation_history
+                        # so _flush_messages_to_session_db skips those rows and
+                        # does not duplicate them (#68196).
+                        _persist_idx = getattr(agent, "_persist_user_message_idx", None)
+                        _persisted_history = (
+                            messages[:_persist_idx]
+                            if isinstance(_persist_idx, int)
+                            and 0 <= _persist_idx <= len(messages)
+                            else None
+                        )
+                        agent._flush_messages_to_session_db(
+                            messages, conversation_history=_persisted_history
+                        )
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
                     # Propagate title to the new session with auto-numbering

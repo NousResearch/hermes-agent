@@ -13207,6 +13207,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
+
+            # Emit agent:response hook — fires after the response is fully
+            # assembled (including footer, reasoning, etc.) but before it
+            # is returned to the platform adapter for delivery.  Unlike
+            # agent:end (which truncates response to 500 chars), this event
+            # carries the full response text so downstream consumers (audit
+            # logs, cross-bot mirroring, analytics) receive complete data.
+            # (#26109)
+            await self.hooks.emit("agent:response", {
+                **hook_ctx,
+                "response": response or "",
+                "model": agent_result.get("model", ""),
+                "turn_id": session_entry.session_id,
+                "timestamp": datetime.now().isoformat(),
+                "token_usage": {
+                    "prompt_tokens": agent_result.get("last_prompt_tokens", 0),
+                    "context_length": agent_result.get("context_length"),
+                },
+            })
             
             # Check for pending process watchers (check_interval on background processes)
             try:

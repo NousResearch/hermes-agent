@@ -1551,11 +1551,11 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                         refreshed_key,
                         _resolve_base_url(refreshed_creds),
                     )
-            except Exception as refresh_exc:
+            except Exception as retry_exc:
                 logger.warning(
-                    "xAI STT OAuth refresh after HTTP %d failed: %s",
+                    "xAI STT OAuth refresh-and-retry after HTTP %d failed: %s",
                     response.status_code,
-                    refresh_exc,
+                    retry_exc,
                 )
 
         if response.status_code != 200:

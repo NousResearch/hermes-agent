@@ -448,7 +448,9 @@ def cmd_mcp_add(args):
     # Footgun guard: `--env` typed after `--args` is eaten by REMAINDER and
     # never reaches the env: block (issue #68944).  `--args` is documented as
     # "must be the last option", so warn instead of silently misfiling it.
-    if not raw_env and _trailing_env_in_args(cmd_args):
+    # Fires even when a correct `--env` precedes `--args`: appending a second
+    # one at the end of the line loses it just the same.
+    if _trailing_env_in_args(cmd_args):
         _warning(
             "'--env' after '--args' was captured as a command argument, "
             "not an environment variable."

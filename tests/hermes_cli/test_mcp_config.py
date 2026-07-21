@@ -311,7 +311,7 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
-    def test_add_warns_when_env_lands_in_args(self, tmp_path, capsys, monkeypatch):
+    def test_add_warns_when_env_lands_in_args(self, capsys, monkeypatch):
         """Warn when a trailing ``--env KEY=VALUE`` was swallowed by ``--args``.
 
         ``--args`` uses ``nargs=REMAINDER`` (so child flags like ``-y`` pass
@@ -345,8 +345,45 @@ class TestMcpAdd:
         assert "--env" in out and "--args" in out
         assert "environment variable" in out
 
+    def test_add_warns_even_when_a_correct_env_precedes_args(
+        self, capsys, monkeypatch
+    ):
+        """A correct ``--env`` before ``--args`` must not mask a trailing one.
+
+        ``--env A=1 --args -y pkg --env B=2`` parses to ``env=['A=1']`` with
+        ``B=2`` still stranded in the child argv — the same silent loss, just
+        with one variable working.  Gating the warning on "no env parsed"
+        would re-create the reported bug here, so it is deliberately ungated.
+        """
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["-y", "@mcp/github", "--env", "STRANDED=xxx"],
+            env=["WORKING=yes"],
+        ))
+        out = capsys.readouterr().out
+        assert "environment variable" in out
+
+        # The correctly-placed variable is still persisted as-is.
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["github"]
+        assert srv["env"] == {"WORKING": "yes"}
+
     def test_add_no_warning_when_env_legitimately_in_args(
-        self, tmp_path, capsys, monkeypatch
+        self, capsys, monkeypatch
     ):
         """A container runtime's own ``--env`` mid-args must not trip the warning.
 
@@ -367,14 +404,23 @@ class TestMcpAdd:
 
         from hermes_cli.mcp_config import cmd_mcp_add
 
+        docker_argv = ["run", "-i", "--rm", "--env", "FOO=bar", "some/image"]
         cmd_mcp_add(_make_args(
             name="dockermcp",
             mcp_command="docker",
-            args=["run", "-i", "--rm", "--env", "FOO=bar", "some/image"],
+            args=list(docker_argv),
             env=None,
         ))
         out = capsys.readouterr().out
         assert "environment variable" not in out
+
+        # Pins the core design decision: the guard never rewrites argv, so
+        # docker's own --env stays in args and no env: block is invented.
+        from hermes_cli.config import load_config
+
+        srv = load_config()["mcp_servers"]["dockermcp"]
+        assert srv["args"] == docker_argv
+        assert "env" not in srv
 
     def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
         """Invalid environment variable names are rejected up front."""

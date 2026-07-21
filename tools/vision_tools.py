@@ -812,14 +812,19 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
-    # Check the provider's registered profile for the supports_vision flag.
-    # This covers vision-capable providers like xiaomi, minimax, etc. that
-    # aren't in the hardcoded list above.
+    # Check the provider's registered profile.  Two flags gate tool-result
+    # vision support:
+    #   * supports_vision            — the model can see images at all
+    #   * supports_vision_tool_messages — the API accepts list-type tool
+    #     content with image_url parts (Xiaomi sets this to False even
+    #     though the model itself is vision-capable)
+    # Both must be True for us to embed images in tool results.
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
         if profile is not None and profile.supports_vision:
-            return True
+            if getattr(profile, "supports_vision_tool_messages", True):
+                return True
     except Exception:
         pass
 
@@ -836,9 +841,16 @@ def _should_use_native_vision_fast_path() -> bool:
     True when image routing resolves to ``native`` AND either the provider is
     known to accept images inside tool results, or the user explicitly declared
     the model vision-capable via the ``model.supports_vision`` config override.
-    The override is the escape hatch for custom/local providers that aren't in
+    The override is the escape hatch for custom/local providers that are not in
     the static allowlist. Best-effort: any resolution failure returns False so
     the caller falls back to the legacy aux-LLM path.
+
+    Note: providers that declare ``supports_vision_tool_messages=False`` in
+    their ProviderProfile (e.g. xiaomi) explicitly signal that their API
+    rejects multimodal tool-result content.  Even if the model itself supports
+    vision, placing images inside tool results will fail silently or with a
+    400 error.  In that case we must NOT use the native fast path — the
+    auxiliary vision LLM fallback handles it correctly.
     """
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
@@ -850,10 +862,25 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True
-        )
+
+        tool_result_support = _supports_media_in_tool_results(provider, model)
+        if tool_result_support:
+            return True
+
+        # Provider does NOT support images in tool results.  Only fall back
+        # to the native fast path when the user explicitly set the
+        # ``model.supports_vision`` config override — that is the deliberate
+        # escape hatch for custom/local providers.  Do NOT use the models.dev
+        # metadata alone, because providers like xiaomi declare vision
+        # capability for user messages but reject multimodal tool results.
+        vision_override = _lookup_supports_vision(provider, model, cfg)
+        if vision_override is True:
+            from agent.image_routing import _supports_vision_override
+            explicit = _supports_vision_override(cfg, provider, model)
+            if explicit is True:
+                return True
+
+        return False
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

@@ -7101,6 +7101,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = await adapter.send(
                     chat_id=row["chat_id"],
                     content=content,
+                    reply_to=row.get("reply_to"),
                     metadata=metadata,
                 )
             except Exception as send_err:

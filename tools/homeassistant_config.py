@@ -42,7 +42,11 @@ class HomeAssistantResources:
 
     @staticmethod
     def _ensure_resource_id(resource_id: str) -> None:
-        if not isinstance(resource_id, str) or not RESOURCE_ID_RE.fullmatch(resource_id):
+        if (
+            not isinstance(resource_id, str)
+            or resource_id in {".", ".."}
+            or not RESOURCE_ID_RE.fullmatch(resource_id)
+        ):
             raise ValueError("invalid Home Assistant resource_id")
 
     @staticmethod

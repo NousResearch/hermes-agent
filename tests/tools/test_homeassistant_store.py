@@ -124,6 +124,23 @@ def test_proposal_can_only_be_claimed_once(tmp_path):
         )
 
 
+def test_claim_and_apply_intent_are_atomic(tmp_path):
+    store = _store(tmp_path)
+    proposal = store.create_proposal(
+        resource_type="automation", resource_id="morning", operation="update",
+        before={"alias": "Morning"}, desired={"alias": "Early"}, now=NOW,
+    )
+
+    change = store.claim_and_begin_apply(
+        proposal["id"], proposal["before_fingerprint"],
+        created_by_hermes=False, now=NOW,
+    )
+
+    assert store.get_proposal(proposal["id"])["status"] == "applying"
+    assert change["status"] == "applying"
+    assert store.list_unfinished()[0]["id"] == change["id"]
+
+
 def test_only_latest_unapplied_proposal_remains_active(tmp_path):
     store = _store(tmp_path)
     first = store.create_proposal(

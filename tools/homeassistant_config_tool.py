@@ -153,6 +153,10 @@ async def _reconcile_unfinished(manager, store) -> list[dict[str, str]]:
             outcomes.append({"change_id": change["id"], "status": "unreachable"})
             continue
         if change["status"] in {"applying", "apply_uncertain"}:
+            if change["operation"] == "create" and not change["authoritative_id"]:
+                store.mark_apply_uncertain(change["id"])
+                outcomes.append({"change_id": change["id"], "status": "manual_review"})
+                continue
             if _desired_matches_current(change["after"], current):
                 store.finalize_applied(change["id"], after=current)
                 status = "applied"
@@ -229,9 +233,9 @@ def _handle_apply(args: dict, manager, store) -> str:
     current = _run_async(
         lambda: manager.get(proposal["resource_type"], proposal["resource_id"])
     )
-    store.claim_proposal(proposal_id, canonical_fingerprint(current))
-    attempt = store.begin_apply(
+    attempt = store.claim_and_begin_apply(
         proposal_id,
+        canonical_fingerprint(current),
         created_by_hermes=proposal["operation"] == "create",
         resource_id=proposal["resource_id"],
     )
@@ -250,6 +254,8 @@ def _handle_apply(args: dict, manager, store) -> str:
     actual_resource_id = _resource_id_from_result(
         proposal["resource_type"], applied_result, proposal["resource_id"]
     )
+    if proposal["operation"] == "create":
+        store.identify_created_resource(attempt["id"], actual_resource_id)
     after = _run_async(
         lambda: manager.get(proposal["resource_type"], actual_resource_id)
     )

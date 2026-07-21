@@ -127,6 +127,7 @@ class HomeAssistantChangeStore:
                     after_fingerprint TEXT NOT NULL,
                     applied_at TEXT NOT NULL,
                     created_by_hermes INTEGER NOT NULL,
+                    authoritative_id INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL,
                     rollback_at TEXT,
                     FOREIGN KEY (proposal_id) REFERENCES proposals(id)
@@ -134,6 +135,13 @@ class HomeAssistantChangeStore:
                 CREATE INDEX IF NOT EXISTS changes_applied_at ON changes(applied_at DESC);
                 """
             )
+            change_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(changes)").fetchall()
+            }
+            if "authoritative_id" not in change_columns:
+                conn.execute(
+                    "ALTER TABLE changes ADD COLUMN authoritative_id INTEGER NOT NULL DEFAULT 0"
+                )
             conn.commit()
         finally:
             conn.close()
@@ -171,6 +179,7 @@ class HomeAssistantChangeStore:
             "after_fingerprint": row["after_fingerprint"],
             "applied_at": _datetime(row["applied_at"]),
             "created_by_hermes": bool(row["created_by_hermes"]),
+            "authoritative_id": bool(row["authoritative_id"]),
             "status": row["status"],
             "rollback_at": _datetime(row["rollback_at"]) if row["rollback_at"] else None,
         }
@@ -262,6 +271,57 @@ class HomeAssistantChangeStore:
         proposal["status"] = "applying"
         return proposal
 
+    def claim_and_begin_apply(
+        self,
+        proposal_id: str,
+        current_fingerprint: str,
+        *,
+        created_by_hermes: bool,
+        resource_id: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Atomically claim a proposal and persist its pre-mutation audit intent."""
+        claimed_at = _as_utc(now or _utc_now())
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+            proposal = self._proposal(row)
+            if proposal is None or proposal["status"] != "pending":
+                conn.rollback()
+                raise ProposalUnavailable("proposal is not pending")
+            if claimed_at > proposal["expires_at"]:
+                conn.execute("UPDATE proposals SET status = 'expired' WHERE id = ?", (proposal_id,))
+                conn.commit()
+                raise ProposalExpired("proposal approval window expired")
+            if current_fingerprint != proposal["before_fingerprint"]:
+                conn.execute("UPDATE proposals SET status = 'stale' WHERE id = ?", (proposal_id,))
+                conn.commit()
+                raise ProposalStale("resource changed after preview")
+            change_id = uuid.uuid4().hex
+            conn.execute("UPDATE proposals SET status = 'applying' WHERE id = ?", (proposal_id,))
+            conn.execute(
+                """INSERT INTO changes (
+                    id, proposal_id, resource_type, resource_id, operation,
+                    before_json, after_json, after_fingerprint, applied_at,
+                    created_by_hermes, authoritative_id, status, rollback_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'applying', NULL)""",
+                (
+                    change_id, proposal_id, proposal["resource_type"],
+                    resource_id or proposal["resource_id"], proposal["operation"],
+                    _canonical_json(proposal["before"]),
+                    _canonical_json(proposal["desired"]),
+                    canonical_fingerprint(proposal["desired"]),
+                    _timestamp(claimed_at), int(created_by_hermes),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        change = self.get_change(change_id)
+        assert change is not None
+        return change
+
     def record_applied(
         self,
         proposal_id: str,
@@ -307,7 +367,11 @@ class HomeAssistantChangeStore:
                 raise ProposalUnavailable("proposal already has a mutation attempt")
             change_id = uuid.uuid4().hex
             conn.execute(
-                "INSERT INTO changes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'applying', NULL)",
+                """INSERT INTO changes (
+                    id, proposal_id, resource_type, resource_id, operation,
+                    before_json, after_json, after_fingerprint, applied_at,
+                    created_by_hermes, authoritative_id, status, rollback_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'applying', NULL)""",
                 (
                     change_id,
                     proposal_id,
@@ -327,6 +391,18 @@ class HomeAssistantChangeStore:
         change = self.get_change(change_id)
         assert change is not None
         return change
+
+    def identify_created_resource(self, change_id: str, resource_id: str) -> None:
+        """Persist the server-confirmed ID before any further remote read."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE changes SET resource_id = ?, authoritative_id = 1
+                   WHERE id = ? AND operation = 'create'
+                     AND status IN ('applying', 'apply_uncertain')""",
+                (resource_id, change_id),
+            )
+            if cursor.rowcount != 1:
+                raise ProposalUnavailable("create attempt is not awaiting identification")
 
     def finalize_applied(
         self,

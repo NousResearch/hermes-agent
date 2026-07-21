@@ -148,6 +148,14 @@ async def test_resource_id_cannot_escape_config_endpoint():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resource_id", [".", ".."])
+async def test_resource_id_rejects_dot_segments(resource_id):
+    resources = HomeAssistantResources(MagicMock())
+    with pytest.raises(ValueError, match="invalid.*resource_id"):
+        await resources.get("automation", resource_id)
+
+
+@pytest.mark.asyncio
 async def test_group_create_uses_config_entry_flow():
     client = MagicMock()
     client.rest = AsyncMock(side_effect=[
@@ -347,6 +355,34 @@ def test_interrupted_apply_is_audited_and_reconciled_from_remote_state(tmp_path)
     assert history["changes"][0]["status"] == "applied"
     assert history["changes"][0]["before"] == {"alias": "Old"}
     assert history["changes"][0]["after"] == {"alias": "New"}
+
+
+def test_response_lost_during_create_never_infers_deletion_ownership(tmp_path):
+    from tools import homeassistant_config_tool as tool
+    from tools.homeassistant_store import HomeAssistantChangeStore
+
+    manager = MagicMock()
+    manager.get = AsyncMock(side_effect=[None, None])
+    manager.apply = AsyncMock(side_effect=RuntimeError("response lost"))
+    store = HomeAssistantChangeStore(tmp_path / "changes.sqlite3")
+    proposal = store.create_proposal(
+        resource_type="area", resource_id="guest_room", operation="create",
+        before=None, desired={"name": "Guest room"},
+    )
+    with (
+        patch.object(tool, "_get_runtime", return_value=(manager, store, 900)),
+        patch.object(
+            tool, "request_tool_approval",
+            return_value={"approved": True, "message": None},
+        ),
+    ):
+        tool._handle_manage({"action": "apply", "proposal_id": proposal["id"]})
+        history = json.loads(tool._handle_inspect({"action": "history"}))["result"]
+
+    assert history["reconciliation"][0]["status"] == "manual_review"
+    change = history["changes"][0]
+    assert change["status"] == "apply_uncertain"
+    assert change["authoritative_id"] is False
 
 
 def test_preview_redacts_secret_values_from_tool_output(tmp_path):

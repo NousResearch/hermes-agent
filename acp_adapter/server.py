@@ -643,8 +643,15 @@ class HermesACPAgent(acp.Agent):
         )
 
     @staticmethod
-    def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
+    def _resolve_model_selection(
+        raw_model: str, current_provider: str, *, preserve_provider: bool = False
+    ) -> tuple[str, str]:
+        """Resolve ``provider:model`` input into the provider and normalized model id.
+
+        When ``preserve_provider`` is True, skip model-name-based auto-detection
+        so that an explicit provider override (e.g. ``--provider quotio``) is
+        not silently clobbered by ``detect_provider_for_model``.
+        """
         target_provider = current_provider
         new_model = raw_model.strip()
 
@@ -652,7 +659,7 @@ class HermesACPAgent(acp.Agent):
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            if not preserve_provider and target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected
@@ -1786,7 +1793,19 @@ class HermesACPAgent(acp.Agent):
             return f"Current model: {model}\nProvider: {provider}"
 
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+
+        # Parse --provider / --global flags so explicit provider is preserved
+        try:
+            from hermes_cli.models import parse_model_flags
+            parsed, explicit_provider = parse_model_flags(args)
+            # If only flags were provided (no model), avoid forwarding flags as model name
+            args = parsed if parsed else ("" if explicit_provider else args)
+        except ImportError:
+            explicit_provider = None
+
+        target_provider, new_model = self._resolve_model_selection(
+            args, current_provider, preserve_provider=bool(explicit_provider)
+        )
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(

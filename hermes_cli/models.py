@@ -1880,6 +1880,34 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     return (current_provider, stripped)
 
 
+def parse_model_flags(raw: str) -> tuple[str, str | None]:
+    """Parse ``--provider`` and ``--global`` flags from a ``/model`` command string.
+
+    Returns ``(model_id, explicit_provider)`` where *model_id* has the flags
+    stripped and *explicit_provider* is the value of ``--provider`` if given.
+
+    Examples::
+
+        parse_model_flags("gemini-3 --provider quotio")  →  ("gemini-3", "quotio")
+        parse_model_flags("gpt-5 --provider=openai")      →  ("gpt-5", "openai")
+        parse_model_flags("claude-sonnet --global")       →  ("claude-sonnet", None)
+        parse_model_flags("qwen")                         →  ("qwen", None)
+    """
+    import re
+    explicit_provider = None
+
+    # Match --provider <value> or --provider=<value>
+    m = re.search(r'--provider(?:[\s=]+(\S+))', raw)
+    if m:
+        explicit_provider = m.group(1)
+        raw = raw[:m.start()] + raw[m.end():]
+
+    # Strip --global (boolean flag kept for future use)
+    raw = re.sub(r'--global\b', '', raw)
+
+    return raw.strip(), explicit_provider
+
+
 def _get_custom_base_url() -> str:
     """Get the custom endpoint base_url from config.yaml."""
     model_cfg = _get_model_config_dict()

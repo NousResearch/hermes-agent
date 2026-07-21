@@ -2250,6 +2250,76 @@ class TestAzureFoundryResolution:
             "default": "gpt-4.1",
         }
 
+    def test_explicit_azure_base_url_path_injection_does_not_trigger_azure_short_circuit(self, monkeypatch):
+        """azure.com in the path must not trigger Azure key routing."""
+        import agent.anthropic_adapter as anthropic_adapter
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "anthropic"})
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **kwargs: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **kwargs: None)
+        monkeypatch.setattr(anthropic_adapter, "resolve_anthropic_token", lambda: "anthropic-token")
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret-should-not-leak")
+
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://proxy.example.test/azure.com/v1",
+        )
+
+        assert resolved["provider"] == "anthropic"
+        assert resolved["api_key"] == "anthropic-token"
+        assert "azure-secret" not in resolved["api_key"]
+
+    def test_explicit_azure_lookalike_host_does_not_trigger_azure_short_circuit(self, monkeypatch):
+        """azure.com.attacker.test is not an Azure host."""
+        import agent.anthropic_adapter as anthropic_adapter
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "anthropic"})
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **kwargs: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **kwargs: None)
+        monkeypatch.setattr(anthropic_adapter, "resolve_anthropic_token", lambda: "anthropic-token")
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret-should-not-leak")
+
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://azure.com.attacker.test/v1",
+        )
+
+        assert resolved["provider"] == "anthropic"
+        assert resolved["api_key"] == "anthropic-token"
+        assert "azure-secret" not in resolved["api_key"]
+
+    def test_explicit_genuine_azure_host_uses_azure_key(self, monkeypatch):
+        """Explicit azure.com host should still use Azure key routing."""
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "az-key")
+
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://azure.com/foundry/v1",
+        )
+
+        assert resolved["provider"] == "anthropic"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["base_url"] == "https://azure.com/foundry/v1"
+        assert resolved["api_key"] == "az-key"
+
+    def test_explicit_azure_subdomain_uses_azure_key(self, monkeypatch):
+        """services.ai.azure.com should still be treated as Azure."""
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "az-key")
+
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://my-resource.services.ai.azure.com/anthropic/v1",
+        )
+
+        assert resolved["provider"] == "anthropic"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["base_url"] == "https://my-resource.services.ai.azure.com/anthropic/v1"
+        assert resolved["api_key"] == "az-key"
+
     def test_azure_foundry_openai_style_explicit(self, monkeypatch):
         """OpenAI-style Azure Foundry → chat_completions, keeps base_url as-is."""
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key-openai")

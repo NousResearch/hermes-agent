@@ -1574,7 +1574,7 @@ def resolve_runtime_provider(
     # return provider="custom" with chat_completions api_mode and no valid key).
     # Instead, use the Azure key directly with anthropic_messages api_mode.
     _eff_base = (explicit_base_url or "").strip()
-    if requested_provider == "anthropic" and "azure.com" in _eff_base:
+    if requested_provider == "anthropic" and base_url_host_matches(_eff_base, "azure.com"):
         _azure_key = (
             (explicit_api_key or "").strip()
             or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
@@ -1911,8 +1911,8 @@ def resolve_runtime_provider(
         # would find the Claude Code OAuth token first (priority 3) and return
         # that instead, causing 401s. Detect Azure endpoints and use the env
         # key directly to bypass the OAuth priority chain.
-        _is_azure_endpoint = "azure.com" in base_url.lower() or (
-            cfg_base_url and "azure.com" in cfg_base_url.lower()
+        _is_azure_endpoint = base_url_host_matches(base_url, "azure.com") or (
+            bool(cfg_base_url) and base_url_host_matches(cfg_base_url, "azure.com")
         )
         if _is_azure_endpoint:
             # Honor user-specified env var hints on the model config before

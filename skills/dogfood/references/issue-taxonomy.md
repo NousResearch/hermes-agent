@@ -107,3 +107,34 @@ Issues with the text, media, or information on the page.
 - Missing content (empty sections)
 - Broken or dead links to external resources
 - Incorrect or misleading labels
+
+## Reproduction Confidence
+
+Record how reliably each issue can be reproduced. This tells the receiving team
+how much to trust the report and whether the bug needs more investigation before
+a fix.
+
+### Confirmed
+Reproduced the issue 2 or more times by following the documented steps. The
+steps to reproduce are reliable.
+
+### Likely
+Observed the issue once and have clear evidence (screenshot/console), but did not
+re-run the steps to confirm it repeats.
+
+### Intermittent
+Saw the issue but could not reproduce it consistently — it appeared under
+conditions that were not reliably repeatable (e.g. timing, race, flaky network).
+Flag these explicitly so the team knows further investigation is needed.
+
+## Suggested Owner
+
+Suggest which area should pick up the issue, to speed up routing. Pick the
+closest match; when unsure, choose based on where the root cause most likely
+lives, not where the symptom appears.
+
+- **Frontend** — rendering, layout, client-side interaction, visual/UX issues
+- **Backend/API** — failed requests, 4xx/5xx responses, incorrect data returned
+- **Design** — visual inconsistencies, accessibility/contrast, UX patterns
+- **Content** — copy, typos, placeholder text, outdated or missing information
+- **Infra** — CORS, mixed content, TLS, asset/CDN delivery, environment config

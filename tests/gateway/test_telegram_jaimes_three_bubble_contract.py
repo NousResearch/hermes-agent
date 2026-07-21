@@ -238,7 +238,7 @@ def test_gateway_stops_typing_before_final_delivery():
     source = inspect.getsource(BasePlatformAdapter._process_message_background)
     response_branch = source.index("if response:")
     stop_at = source.index("await _stop_typing_task()", response_branch)
-    send_at = source.index("result = await self._send_with_retry", response_branch)
+    send_at = source.index("result = await delivery_adapter._send_with_retry", response_branch)
     assert stop_at < send_at
 
 

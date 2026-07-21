@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import locale
 import shlex
 import site
 import sys
@@ -2350,7 +2351,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         if proc.returncode == 0:
-            return _format_duration(float(stdout.decode().strip()))
+            return _format_duration(float(stdout.decode("utf-8", errors="replace").strip()))
     except Exception:
         pass
 
@@ -11217,7 +11218,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 env=sanitized_env,
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
+                            output = (stdout or stderr).decode(
+                                locale.getpreferredencoding(False), errors="replace"
+                            ).strip()
                             # Redact any remaining sensitive patterns in output
                             if output:
                                 from agent.redact import redact_sensitive_text

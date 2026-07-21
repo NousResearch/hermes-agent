@@ -2619,6 +2619,7 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoint_max_file_size_mb": cp_cfg.get(
             "max_file_size_mb", defaults["max_file_size_mb"],
         ),
+        "checkpoint_scope": cp_cfg.get("scope", defaults.get("scope", "turn")),
     }
 
 

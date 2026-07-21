@@ -1354,6 +1354,13 @@ DEFAULT_CONFIG = {
     # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
     "checkpoints": {
         "enabled": False,
+        # Snapshot cadence. "turn" (default): one snapshot per working dir per
+        # agent iteration. "task": a single snapshot per working dir for the
+        # whole user task, captured before the first file mutation — so
+        # /rollback always restores the pre-task baseline even on long
+        # multi-turn runs whose per-turn snapshots would evict it (issue
+        # #68877). Backward-compatible: unset/"turn" keeps existing behavior.
+        "scope": "turn",
         # Max checkpoints to keep per working directory.  Pre-v2 this only
         # limited the `/rollback` listing; v2 actually rewrites the ref and
         # garbage-collects older commits.

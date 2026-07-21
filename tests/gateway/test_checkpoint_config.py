@@ -14,6 +14,7 @@ def test_gateway_checkpoint_config_reaches_real_agent(tmp_path, monkeypatch):
   max_snapshots: 11
   max_total_size_mb: 345
   max_file_size_mb: 6
+  scope: task
 """,
         encoding="utf-8",
     )
@@ -36,6 +37,7 @@ def test_gateway_checkpoint_config_reaches_real_agent(tmp_path, monkeypatch):
         assert manager.max_snapshots == 11
         assert manager.max_total_size_mb == 345
         assert manager.max_file_size_mb == 6
+        assert manager.scope == "task"
     finally:
         agent.close()
 
@@ -51,3 +53,4 @@ def test_checkpoint_agent_kwargs_supports_legacy_boolean_config():
     assert kwargs["checkpoint_max_snapshots"] == defaults["max_snapshots"]
     assert kwargs["checkpoint_max_total_size_mb"] == defaults["max_total_size_mb"]
     assert kwargs["checkpoint_max_file_size_mb"] == defaults["max_file_size_mb"]
+    assert kwargs["checkpoint_scope"] == defaults.get("scope", "turn")

@@ -633,11 +633,20 @@ class CheckpointManager:
         max_snapshots: int = 20,
         max_total_size_mb: int = 500,
         max_file_size_mb: int = 10,
+        scope: str = "turn",
     ):
         self.enabled = enabled
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
+        # "turn" (default): one snapshot per directory per agent iteration —
+        # the historical behavior. "task": one snapshot per directory for the
+        # whole user task (captured before the first file mutation), so
+        # /rollback always restores the pre-task baseline even on long,
+        # multi-turn autonomous runs whose per-turn snapshots would otherwise
+        # evict that baseline past max_snapshots (issue #68877). Unknown values
+        # degrade to "turn".
+        self.scope = "task" if str(scope).strip().lower() == "task" else "turn"
         self._checkpointed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
 
@@ -645,8 +654,26 @@ class CheckpointManager:
     # Turn lifecycle
     # ------------------------------------------------------------------
 
+    def new_task(self) -> None:
+        """Reset the per-directory dedup at a task boundary (new user prompt).
+
+        Always clears, regardless of scope, so every task starts able to
+        capture a fresh baseline. Call once at the start of a conversation
+        turn/task, before the tool loop.
+        """
+        self._checkpointed_dirs.clear()
+
     def new_turn(self) -> None:
-        """Reset per-turn dedup.  Call at the start of each agent iteration."""
+        """Reset per-iteration dedup. Call at the start of each agent iteration.
+
+        In ``scope="task"`` this is a no-op: the dedup set persists across the
+        task's iterations so only the first file mutation snapshots, and every
+        later turn reuses that single pre-task baseline. In ``scope="turn"``
+        (default) it clears, restoring the historical one-snapshot-per-turn
+        behavior.
+        """
+        if self.scope == "task":
+            return
         self._checkpointed_dirs.clear()
 
     # ------------------------------------------------------------------

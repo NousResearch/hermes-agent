@@ -410,7 +410,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # __init__), so the compression model must too — otherwise it
         # cannot summarise a full threshold-sized window of main-model
         # content.  Mirrors the main-model rejection pattern.
-        if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
+        _allow_short_aux = True  # Jakob: allow short context for local aux models
+        if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH and not _allow_short_aux:
             raise ValueError(
                 f"Auxiliary compression model {aux_model} has a context "
                 f"window of {aux_context:,} tokens, which is below the "

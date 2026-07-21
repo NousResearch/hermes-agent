@@ -17927,7 +17927,18 @@ def mount_spa(application: FastAPI):
         ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
         auth scheme for /api/pty and /api/ws (ticket vs token).
         """
-        html = _index_path.read_text(encoding="utf-8")
+        try:
+            html = _index_path.read_text(encoding="utf-8")
+        except OSError:
+            # The dist dir existed at mount time but index.html is missing or
+            # unreadable now (partial build, wiped dist, permissions). Without
+            # this guard every request raises FileNotFoundError (500). Return
+            # the same JSON 404 payload mount_spa uses for a fully-missing
+            # dist so clients get a clear, consistent signal.
+            return JSONResponse(
+                {"error": "Frontend not built. Run: cd web && npm run build"},
+                status_code=404,
+            )
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"

@@ -1962,7 +1962,6 @@ def terminal_tool(
                 try:
                     from agent.cancellation import get_process_registry, is_preemptive_cancellation_enabled
                     if is_preemptive_cancellation_enabled() and proc_session.pid:
-                        import threading
                         _job_id = getattr(threading.current_thread(), "_hermes_job_id", None)
                         if _job_id:
                             get_process_registry().register_pid(_job_id, proc_session.pid)

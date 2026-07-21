@@ -1708,13 +1708,33 @@ def _model_flow_copilot(config, current_model=""):
     else:
         print("No change.")
 
+
+def _save_external_process_model_choice(
+    selected: str, provider_id: str, base_url: str
+) -> None:
+    """Persist an external-process model selection in one config write."""
+    from hermes_cli.auth import deactivate_provider
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["default"] = selected
+    model["provider"] = provider_id
+    model["base_url"] = base_url
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+
 def _model_flow_copilot_acp(config, current_model=""):
     """GitHub Copilot ACP flow using the local Copilot CLI."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
-        _save_model_choice,
-        deactivate_provider,
         get_external_process_provider_status,
         resolve_api_key_provider_credentials,
         resolve_external_process_provider_credentials,
@@ -1724,7 +1744,6 @@ def _model_flow_copilot_acp(config, current_model=""):
         fetch_github_model_catalog,
         normalize_copilot_model_id,
     )
-    from hermes_cli.config import load_config, save_config
 
     del config
 
@@ -1809,19 +1828,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         )
         or selected
     )
-    _save_model_choice(selected)
-
-    cfg = load_config()
-    model = cfg.get("model")
-    if not isinstance(model, dict):
-        model = {"default": model} if model else {}
-        cfg["model"] = model
-    model["provider"] = provider_id
-    model["base_url"] = effective_base
-    model["api_mode"] = "chat_completions"
-    clear_model_endpoint_credentials(model, clear_api_mode=False)
-    save_config(cfg)
-    deactivate_provider()
+    _save_external_process_model_choice(selected, provider_id, effective_base)
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
@@ -1831,11 +1838,8 @@ def _model_flow_kimi_acp(config, current_model=""):
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
-        _save_model_choice,
-        deactivate_provider,
         resolve_external_process_provider_credentials,
     )
-    from hermes_cli.config import load_config, save_config
     from hermes_cli.models import _PROVIDER_MODELS
 
     del config
@@ -1867,18 +1871,7 @@ def _model_flow_kimi_acp(config, current_model=""):
         print("No change.")
         return
 
-    _save_model_choice(selected)
-    cfg = load_config()
-    model = cfg.get("model")
-    if not isinstance(model, dict):
-        model = {"default": model} if model else {}
-        cfg["model"] = model
-    model["provider"] = provider_id
-    model["base_url"] = effective_base
-    model["api_mode"] = "chat_completions"
-    clear_model_endpoint_credentials(model, clear_api_mode=False)
-    save_config(cfg)
-    deactivate_provider()
+    _save_external_process_model_choice(selected, provider_id, effective_base)
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 

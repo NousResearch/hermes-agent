@@ -300,6 +300,45 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "k3"
         assert model.get("api_mode") == "chat_completions"
 
+    def test_kimi_acp_selection_uses_one_complete_config_write(self, config_home):
+        """Kimi ACP must not save a model default before its provider metadata."""
+        from copy import deepcopy
+
+        from hermes_cli.main import _model_flow_kimi_acp
+        from hermes_cli.config import load_config
+
+        saved_configs = []
+
+        def capture_save(config):
+            saved_configs.append(deepcopy(config))
+
+        with patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "provider": "kimi-acp",
+                "api_key": "kimi-acp",
+                "base_url": "acp://kimi",
+                "command": "/usr/local/bin/kimi",
+                "args": ["acp"],
+                "source": "process",
+            },
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="k3",
+        ), patch(
+            "hermes_cli.config.save_config",
+            side_effect=capture_save,
+        ), patch("hermes_cli.auth.deactivate_provider"):
+            _model_flow_kimi_acp(load_config(), "old-model")
+
+        assert len(saved_configs) == 1
+        assert saved_configs[0]["model"] == {
+            "default": "k3",
+            "provider": "kimi-acp",
+            "base_url": "acp://kimi",
+            "api_mode": "chat_completions",
+        }
+
     def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config

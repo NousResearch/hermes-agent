@@ -4773,6 +4773,14 @@ class TestStateMeta:
         db.set_meta("key", "v2")
         assert db.get_meta("key") == "v2"
 
+    def test_compare_and_set_meta_requires_the_exact_previous_value(self, db):
+        """Durable workers can claim one metadata record without lost updates."""
+        assert db.compare_and_set_meta("wake", None, "pending") is True
+        assert db.compare_and_set_meta("wake", None, "other") is False
+        assert db.compare_and_set_meta("wake", "stale", "claimed") is False
+        assert db.compare_and_set_meta("wake", "pending", "claimed") is True
+        assert db.get_meta("wake") == "claimed"
+
 
 class TestVacuum:
     def test_vacuum_runs_without_error(self, db):
@@ -6358,4 +6366,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

@@ -1054,7 +1054,7 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is True
 
     def test_time_barrier_clears_after_deadline(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_cli.goals import GoalManager, save_goal
 
         mgr = GoalManager(session_id="jw-deadline")
         mgr.set("g")
@@ -1062,8 +1062,64 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is True
         # Force the deadline into the past → barrier auto-clears.
         mgr.state.waiting_until = time.time() - 1
+        save_goal(mgr.session_id, mgr.state)
         assert mgr.is_waiting() is False
         assert mgr.state.waiting_until == 0.0
+
+    def test_ready_time_wait_has_one_durable_claim_and_expired_lease_retries(self, hermes_home):
+        """A deadline creates a restart-safe delivery claim, not a busy loop."""
+        from hermes_cli.goals import GoalManager, save_goal
+
+        mgr = GoalManager(session_id="jw-durable-wake")
+        mgr.set("continue after cooldown")
+        mgr.wait_for_seconds(120, reason="backoff")
+        mgr.state.waiting_until = time.time() - 1
+        save_goal(mgr.session_id, mgr.state)
+
+        prompt = mgr.claim_ready_wait_continuation(owner="gateway:test", lease_seconds=60)
+        assert prompt is not None
+        assert "Continuing toward your standing goal" in prompt
+        assert mgr.state.waiting_on_pid is None
+        assert mgr.state.waiting_until == 0.0
+        assert mgr.state.wait_resume_state == "claimed"
+        assert mgr.claim_ready_wait_continuation(owner="gateway:other") is None
+
+        # Simulate a process dying after its durable claim but before the
+        # in-memory event can start. A fresh manager may retry only after the
+        # lease expires.
+        mgr.state.wait_resume_claimed_until = time.time() - 1
+        save_goal(mgr.session_id, mgr.state)
+        resumed = GoalManager(session_id=mgr.session_id)
+        assert resumed.claim_ready_wait_continuation(owner="gateway:recovery") is not None
+        assert resumed.complete_wait_continuation() is True
+        assert resumed.state.wait_resume_state == "idle"
+        assert resumed.claim_ready_wait_continuation(owner="gateway:again") is None
+
+    def test_manual_unwait_cancels_ready_delivery_obligation(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-unwait-cancels-wake")
+        mgr.set("g")
+        mgr.wait_for_seconds(120)
+        assert mgr.stop_waiting() is True
+        assert mgr.state.wait_resume_state == "idle"
+        assert mgr.claim_ready_wait_continuation(owner="cli:test") is None
+
+    def test_satisfied_wait_never_overwrites_a_concurrent_pause(self, hermes_home):
+        from hermes_cli.goals import GoalManager, save_goal
+
+        observer = GoalManager(session_id="jw-pause-race")
+        observer.set("g")
+        observer.wait_for_seconds(120)
+        observer.state.waiting_until = time.time() - 1
+        save_goal(observer.session_id, observer.state)
+
+        controller = GoalManager(session_id=observer.session_id)
+        controller.pause("user paused before wake")
+
+        assert observer.is_waiting() is False
+        assert observer.state.status == "paused"
+        assert observer.state.wait_resume_state == "idle"
 
     def test_continue_verdict_still_continues_with_background(self, hermes_home):
         """A running process present but judge says continue → normal loop."""

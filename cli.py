@@ -9492,6 +9492,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass  # Non-fatal — never break the main loop
 
+    def _maybe_resume_ready_goal_wait(self) -> None:
+        """Claim and queue one satisfied ``/goal wait`` while CLI is idle.
+
+        The claim is durable in ``GoalState`` before this in-memory queue is
+        touched.  Never preempt a typed message or a process completion: those
+        are already queued and will satisfy/re-judge the goal on their own.
+        """
+        try:
+            pending = getattr(self, "_pending_input", None)
+            if pending is None or not pending.empty():
+                return
+            mgr = self._get_goal_manager()
+            if mgr is None or not mgr.is_active():
+                return
+            prompt = mgr.claim_ready_wait_continuation(
+                owner=f"cli:{os.getpid()}",
+            )
+            if prompt:
+                pending.put(prompt)
+        except Exception as exc:
+            logging.debug("goal wait resume poll failed: %s", exc)
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
 
@@ -15010,6 +15032,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 self._drain_process_notifications("cli-idle")
                             except Exception:
                                 pass
+                            # A completed PID/session or elapsed deadline
+                            # used to remain lazy until some unrelated input
+                            # arrived. Poll its durable wait obligation only
+                            # after process notifications get first chance to
+                            # queue their real completion payload.
+                            self._maybe_resume_ready_goal_wait()
                         continue
                     
                     if not user_input:

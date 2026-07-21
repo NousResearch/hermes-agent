@@ -80,6 +80,56 @@ def _make_store(tmp_path):
     return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
 
 
+@pytest.fixture
+def goal_home(tmp_path, monkeypatch):
+    """Keep persistent GoalManager wake claims isolated from user state."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli import goals
+
+    goals._DB_CACHE.clear()
+    yield home
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_schedules_satisfied_goal_wait_without_user_message(goal_home):
+    """Gateway wake polling reuses the session route, never a cron session."""
+    from hermes_cli.goals import GoalManager, save_goal
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="goal-wait-chat")
+    entry = SessionEntry(
+        session_key="agent:main:telegram:dm:goal-wait-chat",
+        session_id="goal-wait-sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner.session_store.list_sessions.return_value = [entry]
+    adapter.handle_message = AsyncMock()
+
+    mgr = GoalManager(session_id=entry.session_id)
+    mgr.set("continue after a rate-limit cooldown")
+    mgr.wait_for_seconds(120, reason="rate limited")
+    mgr.state.waiting_until = time.time() - 1
+    save_goal(entry.session_id, mgr.state)
+
+    scheduled = runner._schedule_ready_goal_waits()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source == source
+    assert event.internal is True
+    assert event.metadata == {"goal_wait_resume": True}
+    assert "Continuing toward your standing goal" in event.text
+
+
 def _build_agent_history(history: list) -> list:
     """Mirror gateway/run.py's ``history → agent_history`` conversion.
 

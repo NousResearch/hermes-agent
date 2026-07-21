@@ -7004,6 +7004,37 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def compare_and_set_meta(
+        self, key: str, expected_value: Optional[str], value: str
+    ) -> bool:
+        """Atomically replace one metadata value when it still matches.
+
+        ``state_meta`` is shared by concurrent CLI, gateway, and background
+        workers.  A read followed by :meth:`set_meta` is therefore not a safe
+        claim operation.  This small primitive keeps the comparison and write
+        in one ``BEGIN IMMEDIATE`` transaction so durable work queues can
+        claim a row without a separate process-wide lock.
+
+        ``expected_value=None`` means the key must not exist.
+        """
+
+        def _do(conn):
+            if expected_value is None:
+                cur = conn.execute(
+                    "INSERT INTO state_meta (key, value) "
+                    "SELECT ?, ? WHERE NOT EXISTS "
+                    "(SELECT 1 FROM state_meta WHERE key = ?)",
+                    (key, value, key),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?",
+                    (value, key, expected_value),
+                )
+            return cur.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
 

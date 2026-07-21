@@ -1568,7 +1568,7 @@ The `/footer` slash command toggles this at runtime in any session.
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+— claude-opus-4.7 · 5% · ~
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

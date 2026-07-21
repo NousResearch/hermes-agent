@@ -74,6 +74,31 @@ def test_parse_branch_flag_rejects_empty_and_option_like():
 
 
 # ---------------------------------------------------------------------------
+# Status icon coverage
+# ---------------------------------------------------------------------------
+
+def test_status_icons_cover_all_valid_statuses():
+    # Every status the board can list must have a glyph; otherwise
+    # _fmt_task_line renders "?" for it.
+    missing = kb.VALID_STATUSES - kc._STATUS_ICONS.keys()
+    assert not missing, f"statuses without an icon: {sorted(missing)}"
+
+
+def _make_task(status: str) -> kb.Task:
+    return kb.Task(
+        id="t1", title="x", body=None, assignee=None, status=status,
+        priority=0, created_by=None, created_at=0, started_at=None,
+        completed_at=None, workspace_kind="scratch", workspace_path=None,
+        claim_lock=None, claim_expires=None, tenant=None,
+    )
+
+
+@pytest.mark.parametrize("status", sorted(kb.VALID_STATUSES))
+def test_fmt_task_line_never_falls_back_for_valid_status(status):
+    assert kc._fmt_task_line(_make_task(status)).split(" ", 1)[0] != "?"
+
+
+# ---------------------------------------------------------------------------
 # run_slash smoke tests (end-to-end via the same entry both CLI and gateway use)
 # ---------------------------------------------------------------------------
 

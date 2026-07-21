@@ -1113,6 +1113,21 @@ class BaseEnvironment(ABC):
         self.cleanup()
 
     def __del__(self):
+        # During interpreter shutdown, builtins and the import machinery may
+        # already be partially torn down.  Remote backends (SSH, Modal,
+        # Daytona) call sync_back from cleanup(), which uses open() and
+        # fcntl — both unreliable after atexit handlers have fired.
+        # Skip cleanup entirely when the interpreter is shutting down.
+        #
+        # sys is imported lazily here because importing it at module level
+        # would add an unconditional import for every environment backend,
+        # and this guard is only needed during the rare __del__ path.
+        try:
+            import sys as _sys
+            if _sys.meta_path is None:
+                return  # interpreter is shutting down
+        except Exception:
+            return  # can't determine state — safest to skip
         try:
             self.cleanup()
         except Exception:

@@ -1372,9 +1372,17 @@ def init_agent(
     # Resolving the ~835-token block once here avoids re-running the
     # membership test + reference on every system-prompt rebuild
     # (init + each context compression).
+    #
+    # Gate on HERMES_KANBAN_TASK specifically, not just kanban_show tool
+    # presence: profiles with "kanban" in their toolsets config enable the
+    # kanban tool surface for orchestrator mode, but non-dispatched cron
+    # agents should not receive the kanban lifecycle protocol (#68592).
+    import os
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE
+        if os.environ.get("HERMES_KANBAN_TASK") and "kanban_show" in agent.valid_tool_names
+        else ""
     )
 
     # Check tool requirements

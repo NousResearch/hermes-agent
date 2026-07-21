@@ -159,6 +159,66 @@ def test_tui_gateway_git_probe_timeout_kills_and_returns_empty(monkeypatch):
     assert events == [f"comm:{git_probe._GIT_TIMEOUT}", "kill", "comm:1"]
 
 
+def test_tui_gateway_git_probe_kill_failure_still_fails_open(monkeypatch):
+    """kill() raising (access denied, already-reaped) must not escape —
+    run_git's contract is '' on ANY failure."""
+    from tui_gateway import git_probe
+
+    class _UnkillablePopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_branch_probe(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            if timeout == git_probe._GIT_TIMEOUT:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")
+
+        def kill(self):
+            if self._probe:
+                raise OSError("access denied")
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _UnkillablePopen)
+
+    assert git_probe.run_git("/repo", "branch", "--show-current") == ""
+
+
+def test_tui_gateway_git_probe_nontimeout_failure_kills_child(monkeypatch):
+    """A non-timeout communicate() failure must still terminate the child
+    (not leave it running) and fail open."""
+    from tui_gateway import git_probe
+
+    events = []
+
+    class _BrokenPipePopen:
+        def __init__(self, cmd, **kwargs):
+            self._probe = _is_branch_probe(cmd)
+            self.returncode = None
+            self.pid = 4242
+
+        def communicate(self, timeout=None):
+            if not self._probe:
+                return ("", "")
+            if timeout == git_probe._GIT_TIMEOUT:
+                raise ValueError("I/O operation on closed file")
+            events.append("drain")
+            return ("", "")
+
+        def kill(self):
+            if self._probe:
+                events.append("kill")
+
+    monkeypatch.setattr(git_probe, "IS_WINDOWS", False)
+    monkeypatch.setattr(git_probe.subprocess, "Popen", _BrokenPipePopen)
+
+    assert git_probe.run_git("/repo", "branch", "--show-current") == ""
+    assert events == ["kill", "drain"]
+
+
 def test_tui_gateway_git_probe_timeout_cleanup_failure_is_swallowed(monkeypatch):
     """If the bounded cleanup itself still times out (descendant keeps the
     handles), run_git abandons the pipes and honours the empty-string

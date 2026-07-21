@@ -64,7 +64,7 @@ def run_git(cwd: str, *args: str) -> str:
     try:
         stdout, _ = proc.communicate(timeout=_GIT_TIMEOUT)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_process_tree(proc)
         # Bounded post-kill cleanup instead of subprocess.run()'s unbounded
         # communicate(): on Windows, killing the PATH-resolved git launcher
         # can leave a suspended descendant git.exe holding duplicates of the
@@ -82,8 +82,49 @@ def run_git(cwd: str, *args: str) -> str:
             pass
         return ""
     except Exception:
+        # Non-timeout communicate() failure (decode error, torn-down pipe):
+        # still terminate the child and drain bounded — leaving it running
+        # would leak the same suspended-descendant class this fix targets.
+        _kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
         return ""
     return stdout.strip() if proc.returncode == 0 else ""
+
+
+def _kill_process_tree(proc) -> None:
+    """Best-effort terminate *proc* and, on Windows, its descendants.
+
+    ``proc.kill()`` alone only terminates the PATH-resolved launcher; a
+    suspended descendant ``git.exe`` can survive holding duplicates of the
+    captured pipe handles, which keeps the pipes from reaching EOF and leaks
+    two reader threads + the process per fired timeout (issue #68609).
+    ``taskkill /T /F`` takes the whole tree down so the bounded drain that
+    follows can actually reach EOF. All failures are swallowed — this is
+    cleanup on an already-failing path, and ``run_git``'s contract is to
+    fail open to ``""``. The taskkill spawn itself cannot re-enter this
+    deadlock class: no pipes are captured (DEVNULL), so there are no reader
+    threads for its own timeout cleanup to join.
+    """
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    if IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except Exception:
+            pass
 
 
 def branch(cwd: str) -> str:

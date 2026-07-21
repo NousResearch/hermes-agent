@@ -1519,6 +1519,27 @@ def _resolve_explicit_runtime(
     return None
 
 
+def resolve_logical_model_runtime(model: str) -> tuple[str, Dict[str, Any]] | None:
+    """Resolve a ``role:<name>`` once into its complete runtime provider tuple.
+
+    Physical model strings deliberately return ``None`` so their established
+    runtime-provider behavior is untouched.  For a logical role, resolve the
+    model/provider/api_mode together and then obtain credentials for that
+    resolved provider; callers must replace their prior tuple as one unit.
+    """
+    from hermes_cli.model_role_resolution import resolve_logical_model_role
+
+    route = resolve_logical_model_role(model)
+    if route is None:
+        return None
+    runtime = resolve_runtime_provider(
+        requested=route["provider"], target_model=route["model"]
+    )
+    runtime["provider"] = route["provider"]
+    runtime["api_mode"] = route["api_mode"]
+    return route["model"], runtime
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,

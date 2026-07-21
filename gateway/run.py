@@ -4163,7 +4163,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolved_session_key or "", model, override_model,
                     override_runtime.get("provider"),
                 )
-                return override_model, override_runtime
+                return self._resolve_session_logical_model_role(
+                    resolved_session_key, override_model, override_runtime
+                )
             # Override exists but has no api_key — fall through to env-based
             # resolution and apply model/provider from the override on top.
             logger.debug(
@@ -4265,7 +4267,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _last_good[resolved_session_key] = model
                 _last_good["*"] = model
 
-        return model, runtime_kwargs
+        return self._resolve_session_logical_model_role(
+            resolved_session_key, model, runtime_kwargs
+        )
+
+    def _resolve_session_logical_model_role(
+        self, session_key: str | None, model: str, runtime_kwargs: dict
+    ) -> tuple[str, dict]:
+        """Resolve a logical role once per gateway session and reuse its tuple."""
+        if not isinstance(model, str) or not model.startswith("role:"):
+            return model, runtime_kwargs
+        cache = getattr(self, "_logical_model_role_routes", None)
+        if cache is None:
+            cache = self._logical_model_role_routes = {}
+        cache_key = (session_key or "", model)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            resolved_model, resolved_runtime = cached
+            return resolved_model, dict(resolved_runtime)
+        from hermes_cli.runtime_provider import resolve_logical_model_runtime
+
+        resolved = resolve_logical_model_runtime(model)
+        assert resolved is not None
+        cache[cache_key] = (resolved[0], dict(resolved[1]))
+        return resolved
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.

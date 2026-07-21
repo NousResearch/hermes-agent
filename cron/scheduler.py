@@ -3147,6 +3147,7 @@ def run_job(
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
+            resolve_logical_model_runtime,
             format_runtime_provider_error,
         )
         from hermes_cli.auth import AuthError
@@ -3171,22 +3172,26 @@ def run_job(
             or None
         )
         try:
-            # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
-            # already prefers persisted config over stale shell/env overrides when
-            # no explicit provider is requested. Passing the env var here short-
-            # circuits that precedence and can resurrect old providers (for
-            # example DeepSeek) for cron jobs that do not pin provider/model.
-            runtime_kwargs = {
-                "requested": job.get("provider"),
-                # Derive provider-specific api_mode from the model this job
-                # will actually run (per-job pin > env > config default), not
-                # the stale persisted default — mirrors the fallback path
-                # below, which already passes its fb_model.
-                "target_model": model,
-            }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
-            runtime = resolve_runtime_provider(**runtime_kwargs)
+            logical_runtime = resolve_logical_model_runtime(model)
+            if logical_runtime is not None:
+                model, runtime = logical_runtime
+            else:
+                # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
+                # already prefers persisted config over stale shell/env overrides when
+                # no explicit provider is requested. Passing the env var here short-
+                # circuits that precedence and can resurrect old providers (for
+                # example DeepSeek) for cron jobs that do not pin provider/model.
+                runtime_kwargs = {
+                    "requested": job.get("provider"),
+                    # Derive provider-specific api_mode from the model this job
+                    # will actually run (per-job pin > env > config default), not
+                    # the stale persisted default — mirrors the fallback path
+                    # below, which already passes its fb_model.
+                    "target_model": model,
+                }
+                if job.get("base_url"):
+                    runtime_kwargs["explicit_base_url"] = job.get("base_url")
+                runtime = resolve_runtime_provider(**runtime_kwargs)
             primary_provider_for_drift = (
                 str(runtime.get("provider") or "").strip().lower()
                 or primary_provider_for_drift

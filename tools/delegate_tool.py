@@ -3185,6 +3185,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
+    if configured_model and configured_model.startswith("role:"):
+        from hermes_cli.model_role_resolution import resolve_logical_model_role
+
+        route = resolve_logical_model_role(configured_model)
+        assert route is not None
+        configured_model = route["model"]
+        configured_provider = route["provider"]
+        configured_api_mode = route["api_mode"]
+
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
     # a base_url. For these, always fall through to resolve_runtime_provider()

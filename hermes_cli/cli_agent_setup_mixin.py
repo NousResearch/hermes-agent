@@ -350,6 +350,12 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            if isinstance(effective_model, str) and effective_model.startswith("role:"):
+                from hermes_cli.runtime_provider import resolve_logical_model_runtime
+
+                resolved = resolve_logical_model_runtime(effective_model)
+                assert resolved is not None
+                effective_model, runtime = resolved
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),

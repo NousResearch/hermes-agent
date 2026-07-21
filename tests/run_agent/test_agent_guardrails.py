@@ -74,6 +74,8 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         stub = out[1]
         assert stub["role"] == "tool"
+        assert stub["name"] == "terminal"
+        assert stub["tool_name"] == "terminal"
         assert stub["tool_call_id"] == "c2"
         assert stub["content"]
 

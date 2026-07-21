@@ -195,6 +195,23 @@ def test_goal_confirm_promotes_receipt_with_explicit_user_action(server, session
     )
 
 
+def test_goal_outcomes_shows_only_the_active_session_learning_candidates(server, session):
+    sid, session_key, _ = session
+    with patch(
+        "agent.verification_evidence.list_reusable_outcome_receipts",
+        return_value=[{"id": 73, "recorded_at": "2030-01-01T00:00:00+00:00"}],
+    ) as list_receipts:
+        r = _call(server, "command.dispatch", name="goal", arg="outcomes", session_id=sid)
+
+    assert r["result"]["type"] == "exec"
+    assert "#73" in r["result"]["output"]
+    list_receipts.assert_called_once_with(
+        cwd=server._session_cwd(session[2]),
+        limit=5,
+        session_id=session_key,
+    )
+
+
 def test_goal_wait_supports_session_and_time_barriers(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="build a rocket", session_id=sid)

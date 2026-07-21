@@ -2332,6 +2332,11 @@ class GatewaySlashCommandsMixin:
         if lower == "show":
             return f"{mgr.status_line()}\n{mgr.render_contract()}"
 
+        if lower in {"outcomes", "learning"}:
+            return mgr.render_reusable_outcomes(
+                cwd=os.environ.get("TERMINAL_CWD") or os.getcwd()
+            )
+
         if lower == "confirm" or lower.startswith("confirm "):
             receipt_arg = args[len("confirm"):].strip()
             try:

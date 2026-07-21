@@ -60,6 +60,11 @@ time, and `reusable` flag. It never stores the raw goal text.
 `list_reusable_outcome_receipts()` is explicit pull-only retrieval. This change
 does not alter memory prompts, background learning writes, or skill files.
 
+`/goal outcomes` (with `/goal learning` as an alias) exposes that pull-only
+view on CLI, gateway, and TUI. It is restricted to the active session and
+current workspace, presents only receipts with currently passing evidence, and
+does not disclose raw goal text, mutate a receipt, or inject a model prompt.
+
 When a `/goal` judge returns `done`, the shared `GoalManager` first persists
 the goal terminal state, then records a `judge_done_unconfirmed` receipt for
 the frontend's actual workspace. Hermes reports the receipt id but does not

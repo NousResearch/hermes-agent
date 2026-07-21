@@ -331,6 +331,42 @@ class TestGoalManager:
             actor="goal_judge",
         )
 
+    def test_reusable_outcome_summary_is_session_scoped_and_pull_only(self, hermes_home, tmp_path):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="summary-session")
+        with patch(
+            "agent.verification_evidence.list_reusable_outcome_receipts",
+            return_value=[{"id": 73, "recorded_at": "2030-01-01T00:00:00+00:00"}],
+        ) as list_receipts:
+            summary = mgr.render_reusable_outcomes(cwd=tmp_path)
+
+        list_receipts.assert_called_once_with(
+            cwd=tmp_path,
+            limit=5,
+            session_id="summary-session",
+        )
+        assert "#73" in summary
+        assert "pull-only" in summary
+        assert "prompt or memory was changed" in summary
+
+
+class TestGoalOutcomesCommand:
+    def test_cli_outcomes_routes_current_workspace_to_goal_manager(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.render_reusable_outcomes.return_value = "Verified learning outcomes (1): #73"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with patch.dict("sys.modules", {"cli": fake_cli_module}):
+            CLICommandsMixin._handle_goal_command(caller, "goal outcomes")
+
+        manager.render_reusable_outcomes.assert_called_once_with(cwd=str(tmp_path))
+        fake_cli_module._cprint.assert_called_once_with("  Verified learning outcomes (1): #73")
+
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager

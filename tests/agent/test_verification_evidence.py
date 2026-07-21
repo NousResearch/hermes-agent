@@ -131,6 +131,47 @@ def test_confirmed_passing_outcome_receipt_becomes_explicitly_reusable(tmp_path,
     assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path)] == [receipt["id"]]
 
 
+def test_reusable_outcome_listing_can_be_scoped_to_one_session(tmp_path, monkeypatch):
+    """An interactive outcome view must not reveal another session's receipt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    receipt_ids = []
+    for session_id in ("s1", "s2"):
+        record_terminal_result(
+            command="pnpm test",
+            cwd=tmp_path,
+            session_id=session_id,
+            exit_code=0,
+            output="all green",
+        )
+        receipt = record_outcome_receipt(
+            session_id=session_id,
+            cwd=tmp_path,
+            goal=f"ship the verified widget for {session_id}",
+            terminal_kind="judge_done_unconfirmed",
+        )
+        assert receipt is not None
+        assert confirm_outcome_receipt(
+            receipt["id"], expected_session_id=session_id, cwd=tmp_path
+        )["reusable"] is True
+        receipt_ids.append(receipt["id"])
+
+    assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path, session_id="s1")] == [
+        receipt_ids[0]
+    ]
+    assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path, session_id="s2")] == [
+        receipt_ids[1]
+    ]
+
+
+def test_session_scoped_outcome_listing_fails_closed_without_workspace_root(tmp_path, monkeypatch):
+    """An interactive receipt view may never fall back to another workspace."""
+    monkeypatch.setattr("agent.verification_evidence._outcome_root", lambda _cwd: None)
+
+    assert list_reusable_outcome_receipts(cwd=tmp_path, session_id="s1") == []
+
+
 def test_other_session_edit_stales_outcome_receipt_for_learning_candidates(
     tmp_path, monkeypatch
 ):

@@ -13420,6 +13420,14 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower in {"outcomes", "learning"}:
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": mgr.render_reusable_outcomes(cwd=_session_cwd(session)),
+                },
+            )
         if lower == "confirm" or lower.startswith("confirm "):
             receipt_arg = arg.strip()[len("confirm"):].strip()
             try:

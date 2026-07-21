@@ -939,22 +939,36 @@ def confirm_outcome_receipt(
 
 
 def list_reusable_outcome_receipts(
-    *, cwd: str | Path | None = None, limit: int = 20
+    *,
+    cwd: str | Path | None = None,
+    limit: int = 20,
+    session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return explicitly confirmed learning candidates with current proof.
 
     Retrieval is intentionally explicit.  Callers decide how to present these
     receipts; this ledger never silently expands a model prompt.  A receipt
     marked reusable at confirmation is still excluded when a later workspace
-    edit makes its supporting verification stale.
+    edit makes its supporting verification stale.  A caller that presents
+    receipts to an interactive user can provide ``session_id`` to retain the
+    same-session boundary used for confirmation, without changing the
+    workspace-wide default used by internal callers.
     """
     root = _outcome_root(cwd) if cwd is not None else None
+    # Interactive callers opt into an owner/session scope.  Without a
+    # canonical workspace root, do not broaden that view across workspaces
+    # merely because a session id happens to match.
+    if session_id is not None and root is None:
+        return []
     limit = max(1, min(int(limit or 20), 100))
     where = "WHERE reusable = 1"
     params: list[Any] = []
     if root is not None:
         where += " AND root = ?"
         params.append(root)
+    if session_id is not None:
+        where += " AND session_id = ?"
+        params.append(str(session_id))
     reusable: list[dict[str, Any]] = []
     before_id: Optional[int] = None
     batch_size = 100

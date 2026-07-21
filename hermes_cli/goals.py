@@ -503,6 +503,44 @@ class GoalState:
         return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
 
 
+def render_reusable_outcome_summary(
+    *, session_id: str, cwd: str | Path | None = None, limit: int = 5
+) -> str:
+    """Render explicitly reusable learning candidates for one session.
+
+    This is a read-only control-plane view.  It deliberately lists only
+    same-session receipts that still have fresh passing evidence; it neither
+    expands a model prompt nor changes memory, skills, or receipt state.
+    """
+    try:
+        from agent.verification_evidence import list_reusable_outcome_receipts
+
+        receipts = list_reusable_outcome_receipts(
+            cwd=cwd,
+            limit=limit,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("goal outcome summary unavailable: %s", exc)
+        return "Verified learning outcomes are unavailable for this workspace."
+
+    if not receipts:
+        return (
+            "No verified learning outcomes are currently reusable in this session. "
+            "Outcomes remain explicit and are not injected into prompts or memory."
+        )
+
+    rendered = []
+    for receipt in receipts:
+        receipt_id = receipt.get("id")
+        recorded_at = receipt.get("recorded_at") or "unknown time"
+        rendered.append(f"#{receipt_id} (verified {recorded_at})")
+    return (
+        f"Verified learning outcomes ({len(receipts)}): {', '.join(rendered)}. "
+        "They are explicit pull-only candidates; no prompt or memory was changed."
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Persistence (SessionDB state_meta)
 # ──────────────────────────────────────────────────────────────────────
@@ -1310,6 +1348,10 @@ class GoalManager:
         if not self._state.subgoals:
             return "(no subgoals — use /subgoal <text> to add criteria)"
         return self._state.render_subgoals_block()
+
+    def render_reusable_outcomes(self, *, cwd: str | Path | None = None) -> str:
+        """Return the session-scoped, read-only verified-outcome summary."""
+        return render_reusable_outcome_summary(session_id=self.session_id, cwd=cwd)
 
     # --- /goal wait barrier -------------------------------------------
 

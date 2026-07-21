@@ -2063,6 +2063,10 @@ class CLICommandsMixin:
             _cprint(f"  {mgr.render_contract()}")
             return
 
+        if lower in {"outcomes", "learning"}:
+            _cprint(f"  {mgr.render_reusable_outcomes(cwd=os.getenv('TERMINAL_CWD', os.getcwd()))}")
+            return
+
         if lower == "confirm" or lower.startswith("confirm "):
             receipt_arg = arg[len("confirm"):].strip()
             try:
@@ -2215,7 +2219,8 @@ class CLICommandsMixin:
             f"  {_DIM}After each turn, a judge model checks if the goal is done"
             f"{' against the contract above' if state.has_contract() else ''}. "
             f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal show, /goal confirm, /goal wait, /goal pause, /goal resume, /goal clear.{_RST}"
+            "exhausted. Use /goal status, /goal show, /goal outcomes, /goal confirm, "
+            f"/goal wait, /goal pause, /goal resume, /goal clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.

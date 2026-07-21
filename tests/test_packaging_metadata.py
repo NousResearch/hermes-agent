@@ -267,6 +267,42 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
 
+def test_optional_mcp_manifests_ship_in_both_wheel_and_sdist():
+    """Every optional-mcps/<name>/manifest.yaml must reach sealed installs.
+
+    Like locales/, optional-mcps/ is a bare data directory (no __init__.py):
+    invisible to packages.find and to package-data. Each catalog entry needs
+    its OWN data-files target — data-files flattens globs, so a shared
+    ``optional-mcps/*/*`` glob would collapse every manifest into one colliding
+    ``optional-mcps/manifest.yaml`` — plus a MANIFEST.in graft for the sdist.
+    Without both, sealed installs (pip wheel, Nix store venv) drop the entry
+    and ``mcp_catalog.list_catalog()`` returns nothing for it, so ``hermes mcp``
+    can't see it. Same failure mode as the i18n and bundled-plugin cases.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+    catalog_root = REPO_ROOT / "optional-mcps"
+    on_disk = sorted(
+        child.name
+        for child in catalog_root.iterdir()
+        if child.is_dir() and (child / "manifest.yaml").is_file()
+    )
+    assert on_disk, "expected optional-mcps/<name>/manifest.yaml catalog entries on disk"
+    for name in on_disk:
+        key = f"optional-mcps/{name}"
+        assert data_files.get(key) == [f"{key}/manifest.yaml"], (
+            f"{key}/manifest.yaml is not declared as a data-file. Add "
+            f'`"{key}" = ["{key}/manifest.yaml"]` under '
+            "[tool.setuptools.data-files] in pyproject.toml, or sealed installs "
+            "drop the catalog entry."
+        )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships catalog manifests"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #

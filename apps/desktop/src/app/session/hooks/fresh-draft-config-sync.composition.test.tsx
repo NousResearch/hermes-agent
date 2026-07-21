@@ -73,6 +73,7 @@ function FreshDraftConfigSyncHarness({
     creatingSessionRef,
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => selectedStoredSessionIdRef.current,
     navigate: vi.fn() as never,
     requestGateway: vi.fn().mockResolvedValue({}),
     resetViewSync: vi.fn(),
@@ -85,6 +86,7 @@ function FreshDraftConfigSyncHarness({
   })
 
   useBackgroundSync({
+    activeGatewayProfile: 'default',
     activeIsMessaging: false,
     activeSessionId,
     freshDraftReady,

@@ -2774,6 +2774,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
 
 
+@app.get("/api/health")
+async def get_health():
+    """Lightweight process liveness for desktop/backend readiness probes."""
+    return {
+        "ok": True,
+        "version": __version__,
+        "auth_required": bool(getattr(app.state, "auth_required", False)),
+    }
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None

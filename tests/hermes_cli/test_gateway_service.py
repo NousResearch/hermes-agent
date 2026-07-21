@@ -2598,13 +2598,12 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
-    def test_launchd_plist_supports_aqua_and_background_sessions(self):
-        # macOS 26+ only loads the agent in non-Aqua sessions when the plist
-        # opts into Background as well (issue #23387).
+    def test_launchd_plist_omits_limit_load_to_session_type(self):
+        # LimitLoadToSessionType breaks launchctl bootstrap on macOS 26.5+
+        # with exit code 5 (issue #42376).  User-domain LaunchAgents load
+        # correctly without it.
         plist = gateway_cli.generate_launchd_plist()
-        assert "<key>LimitLoadToSessionType</key>" in plist
-        assert "<string>Aqua</string>" in plist
-        assert "<string>Background</string>" in plist
+        assert "<key>LimitLoadToSessionType</key>" not in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

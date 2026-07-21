@@ -595,6 +595,7 @@ def run_conversation(
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    hydrate_todo_store: bool = True,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -647,6 +648,7 @@ def run_conversation(
         stream_callback,
         persist_user_message,
         persist_user_timestamp,
+        hydrate_todo_store=hydrate_todo_store,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
         install_safe_stdio=_install_safe_stdio,
         sanitize_surrogates=_sanitize_surrogates,

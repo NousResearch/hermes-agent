@@ -236,6 +236,34 @@ _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
 
+# Standard OpenAI Chat/Responses message fields that a client is allowed to
+# supply on entries inside ``messages`` / ``conversation_history``.  Any other
+# key on a client-supplied message is dropped by the three request handlers
+# before the value reaches the agent, and therefore before
+# ``agent/conversation_loop.py`` copies the message field-for-field into the
+# downstream provider payload.  This closes two smuggling routes:
+#
+#   * Hermes-internal fields (``reasoning``, ``reasoning_details``,
+#     ``_thinking_prefill``, ``finish_reason``) submitted by a caller could
+#     otherwise reactivate deprecated code paths or spoof provider state that
+#     the agent believes it produced itself.
+#   * Arbitrary unknown fields (``debug``, ``system``, ``cache_control``,
+#     vendor extensions from other providers, etc.) would otherwise be
+#     forwarded verbatim to whichever provider the agent talks to next,
+#     giving the API caller silent influence over the downstream request
+#     shape.
+#
+# Keep this list in sync with the OpenAI message schema; do NOT add
+# provider-specific extensions here.
+_ALLOWED_CLIENT_MESSAGE_FIELDS = frozenset({
+    "role",
+    "content",
+    "name",
+    "tool_calls",
+    "tool_call_id",
+    "refusal",
+})
+
 
 def _normalize_multimodal_content(content: Any) -> Any:
     """Validate and normalize multimodal content for the API server.
@@ -2688,16 +2716,28 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     system_prompt = system_prompt + "\n" + content
             elif role in {"user", "assistant", "tool"}:
-                # Accept ``tool`` messages and preserve ``tool_calls`` /
-                # ``tool_call_id`` / ``name`` (and any other OpenAI message
-                # fields) so that tool-call/tool-result pairs submitted in the
-                # request survive through ``sanitize_api_messages``. Previously
-                # tool messages were silently dropped and assistant.tool_calls
-                # was stripped — the model then lost all prior tool-calling
-                # context and had to re-learn the tool protocol in-context.
+                # Accept ``tool`` messages and preserve the OpenAI tool
+                # protocol fields (``tool_calls`` / ``tool_call_id`` /
+                # ``name``) so that tool-call/tool-result pairs submitted in
+                # the request survive through ``sanitize_api_messages``.
+                # Previously tool messages were silently dropped and
+                # assistant.tool_calls was stripped — the model then lost all
+                # prior tool-calling context and had to re-learn the tool
+                # protocol in-context.
+                #
+                # Only fields in ``_ALLOWED_CLIENT_MESSAGE_FIELDS`` are copied
+                # through: anything else (Hermes-internal keys such as
+                # ``reasoning`` / ``_thinking_prefill`` / ``finish_reason``,
+                # provider extensions such as ``reasoning_details``, or
+                # arbitrary caller-supplied keys) would otherwise be forwarded
+                # verbatim to the downstream provider by
+                # ``agent/conversation_loop.py``.  Strip them at the trust
+                # boundary.
                 out_msg: Dict[str, Any] = {"role": role}
                 for k, v in msg.items():
                     if k == "role":
+                        continue
+                    if k not in _ALLOWED_CLIENT_MESSAGE_FIELDS:
                         continue
                     if k == "content":
                         if v is None:
@@ -2711,7 +2751,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                     exc, param=f"messages[{idx}].content"
                                 )
                     else:
-                        # Pass through tool_calls, tool_call_id, name, etc. as-is
+                        # Whitelisted: tool_calls, tool_call_id, name, refusal.
                         out_msg[k] = v
                 if "content" not in out_msg:
                     out_msg["content"] = None
@@ -2890,6 +2930,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                # Client-supplied history is untrusted: a forged
+                # assistant.tool_calls[name=todo] + matching role:tool
+                # response could otherwise seed the TodoStore with attacker
+                # data.  See GHSA-5g4g-6jrg-mw3g and the sweeper review on
+                # PR #40965.  /api/sessions/{id}/chat[/stream] keeps
+                # hydration on because history there is loaded from the
+                # trusted server-side SessionDB, not the request body.
+                hydrate_todo_store=False,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2910,6 +2958,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                # See GHSA-5g4g-6jrg-mw3g / sweeper review on PR #40965:
+                # do not hydrate TodoStore from untrusted client history.
+                hydrate_todo_store=False,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3881,17 +3932,24 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have a 'role' field"),
                         status=400,
                     )
-                # Preserve tool_calls / tool_call_id / name (and any other
-                # OpenAI message fields) so that tool-call/tool-result pairs in
-                # history survive intact through ``sanitize_api_messages``.
-                # Previously only ``{role, content}`` were kept, which stripped
-                # ``tool_calls`` from assistant messages and ``tool_call_id``
-                # from tool messages — causing the sanitizer to silently drop
-                # tool results and the model to lose all prior tool-calling
-                # context.  ``content`` is now optional because assistant
-                # messages that only emit ``tool_calls`` have no text content.
+                # Preserve the OpenAI tool protocol fields
+                # (``tool_calls`` / ``tool_call_id`` / ``name``) so that
+                # tool-call/tool-result pairs in history survive intact through
+                # ``sanitize_api_messages``.  Previously only ``{role,
+                # content}`` were kept, which stripped ``tool_calls`` from
+                # assistant messages and ``tool_call_id`` from tool messages —
+                # causing the sanitizer to silently drop tool results and the
+                # model to lose all prior tool-calling context.  ``content``
+                # is optional because assistant messages that only emit
+                # ``tool_calls`` have no text content.
+                #
+                # Only fields in ``_ALLOWED_CLIENT_MESSAGE_FIELDS`` are copied
+                # through; see the constant's docstring for why unknown /
+                # Hermes-internal keys are dropped at this trust boundary.
                 msg: Dict[str, Any] = {}
                 for k, v in entry.items():
+                    if k not in _ALLOWED_CLIENT_MESSAGE_FIELDS:
+                        continue
                     if k == "role":
                         msg["role"] = str(v)
                     elif k == "content":
@@ -3997,6 +4055,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                # Client-supplied history (`conversation_history` or the
+                # replayed `previous_response_id` chain) is untrusted;
+                # do not let a forged todo tool-call pair seed the
+                # TodoStore.  See GHSA-5g4g-6jrg-mw3g + PR #40965 review.
+                hydrate_todo_store=False,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -4031,6 +4094,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                # See GHSA-5g4g-6jrg-mw3g / PR #40965 review: never hydrate
+                # TodoStore from untrusted client-supplied history.
+                hydrate_todo_store=False,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -4680,6 +4746,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        hydrate_todo_store: bool = True,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4695,6 +4762,15 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        ``hydrate_todo_store`` is forwarded to ``AIAgent.run_conversation``.
+        The three OpenAI-compatible request handlers
+        (``/v1/chat/completions``, ``/v1/responses``, ``/v1/runs``) pass
+        ``False`` here because their ``conversation_history`` originates
+        from an untrusted client and must not be allowed to seed the
+        in-memory TodoStore state (see the parameter's docstring on
+        ``AIAgent.run_conversation``).  The default ``True`` preserves the
+        original behaviour for any internal caller.
         """
         loop = asyncio.get_running_loop()
         # Capture before hopping to the executor — ContextVars do not follow
@@ -4729,6 +4805,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         user_message=user_message,
                         conversation_history=conversation_history,
                         task_id=effective_task_id,
+                        hydrate_todo_store=hydrate_todo_store,
                     )
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -4866,15 +4943,22 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have a 'role' field"),
                         status=400,
                     )
-                # Preserve all OpenAI message fields (tool_calls, tool_call_id,
-                # name, etc.) so that tool-call/tool-result pairs in history
-                # survive intact.  Previously only ``{role, content}`` were
-                # kept, which stripped ``tool_calls`` from assistant messages
-                # and ``tool_call_id`` from tool messages — causing
+                # Preserve the OpenAI tool protocol fields
+                # (``tool_calls`` / ``tool_call_id`` / ``name``) so that
+                # tool-call/tool-result pairs in history survive intact.
+                # Previously only ``{role, content}`` were kept, which
+                # stripped ``tool_calls`` from assistant messages and
+                # ``tool_call_id`` from tool messages — causing
                 # ``sanitize_api_messages`` to silently drop tool results and
                 # the model to lose all tool-calling context from prior turns.
+                #
+                # Only fields in ``_ALLOWED_CLIENT_MESSAGE_FIELDS`` are copied
+                # through; see the constant's docstring for why unknown /
+                # Hermes-internal keys are dropped at this trust boundary.
                 msg: Dict[str, Any] = {}
                 for k, v in entry.items():
+                    if k not in _ALLOWED_CLIENT_MESSAGE_FIELDS:
+                        continue
                     if k == "role":
                         msg["role"] = str(v)
                     elif k == "content":
@@ -4882,7 +4966,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         # only carry ``tool_calls``.
                         msg["content"] = str(v) if v is not None else None
                     else:
-                        # Pass through tool_calls, tool_call_id, name, etc. as-is
+                        # Whitelisted: tool_calls, tool_call_id, name, refusal.
                         msg[k] = v
                 # Ensure content key exists (may be absent if sender omitted it)
                 if "content" not in msg:
@@ -5049,6 +5133,13 @@ class APIServerAdapter(BasePlatformAdapter):
                                 user_message=user_message,
                                 conversation_history=conversation_history,
                                 task_id=effective_task_id,
+                                # Client-supplied history (`conversation_history`
+                                # from the request body or replayed via
+                                # `previous_response_id`) is untrusted; do not
+                                # let a forged todo tool-call pair seed the
+                                # TodoStore.  See GHSA-5g4g-6jrg-mw3g + PR
+                                # #40965 review.
+                                hydrate_todo_store=False,
                             )
                         finally:
                             try:

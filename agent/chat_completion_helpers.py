@@ -2092,8 +2092,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_summary_result.content or "").strip()
 
         if final_response:
-            if "<think>" in final_response:
-                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+            # Use the canonical sanitizer instead of an inline <think>-only
+            # regex: strip_think_blocks() also removes leaked tool-call XML
+            # (<tool_call>/<function_call>/...) that toolless summary calls
+            # provoke from open models -- e.g. GLM emits its native tool-call
+            # template as plain content when no tools are bound, and this text
+            # is otherwise delivered to the user verbatim.
+            final_response = agent._strip_think_blocks(final_response).strip()
             if final_response:
                 messages.append({"role": "assistant", "content": final_response})
             else:
@@ -2135,8 +2140,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_retry_result.content or "").strip()
 
             if final_response:
-                if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                # Same canonical sanitizer as the first-attempt branch above.
+                final_response = agent._strip_think_blocks(final_response).strip()
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:

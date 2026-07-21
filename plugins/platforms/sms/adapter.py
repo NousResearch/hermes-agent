@@ -164,7 +164,12 @@ class SmsAdapter(BasePlatformAdapter):
         import aiohttp
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted)
+        # Twilio rejects any single message body over 1600 characters with HTTP 400
+        # ("concatenated message body exceeds the 1600 character limit"). truncate_message
+        # defaults to a 4096-char limit, so without an explicit cap a long reply produced
+        # one oversized chunk that always failed to send. Cap at the SMS limit, as every
+        # other adapter passes its own MAX_MESSAGE_LENGTH.
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_result = SendResult(success=True)
 
         url = f"{TWILIO_API_BASE}/{self._account_sid}/Messages.json"

@@ -189,6 +189,11 @@ _RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+# Images must be stripped before links: an image is link syntax prefixed with
+# "!", so the link regex alone would leave a stray "!" (``![alt](url)`` →
+# ``!alt``) and skip empty-alt images (``![](url)``) entirely. Collapse images
+# to their alt text (empty when there is none).
+_RE_IMAGE = re.compile(r"!\[([^\]]*)\]\([^\)]+\)")
 _RE_LINK = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
 _RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
 
@@ -206,6 +211,7 @@ def strip_markdown(text: str) -> str:
     text = _RE_CODE_BLOCK.sub("", text)
     text = _RE_INLINE_CODE.sub(r"\1", text)
     text = _RE_HEADING.sub("", text)
+    text = _RE_IMAGE.sub(r"\1", text)
     text = _RE_LINK.sub(r"\1", text)
     text = _RE_MULTI_NEWLINE.sub("\n\n", text)
     return text.strip()

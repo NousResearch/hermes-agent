@@ -1433,6 +1433,18 @@ class TestTapsManager:
         assert len(taps) == 1
         assert taps[0]["repo"] == "owner/repo"
 
+    def test_add_github_url_tap_normalizes_repo(self, tmp_path):
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        assert mgr.add("git@github.com:owner/repo.git", "skills/") is True
+        taps = mgr.load()
+        assert taps == [{"repo": "owner/repo", "path": "skills/"}]
+
+    def test_add_rejects_unsupported_non_github_repo(self, tmp_path):
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        with pytest.raises(ValueError, match="GitHub.com repos"):
+            mgr.add("git@git.rccchina.com:crawl/spider-skills.git", "skills/")
+        assert mgr.load() == []
+
     def test_add_duplicate_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")
         mgr.add("owner/repo")

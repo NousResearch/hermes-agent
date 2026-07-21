@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_tap, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -119,6 +119,16 @@ def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
     assert (hub_dir / "lock.json").exists()
     assert (hub_dir / "quarantine").is_dir()
     assert (hub_dir / "index-cache").is_dir()
+
+
+def test_do_tap_add_rejects_unsupported_non_github_repo(hub_env):
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_tap("add", repo="git@git.rccchina.com:crawl/spider-skills.git", console=console)
+
+    output = sink.getvalue()
+    assert "GitHub.com repos" in output
 
 
 def test_do_list_distinguishes_hub_builtin_and_local(three_source_env):

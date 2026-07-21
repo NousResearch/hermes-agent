@@ -3469,6 +3469,38 @@ class TapsManager:
     def __init__(self, path: Optional[Path] = None):
         self.path = path if path is not None else _taps_file()
 
+    @staticmethod
+    def normalize_repo(repo: str) -> str:
+        """Normalize supported GitHub.com tap specs to owner/repo."""
+        repo = repo.strip()
+        if not repo:
+            raise ValueError("Tap repo is required")
+
+        candidates = [repo]
+        if repo.startswith("https://github.com/"):
+            candidates.append(repo[len("https://github.com/"):])
+        if repo.startswith("git@github.com:"):
+            candidates.append(repo[len("git@github.com:"):])
+        if repo.startswith("ssh://git@github.com/"):
+            candidates.append(repo[len("ssh://git@github.com/"):])
+
+        for candidate in candidates:
+            cleaned = candidate.strip().rstrip("/")
+            if cleaned.endswith(".git"):
+                cleaned = cleaned[:-4]
+            parts = cleaned.split("/")
+            if (
+                len(parts) == 2
+                and all(parts)
+                and re.fullmatch(r"[A-Za-z0-9_.-]+", parts[0])
+                and re.fullmatch(r"[A-Za-z0-9_.-]+", parts[1])
+            ):
+                return f"{parts[0]}/{parts[1]}"
+
+        raise ValueError(
+            "Tap repos must be GitHub.com repos in owner/repo form or a github.com URL."
+        )
+
     def load(self) -> List[dict]:
         if not self.path.exists():
             return []
@@ -3484,6 +3516,7 @@ class TapsManager:
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
+        repo = self.normalize_repo(repo)
         taps = self.load()
         if any(t["repo"] == repo for t in taps):
             return False

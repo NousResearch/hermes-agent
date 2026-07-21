@@ -1424,7 +1424,12 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         if not repo:
             c.print("[bold red]Error:[/] Repo required. Usage: hermes skills tap add owner/repo\n")
             return
-        if mgr.add(repo):
+        try:
+            added = mgr.add(repo)
+        except ValueError as exc:
+            c.print(f"[bold red]Error:[/] {exc}\n")
+            return
+        if added:
             c.print(f"[bold green]Added tap:[/] {repo}\n")
         else:
             c.print(f"[yellow]Tap already exists:[/] {repo}\n")

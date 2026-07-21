@@ -185,6 +185,20 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         preferences["require_parameters"] = True
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
+
+    # Local privacy hardening. This is intentionally environment-gated so the
+    # setting can be enabled for Bill's local Hermes services without changing
+    # the upstream configuration schema or affecting other installations.
+    zdr_enabled = os.getenv("HERMES_OPENROUTER_ZDR", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if zdr_enabled:
+        try:
+            is_openrouter = agent.provider == "openrouter" or agent._is_openrouter_url()
+        except Exception:
+            is_openrouter = False
+        if is_openrouter:
+            preferences["zdr"] = True
     return preferences
 
 

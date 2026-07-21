@@ -1507,11 +1507,14 @@ def _fetch_openrouter_policy_catalog(
 def _openrouter_policy_model_ids(
     *,
     force_refresh: bool = False,
+    tool_capable: bool = False,
 ) -> list[str] | None:
     """Return model IDs eligible under the current OpenRouter policy."""
     catalog = _fetch_openrouter_policy_catalog(force_refresh=force_refresh)
     if catalog is None:
         return None
+    if tool_capable:
+        return [mid for mid, item in catalog.items() if _openrouter_model_supports_tools(item)]
     return list(catalog)
 
 
@@ -1520,7 +1523,11 @@ def fetch_openrouter_models(
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """Return tool-capable curated models allowed by OpenRouter's policy.
+    """Return tool-capable OpenRouter models allowed by the account policy.
+
+    Curated models are listed first as a stable ordering hint, followed by
+    every additional tool-capable model returned by OpenRouter's authenticated
+    policy-aware catalog.
 
     The picker is intentionally fail-closed: if the authenticated
     policy-aware catalog cannot be fetched, it returns a stale filtered picker
@@ -1538,9 +1545,8 @@ def fetch_openrouter_models(
     ):
         return list(_openrouter_catalog_cache)
 
-    # Prefer the remotely-hosted curated catalog manifest; fall back to the
-    # in-repo snapshot only to determine which policy-eligible models Hermes
-    # should feature in its picker.
+    # Prefer the remotely-hosted curated catalog manifest for stable ordering;
+    # fall back to the in-repo snapshot only as an ordering hint.
     try:
         from hermes_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
@@ -1556,30 +1562,29 @@ def fetch_openrouter_models(
     if live_by_id is None:
         return list(_openrouter_catalog_cache or [])
 
-    curated: list[tuple[str, str]] = []
+    ordered_ids = list(preferred_ids)
+    seen_ids = set(ordered_ids)
+    ordered_ids.extend(mid for mid in live_by_id if mid not in seen_ids)
+
+    models: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
+    for model_id in ordered_ids:
+        live_item = live_by_id.get(model_id)
+        if live_item is None or not _openrouter_model_supports_tools(live_item):
             continue
-        # Hide models that don't advertise tool-calling support — hermes-agent
-        # requires it and surfacing them leads to immediate runtime failures
-        # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
-            continue
-        if preferred_id == silent_default:
+        if model_id == silent_default:
             desc = "default"
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
+        models.append((model_id, desc))
 
-    if curated and not curated[0][1]:
-        first_id, _ = curated[0]
-        curated[0] = (first_id, "recommended")
+    if models and not models[0][1]:
+        first_id, _ = models[0]
+        models[0] = (first_id, "recommended")
 
-    _openrouter_catalog_cache = curated
+    _openrouter_catalog_cache = models
     _openrouter_catalog_cache_at = now
-    return list(curated)
+    return list(models)
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:
@@ -4762,7 +4767,7 @@ def validate_requested_model(
         }
 
     if normalized == "openrouter":
-        eligible_models = _openrouter_policy_model_ids()
+        eligible_models = _openrouter_policy_model_ids(tool_capable=True)
         if eligible_models is None:
             return {
                 "accepted": False,

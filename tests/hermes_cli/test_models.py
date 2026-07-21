@@ -81,6 +81,35 @@ class TestFetchOpenRouterModels:
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
         ]
 
+    def test_includes_additional_policy_eligible_tool_models(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_policy_catalog_cache", None)
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            lambda: [("curated/model", "")],
+        )
+        policy_catalog = {
+            "curated/model": {
+                "pricing": {"prompt": "0", "completion": "0"},
+                "supported_parameters": ["tools"],
+            },
+            "additional/tool-model": {
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+                "supported_parameters": ["tools", "temperature"],
+            },
+            "additional/non-tool-model": {
+                "pricing": {"prompt": "0", "completion": "0"},
+                "supported_parameters": ["temperature"],
+            },
+        }
+        with patch(
+            "hermes_cli.models._fetch_openrouter_policy_catalog",
+            return_value=policy_catalog,
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert [mid for mid, _ in models] == ["curated/model", "additional/tool-model"]
+
 
     def test_returns_empty_on_policy_fetch_failure_without_stale_cache(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)

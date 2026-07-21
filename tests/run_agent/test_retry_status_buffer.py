@@ -9,6 +9,7 @@ silently dropped.
 from __future__ import annotations
 
 
+from agent.conversation_loop import _finalize_retry_status_on_success
 from run_agent import AIAgent
 
 
@@ -148,8 +149,7 @@ def test_pending_fallback_notice_emitted_once_on_success():
     agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
 
     # Success path order: emit pending notice, then drop the buffer.
-    agent._emit_pending_fallback_notice()
-    agent._clear_status_buffer()
+    _finalize_retry_status_on_success(agent)
 
     # The durable notice was shown exactly once; the buffered retry noise was
     # silently dropped.
@@ -172,6 +172,19 @@ def test_pending_fallback_notice_noop_when_unset():
     # No _pending_fallback_notice attribute set at all.
     agent._emit_pending_fallback_notice()
     assert emitted == []
+
+
+def test_success_status_finalization_tolerates_pre_notice_agent():
+    """A pre-notice AIAgent can meet a lazily imported newer loop."""
+    cleared = []
+
+    class LegacyAgent:
+        def _clear_status_buffer(self):
+            cleared.append(True)
+
+    _finalize_retry_status_on_success(LegacyAgent())
+
+    assert cleared == [True]
 
 
 def test_flush_discards_pending_fallback_notice():

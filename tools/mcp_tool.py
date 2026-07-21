@@ -92,6 +92,7 @@ Thread safety:
 import asyncio
 import contextvars
 import concurrent.futures
+import errno
 import inspect
 import json
 import logging
@@ -945,6 +946,85 @@ class NonMcpEndpointError(ConnectionError):
     Subclasses :class:`ConnectionError` so callers that only catch the broad
     class still treat it as a connection problem.
     """
+
+
+def _unwrap_exception_group(exc: BaseException) -> BaseException:
+    """Extract the root-cause exception from anyio TaskGroup wrappers.
+
+    The MCP SDK uses anyio task groups, which wrap errors in
+    ``BaseExceptionGroup`` / ``ExceptionGroup``. Their ``str()`` is opaque —
+    "unhandled errors in a TaskGroup (1 sub-exception)" — so log sites must
+    unwrap to surface the real cause (e.g. ``BrokenPipeError`` on a dead
+    stdio pipe, "401 Unauthorized" on an auth failure).
+
+    Adapted from :func:`hermes_cli.mcp_config._unwrap_exception_group` with
+    two extra behaviours needed on the runtime path:
+
+    - **Fatal leaves re-raise.** A ``KeyboardInterrupt`` / ``SystemExit``
+      anywhere in the (possibly nested) group must propagate to the
+      interpreter, never be flattened into a loggable error.
+    - **Prefer non-cancellation leaves.** When a group carries both a real
+      error and the ``CancelledError``s that anyio cancellation sprays across
+      sibling tasks, the real error is the root cause worth logging.
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        fatal, _rest = exc.split((KeyboardInterrupt, SystemExit))
+        if fatal is not None:
+            # Surface the fatal signal itself, not the wrapper.
+            leaf: BaseException = fatal
+            while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
+                leaf = leaf.exceptions[0]
+            raise leaf
+        # Prefer a non-cancellation leaf when one exists: cancellation
+        # noise from sibling tasks should not mask the real error.
+        chosen = exc.exceptions[0]
+        for sub in exc.exceptions:
+            if not _contains_only_cancellation(sub):
+                chosen = sub
+                break
+        exc = chosen
+    return exc
+
+
+def _contains_only_cancellation(exc: BaseException) -> bool:
+    """True if ``exc`` is (or a group containing only) CancelledError."""
+    if isinstance(exc, BaseExceptionGroup):
+        return all(_contains_only_cancellation(sub) for sub in exc.exceptions)
+    return isinstance(exc, asyncio.CancelledError)
+
+
+def _classify_mcp_failure(exc: BaseException) -> str:
+    """Classify an MCP connection failure as ``'permanent'`` or ``'transient'``.
+
+    Permanent failures are deterministic — every retry hits the same wall, so
+    burning the retry ladder (and log lines) on them is pure noise; ``run()``
+    parks them immediately:
+
+    - auth failures (401/403) — need new credentials, not a retry;
+    - :class:`NonMcpEndpointError` — the URL serves a web page, not MCP;
+    - :class:`InvalidMcpUrlError` — unusable config;
+    - ``FileNotFoundError`` / ``ENOENT`` — the stdio command doesn't exist.
+
+    Everything else (network blips, EOF, ``ClosedResourceError``, transport
+    TaskGroup drops, timeouts) is transient and keeps the normal
+    retry-with-backoff ladder.
+    """
+    root = _unwrap_exception_group(exc)
+    if _is_auth_error(root):
+        return "permanent"
+    if isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError)):
+        return "permanent"
+    # Stdio command missing: FileNotFoundError, or an OSError carrying ENOENT.
+    if isinstance(root, FileNotFoundError):
+        return "permanent"
+    if isinstance(root, OSError) and getattr(root, "errno", None) == errno.ENOENT:
+        return "permanent"
+    # httpx.HTTPStatusError with 401/403 that _is_auth_error's type-gate
+    # missed (e.g. auth types not importable in this environment).
+    status = getattr(getattr(root, "response", None), "status_code", None)
+    if status in (401, 403):
+        return "permanent"
+    return "transient"
 
 
 def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
@@ -2178,10 +2258,11 @@ class MCPServerTask:
                     try:
                         await self._keepalive_probe()
                     except Exception as exc:
+                        root = _unwrap_exception_group(exc)
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
-                            "triggering reconnect: %s",
-                            self.name, exc,
+                            "triggering reconnect: %s: %s",
+                            self.name, type(root).__name__, root,
                         )
                         self._reconnect_event.set()
                         break
@@ -3052,7 +3133,7 @@ class MCPServerTask:
                         )
                         if parked == "shutdown":
                             break
-                        logger.debug(
+                        logger.info(
                             "MCP server '%s': attempting revival from parked "
                             "state (self-probe or explicit reconnect request); "
                             "rebuilding transport.",
@@ -3083,11 +3164,19 @@ class MCPServerTask:
                 raise
             except Exception as exc:
                 self.session = None
+                # Unwrap anyio TaskGroup wrappers first: str(exc) on a
+                # BaseExceptionGroup is "unhandled errors in a TaskGroup
+                # (N sub-exceptions)" — useless in logs, and it hides the
+                # root cause from the auth/permanence classification below.
+                # Empty dead-pipe errors still get a name this way
+                # (e.g. "BrokenPipeError: ").
+                root = _unwrap_exception_group(exc)
+                failure_class = _classify_mcp_failure(root)
                 if self._is_recycled_stdio():
                     logger.warning(
                         "MCP server '%s': lazy reconnect after stdio recycle "
-                        "failed, marking unavailable while retrying: %s",
-                        self.name, exc,
+                        "failed, marking unavailable while retrying: %s: %s",
+                        self.name, type(root).__name__, root,
                     )
                     self._recycled_reason = None
 
@@ -3096,25 +3185,62 @@ class MCPServerTask:
                 # should not permanently kill the server.
                 # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ready.is_set():
-                    if _is_auth_error(exc):
+                    if _is_auth_error(root):
                         logger.warning(
                             "MCP server '%s' failed initial OAuth authentication, "
-                            "not retrying automatically: %s",
-                            self.name, exc,
+                            "not retrying automatically: %s: %s",
+                            self.name, type(root).__name__, root,
                         )
                         self._error = exc
                         self._ready.set()
                         return
 
+                    if failure_class == "permanent":
+                        # Deterministic failure (bad command, non-MCP URL,
+                        # 401/403): every retry hits the same wall. Park
+                        # immediately instead of burning the retry ladder
+                        # and spamming N identical warnings (#65673).
+                        logger.warning(
+                            "MCP server '%s' failed initial connection with a "
+                            "permanent error, parking without retries "
+                            "(state: connecting → parked): %s: %s",
+                            self.name, type(root).__name__, root,
+                        )
+                        self._error = exc
+                        self._ready.set()
+                        self._was_parked = True
+                        self._deregister_tools()
+                        self._reconnect_event.clear()
+                        parked = await self._wait_for_reconnect_or_shutdown(
+                            timeout=_PARKED_RETRY_INTERVAL
+                        )
+                        if parked == "shutdown":
+                            return
+                        logger.info(
+                            "MCP server '%s': attempting revival after "
+                            "permanent initial failure (self-probe or explicit "
+                            "reconnect request); rebuilding transport.",
+                            self.name,
+                        )
+                        initial_retries = 0
+                        self._reconnect_retries = 0
+                        backoff = 1.0
+                        self._error = None
+                        self._ready.clear()
+                        continue
+
                     initial_retries += 1
                     if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
-                            "%d attempts, parking until a reconnect is requested: %s",
-                            self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
+                            "%d attempts, parking until a reconnect is "
+                            "requested (state: connecting → parked): %s: %s",
+                            self.name, _MAX_INITIAL_CONNECT_RETRIES,
+                            type(root).__name__, root,
                         )
                         self._error = exc
                         self._ready.set()
+                        self._was_parked = True
                         self._deregister_tools()
                         self._reconnect_event.clear()
                         parked = await self._wait_for_reconnect_or_shutdown(
@@ -3137,9 +3263,10 @@ class MCPServerTask:
 
                     logger.warning(
                         "MCP server '%s' initial connection failed "
-                        "(attempt %d/%d), retrying in %.0fs: %s",
+                        "(attempt %d/%d), retrying in %.0fs: %s: %s",
                         self.name, initial_retries,
-                        _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                        _MAX_INITIAL_CONNECT_RETRIES, backoff,
+                        type(root).__name__, root,
                     )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -3154,18 +3281,50 @@ class MCPServerTask:
                 # If shutdown was requested, don't reconnect
                 if self._shutdown_event.is_set():
                     logger.debug(
-                        "MCP server '%s' disconnected during shutdown: %s",
-                        self.name, exc,
+                        "MCP server '%s' disconnected during shutdown: %s: %s",
+                        self.name, type(root).__name__, root,
                     )
                     return
+
+                if failure_class == "permanent":
+                    # A previously-working server now fails deterministically
+                    # (revoked credentials, URL now serving a web page, stdio
+                    # binary uninstalled). Retrying can't help — park
+                    # immediately without burning the retry ladder.
+                    logger.warning(
+                        "MCP server '%s' hit a permanent error, parking "
+                        "without retries; will self-probe every %ds "
+                        "(state: connected → parked): %s: %s",
+                        self.name, _PARKED_RETRY_INTERVAL,
+                        type(root).__name__, root,
+                    )
+                    self._was_parked = True
+                    self._deregister_tools()
+                    self._reconnect_event.clear()
+                    parked = await self._wait_for_reconnect_or_shutdown(
+                        timeout=_PARKED_RETRY_INTERVAL
+                    )
+                    if parked == "shutdown":
+                        return
+                    logger.info(
+                        "MCP server '%s': attempting revival from parked state "
+                        "(permanent error; self-probe or explicit reconnect "
+                        "request); rebuilding transport.",
+                        self.name,
+                    )
+                    self._reconnect_retries = _MAX_RECONNECT_RETRIES
+                    backoff = 1.0
+                    continue
 
                 self._reconnect_retries += 1
                 if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
-                        "parking; will self-probe every %ds until it recovers: %s",
+                        "parking; will self-probe every %ds until it recovers "
+                        "(state: degraded → parked): %s: %s",
                         self.name, _MAX_RECONNECT_RETRIES,
-                        _PARKED_RETRY_INTERVAL, exc,
+                        _PARKED_RETRY_INTERVAL,
+                        type(root).__name__, root,
                     )
                     # Do NOT return — exiting the task orphans the server:
                     # nothing would ever listen for _reconnect_event again
@@ -3178,6 +3337,7 @@ class MCPServerTask:
                     # we wake and attempt one reconnect ourselves (#57129).
                     # An explicit _reconnect_event.set() (OAuth recovery,
                     # manual /mcp refresh) still wakes us immediately.
+                    self._was_parked = True
                     self._deregister_tools()
                     self._reconnect_event.clear()
                     parked = await self._wait_for_reconnect_or_shutdown(
@@ -3200,9 +3360,9 @@ class MCPServerTask:
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s",
+                    "reconnecting in %.0fs: %s: %s",
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
+                    backoff, type(root).__name__, root,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)

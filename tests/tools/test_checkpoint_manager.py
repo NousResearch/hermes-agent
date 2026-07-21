@@ -19,9 +19,16 @@ from tools.checkpoint_manager import (
     _dir_file_count,
     _project_hash,
     _store_path,
+    _index_path,
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _INDEX_LOCK_STALE_SECONDS,
+    _index_lock_path,
+    _is_index_lock_error,
+    _index_lock_has_open_process,
+    _remove_stale_index_lock,
+    _git_add_recover_stale_index_lock,
     format_checkpoint_list,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
@@ -1049,3 +1056,118 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# =========================================================================
+# Stale index-lock recovery — shared helper for _take() and diff()
+# =========================================================================
+
+class TestCheckpointIndexLocks:
+    def _stale_lock(self, index_file: Path) -> Path:
+        lock_path = _index_lock_path(index_file)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale\n", encoding="utf-8")
+        old = time.time() - _INDEX_LOCK_STALE_SECONDS - 1
+        os.utime(lock_path, (old, old))
+        return lock_path
+
+    def test_diff_uses_shared_git_add_recovery_helper(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=True, max_snapshots=50)
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+        (work_dir / "main.py").write_text("modified\n")
+
+        called = []
+        original = _git_add_recover_stale_index_lock
+
+        def spy_helper(*args, **kwargs):
+            called.append(args[2])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._git_add_recover_stale_index_lock",
+            spy_helper,
+        )
+
+        checkpoint = m.list_checkpoints(str(work_dir))[0]
+        result = m.diff(str(work_dir), checkpoint["hash"])
+
+        assert result["success"] is True
+        assert called == [_index_path(_store_path(checkpoint_base), _project_hash(str(work_dir)))]
+
+    def test_recovers_only_matching_stale_index_lock_error(self, tmp_path, monkeypatch):
+        work_dir = tmp_path / "project"
+        work_dir.mkdir()
+        store = tmp_path / "store"
+        index_file = store / "indexes" / ("a" * 16)
+        lock_path = self._stale_lock(index_file)
+        calls = []
+
+        def fake_run_git(args, *unused_args, **unused_kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                return False, "", f"fatal: Unable to create '{lock_path}': File exists."
+            return True, "", ""
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", fake_run_git)
+        monkeypatch.setattr("tools.checkpoint_manager._index_lock_has_open_process", lambda _: False)
+
+        assert _git_add_recover_stale_index_lock(store, str(work_dir), index_file) == (True, "", "")
+        assert calls == [["add", "-A"], ["add", "-A"]]
+
+        calls.clear()
+        def unrelated_run_git(*args, **kwargs):
+            calls.append(args)
+            return False, "", "fatal: unrelated git failure"
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", unrelated_run_git)
+        assert _git_add_recover_stale_index_lock(store, str(work_dir), index_file) == (
+            False,
+            "",
+            "fatal: unrelated git failure",
+        )
+        assert len(calls) == 1
+
+    def test_remove_stale_lock_quarantines_before_unlinking(self, tmp_path, monkeypatch):
+        index_file = tmp_path / "store" / "indexes" / ("b" * 16)
+        lock_path = self._stale_lock(index_file)
+        monkeypatch.setattr("tools.checkpoint_manager._index_lock_has_open_process", lambda _: False)
+        original_unlink = Path.unlink
+
+        def create_new_original_before_unlink(self, *args, **kwargs):
+            if ".quarantine." in self.name:
+                lock_path.write_text("fresh\n", encoding="utf-8")
+            return original_unlink(self, *args, **kwargs)
+
+        with patch.object(Path, "unlink", create_new_original_before_unlink):
+            assert _remove_stale_index_lock(index_file) is True
+
+        assert lock_path.exists()
+        assert lock_path.read_text(encoding="utf-8") == "fresh\n"
+
+    def test_keeps_recent_open_unknown_or_unexpected_index_locks(self, tmp_path, monkeypatch):
+        index_file = tmp_path / "store" / "indexes" / ("c" * 16)
+        lock_path = self._stale_lock(index_file)
+
+        monkeypatch.setattr("tools.checkpoint_manager._index_lock_has_open_process", lambda _: None)
+        assert _remove_stale_index_lock(index_file) is False
+        assert lock_path.exists()
+
+        monkeypatch.setattr("tools.checkpoint_manager._index_lock_has_open_process", lambda _: True)
+        assert _remove_stale_index_lock(index_file) is False
+        assert lock_path.exists()
+
+        fresh_index = tmp_path / "store" / "indexes" / ("d" * 16)
+        fresh_lock = _index_lock_path(fresh_index)
+        fresh_lock.parent.mkdir(parents=True, exist_ok=True)
+        fresh_lock.write_text("fresh\n", encoding="utf-8")
+        monkeypatch.setattr("tools.checkpoint_manager._index_lock_has_open_process", lambda _: False)
+        assert _remove_stale_index_lock(fresh_index) is False
+        assert fresh_lock.exists()
+
+        unexpected = tmp_path / "store" / "not-indexes" / ("e" * 16)
+        unexpected_lock = self._stale_lock(unexpected)
+        assert _remove_stale_index_lock(unexpected) is False
+        assert unexpected_lock.exists()

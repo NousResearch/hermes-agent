@@ -364,6 +364,153 @@ def _run_git(
 
 
 # ---------------------------------------------------------------------------
+# Stale index-lock recovery (shared by _take and diff)
+# ---------------------------------------------------------------------------
+
+_INDEX_LOCK_STALE_SECONDS: int = 5 * 60  # 5 minutes
+
+
+def _index_lock_path(index_file: Path) -> Path:
+    """Return the lock path Git uses while updating ``index_file``."""
+    return index_file.with_name(index_file.name + ".lock")
+
+
+def _is_index_lock_error(stderr: str, index_file: Path) -> bool:
+    """Return whether Git failed because this project's index lock exists."""
+    if not stderr:
+        return False
+    lock_path = _index_lock_path(index_file)
+    return (
+        str(lock_path) in stderr
+        and "Unable to create" in stderr
+        and "File exists" in stderr
+    )
+
+
+def _index_lock_has_open_process(lock_path: Path) -> Optional[bool]:
+    """Return whether ``lock_path`` is open, or None when that is unknown.
+
+    Git lockfiles do not record an owner PID.  ``lsof`` lets us distinguish a
+    dead, abandoned lock from one an active Git process is still writing.  If
+    it is unavailable or errors, callers must retain the lock rather than
+    guessing that it is stale.
+    """
+    if shutil.which("lsof") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["lsof", "-t", "--", str(lock_path)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    return None
+
+
+def _remove_stale_index_lock(index_file: Path) -> bool:
+    """Atomically quarantine and remove a stale ``index_file.lock``.
+
+    Acceptance criteria (all must hold or the call returns False):
+
+    * *index_file* lives under ``indexes/<16hex>`` (rejects anything else).
+    * The lock file is at least ``_INDEX_LOCK_STALE_SECONDS`` old.
+    * ``_index_lock_has_open_process`` returns ``False`` (no holder).
+
+    TOCTOU mitigation: the lock is **renamed** to a unique quarantine
+    sibling first.  Any new lock created after the rename lands at the
+    original path and is never touched.  The quarantine copy is then
+    unlinked.  If unlinking the quarantine fails, we attempt to restore it
+    back to the original path — but only if the original is absent — and
+    return False.
+    """
+    lock_path = _index_lock_path(index_file)
+
+    # Validate: must be indexes/<16hex> (name is 16 hex chars).
+    dir_hash = index_file.name
+    if (
+        index_file.parent.name != _INDEXES_DIRNAME
+        or not re.fullmatch(r'[0-9a-f]{16}', dir_hash)
+    ):
+        return False
+
+    if not lock_path.exists():
+        return True
+
+    # Age guard.
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return False
+    if age < _INDEX_LOCK_STALE_SECONDS:
+        return False
+
+    # Process-hold guard.
+    held = _index_lock_has_open_process(lock_path)
+    if held is not False:  # True or None (indeterminate) → refuse
+        return False
+
+    # Atomic quarantine: rename away before unlink.
+    quarantine_path = lock_path.with_name(
+        f"{dir_hash}.quarantine.{int(time.time_ns())}"
+    )
+    try:
+        lock_path.rename(quarantine_path)
+    except OSError:
+        return False
+
+    # Unlink the quarantine copy.
+    try:
+        quarantine_path.unlink()
+    except OSError:
+        # Unlink failed — try to restore quarantine back to lock_path,
+        # but only if the original path is currently absent (e.g. a new
+        # process created a lock after our rename; do NOT overwrite it).
+        if not lock_path.exists():
+            try:
+                quarantine_path.rename(lock_path)
+            except OSError:
+                pass
+        return False
+
+    return True
+
+
+def _git_add_recover_stale_index_lock(
+    store: Path,
+    working_dir: str,
+    index_file: Path,
+    timeout: int = _GIT_TIMEOUT,
+) -> Tuple[bool, str, str]:
+    """``git add`` with automatic recovery from stale index locks.
+
+    Shared by ``_take()`` and ``diff()``.  Runs ``git add`` with
+    ``allowed_returncodes={128}`` so the error path is reached without
+    noisy logging, then attempts recovery only when the stderr matches a
+    known index-lock pattern and ``_remove_stale_index_lock`` succeeds.
+    """
+    ok, stdout, stderr = _run_git(
+        ["add", "-A"], store, working_dir,
+        timeout=timeout, index_file=index_file,
+        allowed_returncodes={128},
+    )
+    if not ok and _is_index_lock_error(stderr, index_file):
+        if _remove_stale_index_lock(index_file):
+            ok, stdout, stderr = _run_git(
+                ["add", "-A"], store, working_dir,
+                timeout=timeout, index_file=index_file,
+            )
+    return ok, stdout, stderr
+
+
+# ---------------------------------------------------------------------------
 # Store initialisation + legacy migration
 # ---------------------------------------------------------------------------
 
@@ -763,8 +910,8 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        _git_add_recover_stale_index_lock(store, abs_dir, index_file,
+                                          timeout=_GIT_TIMEOUT * 2)
 
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
@@ -920,9 +1067,9 @@ class CheckpointManager:
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+        ok, _, err = _git_add_recover_stale_index_lock(
+            store, working_dir, index_file,
+            timeout=_GIT_TIMEOUT * 2,
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)

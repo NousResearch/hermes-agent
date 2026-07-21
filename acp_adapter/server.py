@@ -1785,8 +1785,17 @@ class HermesACPAgent(acp.Agent):
             provider = getattr(state.agent, "provider", None) or "auto"
             return f"Current model: {model}\nProvider: {provider}"
 
+        # Parse flags using CLI's shared utility (supports --provider, --global)
+        from hermes_cli.model_switch import parse_model_flags
+        raw_model, explicit_provider, is_global = parse_model_flags(args)
+
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+        effective_provider = explicit_provider or current_provider
+
+        # Resolve model using the ACP's existing resolution pipeline
+        target_provider, new_model = self._resolve_model_selection(
+            raw_model or args, effective_provider
+        )
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(
@@ -1795,9 +1804,16 @@ class HermesACPAgent(acp.Agent):
             model=new_model,
             requested_provider=target_provider,
         )
+        if is_global:
+            from hermes_cli.model_switch import persist_global
+            persist_global(target_provider or current_provider, new_model)
+
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
-        logger.info("Session %s: model switched to %s", state.session_id, new_model)
+        logger.info(
+            "Session %s: model switched to %s (global=%s)",
+            state.session_id, new_model, is_global,
+        )
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:

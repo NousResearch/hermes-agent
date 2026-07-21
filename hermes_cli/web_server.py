@@ -48,6 +48,61 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+
+# ---------------------------------------------------------------------------
+# Web-asset MIME normalization (#28987)
+# ---------------------------------------------------------------------------
+#
+# Starlette's ``StaticFiles`` and ``FileResponse`` rely on
+# ``mimetypes.guess_type`` to set ``Content-Type``.  On native Windows,
+# Python's ``mimetypes.init()`` reads the system registry — and many
+# installers (notably some older IIS / VS toolchains) pollute
+# ``HKEY_CLASSES_ROOT\.js`` with ``Content Type = text/plain``.  Python
+# faithfully honours that, browsers then refuse to execute the Vite
+# bundle under strict MIME checking, and the dashboard renders as a
+# blank page.
+#
+# Fix: explicitly override the strict map for the asset extensions we
+# actually serve.  ``mimetypes.add_type(..., strict=True)`` directly
+# writes the ``types_map`` dict that ``guess_type`` consults first, so
+# our values win regardless of what the registry says.
+#
+# Per RFC 9239 (May 2022) ``text/javascript`` is the only IANA-blessed
+# JavaScript MIME type; every major browser also accepts it for ESM
+# module scripts under HTML's strict MIME checking.
+
+_WEB_ASSET_MIME_OVERRIDES = {
+    ".js":   "text/javascript",
+    ".mjs":  "text/javascript",
+    ".cjs":  "text/javascript",
+    ".css":  "text/css",
+    ".json": "application/json",
+    ".map":  "application/json",   # source maps
+    ".svg":  "image/svg+xml",
+    ".wasm": "application/wasm",
+    ".webp": "image/webp",
+    ".webmanifest": "application/manifest+json",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ico":  "image/x-icon",
+}
+
+
+def _normalize_web_asset_mime_types() -> None:
+    """Force web-standard ``Content-Type`` values for SPA assets.
+
+    Idempotent.  Called once at module load so every ``StaticFiles``
+    mount and ``FileResponse`` built afterwards sees the corrected
+    map.  See #28987 for the Windows registry corner case that
+    motivated this.
+    """
+    mimetypes.init()  # populate from system sources first
+    for ext, mime in _WEB_ASSET_MIME_OVERRIDES.items():
+        mimetypes.add_type(mime, ext, strict=True)
+
+
+_normalize_web_asset_mime_types()
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

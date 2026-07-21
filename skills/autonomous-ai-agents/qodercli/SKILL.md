@@ -165,6 +165,7 @@ terminal(command="qodercli -r <session-id> --fork-session", workdir="~/project",
 - **PATH mismatch** can select the wrong Qoder binary. See Binary Resolution above.
 - **Parallel sessions need isolation.** Shared cwd causes file-write conflicts.
 - **Auth token expiry.** 401/403 mid-session means re-run `qodercli login`.
+- **Don't echo the token.** `qodercli` reads `QODER_PERSONAL_ACCESS_TOKEN` automatically. Never run `echo $QODER_PERSONAL_ACCESS_TOKEN` for validation — use `qodercli --version` or the smoke test below.
 - **Credit drain on vague prompts.** Tight scope = fewer turns = fewer credits.
 
 ## Verification

@@ -1,8 +1,7 @@
-from hermes_state import AsyncSessionDB
 """Tests for gateway /status behavior and token persistence."""
 
-from datetime import datetime
 import time
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,6 +10,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_state import AsyncSessionDB
 
 
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
@@ -74,8 +74,23 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     return runner
 
 
+@pytest.fixture(autouse=True)
+def _stable_local_status_sources(monkeypatch):
+    """Keep command tests deterministic without changing their data path."""
+
+    monkeypatch.setattr(
+        "gateway.status_card.collect_uptime_seconds",
+        lambda: (60, 3600),
+    )
+    monkeypatch.setattr(
+        "gateway.status_card.get_hermes_revision",
+        lambda: "deadbeef",
+    )
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+
+
 @pytest.mark.asyncio
-async def test_status_command_reports_running_agent_without_interrupt(monkeypatch):
+async def test_status_command_reports_running_agent_without_interrupt():
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -86,7 +101,7 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
         total_tokens=321,
     )
     runner = _make_runner(session_entry)
-    # Token total comes from the SQLite SessionDB, not SessionEntry.
+    # Token components come from the SQLite SessionDB, not SessionEntry.
     runner._session_db._db.get_session.return_value = {
         "input_tokens": 200,
         "output_tokens": 121,
@@ -94,21 +109,26 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
         "cache_write_tokens": 0,
         "reasoning_tokens": 0,
     }
-    running_agent = MagicMock()
+    running_agent = SimpleNamespace(
+        model="",
+        provider="",
+        context_compressor=None,
+        interrupt=MagicMock(),
+    )
     runner._running_agents[build_session_key(_make_source())] = running_agent
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Cumulative API tokens (re-sent each call):** 321" in result
-    assert "**Agent Running:** Yes ⚡" in result
+    assert "🧵 **Session:** `sess-1`" in result
+    assert "🧮 **Tokens:** 200 in / 121 out" in result
+    assert "📌 **Tasks:** running · 1 active" in result
     assert "**Title:**" not in result
     running_agent.interrupt.assert_not_called()
     assert runner._pending_messages == {}
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_session_title_when_present():
+async def test_status_command_keeps_card_concise_when_session_has_title():
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -123,15 +143,15 @@ async def test_status_command_includes_session_title_when_present():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Title:** My titled session" in result
+    assert "🧵 **Session:** `sess-1`" in result
+    assert "My titled session" not in result
+    assert "**Created:**" not in result
+    assert "**Connected Platforms:**" not in result
 
 
 @pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
-    """Regression test for #17158: /status must source token totals from the
-    SQLite SessionDB (where run_agent.py persists them) and sum all component
-    counts, not from SessionEntry (which the agent never writes)."""
+    """Regression test for #17158: status components come from SessionDB."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -152,8 +172,9 @@ async def test_status_command_reads_token_totals_from_session_db():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    # 1000 + 250 + 500 + 100 + 50 = 1,900
-    assert "**Cumulative API tokens (re-sent each call):** 1,900" in result
+    assert "🧮 **Tokens:** 1k in / 250 out" in result
+    assert "🗄️ **Cache:** 31% hit · 500 read, 100 write" in result
+    assert "1,900" not in result
 
 
 @pytest.mark.asyncio
@@ -174,7 +195,8 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Cumulative API tokens (re-sent each call):** 0" in result
+    assert "🧮 **Tokens:** 0 in / 0 out" in result
+    assert "🗄️ **Cache:** 0% hit · 0 read, 0 write" in result
 
 
 @pytest.mark.asyncio
@@ -203,6 +225,7 @@ async def test_status_command_includes_live_agent_model_and_context():
         context_compressor=SimpleNamespace(
             last_prompt_tokens=12_345,
             context_length=100_000,
+            compression_count=3,
         ),
         interrupt=MagicMock(),
     )
@@ -210,10 +233,10 @@ async def test_status_command_includes_live_agent_model_and_context():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Model:** `openai/gpt-test` (openai)" in result
-    assert "**Context:** 12,345 / 100,000 (12%)" in result
-    assert "**Cumulative API tokens (re-sent each call):** 1,250" in result
-    assert "1,250 (cumulative)" not in result
+    assert "🧠 **Model:** openai/gpt-test · **Provider:** openai" in result
+    assert "📚 **Context:** 12.3k/100k (12%)" in result
+    assert "🧹 **Compactions:** 3" in result
+    assert "🧮 **Tokens:** 1k in / 250 out" in result
 
 
 @pytest.mark.asyncio
@@ -243,9 +266,9 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
-    assert "**Context:** 24,000 / 272,000 (9%)" in result
-    assert "**Cumulative API tokens (re-sent each call):** 2,500" in result
+    assert "🧠 **Model:** openai/gpt-persisted · **Provider:** openai-codex" in result
+    assert "📚 **Context:** 24k/272k (9%)" in result
+    assert "🧮 **Tokens:** 2k in / 500 out" in result
 
 
 @pytest.mark.asyncio
@@ -266,14 +289,78 @@ async def test_status_command_includes_cached_agent_model_and_context():
         context_compressor=SimpleNamespace(
             last_prompt_tokens=10_000,
             context_length=200_000,
+            compression_count=7,
         ),
     )
     runner._agent_cache = {session_entry.session_key: (cached_agent, time.time())}
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Model:** `anthropic/claude-sonnet-test` (openrouter)" in result
-    assert "**Context:** 10,000 / 200,000 (5%)" in result
+    assert "🧠 **Model:** anthropic/claude-sonnet-test · **Provider:** openrouter" in result
+    assert "📚 **Context:** 10k/200k (5%)" in result
+    assert "🧹 **Compactions:** 7" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_falls_back_to_local_config(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        last_prompt_tokens=8_000,
+    )
+    runner = _make_runner(session_entry)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "gpt-configured",
+                "provider": "provider-configured",
+                "context_length": 128_000,
+            },
+            "fallback_providers": [
+                {"provider": "backup", "model": "fallback-one"},
+                {"provider": "backup", "model": "fallback-two"},
+            ],
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "🧠 **Model:** gpt-configured · **Provider:** provider-configured" in result
+    assert "🔄 **Fallbacks:** backup/fallback-one, backup/fallback-two" in result
+    assert "📚 **Context:** 8k/128k (6%)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_uses_local_cost_without_remote_account_call(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 100,
+        "output_tokens": 25,
+        "actual_cost_usd": 1.23,
+        "estimated_cost_usd": 9.99,
+        "cost_status": "actual",
+    }
+    remote_usage = MagicMock(side_effect=AssertionError("remote usage call"))
+    monkeypatch.setattr("gateway.slash_commands.fetch_account_usage", remote_usage)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "💵 **Cost:** $1.23" in result
+    assert "~$1.23" not in result
+    remote_usage.assert_not_called()
 
 
 @pytest.mark.asyncio

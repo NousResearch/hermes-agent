@@ -89,7 +89,7 @@ export function decideProfileDeleteAction(
  */
 export function resolveRouteProfile(
   tornDownProfile: string | null,
-  profile: string | undefined
+  profile: string | null | undefined
 ): string | null | undefined {
   return tornDownProfile ? null : profile
 }

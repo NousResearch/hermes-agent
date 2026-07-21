@@ -1910,6 +1910,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.status import (
             derive_gateway_busy,
             derive_gateway_drainable,
+            normalize_updated_at,
             parse_active_agents,
             read_runtime_status,
         )
@@ -1948,7 +1949,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_state=gw_state,
             ),
             "exit_reason": runtime.get("exit_reason"),
-            "updated_at": runtime.get("updated_at"),
+            # Contract: updated_at is RFC3339 string | null, never a number —
+            # the state file may carry legacy epoch floats or hand-edited junk.
+            "updated_at": normalize_updated_at(runtime.get("updated_at")),
             "pid": os.getpid(),
         })
 

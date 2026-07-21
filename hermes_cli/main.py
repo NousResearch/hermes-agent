@@ -6712,9 +6712,11 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
-    subprocess.run(
+    stash_push = subprocess.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
+        capture_output=True,
+        text=True,
         check=True,
     )
     stash_ref = subprocess.run(
@@ -6722,9 +6724,21 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout.strip()
-    return stash_ref
+        check=False,
+    )
+    if stash_ref.returncode == 0:
+        return stash_ref.stdout.strip()
+
+    print("⚠ Git reported local changes, but `git stash` did not create a stash entry.")
+    stash_message = (stash_push.stdout or stash_push.stderr).strip()
+    if stash_message:
+        print(f"  git stash said: {stash_message.splitlines()[0]}")
+    print("  Leaving those changes in place for the update.")
+    print("  This commonly happens with staged embedded git repositories / gitlinks.")
+    print(
+        "  If a later checkout/pull step fails, inspect `git status` and commit, remove, or convert that nested repo before retrying."
+    )
+    return None
 
 
 def _resolve_stash_selector(

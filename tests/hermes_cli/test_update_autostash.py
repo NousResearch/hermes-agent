@@ -304,22 +304,70 @@ def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_pa
     assert len(reset_calls) == 1
 
 
-def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch, tmp_path):
+def test_stash_local_changes_if_needed_warns_and_continues_when_stash_ref_missing(
+    monkeypatch, tmp_path, capsys
+):
     def fake_run(cmd, **kwargs):
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout=" M hermes_cli/main.py\n", returncode=0)
         if cmd[-2:] == ["ls-files", "--unmerged"]:
             return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:
-            return SimpleNamespace(stdout="Saved working directory\n", returncode=0)
+            return SimpleNamespace(stdout="No local changes to save\n", stderr="", returncode=0)
         if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:
-            raise CalledProcessError(returncode=128, cmd=cmd)
+            return SimpleNamespace(stdout="", stderr="fatal: Needed a single revision\n", returncode=128)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    with pytest.raises(CalledProcessError):
-        hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+
+    assert stash_ref is None
+    out = capsys.readouterr().out
+    assert "did not create a stash entry" in out
+    assert "No local changes to save" in out
+    assert "embedded git repositories / gitlinks" in out
+
+
+def test_stash_local_changes_if_needed_real_git_embedded_repo_addition(tmp_path, capsys):
+    """Real git regression: `git stash` ignores staged embedded repos / gitlinks."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args, cwd=tmp_path):
+        return subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "README.md").write_text("root\n")
+    git("add", "README.md")
+    git("commit", "-qm", "init")
+
+    child = tmp_path / "child"
+    child.mkdir()
+    git("init", "-q", cwd=child)
+    git("config", "user.email", "t@example.com", cwd=child)
+    git("config", "user.name", "t", cwd=child)
+    (child / "sub.txt").write_text("sub\n")
+    git("add", "sub.txt", cwd=child)
+    git("commit", "-qm", "subinit", cwd=child)
+
+    git("add", "child")
+
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
+
+    assert stash_ref is None
+    out = capsys.readouterr().out
+    assert "did not create a stash entry" in out
+    assert "Leaving those changes in place" in out
+    status = git("status", "--porcelain").stdout
+    assert "A  child" in status
 
 
 def test_discard_lockfile_churn_skips_lock_when_package_json_dirty(tmp_path):

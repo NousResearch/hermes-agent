@@ -337,6 +337,40 @@ async def test_send_typing_forwards_relay_action_with_routing_context():
     assert t.sent_platform == "slack"
 
 
+@pytest.mark.asyncio
+async def test_stop_typing_forwards_explicit_clear_with_routing_context():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=t)
+    event = _make_event(chat_id="channel-1", scope_id="workspace-1")
+    event.source.platform = Platform.SLACK
+    a._capture_scope(event)
+
+    await a.stop_typing("channel-1", metadata={"thread_id": "thread-1"})
+
+    assert t.sent == {
+        "op": "typing",
+        "chat_id": "channel-1",
+        "content": "",
+        "metadata": {
+            "thread_id": "thread-1",
+            "scope_id": "workspace-1",
+        },
+    }
+    assert t.sent_platform == "slack"
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_is_noop_for_non_slack_relay_platforms():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="telegram"), transport=t)
+    event = _make_event(chat_id="channel-1", scope_id="workspace-1")
+    event.source.platform = Platform.TELEGRAM
+    a._capture_scope(event)
+
+    await a.stop_typing("channel-1", metadata={"thread_id": "thread-1"})
+
+    assert t.sent is None
+    assert t.sent_platform is None
 # ── Phase 7 Unit 7d-B: terminal auth revocation → clean "relay disabled" ─────
 
 

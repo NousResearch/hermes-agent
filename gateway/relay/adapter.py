@@ -558,6 +558,30 @@ class RelayAdapter(BasePlatformAdapter):
             platform=self._platform_by_chat.get(str(chat_id)),
         )
 
+    async def stop_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward an explicit typing/status clear to the connector."""
+        if self._transport is None:
+            return
+        platform = self._platform_by_chat.get(str(chat_id))
+        # Slack Assistant status persists until explicitly cleared. Other relay
+        # senders expose only one-shot typing heartbeats; sending an empty
+        # heartbeat there would incorrectly re-trigger typing at completion.
+        if platform != Platform.SLACK.value:
+            return
+        await self._transport.send_outbound(
+            {
+                "op": "typing",
+                "chat_id": chat_id,
+                "content": "",
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=platform,
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
         if self._transport is None:

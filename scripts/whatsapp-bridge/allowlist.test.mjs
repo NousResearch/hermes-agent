@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  isGroupChatAllowed,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
@@ -55,6 +56,69 @@ test('matchesAllowedUser treats * as allow-all wildcard', () => {
     assert.equal(matchesAllowedUser('267383306489914@lid', allowedUsers, sessionDir), true);
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('allowlist group policy rejects a group missing from the group allowlist', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-group-allowlist-'));
+  try {
+    const allowedGroups = parseAllowedUsers('120363001234567890@g.us');
+    assert.equal(
+      isGroupChatAllowed(
+        '120363009999999999@g.us',
+        'allowlist',
+        allowedGroups,
+        sessionDir,
+      ),
+      false,
+    );
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('allowlist group policy allows a listed group', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-group-allowlist-'));
+  try {
+    const allowedGroups = parseAllowedUsers('120363001234567890@g.us');
+    assert.equal(
+      isGroupChatAllowed(
+        '120363001234567890@g.us',
+        'allowlist',
+        allowedGroups,
+        sessionDir,
+      ),
+      true,
+    );
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('open group policy allows a group without an allowlist', () => {
+  assert.equal(
+    isGroupChatAllowed(
+      '120363009999999999@g.us',
+      'open',
+      new Set(),
+      '',
+    ),
+    true,
+  );
+});
+
+test('non-open group policies reject groups unless explicitly allowlisted', () => {
+  for (const policy of ['disabled', 'pairing', '']) {
+    assert.equal(
+      isGroupChatAllowed(
+        '120363001234567890@g.us',
+        policy,
+        parseAllowedUsers('*'),
+        '',
+      ),
+      false,
+      `policy ${policy || '<empty>'}`,
+    );
   }
 });
 

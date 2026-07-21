@@ -63,6 +63,17 @@ export function expandWhatsAppIdentifiers(identifier, sessionDir) {
   return resolved;
 }
 
+export function isGroupChatAllowed(chatId, groupPolicy, allowedGroups, sessionDir) {
+  const policy = String(groupPolicy || '').trim().toLowerCase();
+  if (policy === 'open') {
+    return true;
+  }
+  if (policy === 'allowlist') {
+    return matchesAllowedUser(chatId, allowedGroups, sessionDir);
+  }
+  return false;
+}
+
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   // Empty allowlist = NO ONE allowed (secure default, #8389).  Operators
   // who want an open bot must set ``WHATSAPP_ALLOWED_USERS=*`` explicitly.

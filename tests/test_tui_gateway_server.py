@@ -8367,6 +8367,55 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         server._sessions.pop("sid-b", None)
 
 
+def test_prompt_submit_synthesizes_text_for_zero_api_interrupt(monkeypatch):
+    """Compaction/interruption races can end a turn before any model call.
+
+    The gateway should not emit a blank interrupted message.complete payload.
+    Ink decides whether to display this text based on whether it already
+    recorded the user's local interrupt.
+    """
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": None,
+                "messages": [],
+                "api_calls": 0,
+                "completed": False,
+                "interrupted": True,
+                "turn_exit_reason": "interrupted_by_user",
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    assert payload.get("status") == "interrupted"
+    assert "Interrupted before the model call" in payload.get("text", "")
+
+
 # ── session.most_recent ──────────────────────────────────────────────
 
 

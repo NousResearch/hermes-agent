@@ -2,7 +2,7 @@
 
 ## Motivation
 
-Every major chat frontend (Open WebUI 126k★, LobeChat 73k★, LibreChat 34k★,
+Every major chat frontend (Open WebUI 126k★, LobeHub 73k★, LibreChat 34k★,
 AnythingLLM 56k★, NextChat 87k★, ChatBox 39k★, Jan 26k★, HF Chat-UI 8k★,
 big-AGI 7k★) connects to backends via the OpenAI-compatible REST API with
 SSE streaming. By exposing this endpoint, hermes-agent becomes instantly
@@ -13,7 +13,7 @@ usable as a backend for all of them — no custom adapters needed.
 ```
 ┌──────────────────┐
 │  Open WebUI      │──┐
-│  LobeChat        │  │    POST /v1/chat/completions
+│  LobeHub         │  │    POST /v1/chat/completions
 │  LibreChat       │  ├──► Authorization: Bearer <key>     ┌─────────────────┐
 │  AnythingLLM     │  │    {"messages": [...]}             │  hermes-agent   │
 │  NextChat        │  │                                    │  gateway        │
@@ -279,7 +279,7 @@ Once implemented, hermes-agent works as a drop-in backend for:
 |----------|-------|---------------|
 | Open WebUI | 126k | Settings → Connections → Add OpenAI API, URL: `http://localhost:8642/v1` |
 | NextChat | 87k | BASE_URL env var |
-| LobeChat | 73k | Custom provider endpoint |
+| LobeHub | 73k | Custom provider endpoint |
 | AnythingLLM | 56k | LLM Provider → Generic OpenAI |
 | Oobabooga | 42k | Already a backend, not a frontend |
 | ChatBox | 39k | API Host setting |

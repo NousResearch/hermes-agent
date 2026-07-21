@@ -12,7 +12,7 @@ Hermes ships three protocols for driving the agent from external programs — ID
 |----------|-----------|----------|------------|
 | **ACP** | JSON-RPC over stdio | IDE clients (VS Code, Zed, JetBrains) that already speak the [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol) | `acp_adapter/` |
 | **TUI gateway** | JSON-RPC over stdio (or WebSocket) | Custom hosts that want fine-grained control of sessions, slash commands, approvals, and streaming events | `tui_gateway/server.py` |
-| **API server** | HTTP + Server-Sent Events | OpenAI-compatible frontends (Open WebUI, LobeChat, LibreChat…) and language-agnostic web clients | `gateway/platforms/api_server.py` |
+| **API server** | HTTP + Server-Sent Events | OpenAI-compatible frontends (Open WebUI, LobeHub, LibreChat…) and language-agnostic web clients | `gateway/platforms/api_server.py` |
 
 All three drive the same `AIAgent` core. They differ only in wire format and which set of features they expose.
 

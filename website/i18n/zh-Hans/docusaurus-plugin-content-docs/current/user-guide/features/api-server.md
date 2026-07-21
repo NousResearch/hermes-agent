@@ -6,12 +6,12 @@ description: "将 hermes-agent 作为 OpenAI 兼容的 API 暴露给任意前端
 
 # API 服务器
 
-API 服务器将 hermes-agent 作为 OpenAI 兼容的 HTTP 端点暴露出来。任何支持 OpenAI 格式的前端——Open WebUI、LobeChat、LibreChat、NextChat、ChatBox 以及数百个其他工具——都可以连接到 hermes-agent 并将其用作后端。
+API 服务器将 hermes-agent 作为 OpenAI 兼容的 HTTP 端点暴露出来。任何支持 OpenAI 格式的前端——Open WebUI、LobeHub、LibreChat、NextChat、ChatBox 以及数百个其他工具——都可以连接到 hermes-agent 并将其用作后端。
 
 你的 agent 使用完整工具集（终端、文件操作、网络搜索、记忆、技能）处理请求，并返回最终响应。在流式传输时，工具进度指示器会内联显示，让前端能够展示 agent 正在执行的操作。
 
 :::tip 一个后端同时覆盖模型与工具
-Hermes 本身需要配置好 provider（提供商）和工具后端，API 服务器才能发挥作用。[Nous Portal](/user-guide/features/tool-gateway) 订阅同时处理两者——300+ 个模型，以及通过 Tool Gateway 提供的网络/图像/TTS/浏览器功能。在启动 API 服务器之前运行一次 `hermes setup --portal`，Open WebUI 或 LobeChat 等前端即可获得一个完整配备工具的后端。
+Hermes 本身需要配置好 provider（提供商）和工具后端，API 服务器才能发挥作用。[Nous Portal](/user-guide/features/tool-gateway) 订阅同时处理两者——300+ 个模型，以及通过 Tool Gateway 提供的网络/图像/TTS/浏览器功能。在启动 API 服务器之前运行一次 `hermes setup --portal`，Open WebUI 或 LobeHub 等前端即可获得一个完整配备工具的后端。
 :::
 
 ## 快速开始
@@ -51,7 +51,7 @@ curl http://localhost:8642/v1/chat/completions \
   -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-或连接 Open WebUI、LobeChat 或其他任意前端——参见 [Open WebUI 集成指南](/user-guide/messaging/open-webui)获取分步说明。
+或连接 Open WebUI、LobeHub 或其他任意前端——参见 [Open WebUI 集成指南](/user-guide/messaging/open-webui)获取分步说明。
 
 ## 端点
 
@@ -387,7 +387,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 | 前端 | Stars | 连接方式 |
 |----------|-------|------------|
 | [Open WebUI](/user-guide/messaging/open-webui) | 126k | 提供完整指南 |
-| LobeChat | 73k | 自定义 provider 端点 |
+| LobeHub | 73k | 自定义 provider 端点 |
 | LibreChat | 34k | librechat.yaml 中的自定义端点 |
 | AnythingLLM | 56k | 通用 OpenAI provider |
 | NextChat | 87k | BASE_URL 环境变量 |

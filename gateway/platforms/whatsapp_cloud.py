@@ -818,11 +818,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
+        Kept within WhatsApp's 1024-char body cap via ``_truncate_body``.
 
         Two quick-reply buttons (Approve / Deny). Tapping resolves the
         waiting agent via ``tools.approval.resolve_gateway_approval`` —
@@ -836,9 +841,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
-        cmd_preview = cmd if len(cmd) <= 800 else cmd[:800] + "..."
+        # WhatsApp body caps at 1024 chars total (enforced by _truncate_body).
+        # When a rationale is present, give it a slice of the budget and
+        # shrink the command preview so both fit; truncate each with ellipsis.
+        _rationale_block = ""
+        if contextual_reason:
+            _r = contextual_reason
+            if len(_r) > 300:
+                _r = _r[:297] + "..."
+            _rationale_block = f"{_r}\n\n"
+            cmd_preview = cmd if len(cmd) <= 500 else cmd[:500] + "..."
+        else:
+            cmd_preview = cmd if len(cmd) <= 800 else cmd[:800] + "..."
         body_text = self._truncate_body(
             f"⚠️ *Command Approval Required*\n\n"
+            f"{_rationale_block}"
             f"```\n{cmd_preview}\n```\n\n"
             f"Reason: {description}"
             + ("\n\nSmart DENY: owner override applies to this one operation only." if smart_denied else "")

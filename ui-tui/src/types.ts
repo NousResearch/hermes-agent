@@ -157,6 +157,7 @@ export interface ProjectInfo {
 }
 
 export interface SessionInfo {
+  approval_mode?: string
   cwd?: string
   fast?: boolean
   install_warning?: string
@@ -175,10 +176,16 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+  yolo?: boolean
 }
 
 export interface Usage {
+  active_shells?: number
   active_subagents?: number
+  cache_read?: number
+  cache_write?: number
+  last_prompt?: number
+  session_cache_read?: number
   calls: number
   compressions?: number
   context_max?: number

@@ -4570,6 +4570,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _format_status_cache_fresh(snapshot: Dict[str, Any]) -> str:
+        """Claude-style `cache R=134K(96%) fresh=5K` for the status bar."""
+        cache_read = int(snapshot.get("last_cache_read_tokens") or 0)
+        if cache_read <= 0:
+            cache_read = int(snapshot.get("session_cache_read_tokens") or 0)
+        if cache_read <= 0:
+            return ""
+        last_prompt = int(snapshot.get("last_prompt_tokens") or 0)
+        ctx_used = int(snapshot.get("context_tokens") or 0)
+        denom = last_prompt or ctx_used or cache_read
+        hit = max(0, min(100, round(cache_read / denom * 100)))
+        parts = [f"cache R={format_token_count_compact(cache_read)}({hit}%)"]
+        fresh_base = last_prompt or ctx_used
+        if fresh_base > 0:
+            parts.append(f"fresh={format_token_count_compact(max(0, fresh_base - cache_read))}")
+        return " ".join(parts)
+
+    def _status_bar_show_cost(self) -> bool:
+        try:
+            from hermes_cli.config import load_config
+            display = (load_config() or {}).get("display") or {}
+            return bool(display.get("show_cost"))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _format_status_cost(amount: float) -> str:
+        if amount is None or amount <= 0:
+            return ""
+        if amount < 0.01:
+            return "<$0.01"
+        if amount < 10:
+            return f"${amount:.2f}"
+        # 3dp max; drop trailing zeros so 12.5 stays $12.5 not $12.500
+        return f"${amount:.3f}".rstrip("0").rstrip(".")
+
+    @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
@@ -4664,6 +4701,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "session_output_tokens": 0,
             "session_cache_read_tokens": 0,
             "session_cache_write_tokens": 0,
+            "last_cache_read_tokens": 0,
+            "last_cache_write_tokens": 0,
+            "last_prompt_tokens": 0,
+            "session_estimated_cost_usd": 0.0,
             "session_prompt_tokens": 0,
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
@@ -4710,6 +4751,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         snapshot["session_output_tokens"] = getattr(agent, "session_output_tokens", 0) or 0
         snapshot["session_cache_read_tokens"] = getattr(agent, "session_cache_read_tokens", 0) or 0
         snapshot["session_cache_write_tokens"] = getattr(agent, "session_cache_write_tokens", 0) or 0
+        snapshot["last_cache_read_tokens"] = getattr(agent, "last_cache_read_tokens", 0) or 0
+        snapshot["last_cache_write_tokens"] = getattr(agent, "last_cache_write_tokens", 0) or 0
+        snapshot["last_prompt_tokens"] = getattr(agent, "last_prompt_tokens", 0) or 0
+        snapshot["session_estimated_cost_usd"] = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
         snapshot["session_prompt_tokens"] = getattr(agent, "session_prompt_tokens", 0) or 0
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
@@ -5158,7 +5203,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
-                    text += " · ⚠ YOLO"
+                    text += " · bypass permissions on"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
@@ -5170,13 +5215,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     parts.append(f"▶ {bg_count}")
                 bg_proc_count = snapshot.get("active_background_processes", 0)
                 if bg_proc_count:
-                    parts.append(f"⚙ {bg_proc_count}")
+                    parts.append(f"{bg_proc_count} shells")
                 bg_subagent_count = snapshot.get("active_background_subagents", 0)
                 if bg_subagent_count:
                     parts.append(f"⛓ {bg_subagent_count}")
                 parts.append(duration_label)
                 if yolo_active:
-                    parts.append("⚠ YOLO")
+                    parts.append("bypass permissions on")
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
             if snapshot["context_length"]:
@@ -5188,6 +5233,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            cache_fresh = self._format_status_cache_fresh(snapshot)
+            if cache_fresh:
+                parts.append(cache_fresh)
+            if self._status_bar_show_cost():
+                cost_label = self._format_status_cost(float(snapshot.get("session_estimated_cost_usd") or 0.0))
+                if cost_label:
+                    parts.append(cost_label)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5195,7 +5247,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 parts.append(f"▶ {bg_count}")
             bg_proc_count = snapshot.get("active_background_processes", 0)
             if bg_proc_count:
-                parts.append(f"⚙ {bg_proc_count}")
+                parts.append(f"{bg_proc_count} shells")
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
                 parts.append(f"⛓ {bg_subagent_count}")
@@ -5207,7 +5259,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if idle_since:
                 parts.append(idle_since)
             if yolo_active:
-                parts.append("⚠ YOLO")
+                parts.append("bypass permissions on")
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -5235,7 +5287,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ]
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
-                    frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    frags.append(("class:status-bar-yolo", "bypass permissions on"))
                 frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
@@ -5259,7 +5311,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                        frags.append(("class:status-bar-strong", f"{bg_proc_count} shells"))
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
@@ -5269,7 +5321,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     ])
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                        frags.append(("class:status-bar-yolo", "bypass permissions on"))
                     frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
@@ -5294,6 +5346,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    cache_fresh = self._format_status_cache_fresh(snapshot)
+                    if cache_fresh:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", cache_fresh))
+                    if self._status_bar_show_cost():
+                        cost_label = self._format_status_cost(float(snapshot.get("session_estimated_cost_usd") or 0.0))
+                        if cost_label:
+                            frags.append(("class:status-bar-dim", " │ "))
+                            frags.append(("class:status-bar-strong", cost_label))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5302,7 +5363,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                        frags.append(("class:status-bar-strong", f"{bg_proc_count} shells"))
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
@@ -5322,7 +5383,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-dim", idle_since))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                        frags.append(("class:status-bar-yolo", "bypass permissions on"))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)

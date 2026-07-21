@@ -39,6 +39,9 @@ def _attach_agent(
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
         session_cache_write_tokens=cache_write_tokens,
+        last_cache_read_tokens=cache_read_tokens,
+        last_cache_write_tokens=cache_write_tokens,
+        session_estimated_cost_usd=0.0,
         session_prompt_tokens=prompt_tokens,
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
@@ -135,8 +138,9 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
-        text = cli_obj._build_status_bar_text(width=120)
-        assert "$" not in text  # cost is never shown in status bar
+        with patch.object(cli_obj, "_status_bar_show_cost", return_value=False):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "$" not in text  # cost hidden when display.show_cost is false
 
     def test_build_status_bar_text_collapses_for_narrow_terminal(self):
         cli_obj = _attach_agent(
@@ -678,3 +682,52 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+
+
+class TestCLIStatusBarClaudeExtras:
+    def test_format_status_cache_fresh(self):
+        cli_obj = _make_cli()
+        label = cli_obj._format_status_cache_fresh(
+            {
+                "last_cache_read_tokens": 134_000,
+                "context_tokens": 139_000,
+            }
+        )
+        assert "cache R=" in label
+        assert "fresh=" in label
+        assert "96%" in label or "97%" in label  # 134/139 ~ 96%
+
+    def test_cost_shown_when_config_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=5000,
+            total_tokens=15000,
+            api_calls=7,
+            context_tokens=50000,
+            context_length=200_000,
+            cache_read_tokens=40_000,
+        )
+        cli_obj.agent.session_estimated_cost_usd = 12.5
+        cli_obj.agent.last_cache_read_tokens = 40_000
+        with patch.object(cli_obj, "_status_bar_show_cost", return_value=True):
+            text = cli_obj._build_status_bar_text(width=160)
+        assert "$12.50" in text or "$12.5" in text
+        assert "cache R=" in text
+        assert "fresh=" in text
+
+    def test_yolo_uses_bypass_permissions_label(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=5000,
+            total_tokens=15000,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        with patch.object(cli_obj, "_is_session_yolo_active", return_value=True):
+            text = cli_obj._build_status_bar_text(width=160)
+        assert "bypass permissions on" in text
+        assert "⚠ YOLO" not in text
+

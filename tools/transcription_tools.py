@@ -1483,12 +1483,16 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai") or {}
-    base_url = str(
-        xai_config.get("base_url")
-        or get_env_value("XAI_STT_BASE_URL")
-        or creds.get("base_url")
-        or XAI_STT_BASE_URL
-    ).strip().rstrip("/")
+
+    def _resolve_base_url(resolved_creds: Dict[str, str]) -> str:
+        return str(
+            xai_config.get("base_url")
+            or get_env_value("XAI_STT_BASE_URL")
+            or resolved_creds.get("base_url")
+            or XAI_STT_BASE_URL
+        ).strip().rstrip("/")
+
+    base_url = _resolve_base_url(creds)
     language = str(
         xai_config.get("language")
         or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
@@ -1511,19 +1515,48 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         if use_diarize:
             data["diarize"] = "true"
 
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                f"{base_url}/stt",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": hermes_xai_user_agent(),
-                },
-                files={
-                    "file": (Path(file_path).name, audio_file),
-                },
-                data=data,
-                timeout=120,
+        def _post_transcription(bearer: str, endpoint_base_url: str):
+            with open(file_path, "rb") as audio_file:
+                return requests.post(
+                    f"{endpoint_base_url}/stt",
+                    headers={
+                        "Authorization": f"Bearer {bearer}",
+                        "User-Agent": hermes_xai_user_agent(),
+                    },
+                    files={
+                        "file": (Path(file_path).name, audio_file),
+                    },
+                    data=data,
+                    timeout=120,
+                )
+
+        response = _post_transcription(api_key, base_url)
+
+        if (
+            response.status_code in {401, 403}
+            and creds.get("provider") == "xai-oauth"
+        ):
+            logger.info(
+                "xAI STT got HTTP %d; refreshing OAuth credentials and retrying once",
+                response.status_code,
             )
+            try:
+                refreshed_creds = resolve_xai_http_credentials(
+                    force_refresh=True,
+                    api_key_hint=api_key,
+                )
+                refreshed_key = str(refreshed_creds.get("api_key") or "").strip()
+                if refreshed_key and refreshed_key != api_key:
+                    response = _post_transcription(
+                        refreshed_key,
+                        _resolve_base_url(refreshed_creds),
+                    )
+            except Exception as refresh_exc:
+                logger.warning(
+                    "xAI STT OAuth refresh after HTTP %d failed: %s",
+                    response.status_code,
+                    refresh_exc,
+                )
 
         if response.status_code != 200:
             detail = ""

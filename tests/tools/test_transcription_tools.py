@@ -11,7 +11,7 @@ import struct
 import subprocess
 import types
 import wave
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -1194,6 +1194,59 @@ class TestTranscribeXAI:
         assert result["success"] is False
         assert "HTTP 400" in result["error"]
         assert "Invalid audio format" in result["error"]
+
+    def test_retries_403_with_refreshed_oauth_credentials(
+        self, sample_ogg, mock_xai_http_module
+    ):
+        mock_xai_http_module.resolve_xai_http_credentials.side_effect = [
+            {
+                "api_key": "stale-oauth-token",
+                "base_url": "https://api.x.ai/v1",
+                "provider": "xai-oauth",
+            },
+            {
+                "api_key": "fresh-oauth-token",
+                "base_url": "https://api.x.ai/v1",
+                "provider": "xai-oauth",
+            },
+        ]
+
+        rejected = MagicMock()
+        rejected.status_code = 403
+        rejected.json.return_value = {
+            "error": {"message": "OAuth2 access token could not be validated"}
+        }
+        accepted = MagicMock()
+        accepted.status_code = 200
+        accepted.json.return_value = {
+            "text": "fleet speech transcription proof",
+            "language": "en",
+            "duration": 2.1,
+        }
+
+        stt_config = {"provider": "xai"}
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("requests.post", side_effect=[rejected, accepted]) as mock_post:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result == {
+            "success": True,
+            "transcript": "fleet speech transcription proof",
+            "provider": "xai",
+        }
+        assert mock_post.call_count == 2
+        assert mock_post.call_args_list[0].kwargs["headers"]["Authorization"] == (
+            "Bearer stale-oauth-token"
+        )
+        assert mock_post.call_args_list[1].kwargs["headers"]["Authorization"] == (
+            "Bearer fresh-oauth-token"
+        )
+        assert mock_xai_http_module.resolve_xai_http_credentials.call_args_list == [
+            call(),
+            call(force_refresh=True, api_key_hint="stale-oauth-token"),
+        ]
 
     def test_empty_transcript_returns_failure(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")

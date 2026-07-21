@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -19,6 +20,16 @@ REGISTRY_RESOURCES = {
 EXCLUDED_RESOURCES = [
     "addon", "dashboard", "device_removal", "integration", "pairing",
 ]
+REGISTRY_MUTABLE_FIELDS = {
+    "entity": {"name", "icon", "disabled_by", "hidden_by", "area_id", "labels", "aliases"},
+    "device": {"name_by_user", "area_id", "disabled_by", "labels"},
+    "area": {"name", "floor_id", "icon", "picture", "aliases", "labels"},
+}
+GROUP_MUTABLE_FIELDS = {
+    "name", "group_type", "entities", "hide_members", "all", "type",
+    "ignore_non_numeric",
+}
+RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,255}$")
 
 
 class HomeAssistantResources:
@@ -29,16 +40,46 @@ class HomeAssistantResources:
         if resource_type not in REST_RESOURCES | HELPER_RESOURCES | set(REGISTRY_RESOURCES) | {GROUP_RESOURCE}:
             raise ValueError(f"unsupported Home Assistant resource type: {resource_type}")
 
+    @staticmethod
+    def _ensure_resource_id(resource_id: str) -> None:
+        if not isinstance(resource_id, str) or not RESOURCE_ID_RE.fullmatch(resource_id):
+            raise ValueError("invalid Home Assistant resource_id")
+
+    @staticmethod
+    def _mutation_payload(resource_type: str, definition: dict[str, Any]) -> dict[str, Any]:
+        """Remove response-only and immutable fields before sending a mutation."""
+        if resource_type in REST_RESOURCES:
+            return {key: value for key, value in definition.items() if key != "id"}
+        if resource_type == GROUP_RESOURCE:
+            return {
+                key: value for key, value in definition.items()
+                if key in GROUP_MUTABLE_FIELDS
+            }
+        if resource_type in HELPER_RESOURCES:
+            return {
+                key: value for key, value in definition.items()
+                if key not in {"id", "entity_id", "editable"}
+            }
+        return {
+            key: value for key, value in definition.items()
+            if key in REGISTRY_MUTABLE_FIELDS[resource_type]
+        }
+
     async def capabilities(self) -> dict[str, Any]:
         config = await self.client.rest("GET", "/api/config")
+        components = set(config.get("components") or [])
+        available = (REST_RESOURCES | HELPER_RESOURCES | {GROUP_RESOURCE}) & components
         mutable = {
             resource: ["create", "update"]
-            for resource in sorted(REST_RESOURCES | HELPER_RESOURCES | {GROUP_RESOURCE})
+            for resource in sorted(available)
         }
         mutable.update({"entity": ["update"], "device": ["update"], "area": ["create", "update"]})
         return {
             "home_assistant_version": config.get("version"),
             "mutable": mutable,
+            "unavailable": sorted(
+                (REST_RESOURCES | HELPER_RESOURCES | {GROUP_RESOURCE}) - available
+            ),
             "excluded": EXCLUDED_RESOURCES,
             "rollback": "update if unchanged; delete only exact Hermes-created resources",
         }
@@ -85,6 +126,7 @@ class HomeAssistantResources:
         self._ensure_supported(resource_type)
         if not resource_id:
             raise ValueError("resource_id is required")
+        self._ensure_resource_id(resource_id)
         if resource_type in REST_RESOURCES:
             try:
                 return await self.client.rest(
@@ -112,8 +154,12 @@ class HomeAssistantResources:
         self._ensure_supported(resource_type)
         if operation not in {"create", "update"}:
             raise ValueError("operation must be create or update")
+        self._ensure_resource_id(resource_id)
         if operation == "create" and resource_type in {"entity", "device"}:
             raise ValueError(f"Home Assistant does not support creating {resource_type} metadata")
+        definition = self._mutation_payload(resource_type, definition)
+        if not definition:
+            raise ValueError("definition contains no mutable fields for this resource type")
         if resource_type in REST_RESOURCES:
             await self.client.rest(
                 "POST", f"/api/config/{resource_type}/config/{resource_id}", definition
@@ -171,9 +217,13 @@ class HomeAssistantResources:
         resource_type = change["resource_type"]
         resource_id = change["resource_id"]
         self._ensure_supported(resource_type)
+        self._ensure_resource_id(resource_id)
         if change["operation"] == "update":
             return await self.apply(
-                resource_type, resource_id, "update", change["before"]
+                resource_type,
+                resource_id,
+                "update",
+                self._mutation_payload(resource_type, change["before"]),
             )
         if not change.get("created_by_hermes"):
             raise ValueError("created resource was not recorded as created by Hermes")

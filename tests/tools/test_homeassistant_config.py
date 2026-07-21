@@ -27,13 +27,17 @@ def test_client_requires_token():
 @pytest.mark.asyncio
 async def test_resource_capabilities_are_explicit_and_bounded():
     client = MagicMock()
-    client.rest = AsyncMock(return_value={"version": "2026.7.0"})
+    client.rest = AsyncMock(
+        return_value={"version": "2026.7.0", "components": ["automation", "timer"]}
+    )
     resources = HomeAssistantResources(client)
 
     capabilities = await resources.capabilities()
 
     assert capabilities["home_assistant_version"] == "2026.7.0"
     assert capabilities["mutable"]["automation"] == ["create", "update"]
+    assert capabilities["mutable"]["timer"] == ["create", "update"]
+    assert "input_boolean" in capabilities["unavailable"]
     assert capabilities["mutable"]["entity"] == ["update"]
     assert "dashboard" in capabilities["excluded"]
     assert "integration" in capabilities["excluded"]
@@ -97,10 +101,50 @@ async def test_rollback_only_deletes_a_resource_hermes_created():
 
 
 @pytest.mark.asyncio
+async def test_helper_rollback_strips_response_only_fields():
+    client = MagicMock()
+    client.websocket = AsyncMock(return_value={"id": "tea", "name": "Tea"})
+    resources = HomeAssistantResources(client)
+
+    await resources.rollback({
+        "resource_type": "timer", "resource_id": "tea", "operation": "update",
+        "before": {"id": "tea", "entity_id": "timer.tea", "editable": True,
+                   "name": "Tea", "duration": "00:05:00"},
+    })
+
+    client.websocket.assert_awaited_once_with({
+        "type": "timer/update", "timer_id": "tea", "name": "Tea",
+        "duration": "00:05:00",
+    })
+
+
+@pytest.mark.asyncio
+async def test_registry_update_rejects_immutable_only_definition():
+    resources = HomeAssistantResources(MagicMock())
+    with pytest.raises(ValueError, match="no mutable fields"):
+        await resources.apply(
+            "entity", "light.kitchen", "update",
+            {"entity_id": "light.renamed", "unique_id": "immutable"},
+        )
+
+
+@pytest.mark.asyncio
 async def test_unknown_resource_type_fails_closed():
     resources = HomeAssistantResources(MagicMock())
     with pytest.raises(ValueError, match="unsupported"):
         await resources.get("dashboard", "lovelace")
+
+
+@pytest.mark.asyncio
+async def test_resource_id_cannot_escape_config_endpoint():
+    client = MagicMock()
+    resources = HomeAssistantResources(client)
+    with pytest.raises(ValueError, match="invalid.*resource_id"):
+        await resources.apply(
+            "automation", "../../services/persistent_notification/create", "update",
+            {"alias": "Nope"},
+        )
+    client.rest.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -139,7 +139,7 @@ In safe mode, exact light, fan, and media-player targets can run immediately. Br
 
 `ha_inspect_config` reports supported capabilities, lists or fetches configuration, and shows the local change history. `ha_manage_config` uses a mandatory `preview` → `apply` flow. Each preview covers one object, expires after the configured TTL, and is rejected if Home Assistant changed in the meantime. Apply and rollback approvals cannot be permanently remembered, bypassed by YOLO mode, or granted by a headless cron session.
 
-Supported configuration resources are automations, scripts, scenes, groups, standard helpers (`input_boolean`, `input_number`, `input_select`, `input_text`, `input_datetime`, `counter`, `timer`, and `schedule`), and entity/device/area metadata. Dashboards, integrations, add-ons, pairing, and device removal are outside this interface.
+Supported configuration resources, when loaded by the connected Home Assistant instance, are automations, scripts, scenes, groups, standard helpers (`input_boolean`, `input_number`, `input_select`, `input_text`, `input_datetime`, `counter`, `timer`, and `schedule`), and entity/device/area metadata. `ha_inspect_config(action="capabilities")` reports what is actually available. Dashboards, integrations, add-ons, pairing, and device removal are outside this interface.
 
 Hermes stores proposal and audit records in the active profile under `state/homeassistant_changes.sqlite3` with owner-only permissions. Rollback is allowed only while the applied state is unchanged. Deleting a created object during rollback is allowed only when the audit record proves Hermes created that exact object.
 

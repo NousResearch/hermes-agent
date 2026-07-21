@@ -10,6 +10,7 @@ import agent.verification_evidence as verification_evidence
 from agent.verification_evidence import (
     classify_verification_command,
     confirm_outcome_receipt,
+    get_reusable_outcome_receipt,
     list_approval_decision_receipts,
     list_reusable_outcome_receipts,
     mark_workspace_edited,
@@ -143,7 +144,7 @@ def test_approval_receipt_writer_upgrades_v3_metadata_and_creates_guards(tmp_pat
             "AND name LIKE 'approval_decision_receipts_no_%' ORDER BY name"
         ).fetchall()
 
-    assert version == "5"
+    assert version == "6"
     assert table is not None
     assert [row[0] for row in triggers] == [
         "approval_decision_receipts_no_delete",
@@ -251,6 +252,46 @@ def test_confirmed_passing_outcome_receipt_becomes_explicitly_reusable(tmp_path,
     assert [row["id"] for row in list_reusable_outcome_receipts(cwd=tmp_path)] == [receipt["id"]]
 
 
+def test_get_reusable_outcome_receipt_enforces_current_session_workspace_and_evidence(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    monkeypatch.setattr(
+        "agent.coding_context.project_facts_for",
+        lambda _cwd=None: {
+            "root": str(tmp_path),
+            "verifyCommands": ["pnpm test"],
+            "manifests": ["package.json"],
+            "packageManagers": ["pnpm"],
+            "contextFiles": [],
+        },
+    )
+    record_terminal_result(
+        command="pnpm test", cwd=tmp_path, session_id="s1", exit_code=0, output="all green"
+    )
+    receipt = record_outcome_receipt(
+        session_id="s1", cwd=tmp_path, goal="record a safe lesson", terminal_kind="judge_done_unconfirmed"
+    )
+    assert receipt is not None
+    assert confirm_outcome_receipt(receipt["id"], expected_session_id="s1", cwd=tmp_path)
+
+    eligible = get_reusable_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    )
+    assert eligible is not None
+    assert eligible["id"] == receipt["id"]
+    assert eligible["verification_status"] == "passed"
+    assert get_reusable_outcome_receipt(
+        receipt["id"], expected_session_id="other-session", cwd=tmp_path
+    ) is None
+
+    mark_workspace_edited(session_id="s2", cwd=tmp_path, paths=["src/widget.ts"])
+    assert get_reusable_outcome_receipt(
+        receipt["id"], expected_session_id="s1", cwd=tmp_path
+    ) is None
+
+
 def test_outcome_receipt_binds_final_contract_and_ordered_subgoals(tmp_path, monkeypatch):
     """Learning candidates identify the exact criteria the judge evaluated."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -318,7 +359,45 @@ def test_outcome_receipt_writer_migrates_v4_contract_digest_column(tmp_path, mon
         columns = [row[1] for row in conn.execute("PRAGMA table_info(outcome_receipts)")]
         version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
     assert "completion_contract_digest" in columns
-    assert version == "5"
+    assert version == "6"
+
+
+def test_approval_receipt_writer_migrates_v5_outcome_lineage_column(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    home.mkdir()
+    database_path = home / "verification_evidence.db"
+    with sqlite3.connect(database_path) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '5')")
+        conn.execute(
+            """CREATE TABLE approval_decision_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at TEXT NOT NULL,
+                subsystem TEXT NOT NULL, pending_id TEXT NOT NULL,
+                proposal_digest TEXT NOT NULL, proposal_origin TEXT NOT NULL,
+                decision TEXT NOT NULL, terminal_outcome TEXT NOT NULL,
+                failure_code TEXT,
+                UNIQUE (subsystem, pending_id, proposal_digest)
+            )"""
+        )
+
+    record = _approval_record() | {
+        "proposal_version": 3,
+        "freshness": {"outcome_receipt_id": 73},
+    }
+    receipt = record_approval_decision_receipt(
+        record=record, decision="approved", terminal_outcome="applied"
+    )
+
+    assert receipt is not None
+    assert receipt["outcome_receipt_id"] == 73
+    with sqlite3.connect(database_path) as conn:
+        columns = [
+            row[1] for row in conn.execute("PRAGMA table_info(approval_decision_receipts)")
+        ]
+        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+    assert "outcome_receipt_id" in columns
+    assert version == "6"
 
 
 def test_reusable_outcome_listing_can_be_scoped_to_one_session(tmp_path, monkeypatch):

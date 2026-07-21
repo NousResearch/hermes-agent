@@ -13461,6 +13461,32 @@ def _(rid, params: dict) -> dict:
                     f"is {status}; it is not reusable."
                 )
             return _ok(rid, {"type": "exec", "output": output})
+        if lower == "learn" or lower.startswith("learn "):
+            learn_arg = arg.strip()[len("learn"):].strip()
+            parts = learn_arg.split(None, 1)
+            if len(parts) != 2:
+                return _err(rid, 4004, "Usage: /goal learn <receipt-id> <lesson>")
+            try:
+                receipt_id = int(parts[0])
+            except ValueError:
+                return _err(rid, 4004, "/goal learn: <receipt-id> must be a positive integer.")
+            try:
+                from tools.memory_tool import stage_verified_outcome_lesson
+
+                result = stage_verified_outcome_lesson(
+                    receipt_id,
+                    parts[1],
+                    session_id=sid_key,
+                    cwd=_session_cwd(session),
+                )
+            except Exception as exc:
+                logger.debug("goal learn: staging failed: %s", exc)
+                return _err(rid, 5000, "/goal learn: lesson could not be staged.")
+            if result.get("success"):
+                output = f"✓ {result['message']}"
+            else:
+                output = f"/goal learn: {result.get('error') or 'lesson was not staged.'}"
+            return _ok(rid, {"type": "exec", "output": output})
         if lower == "wait" or lower.startswith("wait "):
             wait_arg = arg.strip()[len("wait"):].strip()
             if not wait_arg:

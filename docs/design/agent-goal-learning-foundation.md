@@ -67,6 +67,16 @@ current workspace, presents only receipts with currently passing evidence, and
 shows a short criteria-digest prefix for newly recorded receipts. It does not
 disclose raw goal text, mutate a receipt, or inject a model prompt.
 
+`/goal learn <receipt-id> <lesson>` is the explicit, user-authored bridge from
+one such candidate to procedural memory. It always stages a V3 memory proposal
+instead of writing directly, even when ordinary memory approval is disabled.
+The proposal carries only the receipt id plus its session/workspace scope and a
+locked memory revision; its approval replay reserves the evidence ledger while
+it re-checks eligibility and applies the reviewed memory revision, so a
+workspace edit cannot land between those operations. The immutable approval
+receipt records the numeric outcome reference for redacted lineage, never the
+goal, contract, or lesson text.
+
 When a `/goal` judge returns `done`, the shared `GoalManager` first persists
 the goal terminal state, then records a `judge_done_unconfirmed` receipt for
 the frontend's actual workspace. Hermes reports the receipt id but does not

@@ -151,6 +151,49 @@ async def test_gateway_goal_outcomes_scopes_receipts_to_event_session(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_gateway_goal_learn_stages_lesson_with_event_scope(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+    event = MessageEvent(
+        text="/goal learn 73 preserve verified coverage",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-learn",
+    )
+
+    with patch(
+        "tools.memory_tool.stage_verified_outcome_lesson",
+        return_value={"success": True, "message": "Lesson from verified outcome #73 staged."},
+    ) as stage_lesson:
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+    assert "staged" in response
+    stage_lesson.assert_called_once_with(
+        73,
+        "preserve verified coverage",
+        session_id="sid-gateway-goal-config",
+        cwd=str(tmp_path),
+    )
+    goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
 async def test_gateway_goal_wait_supports_session_and_time_barriers(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -2101,6 +2101,37 @@ class CLICommandsMixin:
                 )
             return
 
+        if lower == "learn" or lower.startswith("learn "):
+            learn_arg = arg[len("learn"):].strip()
+            parts = learn_arg.split(None, 1)
+            if len(parts) != 2:
+                _cprint("  Usage: /goal learn <receipt-id> <lesson>")
+                return
+            try:
+                receipt_id = int(parts[0])
+            except ValueError:
+                _cprint("  /goal learn: <receipt-id> must be a positive integer.")
+                return
+            try:
+                from tools.memory_tool import stage_verified_outcome_lesson
+
+                result = stage_verified_outcome_lesson(
+                    receipt_id,
+                    parts[1],
+                    session_id=mgr.session_id,
+                    cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+                )
+            except Exception as exc:
+                import logging as _logging
+                _logging.getLogger(__name__).debug("goal learn: staging failed: %s", exc)
+                _cprint("  /goal learn: lesson could not be staged.")
+                return
+            if result.get("success"):
+                _cprint(f"  ✓ {result['message']}")
+            else:
+                _cprint(f"  /goal learn: {result.get('error') or 'lesson was not staged.'}")
+            return
+
         # /goal draft <objective> → expand plain text into a structured
         # completion contract (outcome / verification / constraints /
         # boundaries / stop_when) and set it as the active goal. Adapted

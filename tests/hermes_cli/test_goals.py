@@ -380,6 +380,61 @@ class TestGoalOutcomesCommand:
         manager.render_reusable_outcomes.assert_called_once_with(cwd=str(tmp_path))
         fake_cli_module._cprint.assert_called_once_with("  Verified learning outcomes (1): #73")
 
+    def test_cli_learn_stages_lesson_for_current_session_and_workspace(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.session_id = "cli-learning-session"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with (
+            patch.dict("sys.modules", {"cli": fake_cli_module}),
+            patch(
+                "tools.memory_tool.stage_verified_outcome_lesson",
+                return_value={
+                    "success": True,
+                    "message": "Lesson from verified outcome #73 staged as memory proposal a1b2c3d4.",
+                },
+            ) as stage_lesson,
+        ):
+            CLICommandsMixin._handle_goal_command(
+                caller, "goal learn 73 preserve the regression test"
+            )
+
+        stage_lesson.assert_called_once_with(
+            73,
+            "preserve the regression test",
+            session_id="cli-learning-session",
+            cwd=str(tmp_path),
+        )
+        assert "staged as memory proposal" in fake_cli_module._cprint.call_args.args[0]
+
+    def test_cli_learn_redacts_internal_staging_error(self, tmp_path, monkeypatch):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        manager = MagicMock()
+        manager.session_id = "cli-learning-session"
+        fake_cli_module = MagicMock(_DIM="", _RST="")
+        caller = type("GoalCommandCaller", (), {"_get_goal_manager": lambda self: manager})()
+
+        with (
+            patch.dict("sys.modules", {"cli": fake_cli_module}),
+            patch(
+                "tools.memory_tool.stage_verified_outcome_lesson",
+                side_effect=RuntimeError("C:\\private\\verification_evidence.db"),
+            ),
+        ):
+            CLICommandsMixin._handle_goal_command(
+                caller, "goal learn 73 preserve the regression test"
+            )
+
+        output = fake_cli_module._cprint.call_args.args[0]
+        assert "lesson could not be staged" in output
+        assert "private" not in output
+
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager

@@ -34,6 +34,49 @@ def _set_approval(subsystem, enabled):
     cfg.save_config(c)
 
 
+def _confirmed_outcome_receipt(tmp_path, monkeypatch, *, session_id="goal-learning-session"):
+    """Create one fresh, user-confirmed outcome without retaining its goal text."""
+    from agent.verification_evidence import (
+        confirm_outcome_receipt,
+        record_outcome_receipt,
+        record_terminal_result,
+    )
+
+    monkeypatch.setattr(
+        "agent.coding_context.project_facts_for",
+        lambda _cwd=None: {
+            "root": str(tmp_path),
+            "verifyCommands": ["pnpm test"],
+            "manifests": ["package.json"],
+            "packageManagers": ["pnpm"],
+            "contextFiles": [],
+        },
+    )
+
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"test": "vitest"}}), encoding="utf-8"
+    )
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id=session_id,
+        exit_code=0,
+        output="all green",
+    )
+    receipt = record_outcome_receipt(
+        session_id=session_id,
+        cwd=tmp_path,
+        goal="secret completed goal",
+        terminal_kind="judge_done_unconfirmed",
+    )
+    assert receipt is not None
+    assert confirm_outcome_receipt(
+        receipt["id"], expected_session_id=session_id, cwd=tmp_path
+    )
+    return receipt
+
+
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
@@ -153,6 +196,135 @@ def test_memory_pending_v2_binds_review_to_target_revision(hermes_home):
     assert "Approved 1" in output
     assert wa.pending_count("memory") == 0
     assert "reviewed fact" in store.memory_entries
+
+
+def test_verified_outcome_lesson_always_stages_then_records_redacted_lineage(
+    hermes_home, tmp_path, monkeypatch
+):
+    from agent.verification_evidence import list_approval_decision_receipts
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, stage_verified_outcome_lesson
+
+    receipt = _confirmed_outcome_receipt(tmp_path, monkeypatch)
+    staged = stage_verified_outcome_lesson(
+        receipt["id"],
+        "When this check passes, preserve the regression test.",
+        session_id="goal-learning-session",
+        cwd=tmp_path,
+    )
+
+    assert staged["success"] is True
+    assert staged["staged"] is True
+    record = wa.get_pending(wa.MEMORY, staged["pending_id"])
+    assert record["proposal_version"] == 3
+    assert record["freshness"]["outcome_receipt_id"] == receipt["id"]
+    assert record["freshness"]["outcome_session_id"] == "goal-learning-session"
+    assert record["freshness"]["outcome_root"] == str(tmp_path)
+
+    store = MemoryStore()
+    store.load_from_disk()
+    output = handle_pending_subcommand(wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store)
+
+    assert "Approved 1" in output
+    assert any("preserve the regression test" in entry for entry in store.memory_entries)
+    audit = list_approval_decision_receipts(subsystem=wa.MEMORY)
+    assert len(audit) == 1
+    assert audit[0]["outcome_receipt_id"] == receipt["id"]
+    assert "secret completed goal" not in str(audit[0])
+    assert "preserve the regression test" not in str(audit[0])
+    history = handle_pending_subcommand(wa.MEMORY, ["receipts"])
+    assert f"outcome #{receipt['id']}" in history
+    assert "secret completed goal" not in history
+    assert "preserve the regression test" not in history
+
+
+def test_stale_verified_outcome_lesson_is_terminal_without_memory_mutation(
+    hermes_home, tmp_path, monkeypatch
+):
+    from agent.verification_evidence import list_approval_decision_receipts, mark_workspace_edited
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, stage_verified_outcome_lesson
+
+    receipt = _confirmed_outcome_receipt(tmp_path, monkeypatch)
+    staged = stage_verified_outcome_lesson(
+        receipt["id"],
+        "This lesson must never survive stale verification.",
+        session_id="goal-learning-session",
+        cwd=tmp_path,
+    )
+    assert staged["success"] is True
+    mark_workspace_edited(session_id="other-session", cwd=tmp_path, paths=["src/widget.ts"])
+
+    store = MemoryStore()
+    store.load_from_disk()
+    output = handle_pending_subcommand(wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store)
+
+    assert "Approved 0" in output
+    assert "no longer reusable" in output
+    assert store.memory_entries == []
+    audit = list_approval_decision_receipts(subsystem=wa.MEMORY)
+    assert [(row["terminal_outcome"], row["outcome_receipt_id"]) for row in audit] == [
+        ("terminal_noop", receipt["id"])
+    ]
+
+
+def test_verified_outcome_lesson_serializes_concurrent_workspace_edit(
+    hermes_home, tmp_path, monkeypatch
+):
+    """An edit cannot land between V3 outcome validation and memory mutation."""
+    from agent.verification_evidence import mark_workspace_edited
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools import memory_tool as memory_module
+    from tools.memory_tool import MemoryStore, stage_verified_outcome_lesson
+
+    receipt = _confirmed_outcome_receipt(tmp_path, monkeypatch)
+    staged = stage_verified_outcome_lesson(
+        receipt["id"],
+        "Keep the evidence-linked regression lesson.",
+        session_id="goal-learning-session",
+        cwd=tmp_path,
+    )
+    assert staged["success"] is True
+
+    attempted = threading.Event()
+    completed = threading.Event()
+    marker_threads = []
+
+    def mark_concurrent_edit():
+        attempted.set()
+        mark_workspace_edited(
+            session_id="other-session", cwd=tmp_path, paths=["src/widget.ts"]
+        )
+        completed.set()
+
+    original_apply = memory_module.apply_memory_pending
+
+    def delay_apply_until_edit_attempt(*args, **kwargs):
+        marker = threading.Thread(target=mark_concurrent_edit)
+        marker.start()
+        marker_threads.append(marker)
+        assert attempted.wait(2)
+        # The V3 approval holds the evidence ledger reservation while writing
+        # memory, so the edit cannot become stale proof in this interval.
+        assert not completed.wait(0.1)
+        return original_apply(*args, **kwargs)
+
+    monkeypatch.setattr(memory_module, "apply_memory_pending", delay_apply_until_edit_attempt)
+    store = MemoryStore()
+    store.load_from_disk()
+    output = handle_pending_subcommand(
+        wa.MEMORY, ["approve", staged["pending_id"]], memory_store=store
+    )
+
+    for marker in marker_threads:
+        marker.join(timeout=2)
+        assert not marker.is_alive()
+    assert completed.is_set()
+    assert "Approved 1" in output
+    assert any("evidence-linked regression lesson" in entry for entry in store.memory_entries)
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -28,7 +28,7 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 5
+_VERIFY_SCHEMA_VERSION = 6
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 _OUTCOME_TERMINAL_KINDS = frozenset(
     {"judge_done_unconfirmed", "blocked", "cancelled", "achieved_confirmed"}
@@ -183,6 +183,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             subsystem TEXT NOT NULL CHECK (subsystem IN ('memory', 'skills')),
             pending_id TEXT NOT NULL,
             proposal_digest TEXT NOT NULL,
+            outcome_receipt_id INTEGER,
             proposal_origin TEXT NOT NULL,
             decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
             terminal_outcome TEXT NOT NULL
@@ -202,6 +203,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    approval_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(approval_decision_receipts)").fetchall()
+    }
+    if "outcome_receipt_id" not in approval_columns:
+        # V6 connects an approved, user-authored lesson to its verified outcome
+        # without storing raw goal, contract, or lesson text in the audit row.
+        # Legacy receipts remain readable with NULL lineage.
+        conn.execute(
+            "ALTER TABLE approval_decision_receipts ADD COLUMN outcome_receipt_id INTEGER"
+        )
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_approval_decision_receipts_recent
@@ -841,6 +853,25 @@ def _approval_proposal_digest(record: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _approval_outcome_receipt_id(record: dict[str, Any]) -> Optional[int]:
+    """Return a bounded, redacted learning lineage reference when present.
+
+    This is deliberately a numeric foreign reference only.  It is copied from
+    a digest-bound V3 memory proposal, never from proposal text, so the
+    immutable approval audit can explain *which verified outcome* authorized a
+    lesson without retaining the goal, completion contract, or lesson itself.
+    """
+    if record.get("subsystem") != "memory" or record.get("proposal_version") != 3:
+        return None
+    freshness = record.get("freshness")
+    if not isinstance(freshness, dict):
+        return None
+    outcome_receipt_id = freshness.get("outcome_receipt_id")
+    if type(outcome_receipt_id) is not int or outcome_receipt_id <= 0:
+        return None
+    return outcome_receipt_id
+
+
 def record_approval_decision_receipt(
     *,
     record: dict[str, Any],
@@ -877,12 +908,14 @@ def record_approval_decision_receipt(
         return None
 
     proposal_digest = _approval_proposal_digest(record)
+    outcome_receipt_id = _approval_outcome_receipt_id(record)
     origin = str(record.get("origin") or "").strip()
     proposal_origin = origin if origin in {"foreground", "background_review"} else "unknown"
     expected = {
         "subsystem": subsystem,
         "pending_id": pending_id,
         "proposal_digest": proposal_digest,
+        "outcome_receipt_id": outcome_receipt_id,
         "proposal_origin": proposal_origin,
         "decision": clean_decision,
         "terminal_outcome": clean_outcome,
@@ -907,15 +940,16 @@ def record_approval_decision_receipt(
                 cur = conn.execute(
                     """
                     INSERT INTO approval_decision_receipts(
-                        recorded_at, subsystem, pending_id, proposal_digest,
+                        recorded_at, subsystem, pending_id, proposal_digest, outcome_receipt_id,
                         proposal_origin, decision, terminal_outcome, failure_code
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _utc_now(),
                         subsystem,
                         pending_id,
                         proposal_digest,
+                        outcome_receipt_id,
                         proposal_origin,
                         clean_decision,
                         clean_outcome,
@@ -969,41 +1003,89 @@ def list_approval_decision_receipts(
     return [dict(row) for row in rows]
 
 
+def _outcome_verification_status_in_conn(
+    conn: sqlite3.Connection, *, session_id: str, root: str
+) -> dict[str, Any]:
+    """Read receipt eligibility through one ledger connection.
+
+    Keeping this query on a caller-owned connection is important for the
+    approval-time path: it lets a caller hold a SQLite write reservation from
+    the final freshness check through its dependent mutation, so a concurrent
+    workspace edit is serialized before or after the mutation rather than
+    between them.
+    """
+    state = conn.execute(
+        """
+        SELECT last_event_id, last_edit_at, changed_paths_json
+        FROM verification_state
+        WHERE session_id = ? AND root = ?
+        """,
+        (session_id, root),
+    ).fetchone()
+    if state is None:
+        return {
+            "status": "unverified",
+            "evidence": None,
+            "root": root,
+            "session_id": session_id,
+            "changed_paths": [],
+        }
+    event = None
+    if state["last_event_id"] is not None:
+        event = conn.execute(
+            "SELECT * FROM verification_events WHERE id = ?",
+            (state["last_event_id"],),
+        ).fetchone()
+    try:
+        changed_paths = json.loads(state["changed_paths_json"] or "[]")
+    except (TypeError, ValueError):
+        changed_paths = []
+    if event is None:
+        return {
+            "status": "unverified",
+            "evidence": None,
+            "root": root,
+            "session_id": session_id,
+            "changed_paths": changed_paths,
+        }
+
+    evidence = dict(event)
+    if state["last_edit_at"] and state["last_edit_at"] > evidence["created_at"]:
+        status = "stale"
+    else:
+        status = evidence["status"]
+    result = {
+        "status": status,
+        "evidence": evidence,
+        "root": root,
+        "session_id": session_id,
+        "changed_paths": changed_paths,
+    }
+    root_edit = conn.execute(
+        """
+        SELECT last_edit_at
+        FROM workspace_edit_state
+        WHERE root = ?
+          AND last_edit_at > ?
+        LIMIT 1
+        """,
+        (root, evidence["created_at"]),
+    ).fetchone()
+    if root_edit is not None:
+        result["status"] = "stale"
+        result["root_last_edit_at"] = root_edit["last_edit_at"]
+    return result
+
+
 def _outcome_verification_status(
     *, session_id: str, root: str
 ) -> dict[str, Any]:
-    """Return receipt eligibility without trusting a session-local edit view.
-
-    Verification events remain scoped to their recording session, but an
-    outcome receipt is a workspace-level learning candidate.  Any later edit
-    recorded for the same root therefore makes the event behind that receipt
-    stale, even when a different session performed the edit.
-    """
-    status = verification_status(session_id=session_id, cwd=Path(root))
-    evidence = status.get("evidence") or {}
-    created_at = evidence.get("created_at")
-    if not created_at:
-        return status
-
+    """Return receipt eligibility without trusting a session-local edit view."""
     with _DB_LOCK:
         with _connect() as conn:
-            root_edit = conn.execute(
-                """
-                SELECT last_edit_at
-                FROM workspace_edit_state
-                WHERE root = ?
-                  AND last_edit_at > ?
-                LIMIT 1
-                """,
-                (root, created_at),
-            ).fetchone()
-    if root_edit is None:
-        return status
-
-    stale = dict(status)
-    stale["status"] = "stale"
-    stale["root_last_edit_at"] = root_edit["last_edit_at"]
-    return stale
+            return _outcome_verification_status_in_conn(
+                conn, session_id=session_id, root=root
+            )
 
 
 def record_outcome_receipt(
@@ -1267,3 +1349,106 @@ def list_reusable_outcome_receipts(
             break
         before_id = int(rows[-1]["id"])
     return reusable
+
+
+def get_reusable_outcome_receipt(
+    receipt_id: int,
+    *,
+    expected_session_id: str | None,
+    cwd: str | Path | None,
+) -> Optional[dict[str, Any]]:
+    """Return one currently reusable outcome in its exact interactive scope.
+
+    The helper intentionally returns ``None`` for an absent, foreign,
+    unconfirmed, stale, or otherwise ineligible receipt.  Callers therefore do
+    not turn a guessed global receipt id into an existence oracle, and they can
+    use the same fail-closed boundary both when staging and replaying a lesson.
+    """
+    if type(receipt_id) is not int or receipt_id <= 0:
+        return None
+    if not isinstance(expected_session_id, str) or not expected_session_id:
+        return None
+    root = _outcome_root(cwd)
+    if root is None:
+        return None
+    with _DB_LOCK:
+        with _connect() as conn:
+            return _get_reusable_outcome_receipt_in_conn(
+                conn,
+                receipt_id=receipt_id,
+                expected_session_id=expected_session_id,
+                root=root,
+            )
+
+
+def _get_reusable_outcome_receipt_in_conn(
+    conn: sqlite3.Connection,
+    *,
+    receipt_id: int,
+    expected_session_id: str,
+    root: str,
+) -> Optional[dict[str, Any]]:
+    """Resolve one eligible receipt while a caller owns its ledger connection."""
+    row = conn.execute(
+        """
+        SELECT * FROM outcome_receipts
+        WHERE id = ? AND session_id = ? AND root = ?
+          AND terminal_kind = 'achieved_confirmed' AND reusable = 1
+        """,
+        (receipt_id, expected_session_id, root),
+    ).fetchone()
+    receipt = _receipt_from_row(row)
+    if receipt is None:
+        return None
+    status = _outcome_verification_status_in_conn(
+        conn,
+        session_id=expected_session_id,
+        root=root,
+    )
+    if status.get("status") != "passed":
+        return None
+    receipt["verification_status"] = "passed"
+    return receipt
+
+
+def apply_if_reusable_outcome_receipt(
+    receipt_id: int,
+    *,
+    expected_session_id: str | None,
+    cwd: str | Path | None,
+    operation: Callable[[], Any],
+) -> tuple[Optional[dict[str, Any]], Any]:
+    """Run one dependent mutation while an outcome remains reusable.
+
+    The eligibility query and ``operation`` form one serialized boundary over
+    the evidence ledger.  ``BEGIN IMMEDIATE`` also reserves the SQLite writer
+    lock across processes, so a concurrent `mark_workspace_edited` either
+    becomes visible before the check (and blocks the operation) or waits until
+    after it finishes.  Operations must not call back into this ledger while
+    the boundary is held.
+    """
+    if type(receipt_id) is not int or receipt_id <= 0:
+        return None, None
+    if not isinstance(expected_session_id, str) or not expected_session_id:
+        return None, None
+    if not callable(operation):
+        return None, None
+    root = _outcome_root(cwd)
+    if root is None:
+        return None, None
+
+    with _DB_LOCK:
+        with _connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            receipt = _get_reusable_outcome_receipt_in_conn(
+                conn,
+                receipt_id=receipt_id,
+                expected_session_id=expected_session_id,
+                root=root,
+            )
+            if receipt is None:
+                conn.rollback()
+                return None, None
+            result = operation()
+            conn.commit()
+    return receipt, result

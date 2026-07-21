@@ -68,12 +68,19 @@ def _fmt_receipt_list(subsystem: str) -> str:
     for receipt in records:
         failure = receipt.get("failure_code")
         suffix = f" ({failure})" if failure else ""
+        outcome_receipt_id = receipt.get("outcome_receipt_id")
+        lineage = (
+            f" outcome #{outcome_receipt_id}"
+            if type(outcome_receipt_id) is int and outcome_receipt_id > 0
+            else ""
+        )
         lines.append(
-            "  {id}: {pending_id} {decision}/{outcome} [{origin}] {recorded_at}{suffix}".format(
+            "  {id}: {pending_id} {decision}/{outcome}{lineage} [{origin}] {recorded_at}{suffix}".format(
                 id=receipt["id"],
                 pending_id=receipt["pending_id"],
                 decision=receipt["decision"],
                 outcome=receipt["terminal_outcome"],
+                lineage=lineage,
                 origin=receipt["proposal_origin"],
                 recorded_at=receipt["recorded_at"],
                 suffix=suffix,

@@ -950,12 +950,17 @@ def _stage_memory_proposal(
     payload: Dict[str, Any],
     summary: str,
     origin: str,
+    proposal_version: int = 2,
+    extra_freshness: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Stage a V2 memory proposal with a target-bound locked revision."""
+    """Stage a versioned memory proposal with a target-bound locked revision."""
     target = payload.get("target")
     revision = store.capture_revision(target)
     if revision is None:
         return None
+    freshness = dict(revision)
+    if extra_freshness:
+        freshness.update(extra_freshness)
     from tools import write_approval as wa
 
     return wa.stage_write(
@@ -963,9 +968,80 @@ def _stage_memory_proposal(
         payload,
         summary=summary,
         origin=origin,
-        proposal_version=2,
-        freshness=revision,
+        proposal_version=proposal_version,
+        freshness=freshness,
     )
+
+
+def stage_verified_outcome_lesson(
+    receipt_id: int,
+    lesson: str,
+    *,
+    session_id: str | None,
+    cwd: str | Path | None,
+    store: Optional["MemoryStore"] = None,
+) -> Dict[str, Any]:
+    """Stage a human-authored lesson from one currently reusable outcome.
+
+    This is intentionally an opt-in bridge, not automatic learning: the lesson
+    is always placed in the normal pending-memory queue, even when ordinary
+    memory approval is disabled.  The queue record binds a redacted outcome
+    receipt reference to the reviewed memory revision; approval later checks
+    both again before any memory mutation can occur.
+    """
+    if type(receipt_id) is not int or receipt_id <= 0:
+        return {"success": False, "error": "Outcome receipt id must be a positive integer."}
+    lesson_text = str(lesson or "").strip()
+    if not lesson_text:
+        return {"success": False, "error": "Lesson text is required."}
+    if not isinstance(session_id, str) or not session_id:
+        return {"success": False, "error": "No active goal session is available for this lesson."}
+
+    from agent.verification_evidence import get_reusable_outcome_receipt
+
+    outcome = get_reusable_outcome_receipt(
+        receipt_id,
+        expected_session_id=session_id,
+        cwd=cwd,
+    )
+    if outcome is None:
+        return {
+            "success": False,
+            "error": (
+                "Outcome receipt is unavailable, unconfirmed, stale, or belongs to "
+                "another session/workspace; no lesson was staged."
+            ),
+        }
+
+    active_store = store or load_on_disk_store()
+    payload = {"action": "add", "target": "memory", "content": lesson_text}
+    record = _stage_memory_proposal(
+        store=active_store,
+        payload=payload,
+        summary=f"learn from verified outcome #{receipt_id}: {lesson_text[:120]}",
+        origin="foreground",
+        proposal_version=3,
+        extra_freshness={
+            "outcome_receipt_id": receipt_id,
+            "outcome_session_id": outcome["session_id"],
+            "outcome_root": outcome["root"],
+        },
+    )
+    if record is None:
+        return {
+            "success": False,
+            "error": "Verified-outcome lesson could not be persisted; no memory was changed.",
+        }
+    return {
+        "success": True,
+        "staged": True,
+        "pending_id": record["id"],
+        "outcome_receipt_id": receipt_id,
+        "message": (
+            f"Lesson from verified outcome #{receipt_id} staged as memory proposal "
+            f"{record['id']}; review it with /memory pending and approve it explicitly."
+        ),
+    }
 
 
 def _apply_write_gate(
@@ -1250,9 +1326,10 @@ def apply_memory_pending_record(
     from tools import write_approval as wa
 
     payload = record.get("payload") if isinstance(record, dict) else None
+    proposal_version = record.get("proposal_version") if isinstance(record, dict) else None
     if (
         not isinstance(payload, dict)
-        or record.get("proposal_version") != 2
+        or proposal_version not in {2, 3}
         or not wa.versioned_record_is_intact(record)
     ):
         return {
@@ -1269,6 +1346,49 @@ def apply_memory_pending_record(
             "terminal": True,
             "error": "Memory proposal has an invalid freshness record; no changes were applied. Create a new proposal to review the current state.",
         }
+    if proposal_version == 3:
+        outcome_receipt_id = freshness.get("outcome_receipt_id") if isinstance(freshness, dict) else None
+        outcome_session_id = freshness.get("outcome_session_id") if isinstance(freshness, dict) else None
+        outcome_root = freshness.get("outcome_root") if isinstance(freshness, dict) else None
+        if (
+            type(outcome_receipt_id) is not int
+            or outcome_receipt_id <= 0
+            or not isinstance(outcome_session_id, str)
+            or not outcome_session_id
+            or not isinstance(outcome_root, str)
+            or not outcome_root
+        ):
+            return {
+                "success": False,
+                "terminal": True,
+                "error": "Outcome-linked lesson has an invalid provenance record; no changes were applied.",
+            }
+        from agent.verification_evidence import apply_if_reusable_outcome_receipt
+
+        outcome, result = apply_if_reusable_outcome_receipt(
+            outcome_receipt_id,
+            expected_session_id=outcome_session_id,
+            cwd=Path(outcome_root),
+            operation=lambda: apply_memory_pending(
+                payload, store, expected_revision=freshness
+            ),
+        )
+        if outcome is None or outcome.get("root") != outcome_root:
+            return {
+                "success": False,
+                "terminal": True,
+                "error": (
+                    "Outcome receipt is no longer reusable in its reviewed workspace; "
+                    "no memory changes were applied. Create a new lesson from current evidence."
+                ),
+            }
+        if not isinstance(result, dict):
+            return {
+                "success": False,
+                "terminal": True,
+                "error": "Outcome-linked lesson could not be applied safely; no changes were applied.",
+            }
+        return result
     return apply_memory_pending(payload, store, expected_revision=freshness)
 # OpenAI Function-Calling Schema
 # =============================================================================

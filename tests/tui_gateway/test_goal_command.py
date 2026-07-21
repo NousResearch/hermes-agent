@@ -212,6 +212,30 @@ def test_goal_outcomes_shows_only_the_active_session_learning_candidates(server,
     )
 
 
+def test_goal_learn_stages_lesson_with_current_session_and_workspace(server, session):
+    sid, session_key, record = session
+    with patch(
+        "tools.memory_tool.stage_verified_outcome_lesson",
+        return_value={"success": True, "message": "Lesson from verified outcome #73 staged."},
+    ) as stage_lesson:
+        r = _call(
+            server,
+            "command.dispatch",
+            name="goal",
+            arg="learn 73 preserve verified coverage",
+            session_id=sid,
+        )
+
+    assert r["result"]["type"] == "exec"
+    assert "staged" in r["result"]["output"]
+    stage_lesson.assert_called_once_with(
+        73,
+        "preserve verified coverage",
+        session_id=session_key,
+        cwd=server._session_cwd(record),
+    )
+
+
 def test_goal_wait_supports_session_and_time_barriers(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="build a rocket", session_id=sid)

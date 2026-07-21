@@ -2310,7 +2310,7 @@ class GatewaySlashCommandsMixin:
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
 
-        Subcommands: ``/goal`` / ``/goal status`` / ``/goal confirm`` /
+        Subcommands: ``/goal`` / ``/goal status`` / ``/goal confirm`` / ``/goal learn`` /
         ``/goal pause`` / ``/goal resume`` / ``/goal clear``. Any other text becomes the
         new goal.
 
@@ -2365,6 +2365,31 @@ class GatewaySlashCommandsMixin:
                 f"✓ Outcome receipt #{receipt_id} confirmed, but current verification "
                 f"is {status}; it is not reusable."
             )
+
+        if lower == "learn" or lower.startswith("learn "):
+            learn_arg = args[len("learn"):].strip()
+            parts = learn_arg.split(None, 1)
+            if len(parts) != 2:
+                return "Usage: /goal learn <receipt-id> <lesson>"
+            try:
+                receipt_id = int(parts[0])
+            except ValueError:
+                return "/goal learn: <receipt-id> must be a positive integer."
+            try:
+                from tools.memory_tool import stage_verified_outcome_lesson
+
+                result = stage_verified_outcome_lesson(
+                    receipt_id,
+                    parts[1],
+                    session_id=mgr.session_id,
+                    cwd=os.environ.get("TERMINAL_CWD") or os.getcwd(),
+                )
+            except Exception as exc:
+                logger.debug("goal learn: staging failed: %s", exc)
+                return "/goal learn: lesson could not be staged."
+            if result.get("success"):
+                return f"✓ {result['message']}"
+            return f"/goal learn: {result.get('error') or 'lesson was not staged.'}"
 
         if lower == "pause":
             state = mgr.pause(reason="user-paused")

@@ -904,6 +904,43 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "boolean",
         "description": "Run the local browser in headed mode (visible window). Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",
     },
+    # ── Virtual display fields — read at runtime but not in DEFAULT_CONFIG ──
+    # Global display settings used by gateway platforms.
+    "display.tool_progress": {
+        "type": "select",
+        "description": "Global tool progress visibility in messaging platforms",
+        "options": ["all", "new", "verbose", "off"],
+        "category": "display",
+    },
+    "display.background_process_notifications": {
+        "type": "select",
+        "description": "Notification mode for background process completion",
+        "options": ["all", "result", "error", "off"],
+        "category": "display",
+    },
+    "display.cleanup_progress": {
+        "type": "boolean",
+        "description": "Auto-delete tool progress bubbles after final response",
+        "category": "display",
+    },
+    # ── Telegram per-platform display overrides ──────────────────────────
+    "display.platforms.telegram.notifications": {
+        "type": "select",
+        "description": "Push notification mode for Telegram messages",
+        "options": ["important", "all"],
+        "category": "discord",
+    },
+    "display.platforms.telegram.tool_progress": {
+        "type": "select",
+        "description": "Tool progress visibility in Telegram",
+        "options": ["all", "new", "verbose", "off"],
+        "category": "discord",
+    },
+    "display.platforms.telegram.cleanup_progress": {
+        "type": "boolean",
+        "description": "Auto-delete tool progress bubbles after final response on Telegram",
+        "category": "discord",
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -1006,14 +1043,27 @@ def _build_schema_from_config(
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 
 # Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
-# by the normalize/denormalize cycle.  Insert model_context_length right after
-# the "model" key so it renders adjacent in the frontend.
+# by the normalize/denormalize cycle or used at runtime by platform adapters.
+# Insert model_context_length right after the "model" key so it renders
+# adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
         _ordered_schema["model_context_length"] = _mcl_entry
+# Append Telegram per-platform display overrides (virtual fields gated at
+# runtime by the Telegram adapter — not in DEFAULT_CONFIG).
+for _vk in (
+    "display.tool_progress",
+    "display.background_process_notifications",
+    "display.cleanup_progress",
+    "display.platforms.telegram.notifications",
+    "display.platforms.telegram.tool_progress",
+    "display.platforms.telegram.cleanup_progress",
+):
+    if _vk in _SCHEMA_OVERRIDES:
+        _ordered_schema[_vk] = dict(_SCHEMA_OVERRIDES[_vk])
 CONFIG_SCHEMA = _ordered_schema
 
 

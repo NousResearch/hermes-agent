@@ -1156,12 +1156,15 @@ class ShellFileOperations(FileOperations):
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
         
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
-        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
+        # Get total line count. ``awk 'END{print NR}'`` counts logical lines
+        # including a final line with no trailing newline; ``wc -l`` counts
+        # newline characters and would undercount such files by one, yielding
+        # a wrong total and a wrong/absent truncation hint.
+        count_cmd = f"awk 'END{{print NR}}' {self._escape_shell_arg(path)}"
+        count_result = self._exec(count_cmd)
+        count_output = _strip_terminal_fence_leaks(count_result.stdout)
         try:
-            total_lines = int(wc_output.strip())
+            total_lines = int(count_output.strip())
         except ValueError:
             total_lines = 0
         

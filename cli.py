@@ -3243,6 +3243,29 @@ def _preserve_ctrl_enter_newline() -> bool:
     return False
 
 
+def _is_warp_terminal() -> bool:
+    """Detect whether Hermes is running inside Warp terminal.
+
+    Warp sets TERM_PROGRAM=WarpTerminal in the environment. When running
+    inside Warp as a third-party CLI agent (not via the official harness),
+    voice transcription results and rich-input multi-line text are injected
+    into the PTY line-by-line with CR (\\r) terminators rather than being
+    delivered as a single atomic block.  Each CR triggers a separate submit
+    in prompt_toolkit, splitting multi-line/multi-sentence input into many
+    short messages.
+
+    Callers use this flag to apply a short debounce window in process_loop
+    that coalesces rapid successive submissions into one message.
+
+    See: https://github.com/warpdotdev/warp/issues/11632
+    """
+    return os.environ.get("TERM_PROGRAM") == "WarpTerminal"
+
+
+# Warp injects multi-line input line-by-line; coalesce bursts within this window.
+_WARP_DEBOUNCE_SECS = 0.08
+
+
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
@@ -15122,6 +15145,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     
                     if not user_input:
                         continue
+
+                    # --- Warp voice/rich-input debounce ---
+                    # Warp injects multi-line text line-by-line with CR
+                    # terminators when running Hermes as a third-party CLI
+                    # agent (not via the official harness).  Each line fires a
+                    # separate submit, so a single voice utterance or rich-input
+                    # paragraph arrives as many short messages.
+                    #
+                    # Workaround: after the first item, drain any additional
+                    # plain-string submissions that arrive within the debounce
+                    # window and join them with newlines before routing to the
+                    # agent.  Slash commands, image tuples, and interrupt
+                    # payloads are intentionally excluded — only consecutive
+                    # plain-text user messages are merged.
+                    if (
+                        _is_warp_terminal()
+                        and isinstance(user_input, str)
+                        and not user_input.startswith("/")
+                    ):
+                        _deadline = time.monotonic() + _WARP_DEBOUNCE_SECS
+                        _parts = [user_input]
+                        while time.monotonic() < _deadline:
+                            try:
+                                _next = self._pending_input.get(
+                                    timeout=max(0.0, _deadline - time.monotonic())
+                                )
+                                if isinstance(_next, str) and not _next.startswith("/"):
+                                    _parts.append(_next)
+                                else:
+                                    # Non-text item (command / image tuple) — put
+                                    # it back and stop coalescing.
+                                    self._pending_input.put(_next)
+                                    break
+                            except queue.Empty:
+                                break
+                        if len(_parts) > 1:
+                            user_input = "\n".join(p for p in _parts if p)
 
                     # The user has typed and submitted something, so any
                     # post-resize transient suppression should end here.

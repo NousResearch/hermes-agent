@@ -827,6 +827,43 @@ def test_cron_store_is_archived_without_config_cron_section(tmp_path: Path):
     assert "archive/cron-config.json" not in notes_text
 
 
+def test_cron_store_is_reported_in_dry_run_without_config_cron_section(tmp_path: Path):
+    """Dry-run should still surface cron store even without an output directory."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+
+    (source / "openclaw.json").write_text(json.dumps({"channels": {}}), encoding="utf-8")
+    (source / "cron").mkdir(parents=True)
+    (source / "cron" / "jobs.json").write_text(
+        json.dumps({"version": 1, "jobs": [{"id": "job-1", "name": "demo"}]}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+        selected_options={"cron-jobs"},
+    )
+    report = migrator.migrate()
+
+    cron_items = [item for item in report["items"] if item["kind"] == "cron-jobs"]
+    archived_store = next(
+        (item for item in cron_items if item["destination"] == "archive/cron-store"),
+        None,
+    )
+    assert archived_store is not None
+    assert archived_store["status"] == "archived"
+    assert archived_store["reason"] == "Would archive cron job store"
+
+
 def test_skill_installs_cleanly_under_skills_guard():
     skills_guard = load_skills_guard()
     result = skills_guard.scan_skill(

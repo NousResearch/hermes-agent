@@ -2234,13 +2234,18 @@ class Migrator:
                             "archived", "Would archive cron config")
 
         # Also check for cron store files even when config.cron is missing
-        if cron_store.is_dir() and self.archive_dir:
+        if cron_store.is_dir():
             found_any = True
-            dest_cron = self.archive_dir / "cron-store"
-            if self.execute:
+            dest_cron = self.archive_dir / "cron-store" if self.archive_dir else Path("archive/cron-store")
+            if self.execute and self.archive_dir:
                 shutil.copytree(cron_store, dest_cron, dirs_exist_ok=True)
-            self.record("cron-jobs", str(cron_store), str(dest_cron), "archived",
-                        "Cron job store archived")
+            self.record(
+                "cron-jobs",
+                str(cron_store),
+                str(dest_cron),
+                "archived",
+                "Cron job store archived" if self.execute else "Would archive cron job store",
+            )
 
         if not found_any:
             self.record("cron-jobs", None, None, "skipped", "No cron configuration found")

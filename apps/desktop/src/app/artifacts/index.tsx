@@ -5,7 +5,6 @@ import { useNavigate } from 'react-router-dom'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Pagination,
@@ -16,297 +15,34 @@ import {
   PaginationNext,
   PaginationPrevious
 } from '@/components/ui/pagination'
-import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
+import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
-import { mediaExternalUrl } from '@/lib/media'
+import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
+import { normalize } from '@/lib/text'
+import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
-import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-type ArtifactKind = 'image' | 'file' | 'link'
-type ArtifactFilter = 'all' | ArtifactKind
-const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
-
-interface ArtifactRecord {
-  id: string
-  kind: ArtifactKind
-  value: string
-  href: string
-  label: string
-  sessionId: string
-  sessionTitle: string
-  timestamp: number
-}
-
-const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
-const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const URL_RE = /https?:\/\/[^\s<>"')]+/g
-const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
-const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
-const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
-const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
-
-const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-  month: 'short'
-})
-
-function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
-}
-
-function parseMaybeJson(value: string): unknown {
-  if (!value.trim()) {
-    return null
-  }
-
-  try {
-    return JSON.parse(value)
-  } catch {
-    return null
-  }
-}
-
-function looksLikePathOrUrl(value: string): boolean {
-  return (
-    value.startsWith('http://') ||
-    value.startsWith('https://') ||
-    value.startsWith('file://') ||
-    value.startsWith('data:image/') ||
-    value.startsWith('/') ||
-    value.startsWith('./') ||
-    value.startsWith('../') ||
-    value.startsWith('~/')
-  )
-}
-
-function looksLikeArtifact(value: string): boolean {
-  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
-    return true
-  }
-
-  if (looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))) {
-    return true
-  }
-
-  return value.startsWith('/') && value.includes('.')
-}
-
-function artifactKind(value: string): ArtifactKind {
-  if (value.startsWith('data:image/') || IMAGE_EXT_RE.test(value)) {
-    return 'image'
-  }
-
-  if (
-    value.startsWith('/') ||
-    value.startsWith('./') ||
-    value.startsWith('../') ||
-    value.startsWith('~/') ||
-    value.startsWith('file://')
-  ) {
-    return 'file'
-  }
-
-  return 'link'
-}
-
-function artifactHref(value: string): string {
-  if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')) {
-    return value
-  }
-
-  if (value.startsWith('file://') || value.startsWith('/')) {
-    return mediaExternalUrl(value)
-  }
-
-  return value
-}
-
-function artifactLabel(value: string): string {
-  try {
-    const url = new URL(value)
-    const item = url.pathname.split('/').filter(Boolean).pop()
-
-    return item || value
-  } catch {
-    const parts = value.split(/[\\/]/).filter(Boolean)
-
-    return parts.pop() || value
-  }
-}
-
-function messageText(message: SessionMessage): string {
-  if (typeof message.content === 'string' && message.content.trim()) {
-    return message.content
-  }
-
-  if (typeof message.text === 'string' && message.text.trim()) {
-    return message.text
-  }
-
-  if (typeof message.context === 'string' && message.context.trim()) {
-    return message.context
-  }
-
-  return ''
-}
-
-function collectStringValues(
-  value: unknown,
-  keyPath: string,
-  collector: (value: string, keyPath: string) => void
-): void {
-  if (typeof value === 'string') {
-    collector(value, keyPath)
-
-    return
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) => collectStringValues(entry, `${keyPath}.${index}`, collector))
-
-    return
-  }
-
-  if (!value || typeof value !== 'object') {
-    return
-  }
-
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    collectStringValues(child, keyPath ? `${keyPath}.${key}` : key, collector)
-  }
-}
-
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
-  for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
-    pushValue(match[2] || '')
-  }
-
-  for (const match of text.matchAll(MARKDOWN_LINK_RE)) {
-    const start = match.index ?? 0
-
-    if (start > 0 && text[start - 1] === '!') {
-      continue
-    }
-
-    const value = match[2] || ''
-
-    if (looksLikeArtifact(value)) {
-      pushValue(value)
-    }
-  }
-
-  for (const match of text.matchAll(URL_RE)) {
-    const value = match[0] || ''
-
-    if (looksLikeArtifact(value)) {
-      pushValue(value)
-    }
-  }
-
-  for (const match of text.matchAll(PATH_RE)) {
-    pushValue(match[2] || '')
-  }
-}
-
-function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
-  const text = messageText(message)
-
-  if (text) {
-    collectArtifactsFromText(text, pushValue)
-  }
-
-  if (message.role !== 'tool' && !Array.isArray(message.tool_calls)) {
-    return
-  }
-
-  if (Array.isArray(message.tool_calls)) {
-    for (const call of message.tool_calls) {
-      collectStringValues(call, 'tool_call', (value, keyPath) => {
-        const normalized = normalizeValue(value)
-
-        if (!normalized) {
-          return
-        }
-
-        if (KEY_HINT_RE.test(keyPath) && (looksLikePathOrUrl(normalized) || FILE_EXT_RE.test(normalized))) {
-          pushValue(normalized)
-        }
-      })
-    }
-  }
-
-  const parsed = parseMaybeJson(text)
-
-  if (parsed !== null) {
-    collectStringValues(parsed, 'tool_result', (value, keyPath) => {
-      const normalized = normalizeValue(value)
-
-      if (!normalized) {
-        return
-      }
-
-      if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && looksLikeArtifact(normalized)) {
-        pushValue(normalized)
-      }
-    })
-  }
-}
-
-export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
-  const found = new Map<string, ArtifactRecord>()
-  const title = sessionTitle(session)
-
-  for (const message of messages) {
-    if (message.role !== 'assistant' && message.role !== 'tool') {
-      continue
-    }
-
-    collectArtifactsFromMessage(message, candidate => {
-      const value = normalizeValue(candidate)
-
-      if (!value || !looksLikeArtifact(value)) {
-        return
-      }
-
-      const key = `${session.id}:${value}`
-
-      if (found.has(key)) {
-        return
-      }
-
-      found.set(key, {
-        id: key,
-        kind: artifactKind(value),
-        value,
-        href: artifactHref(value),
-        label: artifactLabel(value),
-        sessionId: session.id,
-        sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
-      })
-    })
-  }
-
-  return Array.from(found.values())
-}
+import {
+  ARTIFACT_FILTERS,
+  type ArtifactFilter,
+  artifactImageSrc,
+  type ArtifactRecord,
+  collectArtifactsForSession
+} from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  return fmtDayTime.format(new Date(timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {
@@ -372,13 +108,14 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
+
+  const [refreshing, setRefreshing] = useState(false)
 
   const refreshArtifacts = useCallback(async () => {
     setRefreshing(true)
@@ -422,7 +159,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       return []
     }
 
-    const q = query.trim().toLowerCase()
+    const q = normalize(query)
 
     return artifacts.filter(artifact => {
       if (kindFilter !== 'all' && artifact.kind !== kindFilter) {
@@ -466,6 +203,27 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [currentFilePage, visibleFileArtifacts]
   )
 
+  // Rotating placeholder nudges from real data — search matches file paths and
+  // session titles, not just labels; show it.
+  const searchHints = useMemo(() => {
+    if (!artifacts?.length) {
+      return undefined
+    }
+
+    const extensions = [
+      ...new Set(artifacts.map(artifact => /\.(\w{2,4})$/.exec(artifact.value)?.[1]?.toLowerCase()).filter(Boolean))
+    ].slice(0, 3) as string[]
+
+    const titles = [...new Set(artifacts.map(artifact => artifact.sessionTitle).filter(Boolean))].slice(0, 2)
+
+    const hints = [
+      ...extensions.map(ext => t.common.tryHint(`.${ext}`)),
+      ...titles.map(title => t.common.tryHint(title))
+    ]
+
+    return hints.length > 0 ? hints : undefined
+  }, [artifacts, t])
+
   const counts = useMemo(() => {
     const all = artifacts || []
 
@@ -477,17 +235,30 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [artifacts])
 
-  const openArtifact = useCallback(async (href: string) => {
-    try {
-      if (window.hermesDesktop?.openExternal) {
-        await window.hermesDesktop.openExternal(href)
-      } else {
-        window.open(href, '_blank', 'noopener,noreferrer')
+  const openArtifact = useCallback(
+    async (href: string) => {
+      try {
+        // A gateway-local file resolves to file:// in remote mode (the file
+        // lives on the gateway, not this disk). Opening that locally fails —
+        // and an OAuth remote connection has no query token to build a download
+        // URL. Fetch the bytes over the authenticated fs bridge instead.
+        if (isRemoteGateway() && /^file:/i.test(href)) {
+          await downloadGatewayMediaFile(href)
+
+          return
+        }
+
+        if (window.hermesDesktop?.openExternal) {
+          await window.hermesDesktop.openExternal(href)
+        } else {
+          window.open(href, '_blank', 'noopener,noreferrer')
+        }
+      } catch (err) {
+        notifyError(err, a.openFailed)
       }
-    } catch (err) {
-      notifyError(err, a.openFailed)
-    }
-  }, [a])
+    },
+    [a]
+  )
 
   const markImageFailed = useCallback((id: string) => {
     setFailedImageIds(current => {
@@ -507,40 +278,33 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      activeTab={kindFilter}
       onSearchChange={setQuery}
+      onTabChange={id => setKindFilter(id as typeof kindFilter)}
       searchHidden={counts.all === 0}
+      searchHints={searchHints}
       searchPlaceholder={a.search}
       searchTrailingAction={
-        <Button
-          aria-label={refreshing ? a.refreshing : a.refresh}
-          className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refreshArtifacts()}
-          size="icon-xs"
-          title={refreshing ? a.refreshing : a.refresh}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
+        <Tip label={refreshing ? a.refreshing : a.refresh}>
+          <Button
+            aria-label={refreshing ? a.refreshing : a.refresh}
+            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            disabled={refreshing}
+            onClick={() => void refreshArtifacts()}
+            size="icon-titlebar"
+            variant="ghost"
+          >
+            {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          </Button>
+        </Tip>
       }
       searchValue={query}
-      tabs={
-        <>
-          <TextTab active={kindFilter === 'all'} onClick={() => setKindFilter('all')}>
-            {a.tabAll} <TextTabMeta>({counts.all})</TextTabMeta>
-          </TextTab>
-          <TextTab active={kindFilter === 'image'} onClick={() => setKindFilter('image')}>
-            {a.tabImages} <TextTabMeta>({counts.image})</TextTabMeta>
-          </TextTab>
-          <TextTab active={kindFilter === 'file'} onClick={() => setKindFilter('file')}>
-            {a.tabFiles} <TextTabMeta>({counts.file})</TextTabMeta>
-          </TextTab>
-          <TextTab active={kindFilter === 'link'} onClick={() => setKindFilter('link')}>
-            {a.tabLinks} <TextTabMeta>({counts.link})</TextTabMeta>
-          </TextTab>
-        </>
-      }
+      tabs={[
+        { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
+        { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
+        { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
+        { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
+      ]}
     >
       {!artifacts ? (
         <PageLoader label={a.indexing} />
@@ -552,17 +316,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </div>
         </div>
       ) : (
-        <div className="h-full overflow-y-auto">
-          <div className={cn('flex flex-col gap-3 pb-2', PAGE_INSET_X)}>
+        <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
+          <div className="flex flex-col gap-3 px-3 pb-2">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div
-                  className={cn(
-                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
-                    PAGE_INSET_NEG_X,
-                    PAGE_INSET_X
-                  )}
-                >
+                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={a.itemsImage}
@@ -588,13 +346,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
             {visibleFileArtifacts.length > 0 && (
               <section className="flex flex-col">
-                <div
-                  className={cn(
-                    'sticky top-0 z-10 flex h-7 items-center gap-3 overflow-x-auto bg-background',
-                    PAGE_INSET_NEG_X,
-                    PAGE_INSET_X
-                  )}
-                >
+                <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter, a)}
@@ -680,6 +432,28 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   const { t } = useI18n()
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
+  const [src, setSrc] = useState('')
+
+  useEffect(() => {
+    let active = true
+
+    setSrc('')
+    void artifactImageSrc(artifact.value, artifact.href)
+      .then(nextSrc => {
+        if (active) {
+          setSrc(nextSrc)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          onImageError(artifact.id)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [artifact.href, artifact.id, artifact.value, onImageError])
 
   return (
     <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
@@ -689,7 +463,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
           failedImage && 'cursor-default'
         )}
       >
-        {!failedImage && (
+        {!failedImage && src && (
           <ZoomableImage
             alt={artifact.label}
             className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
@@ -698,7 +472,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
             loading="lazy"
             onError={() => onImageError(artifact.id)}
             slot="artifact-media"
-            src={artifact.href}
+            src={src}
           />
         )}
       </div>
@@ -758,13 +532,12 @@ function ArtifactCellAction({
   }
 
   return (
-    <button
+    <RowButton
       className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
       onClick={onClick}
-      type="button"
     >
       {children}
-    </button>
+    </RowButton>
   )
 }
 
@@ -839,7 +612,8 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
   {
     Cell: PrimaryCell,
     bodyClassName: 'p-0',
-    header: (filter, a) => (filter === 'link' ? a.colTitleLink : filter === 'file' ? a.colTitleFile : a.colTitleDefault),
+    header: (filter, a) =>
+      filter === 'link' ? a.colTitleLink : filter === 'file' ? a.colTitleFile : a.colTitleDefault,
     id: 'primary',
     width: filter => (filter === 'link' ? 'w-[50%]' : 'w-[35%]')
   },

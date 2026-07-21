@@ -59,13 +59,27 @@ class RelayAdapter(BasePlatformAdapter):
         self._transport = transport
         # Capability surface read by stream_consumer (getattr(..., 4096)).
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
-        # chat_id -> guild_id (Discord) / workspace scope, learned from inbound
+        # chat_id -> scope_id (server/workspace scope), learned from inbound
         # events. The connector's egress guard resolves the owning tenant from
-        # the OUTBOUND action's metadata.guild_id; the gateway's generic delivery
+        # the OUTBOUND action's metadata.scope_id; the gateway's generic delivery
         # path (run.py _thread_metadata_for_source) only carries thread_id, so we
         # re-attach the scope here from what we saw inbound. Keyed by chat_id
         # (channel) since that's what send() receives. See routedEgressGuard.ts.
         self._scope_by_chat: Dict[str, str] = {}
+        # chat_id -> author user_id for DM chats (no scope). A DM reply has
+        # no scope discriminator, so the connector resolves its tenant from the
+        # recipient's author binding; we re-attach this user_id as
+        # metadata.user_id on the outbound action so it can. See _capture_scope.
+        self._dm_user_by_chat: Dict[str, str] = {}
+        # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
+        # chat belongs to (Phase 1.5 multi-platform-per-agent). One relay adapter
+        # fronts N platforms on one WS; an outbound reply must egress through the
+        # platform the inbound came from. We remember it per chat_id from the
+        # inbound event's source.platform and stamp it on the OutboundFrame so the
+        # connector dispatches to the right sender. Empty for a single-platform
+        # gateway (the connector falls back to its session default). See
+        # _capture_scope / send.
+        self._platform_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
         # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
         # (a 4401 close after a successful handshake = the operator opted this
@@ -75,6 +89,20 @@ class RelayAdapter(BasePlatformAdapter):
         self._revocation_monitor: Optional[asyncio.Task[None]] = None
 
     # ── capability surface (from descriptor) ─────────────────────────────
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Relay authorization is enforced by the connector, not locally.
+
+        The connector authenticates this gateway's WS (per-instance secret) and
+        performs owner-only author-binding resolution before delivering, so any
+        inbound relay event was already authorized as THIS instance's bound user
+        (``user_instance_binding``, keyed on the connector-observed author id).
+        The instance therefore must not default-deny relay users for lack of a
+        local ``RELAY_ALLOWED_USERS`` env allowlist. See
+        ``BasePlatformAdapter.authorization_is_upstream``.
+        """
+        return True
+
     @property
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
@@ -87,7 +115,24 @@ class RelayAdapter(BasePlatformAdapter):
         return self.descriptor.supports_draft_streaming
 
     # ── abstract methods (delegated to the transport) ────────────────────
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract:
+        # the gateway's reconnect watcher (gateway/run.py) re-establishes a
+        # platform after a fatal adapter error by building a fresh adapter and
+        # calling ``connect(is_reconnect=True)``. Relay MUST accept the kwarg or
+        # that recovery path raises TypeError and the relay platform can never
+        # come back through the watcher.
+        #
+        # Relay deliberately IGNORES the flag. The flag exists so adapters with a
+        # server-side update queue (e.g. Telegram's Bot API) preserve that queue
+        # across an outage instead of dropping it (#46621). Relay has no such
+        # gateway-side queue: messages buffered during a gap live in the
+        # CONNECTOR's durable buffer and are replayed when the transport
+        # re-handshakes. Routine WS drops are handled entirely by the transport's
+        # own reconnect supervisor (WebSocketRelayTransport, reconnect=True);
+        # a watcher-driven reconnect builds a fresh transport from scratch (the
+        # fatal-error handler disconnect()s the old adapter first, cancelling its
+        # supervisor), so there is nothing at the adapter layer to preserve.
         if self._transport is None:
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)
@@ -185,30 +230,105 @@ class RelayAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     def _capture_scope(self, event) -> None:
-        """Remember chat_id -> guild scope from an inbound event so our outbound
-        (the agent's reply) can re-assert it for the connector's egress tenant
-        resolution. Never raises — scope tracking must not break inbound."""
+        """Remember a chat_id's egress discriminator from an inbound event so our
+        outbound (the agent's reply) can re-assert it for the connector's egress
+        tenant resolution. Never raises — scope tracking must not break inbound.
+
+        Two discriminators, captured independently (a scoped message has BOTH):
+          - scope_id: for a scoped (guild/channel) message. The connector's
+            primary path resolves the tenant from metadata.scope_id (routing
+            table).
+          - user_id: the authentic author id, captured for EVERY message (DM
+            and scoped alike). The connector resolves the tenant from the
+            recipient's author binding (resolveByUser) when a route lookup
+            misses. This is the sole discriminator for a DM (no scope), AND the
+            author-first FALLBACK for a scoped reply whose guild has no route
+            row — a managed agent joins guilds dynamically, so a provision-time
+            guild route is not guaranteed. Re-attaching user_id on scoped
+            replies too lets the connector's guild-route-miss fallback resolve
+            the tenant the same way inbound already does (SharedSocketRouter
+            targets()). Without a resolvable discriminator the connector's
+            egress guard declines the reply as 'target not routed to an
+            onboarded tenant'. See gateway-gateway routedEgressGuard.ts /
+            discordTenant.ts (makeDiscordTenantOf).
+        """
         try:
             src = getattr(event, "source", None)
-            scope = getattr(src, "guild_id", None) if src else None
-            chat = getattr(src, "chat_id", None) if src else None
-            if scope and chat:
+            if not src:
+                return
+            chat = getattr(src, "chat_id", None)
+            if not chat:
+                return
+            # Phase 1.5: remember the underlying platform for this chat so the
+            # reply egresses through the right sender (one relay adapter fronts N
+            # platforms). source.platform is a Platform enum (e.g. Platform.DISCORD,
+            # mapped from the connector's "discord" by ws_transport _frame_to_event);
+            # record its string VALUE, skipping the generic RELAY fallback (a
+            # single-platform connector that didn't tag a concrete platform — the
+            # connector's session default handles egress then).
+            platform = getattr(src, "platform", None)
+            platform_value = getattr(platform, "value", platform)
+            if platform_value and platform_value != "relay":
+                self._platform_by_chat[str(chat)] = str(platform_value)
+            # Author id for outbound author-binding resolution. Captured for BOTH
+            # DM and scoped messages: it's the sole discriminator for a DM and
+            # the guild-route-miss fallback for a scoped reply. (Formerly captured
+            # for DMs only, which left managed-agent guild replies with no
+            # resolvable tenant when the guild had no route row.)
+            user_id = getattr(src, "user_id", None)
+            if user_id:
+                self._dm_user_by_chat[str(chat)] = str(user_id)
+            scope = getattr(src, "scope_id", None)
+            if scope:
                 self._scope_by_chat[str(chat)] = str(scope)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Ensure the outbound metadata carries guild_id for the connector's
-        egress tenant resolution. The connector resolves the owning tenant from
-        metadata.guild_id (Discord); without it egress is declined as
-        'target not routed to an onboarded tenant'. No-op when we have no scope
-        for this chat (e.g. DMs) or it's already present."""
+        """Ensure the outbound metadata carries the discriminator(s) the connector's
+        egress guard needs to resolve the owning tenant.
+
+          - scope_id: re-attached for a scoped reply (guild/channel) →
+            routing-table resolution (the primary path).
+          - user_id: the authentic author id we saw inbound, re-attached for
+            EVERY reply we know it for. It is the sole discriminator for a DM
+            (no scope), AND the author-first FALLBACK the connector uses when a
+            scoped reply's guild has no route row (a managed agent joins guilds
+            dynamically — the guild route may not be provisioned). Carrying both
+            on a scoped reply is harmless: the connector tries scope_id first and
+            only falls back to user_id on a route miss. Without a resolvable
+            discriminator egress is declined as 'target not routed to an
+            onboarded tenant'. See gateway-gateway routedEgressGuard.ts /
+            discordTenant.ts.
+
+        No-op when the relevant value is already present or unknown for this chat.
+        """
         meta: Dict[str, Any] = dict(metadata or {})
-        if not meta.get("guild_id"):
+        if not meta.get("scope_id"):
             scope = self._scope_by_chat.get(str(chat_id))
             if scope:
-                meta["guild_id"] = scope
+                meta["scope_id"] = scope
+        # Author-binding discriminator. Attached whenever we know the author for
+        # this chat and it isn't already set — for DMs (the sole discriminator)
+        # AND scoped replies (the connector's guild-route-miss fallback). It is
+        # only consulted by the connector when the scope/route lookup misses, so
+        # carrying it alongside scope_id never overrides routing-table resolution.
+        if not meta.get("user_id"):
+            author = self._dm_user_by_chat.get(str(chat_id))
+            if author:
+                meta["user_id"] = author
         return meta
+
+    def _platform_is_fronted(self, platform: str) -> bool:
+        """Whether ``platform`` is one of the platforms this gateway fronts over
+        the relay (Phase 1.5). Reads the transport's advertised identity set; used
+        to decide whether a follow-up's platform-prefixed `kind` names a real
+        fronted platform worth tagging on the frame (vs. leaving egress to the
+        session default). Safe when the transport is absent or single-identity."""
+        ids = getattr(self._transport, "_identities", None)
+        if not ids:
+            return False
+        return any(p == platform for p, _ in ids)
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
@@ -298,14 +418,14 @@ class RelayAdapter(BasePlatformAdapter):
         member = payload.get("member") or {}
         user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
         channel_id = str(payload.get("channel_id") or "")
-        guild_id = payload.get("guild_id")
+        guild_id = payload.get("guild_id")  # real Discord interaction wire field
         source = SessionSource(
             platform=Platform.RELAY,
             chat_id=channel_id,
             chat_type="channel" if guild_id else "dm",
             user_id=str(user.get("id")) if isinstance(user, dict) and user.get("id") else None,
             user_name=str(user.get("username")) if isinstance(user, dict) and user.get("username") else None,
-            guild_id=str(guild_id) if guild_id else None,
+            scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
         )
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
@@ -341,6 +461,33 @@ class RelayAdapter(BasePlatformAdapter):
                     logger.debug("relay going_idle failed during drain", exc_info=True)
             await self._transport.disconnect()
 
+    async def go_dormant(self) -> bool:
+        """Quiesce the relay for a scale-to-zero suspend (D12 / Phase 0).
+
+        Unlike ``disconnect()`` (terminal teardown for shutdown/restart), this
+        keeps the adapter's reconnect path armed so the gateway re-dials and
+        drains its buffered backlog when the machine wakes. Delegates to the
+        transport's ``go_dormant()`` when available; a transport without it (the
+        stub) is a no-op that returns False, so callers degrade safely.
+
+        NOTE: deliberately does NOT stop the revocation monitor — going dormant
+        is not a teardown; the monitor stays live so a real opt-out/revocation
+        during dormancy is still surfaced on wake.
+        """
+        if self._transport is None:
+            return False
+        go_dormant = getattr(self._transport, "go_dormant", None)
+        if not callable(go_dormant):
+            return False
+        try:
+            result: Any = go_dormant()
+            if asyncio.iscoroutine(result):
+                return bool(await result)
+            return bool(result)
+        except Exception:  # noqa: BLE001 - dormancy is best-effort, never blocks the idle path
+            logger.debug("relay go_dormant failed", exc_info=True)
+            return False
+
     async def send(
         self,
         chat_id: str,
@@ -357,7 +504,8 @@ class RelayAdapter(BasePlatformAdapter):
                 "content": content,
                 "reply_to": reply_to,
                 "metadata": self._with_scope(chat_id, metadata),
-            }
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
         )
         return SendResult(
             success=bool(result.get("success")),
@@ -388,6 +536,16 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return SendResult(success=False, error="no transport")
+        # Phase 1.5: the capability `kind` is platform-prefixed (e.g.
+        # "discord.interaction_token"), so derive the egress platform from it when
+        # it names one we front — that tags the OutboundFrame so a multi-platform
+        # gateway routes the follow-up through the right sender. Falls back to the
+        # session default (connector-side) when the prefix isn't a fronted platform.
+        follow_up_platform = None
+        if kind and "." in kind:
+            prefix = kind.split(".", 1)[0]
+            if self._platform_is_fronted(prefix):
+                follow_up_platform = prefix
         result = await self._transport.send_follow_up(
             {
                 "op": "follow_up",
@@ -395,7 +553,8 @@ class RelayAdapter(BasePlatformAdapter):
                 "kind": kind,
                 "content": content,
                 "metadata": metadata or {},
-            }
+            },
+            platform=follow_up_platform,
         )
         return SendResult(
             success=bool(result.get("success")),

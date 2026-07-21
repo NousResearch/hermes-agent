@@ -52,7 +52,8 @@ def _run_with_current_provider(job, current_provider, tmp_path):
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
-         patch("dotenv.load_dotenv"), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_state.SessionDB", return_value=fake_db), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -252,7 +253,8 @@ def _run_with_current_provider_and_model(job, current_provider, current_model, t
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
          patch("cron.scheduler._resolve_origin", return_value=None), \
-         patch("dotenv.load_dotenv"), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_state.SessionDB", return_value=fake_db), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -332,3 +334,42 @@ class TestModelDriftGuard:
             )
         assert agent_constructed is True
         assert success is True
+
+
+class TestRuntimeResolutionTargetModel:
+    """run_job must resolve the primary provider against the model the job
+    will actually run (per-job pin > env > config default), so providers with
+    model-specific api_mode routing (e.g. OpenCode Zen/Go) pick the mode for
+    the pinned model instead of the stale persisted default."""
+
+    def test_primary_resolution_passes_effective_model(self, tmp_path):
+        job = _base_job(model="my-pinned-model", provider="openrouter")
+        captured = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return {
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+            }
+
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=_capture,
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert captured.get("target_model") == "my-pinned-model"
+        assert captured.get("requested") == "openrouter"

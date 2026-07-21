@@ -69,6 +69,8 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    redact_proxy_url,
+    resolve_proxy_url,
 )
 from gateway.platforms.helpers import strip_markdown
 
@@ -312,6 +314,10 @@ class QQAdapter(BasePlatformAdapter):
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
+            # No client-level ``proxy=`` here: this client also fetches
+            # non-QQ hosts (attachment CDNs, configurable STT endpoints),
+            # and an explicit proxy would preempt httpx's per-request env
+            # handling — including NO_PROXY entries for those hosts.
             self._http_client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
@@ -463,17 +469,36 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
-        # local patch, so QQ can regress to direct-connect timeouts after update.
-        self._session = aiohttp.ClientSession(trust_env=True)
-        ws_proxy = (
-            os.getenv("WSS_PROXY")
-            or os.getenv("wss_proxy")
-            or os.getenv("HTTPS_PROXY")
-            or os.getenv("https_proxy")
-            or os.getenv("ALL_PROXY")
-            or os.getenv("all_proxy")
-        )
+        # Resolve proxy via the shared helper so QQBot honors HTTPS_PROXY,
+        # WSS_PROXY, ALL_PROXY *and* NO_PROXY. The previous code read env
+        # vars manually and passed ``proxy=`` explicitly, which bypasses
+        # aiohttp's own NO_PROXY handling entirely. Users behind a proxy
+        # that mishandles Tencent's WebSocket upgrade can set
+        # ``NO_PROXY=qq.com`` to force direct.
+        #
+        # The bypass decision considers only the host actually being dialed
+        # (standard NO_PROXY semantics). Suffix entries like ``qq.com``
+        # still match whatever gateway host Tencent returns; an entry for
+        # some other QQ host (e.g. ``bots.qq.com``) does not.
+        gateway_host = urlparse(gateway_url).hostname
+        ws_proxy = resolve_proxy_url("WSS_PROXY", target_hosts=gateway_host)
+        # trust_env=False so aiohttp does not re-read HTTPS_PROXY and override
+        # our NO_PROXY decision when ``ws_proxy`` is None — the helper above
+        # is the single source of truth for the WS proxy. (Unlike the REST
+        # client, this session only ever dials the gateway host, so a
+        # connection-level decision is exactly right here.)
+        self._session = aiohttp.ClientSession(trust_env=False)
+        if ws_proxy:
+            logger.info(
+                "[%s] WebSocket proxy: %s",
+                self._log_tag,
+                redact_proxy_url(ws_proxy),
+            )
+        else:
+            logger.info(
+                "[%s] WebSocket direct connect (no proxy or NO_PROXY matched)",
+                self._log_tag,
+            )
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={

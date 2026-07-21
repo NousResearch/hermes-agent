@@ -369,11 +369,14 @@ def resolve_proxy_url(
     of ``target_hosts``.
     """
     if platform_env_var:
-        value = (os.environ.get(platform_env_var) or "").strip()
-        if value:
-            if should_bypass_proxy(target_hosts):
-                return None
-            return normalize_proxy_url(value)
+        # POSIX convention treats lowercase proxy vars as equivalent
+        # (HTTPS_PROXY/https_proxy below get the same treatment).
+        for key in dict.fromkeys((platform_env_var, platform_env_var.lower())):
+            value = (os.environ.get(key) or "").strip()
+            if value:
+                if should_bypass_proxy(target_hosts):
+                    return None
+                return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
@@ -385,6 +388,25 @@ def resolve_proxy_url(
     if detected and should_bypass_proxy(target_hosts):
         return None
     return detected
+
+
+def redact_proxy_url(url: str) -> str:
+    """Return *url* with any userinfo password masked, safe for logging.
+
+    Proxy URLs from env vars may embed credentials
+    (``http://user:pass@host:port``) which must not leak into logs.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.password is None:
+        return url
+    host = parts.hostname or ""
+    netloc = f"{parts.username or ''}:***@{host}"
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return parts._replace(netloc=netloc).geturl()
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:

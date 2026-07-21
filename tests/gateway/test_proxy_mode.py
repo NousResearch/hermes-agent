@@ -166,6 +166,53 @@ class TestResolveProxyUrl:
 
         assert resolve_proxy_url() == "http://proxy.example:8080"
 
+    def test_platform_env_var_lowercase_form(self, monkeypatch):
+        """``wss_proxy`` (lowercase) is honored like ``WSS_PROXY``.
+
+        POSIX convention treats lowercase proxy vars as equivalent; the
+        pre-helper QQBot code read both cases, so the helper must too.
+        """
+        for key in ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "HTTP_PROXY",
+                    "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("wss_proxy", "http://127.0.0.1:8888")
+
+        assert resolve_proxy_url("WSS_PROXY") == "http://127.0.0.1:8888"
+
+    def test_platform_env_var_uppercase_wins_over_lowercase(self, monkeypatch):
+        for key in ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "HTTP_PROXY",
+                    "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("WSS_PROXY", "http://127.0.0.1:1111")
+        monkeypatch.setenv("wss_proxy", "http://127.0.0.1:2222")
+
+        assert resolve_proxy_url("WSS_PROXY") == "http://127.0.0.1:1111"
+
+
+class TestRedactProxyUrl:
+    def test_masks_password(self):
+        from gateway.platforms.base import redact_proxy_url
+
+        assert (
+            redact_proxy_url("http://user:secret@127.0.0.1:7890")
+            == "http://user:***@127.0.0.1:7890"
+        )
+
+    def test_passthrough_without_credentials(self):
+        from gateway.platforms.base import redact_proxy_url
+
+        assert redact_proxy_url("http://127.0.0.1:7890") == "http://127.0.0.1:7890"
+
+    def test_socks_scheme_preserved(self):
+        from gateway.platforms.base import redact_proxy_url
+
+        assert (
+            redact_proxy_url("socks5://u:p@10.0.0.1:1080")
+            == "socks5://u:***@10.0.0.1:1080"
+        )
+
 
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""

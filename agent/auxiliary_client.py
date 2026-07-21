@@ -2485,18 +2485,27 @@ def _build_minimax_oauth_aux_client(
         )
         return None, None
     except Exception as exc:
+        # Do NOT fall back to an OpenAI-wire client here — the MiniMax
+        # ``/anthropic`` endpoint speaks Anthropic Messages, not OpenAI
+        # chat.completions.  Returning ``(None, None)`` lets the caller's
+        # auto-fallback chain pick the next configured provider cleanly,
+        # rather than emitting misformatted requests to the wrong wire
+        # format.  (See PR #61585 review feedback.)
         logger.warning(
             "Auxiliary client: failed to build Anthropic client for "
-            "minimax-oauth (%s) — falling back to OpenAI-wire.",
+            "minimax-oauth (%s) — returning None so auto-fallback engages.",
             exc,
         )
-        # Last-resort: plain OpenAI client (the /anthropic endpoint may
-        # also accept OpenAI wire on some configurations).
-        real_client = _create_openai_client(api_key=token_provider, base_url=base_url)
-        return real_client, model
+        return None, None
+    # is_oauth=False: the ``is_oauth`` flag is Claude-Code-OAuth-specific
+    # (it injects Claude Code system-prompt identity and tool-name
+    # transforms via ``_AnthropicCompletionsAdapter``).  MiniMax OAuth is a
+    # third-party Anthropic-compatible endpoint, not Claude Code, so those
+    # transforms must not apply.  See ``agent/agent_init.py`` which keeps
+    # third-party Anthropic-compatible providers out of the is_oauth path.
     return (
         AnthropicAuxiliaryClient(
-            real_client, model, token_provider, base_url, is_oauth=True
+            real_client, model, token_provider, base_url, is_oauth=False
         ),
         model,
     )

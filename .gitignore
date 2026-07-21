@@ -239,3 +239,34 @@ scripts/windows/watchdog-go/dist/
 # Go build artifacts
 *.exe
 nul
+
+# Media files - large render outputs, never commit
+*.mp4
+*.mp3
+*.wav
+*.ogg
+*.mov
+*.avi
+*.mkv
+*.webm
+*.flac
+*.m4a
+*.aac
+*.blend
+*.blend1
+*.blend2
+render_frames/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.tiff
+*.tif
+*.bmp
+*.exr
+*.hdr
+concat_list.txt
+city_destruction_sim.py
+city_destruction_scene.py
+fix_lighting.py

@@ -120,11 +120,19 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
+    try:
+        from tools.interrupt import is_interrupted
+    except Exception:  # pragma: no cover - optional
+        is_interrupted = None
+
     deadline = time.monotonic() + max(timeout, 0.0)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            break
+        if is_interrupted is not None and is_interrupted():
+            logger.info("Clarify wait interrupted for %s", clarify_id)
             break
         if entry.event.wait(timeout=min(1.0, remaining)):
             break

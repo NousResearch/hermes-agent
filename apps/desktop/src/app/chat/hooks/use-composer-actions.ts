@@ -6,6 +6,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
@@ -50,17 +51,29 @@ export function isImagePath(filePath: string): boolean {
  * In local mode the facade IS the local bridge, so this stays a single read.
  */
 export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
+  let dataUrl: string
+
   try {
     const local = await window.hermesDesktop?.readFileDataUrl?.(filePath)
 
     if (local) {
-      return local
+      dataUrl = local
+    } else {
+      dataUrl = await readDesktopFileDataUrl(filePath)
     }
   } catch {
     // Not on this machine (or unreadable locally) — try the gateway.
+    dataUrl = await readDesktopFileDataUrl(filePath)
   }
 
-  return readDesktopFileDataUrl(filePath)
+  // Downscale large images for preview to prevent main-thread decode freezes.
+  // macOS ImageIO/vImage blocks the Chromium renderer on Retina screenshots
+  // (6000×4000+, >5 MB). The full-resolution bytes are still on disk for the model.
+  if (dataUrl.startsWith('data:image/')) {
+    return downscaleDataUrlForPreview(dataUrl)
+  }
+
+  return dataUrl
 }
 
 export interface DroppedFile {

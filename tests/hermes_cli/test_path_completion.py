@@ -155,6 +155,17 @@ class TestPathCompletions:
 class TestIntegration:
     """Test the completer produces path completions via the prompt_toolkit API."""
 
+    def test_bare_at_shows_static_refs_without_scanning_project(self, completer, monkeypatch):
+        completer._get_project_files = MagicMock(side_effect=AssertionError("bare @ should not scan project files"))
+
+        doc = Document("@", cursor_position=1)
+        event = MagicMock()
+        completions = list(completer.get_completions(doc, event))
+        names = _display_names(completions)
+
+        expected = ("@diff", "@staged", "@file:", "@folder:", "@url:", "@git:")
+        assert set(names) == set(expected)
+
     def test_slash_commands_still_work(self, completer):
         doc = Document("/hel", cursor_position=4)
         event = MagicMock()

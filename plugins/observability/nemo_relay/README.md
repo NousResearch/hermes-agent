@@ -443,9 +443,11 @@ separate trajectories.
 
 ## Adaptive Execution Example
 
-Hermes core always hands LLM and tool calls to NeMo Relay managed execution.
-The `observability/nemo_relay` plugin can install adaptive components on those
-boundaries.
+Hermes core owns the LLM and tool boundaries and enters NeMo Relay managed
+execution while a Hermes-managed Relay consumer is active. With no shared
+metrics subscriber or explicitly configured Relay plugin, Hermes calls the
+provider or tool directly. The `observability/nemo_relay` plugin retains the
+managed path while its adaptive components are installed on those boundaries.
 
 Minimal `plugins.toml`:
 

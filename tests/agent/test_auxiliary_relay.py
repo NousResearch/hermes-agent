@@ -185,6 +185,8 @@ def test_auxiliary_stream_uses_streaming_relay_primitive(monkeypatch):
 
 def test_auxiliary_attempt_uses_real_relay_request_intercepts(relay_turn):
     relay, turn = relay_turn
+    consumer = "test.auxiliary-request-intercept"
+    turn.lease.host.retain_managed_execution(consumer)
     captured_requests = []
     client = SimpleNamespace(
         chat=SimpleNamespace(
@@ -228,6 +230,7 @@ def test_auxiliary_attempt_uses_real_relay_request_intercepts(relay_turn):
         result = run("compression")
     finally:
         relay.intercepts.deregister_llm_request("hermes-auxiliary-request")
+        turn.lease.host.release_managed_execution(consumer)
 
     assert result.choices[0].message.content == "ok"
     assert captured_requests[0]["temperature"] == 0.25

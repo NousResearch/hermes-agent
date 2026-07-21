@@ -135,6 +135,11 @@ def make_tool_progress_cb(
         # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return
+        # Guard: a missing tool name would produce a None-keyed FIFO entry and
+        # send a malformed ToolCallStart to the ACP client.
+        if not name:
+            logger.debug("tool.started event received with no tool name; skipping")
+            return
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -147,9 +152,6 @@ def make_tool_progress_cb(
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
-            tool_call_ids[name] = queue
-        elif isinstance(queue, str):
-            queue = deque([queue])
             tool_call_ids[name] = queue
         queue.append(tc_id)
 
@@ -234,7 +236,11 @@ def make_step_cb(
                 elif isinstance(tool_info, str):
                     tool_name = tool_info
 
+                # Use .get() to avoid defaultdict auto-creating an empty deque
+                # for a tool name that was never tracked by make_tool_progress_cb.
                 queue = tool_call_ids.get(tool_name or "")
+                # Normalise legacy callers that stored a plain string ID directly
+                # (instead of a deque) — treat it as a single-element FIFO.
                 if isinstance(queue, str):
                     queue = deque([queue])
                     tool_call_ids[tool_name] = queue
@@ -255,6 +261,12 @@ def make_step_cb(
                             _send_update(conn, session_id, loop, plan_update)
                     if not queue:
                         tool_call_ids.pop(tool_name, None)
+                elif tool_name:
+                    logger.debug(
+                        "No pending tool call ID for %r; ToolCallComplete skipped "
+                        "(tool may have been started before this ACP session attached)",
+                        tool_name,
+                    )
 
     return _step
 

@@ -5099,8 +5099,15 @@ def run_conversation(
                 # Refund the iteration if the ONLY tool(s) called were
                 # execute_code (programmatic tool calling).  These are
                 # cheap RPC-style calls that shouldn't eat the budget.
+                # Both counters must be decremented to stay in sync with
+                # the while-loop condition at line 801 which requires
+                # api_call_count < agent.max_iterations AND
+                # agent.iteration_budget.remaining > 0. The compression-
+                # restart path (line 3505) follows the same pattern.
                 _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                 if _tc_names == {"execute_code"}:
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
                     agent.iteration_budget.refund()
                 
                 # Use real token counts from the API response to decide

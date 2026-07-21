@@ -3045,6 +3045,22 @@ DEFAULT_CONFIG = {
         # crash/restart, as before.
         "delivery_ledger": True,
 
+        # Crash-safe user-turn inbox. Incoming Gateway turns are committed to
+        # a small standalone SQLite database before agent execution, so a
+        # locked state.db or abrupt process exit cannot erase the triggering
+        # request. The dispatcher preserves FIFO within a session and rotates
+        # fairly across sessions. Restart required after changing these values.
+        "durable_inbox": {
+            "enabled": True,
+            "max_pending_per_session": 64,
+            "max_pending_total": 8192,
+            "max_attempts": 5,
+            "busy_timeout_ms": 5000,
+            "terminal_retention_seconds": 604800,
+            "max_rows": 50000,
+            "prune_interval_seconds": 60,
+        },
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

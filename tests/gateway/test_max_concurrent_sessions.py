@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.inbound_queue import GatewayInboxStore
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
@@ -118,6 +119,52 @@ def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):
     )
     assert new_key not in runner._running_agents
     runner.session_store.get_or_create_session.assert_not_called()
+
+
+def test_new_session_is_durably_queued_at_active_session_limit(
+    monkeypatch, tmp_path
+):
+    _silence_global_gateway_hooks(monkeypatch)
+    runner = _make_runner(max_concurrent_sessions=1)
+    runner._inbox_store = GatewayInboxStore(hermes_home=tmp_path)
+    runner._inbox_wakeup = None
+    _occupy_session(runner, "busy")
+    event = _make_event(chat_id="new")
+    new_key = build_session_key(event.source)
+
+    async def fail_if_agent_runs(self_inner, ev, src, qk, generation):
+        raise AssertionError("_handle_message_with_agent should not run at capacity")
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
+        result = asyncio.run(runner._handle_message(event))
+
+    assert "saved and will start automatically" in result
+    rows = runner._inbox_store.list_rows(session_key=new_key, states={"queued"})
+    assert len(rows) == 1
+    assert rows[0].payload["event"]["text"] == "hello"
+    runner.session_store.get_or_create_session.assert_not_called()
+
+
+def test_successful_durable_turn_completes_claim(monkeypatch, tmp_path):
+    _silence_global_gateway_hooks(monkeypatch)
+    runner = _make_runner()
+    runner._inbox_store = GatewayInboxStore(hermes_home=tmp_path)
+    runner._inbox_wakeup = None
+    runner.session_store._db.has_platform_message_id.return_value = True
+    event = _make_event(chat_id="new")
+    event.message_id = "platform-message-1"
+
+    async def mock_agent_run(self_inner, ev, src, qk, generation):
+        assert await self_inner._inbox_bind_event(ev, "session-db-1")
+        return {"final_response": "ok", "completed": True}
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_agent_run):
+        result = asyncio.run(runner._handle_message(event))
+
+    assert result["final_response"] == "ok"
+    rows = runner._inbox_store.list_rows(states={"completed"})
+    assert len(rows) == 1
+    assert rows[0].trigger_identity == "platform-message-1"
 
 
 def test_existing_active_session_uses_busy_handling_at_limit(monkeypatch):

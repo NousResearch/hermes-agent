@@ -20,6 +20,8 @@ from __future__ import annotations
 import ast
 import inspect
 
+import pytest
+
 from gateway import run as gateway_run
 
 
@@ -101,7 +103,8 @@ def _references_name(node: ast.AST, literal: str) -> bool:
     )
 
 
-def test_auto_reset_cleanup_clears_last_resolved_model():
+@pytest.mark.asyncio
+async def test_auto_reset_cleanup_clears_last_resolved_model():
     """Regression test for #58403.
 
     Auto-reset is a full conversation boundary and now routes through the
@@ -113,7 +116,7 @@ def test_auto_reset_cleanup_clears_last_resolved_model():
     runner = object.__new__(gateway_run.GatewayRunner)
     key = "agent:main:telegram:dm:58403"
     runner._last_resolved_model = {key: "stale/model", "other": "keep/me"}
-    runner._clear_conversation_scope(key, reason="auto_reset")
+    await runner._clear_conversation_scope(key, reason="auto_reset")
     assert key not in runner._last_resolved_model, (
         "the conversation-boundary funnel must pop the session's entry from "
         "`_last_resolved_model` (#58403) — auto-reset routes through it"

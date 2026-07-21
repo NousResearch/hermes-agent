@@ -9,6 +9,10 @@ The funnel clears every dict registered in _CONVERSATION_SCOPED_STATE plus
 the boundary security state, in one call.
 """
 
+from unittest.mock import MagicMock
+
+import pytest
+
 from gateway.run import _CONVERSATION_SCOPED_STATE, GatewayRunner
 
 KEY = "agent:main:telegram:dm:777"
@@ -26,18 +30,53 @@ def _bare_runner() -> GatewayRunner:
     return runner
 
 
-def test_funnel_clears_every_registered_dict_for_key_only():
+@pytest.mark.asyncio
+async def test_funnel_cancels_durable_session_before_clearing_local_state():
     runner = _bare_runner()
-    runner._clear_conversation_scope(KEY, reason="test")
+    runner._inbox_store = MagicMock()
+
+    def cancel_session(session_key, *, reason):
+        assert session_key == KEY
+        assert reason == "new_session"
+        assert KEY in runner._queued_events
+        return 2
+
+    runner._inbox_store.cancel_session.side_effect = cancel_session
+
+    await runner._clear_conversation_scope(KEY, reason="new_session")
+
+    runner._inbox_store.cancel_session.assert_called_once_with(
+        KEY, reason="new_session"
+    )
+    assert KEY not in runner._queued_events
+
+
+@pytest.mark.asyncio
+async def test_funnel_preserves_local_state_when_durable_cancel_raises():
+    runner = _bare_runner()
+    runner._inbox_store = MagicMock()
+    runner._inbox_store.cancel_session.side_effect = RuntimeError("database locked")
+
+    with pytest.raises(RuntimeError, match="database locked"):
+        await runner._clear_conversation_scope(KEY, reason="new_session")
+
+    assert KEY in runner._queued_events
+
+
+@pytest.mark.asyncio
+async def test_funnel_clears_every_registered_dict_for_key_only():
+    runner = _bare_runner()
+    await runner._clear_conversation_scope(KEY, reason="test")
     for attr in _CONVERSATION_SCOPED_STATE:
         store = getattr(runner, attr)
         assert KEY not in store, f"{attr} not cleared by funnel"
         assert OTHER in store, f"{attr} cleared the wrong session"
 
 
-def test_funnel_leaves_turn_scoped_and_generation_state_alone():
+@pytest.mark.asyncio
+async def test_funnel_leaves_turn_scoped_and_generation_state_alone():
     runner = _bare_runner()
-    runner._clear_conversation_scope(KEY, reason="test")
+    await runner._clear_conversation_scope(KEY, reason="test")
     # Turn-scoped: owned by _release_running_agent_state / dispatch finally.
     assert KEY in runner._running_agents
     assert KEY in runner._running_agents_ts
@@ -45,14 +84,16 @@ def test_funnel_leaves_turn_scoped_and_generation_state_alone():
     assert runner._session_run_generation[KEY] == 7
 
 
-def test_funnel_is_bare_runner_safe_and_empty_key_noop():
+@pytest.mark.asyncio
+async def test_funnel_is_bare_runner_safe_and_empty_key_noop():
     runner = object.__new__(GatewayRunner)
     # No dicts initialized at all — must not raise (pitfall #17).
-    runner._clear_conversation_scope(KEY, reason="test")
-    runner._clear_conversation_scope("", reason="test")
+    await runner._clear_conversation_scope(KEY, reason="test")
+    await runner._clear_conversation_scope("", reason="test")
 
 
-def test_funnel_clears_state_written_by_real_setters():
+@pytest.mark.asyncio
+async def test_funnel_clears_state_written_by_real_setters():
     """Behavioral invariant: state written through the runner's real setter
     paths is cleared by the funnel. Guards against a registry entry drifting
     out of sync with the attribute the setter actually writes (a typo'd
@@ -62,16 +103,17 @@ def test_funnel_clears_state_written_by_real_setters():
     # Real setter: lazily creates _session_reasoning_overrides.
     runner._set_session_reasoning_override(KEY, {"effort": "high"})
     assert runner._session_reasoning_overrides.get(KEY) == {"effort": "high"}
-    runner._clear_conversation_scope(KEY, reason="test")
+    await runner._clear_conversation_scope(KEY, reason="test")
     assert KEY not in runner._session_reasoning_overrides
 
 
-def test_funnel_also_clears_boundary_security_state():
+@pytest.mark.asyncio
+async def test_funnel_also_clears_boundary_security_state():
     runner = _bare_runner()
     runner._pending_approvals = {KEY: {"cmd": "rm -rf"}, OTHER: {}}
     runner._update_prompt_pending = {KEY: True}
     runner._pending_skills_reload_notes = {KEY: "note"}
-    runner._clear_conversation_scope(KEY, reason="test")
+    await runner._clear_conversation_scope(KEY, reason="test")
     assert KEY not in runner._pending_approvals
     assert OTHER in runner._pending_approvals
     assert KEY not in runner._update_prompt_pending

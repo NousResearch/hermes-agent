@@ -222,15 +222,16 @@ async def test_dequeue_consumed_snapshot_item_fails_safely_and_refreshes():
     assert "no queued turns" in result.lower()
 
 
-def test_busy_user_turn_is_manageable_but_internal_turn_is_hidden():
+@pytest.mark.asyncio
+async def test_busy_user_turn_is_manageable_but_internal_turn_is_hidden():
     runner, adapter = _make_runner(_session_entry())
     source = _make_source()
     sk = build_session_key(source)
-    runner._queue_or_replace_pending_event(
+    await runner._queue_or_replace_pending_event(
         sk,
         MessageEvent(text="busy follow-up", source=source, message_id="busy"),
     )
-    runner._enqueue_fifo(
+    await runner._enqueue_fifo(
         sk,
         MessageEvent(text="internal completion", source=source, internal=True),
         adapter,
@@ -244,14 +245,15 @@ def test_busy_user_turn_is_manageable_but_internal_turn_is_hidden():
     assert marker["origin"] == "busy"
 
 
-def test_identity_less_busy_user_turn_is_still_session_manageable():
+@pytest.mark.asyncio
+async def test_identity_less_busy_user_turn_is_still_session_manageable():
     runner, adapter = _make_runner(_session_entry())
     source = _make_source()
     source.user_id = None
     source.user_id_alt = None
     session_key = build_session_key(source)
 
-    runner._queue_or_replace_pending_event(
+    await runner._queue_or_replace_pending_event(
         session_key,
         MessageEvent(text="identity-less follow-up", source=source, message_id="busy"),
     )
@@ -265,14 +267,15 @@ def test_identity_less_busy_user_turn_is_still_session_manageable():
     assert marker["origin"] == "busy"
 
 
-def test_queue_management_uses_stable_alt_user_identity():
+@pytest.mark.asyncio
+async def test_queue_management_uses_stable_alt_user_identity():
     runner, adapter = _make_runner(_session_entry())
     source = _make_source()
     source.user_id = None
     source.user_id_alt = "stable-user"
     session_key = build_session_key(source)
 
-    runner._queue_or_replace_pending_event(
+    await runner._queue_or_replace_pending_event(
         session_key,
         MessageEvent(text="alt-owned turn", source=source, message_id="alt-1"),
     )
@@ -426,7 +429,8 @@ async def test_group_text_queue_management_does_not_depend_on_private_delivery()
     adapter.send_private_notice.assert_not_awaited()
 
 
-def test_queue_snapshot_cannot_be_managed_from_another_chat_in_same_scope():
+@pytest.mark.asyncio
+async def test_queue_snapshot_cannot_be_managed_from_another_chat_in_same_scope():
     runner, adapter = _make_runner(_session_entry())
     source_a = SessionSource(
         platform=Platform.TELEGRAM,
@@ -447,13 +451,13 @@ def test_queue_snapshot_cannot_be_managed_from_another_chat_in_same_scope():
         scope_id="workspace-1",
     )
     session_a = build_session_key(source_a)
-    runner._queue_or_replace_pending_event(
+    await runner._queue_or_replace_pending_event(
         session_a,
         MessageEvent(text="only in group a", source=source_a, message_id="q-a"),
     )
     runner._open_text_queue_snapshot(source_a, session_a, adapter)
 
-    result = runner._handle_text_dequeue(
+    result = await runner._handle_text_dequeue(
         MessageEvent(text="/dequeue 1", source=source_b, message_id="remove-b"),
         build_session_key(source_b),
         "1",
@@ -466,7 +470,8 @@ def test_queue_snapshot_cannot_be_managed_from_another_chat_in_same_scope():
     ]
 
 
-def test_queue_snapshot_isolated_from_another_scope():
+@pytest.mark.asyncio
+async def test_queue_snapshot_isolated_from_another_scope():
     runner, adapter = _make_runner(_session_entry())
     source_a = SessionSource(
         platform=Platform.TELEGRAM,
@@ -485,13 +490,13 @@ def test_queue_snapshot_isolated_from_another_scope():
         scope_id="workspace-2",
     )
     session_a = build_session_key(source_a)
-    runner._queue_or_replace_pending_event(
+    await runner._queue_or_replace_pending_event(
         session_a,
         MessageEvent(text="only in group a", source=source_a, message_id="q-a"),
     )
     runner._open_text_queue_snapshot(source_a, session_a, adapter)
 
-    result = runner._handle_text_dequeue(
+    result = await runner._handle_text_dequeue(
         MessageEvent(text="/dequeue 1", source=source_b, message_id="remove-b"),
         runner._queue_control_key(source_b) or "",
         "1",
@@ -764,7 +769,7 @@ async def test_native_discord_bare_queue_management_returns_all_user_items_in_se
     )
     ordinary = MessageEvent(text="ordinary", source=source)
     for queued in (explicit, other_owner, ordinary):
-        runner._enqueue_fifo(sk, queued, adapter)
+        await runner._enqueue_fifo(sk, queued, adapter)
 
     event = MessageEvent(
         text="/queue",
@@ -887,7 +892,7 @@ async def test_native_discord_card_snapshot_is_superseded_by_new_text_view():
             }
         },
     )
-    runner._enqueue_fifo(session_key, queued, adapter)
+    await runner._enqueue_fifo(session_key, queued, adapter)
 
     card_view = await runner._handle_message(
         MessageEvent(
@@ -969,7 +974,7 @@ async def test_native_discord_remove_and_clear_are_session_scoped_and_structured
     ordinary = MessageEvent(text="ordinary", source=source)
     owned_two = queued("owned two", "q-owned-2", "u1")
     for item in (owned_one, other, ordinary, owned_two):
-        runner._enqueue_fifo(sk, item, adapter)
+        await runner._enqueue_fifo(sk, item, adapter)
 
     opened_view = await runner._handle_message(
         MessageEvent(
@@ -1084,7 +1089,7 @@ async def test_native_discord_clear_requires_queue_id_snapshot():
             }
         },
     )
-    runner._enqueue_fifo(session_key, queued, adapter)
+    await runner._enqueue_fifo(session_key, queued, adapter)
 
     result = await runner._handle_message(
         MessageEvent(
@@ -1144,7 +1149,7 @@ async def test_native_discord_manager_rejects_stale_session_before_mutation():
             }
         },
     )
-    runner._enqueue_fifo(session_key, queued, adapter)
+    await runner._enqueue_fifo(session_key, queued, adapter)
 
     result = await runner._handle_message(
         MessageEvent(
@@ -1205,7 +1210,7 @@ async def test_native_discord_remove_requires_view_session_key():
             }
         },
     )
-    runner._enqueue_fifo(session_key, queued, adapter)
+    await runner._enqueue_fifo(session_key, queued, adapter)
 
     result = await runner._handle_message(
         MessageEvent(

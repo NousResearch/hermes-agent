@@ -1709,7 +1709,7 @@ For separate natural mid-turn assistant updates without progressive token editin
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
-## Group Chat Session Isolation
+## Concurrent Session Cap
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
 and messaging gateway:
@@ -1718,8 +1718,9 @@ and messaging gateway:
 max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
 ```
 
-When the cap is reached, Hermes returns a direct limit message for new sessions.
-Existing active sessions keep their normal behavior.
+When the cap is reached, the messaging gateway durably queues new turns when
+the durable inbox is enabled (the default). Other entry points return a direct
+limit message. Existing active sessions keep their normal behavior.
 
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
@@ -1729,6 +1730,45 @@ The cap is enforced with a local runtime lease file and is best-effort: Hermes
 fails open if the registry cannot be read or locked so users are not stranded.
 It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
 mounted across multiple machines.
+
+## Durable Gateway Inbox
+
+The messaging gateway records every accepted human turn before scheduling it.
+This prevents a restart or crash from losing the triggering request and leaving
+recovery with only a session checkpoint:
+
+```yaml
+gateway:
+  durable_inbox:
+    enabled: true
+    max_pending_per_session: 64
+    max_pending_total: 8192
+    max_attempts: 5
+    busy_timeout_ms: 5000
+    terminal_retention_seconds: 604800
+    max_rows: 50000
+    prune_interval_seconds: 60
+```
+
+The inbox is enabled by default and stored separately at
+`~/.hermes/gateway/gateway-inbox.db`. It uses WAL mode and
+`synchronous=FULL`, so contention from session state, FTS indexing, or delivery
+tracking in `state.db` does not block the ingress durability boundary. Pending
+work is selected fairly across sessions while preserving FIFO order inside each
+session.
+
+Recovery is at-least-once. Hermes deduplicates transcript persistence with the
+platform message ID, or a stable `gateway-inbox:<id>` trigger when the platform
+does not provide one. Claimed work with a durably recorded trigger resumes the
+existing session; work without one safely replays its original payload. Retry
+attempts, pending rows, terminal retention, and total rows are bounded by the
+settings above. `/dequeue`, `/reset`, and `/new` cancel matching durable pending
+rows as well as their in-memory mirrors.
+
+Set `enabled: false` only to restore the old process-local behavior. Changes to
+this block require a gateway restart.
+
+## Group Chat Session Isolation
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 

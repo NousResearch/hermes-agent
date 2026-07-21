@@ -160,6 +160,22 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 
 会话在消息之间持续保留，直到重置。Agent 会记住你的对话上下文。
 
+### 崩溃安全的入站队列
+
+Hermes 会先把每个已接受的用户请求写入
+`~/.hermes/gateway/gateway-inbox.db`，再安排执行。因此网关崩溃或重启后，
+可以继续或重放触发请求，不会只剩会话检查点却找不到原始请求。该队列默认
+启用；同一会话内保持 FIFO，并在高并发下公平轮转不同会话。
+
+恢复采用至少一次语义。Hermes 使用平台消息 ID 去重；平台未提供消息 ID
+时，则使用稳定的 `gateway-inbox:<id>` 触发标识，避免重复写入会话记录。
+`/dequeue`、`/reset` 和 `/new` 会同时取消持久化待处理项及其内存镜像，
+防止旧任务跨越会话边界重新出现。
+
+入站队列使用独立的 WAL 数据库和 `synchronous=FULL`，与 `state.db` 及 FTS
+写入争锁隔离。可在 `gateway.durable_inbox` 下配置单会话/全局容量、重试次数、
+保留周期和 SQLite 等待时间；修改后需要重启网关。
+
 ### 重置策略
 
 **默认情况下会话永不自动重置** —— 上下文会一直保留，直到你手动 `/reset` 或触发上下文压缩。如果你希望会话自动重置，可在 `~/.hermes/config.yaml` 的 `session_reset` 部分选择启用：

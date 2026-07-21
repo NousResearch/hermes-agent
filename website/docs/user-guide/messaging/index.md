@@ -234,6 +234,25 @@ Semantics are honest at-least-once:
 Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
 old behavior: in-flight responses are lost on crash).
 
+### Crash-Safe Inbound Queue
+
+Hermes commits each accepted human turn to
+`~/.hermes/gateway/gateway-inbox.db` before scheduling it. A gateway crash can
+therefore resume or replay the triggering request instead of reporting that the
+request was never durably recorded. The inbox is enabled by default, preserves
+FIFO order inside a session, and selects session heads fairly under concurrent
+load.
+
+Recovery is at-least-once. Platform message IDs, or stable synthetic trigger IDs
+when a platform does not provide one, deduplicate transcript persistence.
+`/dequeue`, `/reset`, and `/new` also cancel matching durable pending rows so old
+work cannot reappear after a conversation boundary.
+
+The inbox uses its own WAL database with `synchronous=FULL`, isolating ingress
+from `state.db` and FTS write contention. Queue size, retries, retention, and
+SQLite wait time are bounded and configurable under `gateway.durable_inbox`;
+see [Configuration](/user-guide/configuration#durable-gateway-inbox).
+
 ### Reset Policies
 
 **By default sessions never auto-reset** — context lives until you `/reset`

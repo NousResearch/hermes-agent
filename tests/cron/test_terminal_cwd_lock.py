@@ -189,3 +189,50 @@ def test_run_job_releases_cwd_lock_when_body_raises(tmp_path):
     t.start()
     assert acquired.wait(timeout=5), "writer lock was leaked by run_job on exception"
     t.join(timeout=5)
+
+
+def test_queued_writer_preserves_exclusive_ordering():
+    """A queued workdir writer drains before later readers are admitted."""
+    lock = _lock()
+    first_reader_holding = threading.Event()
+    release_first_reader = threading.Event()
+    writer_waiting = threading.Event()
+    later_reader_acquired = threading.Event()
+    writer_acquired = threading.Event()
+
+    def first_reader():
+        lock.acquire_read()
+        try:
+            first_reader_holding.set()
+            release_first_reader.wait(timeout=5)
+        finally:
+            lock.release_read()
+
+    def writer():
+        first_reader_holding.wait(timeout=5)
+        writer_waiting.set()
+        assert lock.acquire_write(timeout=5)
+        try:
+            writer_acquired.set()
+        finally:
+            lock.release_write()
+
+    def later_reader():
+        writer_waiting.wait(timeout=5)
+        lock.acquire_read()
+        try:
+            later_reader_acquired.set()
+        finally:
+            lock.release_read()
+
+    threads = [threading.Thread(target=fn) for fn in (first_reader, writer, later_reader)]
+    for thread in threads:
+        thread.start()
+    assert writer_waiting.wait(timeout=5)
+    assert not later_reader_acquired.wait(timeout=0.1)
+    release_first_reader.set()
+    assert writer_acquired.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert later_reader_acquired.is_set()

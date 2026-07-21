@@ -585,6 +585,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
+        # Health/status consumers must distinguish a historical successful
+        # last_run from a claim that is still in flight.  Claims are durable
+        # stale-owner evidence; last_run_at alone is not a liveness signal.
+        "run_claim": job.get("run_claim"),
+        "fire_claim": job.get("fire_claim"),
+        "in_flight": bool(job.get("run_claim") or job.get("fire_claim")),
         "enabled": job.get("enabled", True),
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),

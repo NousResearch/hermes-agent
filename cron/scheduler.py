@@ -443,7 +443,7 @@ _sequential_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
 
 class _ReadWriteLock:
-    """Writer-preferring readers-writer lock.
+    """Readers-writer lock for the process-global terminal cwd.
 
     Guards the process-global ``os.environ["TERMINAL_CWD"]`` override that a
     workdir cron job applies for the whole of its agent run.  Workdir jobs are
@@ -454,9 +454,11 @@ class _ReadWriteLock:
     exactly what stops a workdir-less job from picking up another job's workdir
     override and running its commands in the wrong directory.
 
-    Writer preference bounds the wait for a workdir job (dispatched on the
-    single-thread sequential pool) so a stream of workdir-less readers cannot
-    starve it.
+    Writer preference is bounded by the caller's acquisition timeout.  A
+    long-lived agent run may hold a read lock for the whole conversation, but a
+    queued workdir job cannot block every later reader forever: it either
+    acquires after the active readers drain or fails closed and leaves the
+    scheduler lane available.
     """
 
     def __init__(self) -> None:
@@ -477,15 +479,23 @@ class _ReadWriteLock:
             if self._readers == 0:
                 self._cond.notify_all()
 
-    def acquire_write(self) -> None:
+    def acquire_write(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._cond:
             self._writers_waiting += 1
             try:
                 while self._writer_active or self._readers > 0:
-                    self._cond.wait()
+                    if deadline is None:
+                        self._cond.wait()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return False
+                        self._cond.wait(timeout=remaining)
             finally:
                 self._writers_waiting -= 1
             self._writer_active = True
+            return True
 
     def release_write(self) -> None:
         with self._cond:
@@ -3003,9 +3013,15 @@ def run_job(
     # acquire) and is a no-op for workdir-less jobs (they never mutate the env).
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
-    _holds_cwd_write = _job_workdir is not None
-    if _holds_cwd_write:
-        _terminal_cwd_lock.acquire_write()
+    _holds_cwd_write = False
+    if _job_workdir is not None:
+        _lock_timeout = 30.0
+        if not _terminal_cwd_lock.acquire_write(timeout=_lock_timeout):
+            raise TimeoutError(
+                f"Cron job '{job_name}' waited more than {_lock_timeout:.0f}s "
+                "for the terminal cwd lock"
+            )
+        _holds_cwd_write = True
     else:
         _terminal_cwd_lock.acquire_read()
 
@@ -3391,6 +3407,20 @@ def run_job(
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        # Inactivity alone is not a liveness bound: an agent can keep making
+        # small tool/API calls forever while holding the cwd read lock. Keep a
+        # finite wall-clock cap so one run cannot starve the scheduler.
+        _cron_max_runtime = 3600.0
+        try:
+            _cron_config = _cfg.get("cron") if isinstance(_cfg, dict) else {}
+            if not isinstance(_cron_config, dict):
+                _cron_config = {}
+            _configured_max_runtime = _cron_config.get("max_runtime_seconds")
+            if _configured_max_runtime is not None:
+                _cron_max_runtime = float(_configured_max_runtime)
+        except (AttributeError, TypeError, ValueError):
+            logger.warning("Invalid cron.max_runtime_seconds; using default 3600s")
+        _cron_wall_limit = _cron_max_runtime if _cron_max_runtime > 0 else None
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a
@@ -3431,48 +3461,63 @@ def run_job(
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _wall_timeout = False
+        _run_started = time.monotonic()
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — no inactivity watchdog, but a one-shot still
-                # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot:
-                    result = None
-                    while True:
-                        done, _ = concurrent.futures.wait(
-                            {_cron_future}, timeout=_POLL_INTERVAL,
-                        )
-                        if done:
-                            result = _cron_future.result()
-                            break
-                        _heartbeat_run_claim_if_due()
-                else:
+            result = None
+            while True:
+                done, _ = concurrent.futures.wait(
+                    {_cron_future}, timeout=_POLL_INTERVAL,
+                )
+                if done:
                     result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    _heartbeat_run_claim_if_due()
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                    break
+                _heartbeat_run_claim_if_due()
+                if (
+                    _cron_wall_limit is not None
+                    and time.monotonic() - _run_started >= _cron_wall_limit
+                ):
+                    _wall_timeout = True
+                    break
+                # Agent still running — check inactivity when enabled.
+                _idle_secs = 0.0
+                if (
+                    _cron_inactivity_limit is not None
+                    and hasattr(agent, "get_activity_summary")
+                ):
+                    try:
+                        _act = agent.get_activity_summary()
+                        _idle_secs = _act.get("seconds_since_activity", 0.0)
+                    except Exception:
+                        pass
+                if _cron_inactivity_limit is not None and _idle_secs >= _cron_inactivity_limit:
+                    _inactivity_timeout = True
+                    break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        if _wall_timeout:
+            logger.error(
+                "Job '%s' exceeded wall-clock limit of %.0fs; interrupting",
+                job_name, _cron_wall_limit or 0,
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out (wall clock)")
+            # ThreadPoolExecutor cannot kill a running Python thread.  Wait for
+            # the cooperative interrupt to finish before run_job's finally
+            # restores TERMINAL_CWD/releases the lock; otherwise the timed-out
+            # agent could keep using its workdir concurrently with a new job.
+            try:
+                _cron_future.result()
+            except BaseException:
+                pass
+            raise TimeoutError(
+                f"Cron job '{job_name}' exceeded wall-clock limit "
+                f"of {int(_cron_wall_limit or 0)}s"
+            )
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

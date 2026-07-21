@@ -2851,6 +2851,10 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Hard wall-clock cap for an agent-backed cron run.  Unlike the
+        # inactivity watchdog, this cannot be kept alive by continuous tool or
+        # stream activity.  0 disables the cap for an explicit operator choice.
+        "max_runtime_seconds": 3600,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

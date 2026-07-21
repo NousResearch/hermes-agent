@@ -8407,13 +8407,17 @@ def _resolve_hermes_argv() -> list[str]:
     1. ``$HERMES_BIN`` — explicit operator override. Path-like values are
        normalized to absolute paths; bare command names keep normal PATH
        semantics and never prefer a same-directory file before ``PATH``.
-    2. ``shutil.which("hermes")`` — the console-script shim, normalized to
+    2. On Windows inside a virtualenv, use ``sys.executable -m hermes_cli.main``
+       up front. pip's ``console_script`` launcher can resolve against the
+       wrong interpreter when PATH is restricted, which breaks editable
+       installs for spawned workers.
+    3. ``shutil.which("hermes")`` — the console-script shim, normalized to
        an absolute path. On Windows, ``which`` can return a relative
        ``.\\hermes.CMD`` when the current directory is on ``PATH``; directly
        launching batch shims is also unsafe with task-derived argv. The
        dispatcher therefore falls back to the interpreter-bound module form
        for implicit ``.cmd`` / ``.bat`` shims.
-    3. ``sys.executable -m hermes_cli.main`` — fallback for setups where
+    4. ``sys.executable -m hermes_cli.main`` — fallback for setups where
        Hermes is launched from a venv and the ``hermes`` shim is not on
        the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
        launchd jobs, detached processes, etc.). Goes through the running
@@ -8432,6 +8436,11 @@ def _resolve_hermes_argv() -> list[str]:
         resolved_env_bin = _safe_which_no_cwd(env_bin)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
+        return _module_hermes_argv()
+
+    if _IS_WINDOWS and (
+        sys.prefix != sys.base_prefix or os.environ.get("VIRTUAL_ENV")
+    ):
         return _module_hermes_argv()
 
     hermes_bin = _safe_which_no_cwd("hermes") if _IS_WINDOWS else shutil.which("hermes")

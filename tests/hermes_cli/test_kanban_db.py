@@ -3449,6 +3449,8 @@ def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
     argv = kb._resolve_hermes_argv()
     assert argv == ["/usr/local/bin/hermes"]
@@ -3477,6 +3479,36 @@ def test_resolve_hermes_argv_avoids_implicit_windows_batch_shim(monkeypatch, tmp
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".CMD")
     monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_windows_venv_prefers_module_form(monkeypatch):
+    """Windows workers spawned from a venv should not trust a PATH shim."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: "C:\\Python312\\Scripts\\hermes.exe")
+    monkeypatch.setattr(sys, "prefix", "C:\\venvs\\hermes")
+    monkeypatch.setattr(sys, "base_prefix", "C:\\Python312")
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_windows_virtual_env_var_prefers_module_form(monkeypatch):
+    """`VIRTUAL_ENV` alone should trigger the safer Windows module form."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setenv("VIRTUAL_ENV", "C:\\venvs\\hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: "C:\\Python312\\Scripts\\hermes.exe")
+    monkeypatch.setattr(sys, "prefix", "C:\\Python312")
+    monkeypatch.setattr(sys, "base_prefix", "C:\\Python312")
 
     assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 

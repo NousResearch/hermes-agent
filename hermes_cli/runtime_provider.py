@@ -139,6 +139,60 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+# Same local-server hostname/port patterns the interactive
+# _model_flow_custom() setup prompt already uses ("Did you mean to add /v1?").
+# Reusing this narrow, well-established set (rather than guessing at any
+# unversioned custom URL) keeps this conservative: an arbitrary remote
+# custom endpoint that genuinely omits /v1 is left untouched, since the
+# resolver has no live way to validate it the way the interactive setup's
+# probe_api_models() call does at config-save time.
+_LOOKS_LOCAL_MARKERS = ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":8080", ":5000")
+
+
+def _append_v1_if_needed(base_url: str, api_mode: str) -> str:
+    """Append /v1 to a bare local-model-server base URL when needed.
+
+    The OpenAI SDK constructs request URLs by appending the operation path
+    (e.g. /chat/completions) directly to base_url. A bare local-server URL
+    like http://localhost:11434 (Ollama's default, without /v1) produces
+    /chat/completions instead of /v1/chat/completions, returning a 404
+    (issue #4600).
+
+    Scope is intentionally narrow to avoid overriding a deliberate user
+    choice: the interactive custom-endpoint setup already prompts "Add /v1?"
+    for URLs matching this same local-server pattern and then validates the
+    result live via probe_api_models() before saving -- see
+    hermes_cli/model_setup_flows.py:_model_flow_custom(). A user who
+    explicitly declined that prompt, or who configured a *non*-local custom
+    endpoint (e.g. a remote OpenAI-compatible relay that genuinely has no
+    /v1 segment), keeps their configured URL exactly as entered. This only
+    catches the common case of a local server URL set directly via
+    OPENAI_BASE_URL or config.yaml, bypassing the interactive prompt
+    entirely (e.g. a hand-edited config or an env var export).
+
+    Only applies when:
+    - api_mode is chat_completions (the only mode that uses /v1).
+    - the host:port matches a well-known local-model-server pattern.
+    - the URL does not already end with a path version segment (/v1, /v2,
+      /v3, /v4, /v1beta) or a provider-specific path (/anthropic, /api/v1,
+      /backend-api/codex) that must be left intact.
+    """
+    if api_mode != "chat_completions":
+        return base_url
+
+    normalized = (base_url or "").strip().lower()
+    if not any(marker in normalized for marker in _LOOKS_LOCAL_MARKERS):
+        return base_url
+
+    path = urlparse(base_url).path.rstrip("/").lower()
+    _NO_V1_SUFFIXES = ("/v1", "/v2", "/v3", "/v4", "/anthropic", "/api/v1",
+                       "/backend-api/codex", "/v1beta")
+    if any(path.endswith(s) for s in _NO_V1_SUFFIXES):
+        return base_url
+
+    return base_url.rstrip("/") + "/v1"
+
+
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
     """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
 
@@ -1519,7 +1573,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider_impl(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2117,6 +2171,49 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve runtime provider credentials for agent execution.
+
+    Thin wrapper around _resolve_runtime_provider_impl() that normalizes a
+    bare local-model-server base URL (missing /v1) at the single true exit
+    boundary -- after the impl has already picked whichever internal path
+    (auto-detection, named custom provider, direct custom alias, credential
+    pool, or the generic fallback) produced the result. Applying the fix at
+    every one of those internal return points individually would be easy to
+    miss on a future new path; doing it once here on every result covers
+    them all uniformly. Gated on api_mode + URL pattern rather than the
+    "provider" label, since the "auto" resolution path can label what is
+    actually a local custom endpoint as "openrouter" (its OpenAI-compat
+    fallback) rather than literally "custom" -- issue #4600. See
+    _append_v1_if_needed() for the (intentionally narrow) matching rules.
+    """
+    result = _resolve_runtime_provider_impl(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    if isinstance(result, dict):
+        base_url = result.get("base_url")
+        api_mode = result.get("api_mode")
+        # Gated purely on api_mode + the local-server URL pattern (see
+        # _append_v1_if_needed), not on the "provider" label: the "auto"
+        # resolution path can label what is actually a local custom
+        # endpoint as "openrouter" rather than "custom" (its OpenAI-compat
+        # fallback), so gating on provider=="custom" alone would miss that
+        # path -- exactly the gap flagged in review ("cover every
+        # finalized custom-runtime path, including auto").
+        if isinstance(base_url, str) and isinstance(api_mode, str):
+            result["base_url"] = _append_v1_if_needed(base_url, api_mode)
+    return result
 
 
 def format_runtime_provider_error(error: Exception) -> str:

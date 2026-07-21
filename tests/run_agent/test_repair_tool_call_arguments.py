@@ -57,7 +57,9 @@ class TestRepairToolCallArguments:
         # Bracket counting adds ']' then '}', producing {"a": [1, 2]}
         # which is valid JSON.  But the naive count can't always recover
         # complex nesting — verify we at least get valid JSON.
-        json.loads(result)
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+        assert "a" in parsed
 
     # -- Stage 5: excess closing delimiters --
 
@@ -69,7 +71,9 @@ class TestRepairToolCallArguments:
     def test_extra_closing_bracket(self):
         result = _repair_tool_call_arguments('{"a": [1]]}', "t")
         # Should produce valid JSON
-        json.loads(result)
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+        assert "a" in parsed
 
     # -- Stage 6: last resort --
 
@@ -96,14 +100,17 @@ class TestRepairToolCallArguments:
         result = _repair_tool_call_arguments('{"a": 1, "b": 2,', "t")
         # Trailing comma stripped first, then closing brace added.
         # May or may not fully recover — verify valid JSON at minimum.
-        json.loads(result)
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
 
     def test_real_world_glm_truncation(self):
         """Simulates GLM-5.1 truncating mid-argument."""
         raw = '{"command": "ls -la /tmp", "timeout": 30, "background":'
         result = _repair_tool_call_arguments(raw, "terminal")
         # Should at least be valid JSON, even if background is lost
-        json.loads(result)
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+        assert "command" in parsed
 
     # -- Stage 0: strict=False (literal control chars in strings) --
     # llama.cpp backends sometimes emit literal tabs/newlines inside JSON

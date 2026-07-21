@@ -249,6 +249,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "api": {
+        "description": "API integration tools for making HTTP requests to external services",
+        "tools": ["rest_api_call"],
+        "includes": []
+    },
+
+    "data": {
+        "description": "Data processing tools for CSV, JSON, and other data formats",
+        "tools": ["csv_process"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

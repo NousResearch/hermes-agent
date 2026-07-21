@@ -885,8 +885,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                         raise HTTPException(
                             status_code=409,
                             detail=(
-                                f"Cannot move to 'ready': blocked by parent(s) "
-                                f"not done — {names}"
+                                f"Cannot move to 'ready': unsatisfied parent dependency — {names}"
                             ),
                         )
                 raise HTTPException(

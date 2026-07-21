@@ -1,7 +1,7 @@
 ---
 name: qodercli
 description: "Delegate coding to Qoder CLI (features, PRs, refactors)."
-version: 2.0.0
+version: 2.2.0
 author: explicitcontextualunderstanding
 license: MIT
 platforms: [linux, macos, windows]
@@ -57,10 +57,31 @@ terminal(command="HERMES_QODERCLI_BIN=/opt/homebrew/bin/qodercli qodercli -p '..
 
 ## How to Run
 
+### Mode selection (important)
+
+| Task type | Mode | Why |
+|-----------|------|-----|
+| Bounded implementation (files known) | **`-p` (print)** | One-shot, no monitoring, 8x write compression proven in CTA |
+| Repository-wide migration/refactor | **`-p` (print)** | qodercli handles dependency mapping internally |
+| CI/automation/piped input | **`-p` with `-o json`** | Structured output, no PTY needed |
+| Genuinely iterative (needs clarification) | `-i` (interactive) | Only when task requires multi-turn dialogue |
+
+**Default to print mode.** CTA evidence (N=9 interactive sessions): interactive mode has a 40% stuck-session rate where the model polls endlessly without progress. Print mode has zero such failures and achieves 8x write compression on multi-file tasks.
+
 ### Print mode (one-shot, preferred)
 
+**Simplest: use the delegation wrapper** (handles preflight, timeout, error classification):
+
 ```
-terminal(command="qodercli -p 'Add error handling to all API calls in src/routes/' --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=180)
+terminal(command="qodercli-delegate 'Add error handling to all API calls in src/routes/' ~/project 300", timeout=360)
+```
+
+Returns structured JSON: `{exit_code, error_class, files_changed, diff_stat, output_tail}`.
+
+**Direct invocation** (if wrapper unavailable):
+
+```
+terminal(command="qodercli -p 'Add error handling to all API calls in src/routes/' --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
 ```
 
 Print mode skips interactive dialogs. Use for bounded tasks, CI, and piped input:
@@ -69,14 +90,30 @@ Print mode skips interactive dialogs. Use for bounded tasks, CI, and piped input
 terminal(command="git diff main...feature | qodercli -p 'Review for bugs and security issues' --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=120)
 ```
 
-### Interactive mode (multi-turn)
+For programmatic result extraction, use JSON output:
+
+```
+terminal(command="qodercli -p 'List all TODO comments in src/' -o json --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=120)
+```
+
+JSON output includes structured fields (session_id, result, cost) for downstream processing.
+
+### Interactive mode (advanced — prefer print mode)
+
+Only use when the task genuinely requires multi-turn dialogue with qodercli (e.g., iterative refinement, clarifying questions). Bounded implementation tasks should use print mode.
 
 ```
 terminal(command="qodercli -i 'Implement the payroll tax engine'", workdir="~/project", background=true, pty=true)
-process(action="submit", session_id="<id>", data="Use 2026 tax brackets, progressive federal rates")
-process(action="poll", session_id="<id>")
+process(action="wait", session_id="<id>", timeout=120)
+process(action="log", session_id="<id>")
 process(action="write", session_id="<id>", data="\x03")
 ```
+
+**Monitoring patience (critical):**
+- Use `process(action="wait", timeout=120)` between checks — NOT rapid `process(poll)` loops.
+- Qodercli needs 60–300s for multi-file tasks. Spinner characters (⠋⠙⠹) mean it is actively working. Do NOT kill it.
+- Maximum 10 process() calls before checking `git diff --stat` in the working directory for evidence of progress.
+- If files are being written, keep waiting. If no file changes after 5 minutes, then investigate with `process(action="log")`.
 
 ### Folder trust dialog (interactive mode only)
 
@@ -128,10 +165,10 @@ terminal(command="qodercli -p 'Refactor src/db/ to SQLAlchemy' -m Qwen3.8-Max-Pr
 ## Procedure
 
 1. Verify binary resolves (see Binary Resolution above) and `qodercli --version` succeeds.
-2. For bounded tasks, use print mode: `qodercli -p '<scoped prompt>' --permission-mode bypass_permissions`.
-3. For iterative tasks, start interactive with `background=true, pty=true`.
+2. For bounded tasks (default), use print mode: `qodercli -p '<scoped prompt>' --permission-mode bypass_permissions`. Set `timeout=300` for single-directory tasks, `timeout=600` for multi-file/multi-directory tasks. Or use `qodercli-delegate` for automatic error handling.
+3. For genuinely iterative tasks only, start interactive with `background=true, pty=true`.
 4. Handle folder trust dialog if needed (`process(action="write", data="1\n")`).
-5. Monitor with `process(action="poll"|"log")`.
+5. Monitor interactive sessions with `process(action="wait", timeout=120)` — never rapid `process(poll)` loops. Check `git diff --stat` for progress evidence after 10 process() calls.
 6. For parallel work, use `--worktree` or separate directories — never share a cwd.
 7. Exit interactive sessions with `\x03` or `process(action="kill")`.
 8. Verify results: `git diff --stat` and run the test suite.
@@ -158,6 +195,35 @@ terminal(command="qodercli -r <session-id> --fork-session", workdir="~/project",
 - Use `--permission-mode bypass_permissions` for trusted autonomous runs.
 - Monitor long tasks; kill stalled sessions early.
 
+### Error recovery
+
+Never trust the model's self-report of qodercli success. Always verify from the terminal output:
+
+```
+terminal(command="qodercli -p '...' --permission-mode bypass_permissions; echo \"EXIT_CODE=$?\"", workdir="~/project", pty=true, timeout=300)
+```
+
+Check for these failure patterns in the output:
+- `Permission confirmation required` → missing `--permission-mode bypass_permissions`
+- `Not logged in` / `Please run /login` → auth token missing or expired
+- `402` / `credit` → credit limit exhausted; task incomplete
+- Non-zero exit code → qodercli failed regardless of any partial output
+
+If qodercli fails, do NOT report success. Inspect the error, fix the root cause, and retry or fall back to manual implementation.
+
+### Partial completion / session cleanup
+
+When qodercli dies mid-task (credit limit, timeout, crash):
+
+1. Check what was written: `git diff --stat` in the working directory
+2. Assess completeness: are the changes coherent or half-applied?
+3. Options:
+   - **Resume:** `qodercli -c` continues the most recent session (if credits remain)
+   - **Salvage:** keep qodercli's partial writes, complete remaining work manually
+   - **Rollback:** `git checkout -- .` if changes are incoherent, then retry with a tighter prompt
+4. For interactive sessions: `process(action="kill", session_id="<id>")` to clean up the background process
+5. Never leave orphaned background processes — check with `process(action="list")` after any abnormal termination
+
 ## Pitfalls
 
 - **PTY is mandatory for interactive mode.** Qoder hangs without a pseudo-terminal when using `-i` or background sessions. Print mode (`-p`) works without PTY.
@@ -169,6 +235,8 @@ terminal(command="qodercli -r <session-id> --fork-session", workdir="~/project",
 - **Auth token expiry.** 401/403 mid-session means re-run `qodercli login`.
 - **Don't echo the token.** `qodercli` reads `QODER_PERSONAL_ACCESS_TOKEN` automatically. Never run `echo $QODER_PERSONAL_ACCESS_TOKEN` for validation — use `qodercli --version` or the smoke test below.
 - **Credit drain on vague prompts.** Tight scope = fewer turns = fewer credits.
+- **Spinner means working.** If `process(poll)` or `process(log)` shows only spinner characters (⠋⠙⠹⠸⠼⠴) with no meaningful text, qodercli is actively implementing. Do NOT kill it. Wait longer.
+- **Never rapid-poll.** Polling more than once per 30 seconds wastes context on spinner frames. Use `process(action="wait", timeout=120)`. Multi-file implementation takes 2–5 minutes. Prefer print mode to avoid monitoring entirely.
 
 ## Verification
 

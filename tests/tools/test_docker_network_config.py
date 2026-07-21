@@ -95,8 +95,9 @@ def test_sibling_container_config_sites_carry_docker_network():
 
     import tools.code_execution_tool as code_execution_tool
     import tools.file_tools as file_tools
+    import agent.prompt_builder as prompt_builder
 
-    for module in (terminal_tool, file_tools, code_execution_tool):
+    for module in (terminal_tool, file_tools, code_execution_tool, prompt_builder):
         tree = ast.parse(inspect.getsource(module))
         sites = 0
         for node in ast.walk(tree):

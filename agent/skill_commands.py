@@ -756,3 +756,67 @@ def build_preloaded_skills_prompt(
         loaded_names.append(skill_name)
 
     return "\n\n".join(prompt_parts), loaded_names, missing
+
+def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
+    """Read skills.auto_load from user config and return the deduplicated list.
+
+    If user_config is None, reads from the active config file.
+    Returns an empty list if the key is missing or empty.
+    """
+    if user_config is None:
+        try:
+            from hermes_cli.config import load_cli_config as _load_hermes_config
+            user_config = _load_hermes_config()
+        except Exception:
+            return []
+
+    skills_block = user_config.get("skills", {})
+    if not isinstance(skills_block, dict):
+        return []
+    auto_load = skills_block.get("auto_load")
+    if not auto_load or not isinstance(auto_load, list):
+        return []
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in auto_load:
+        if not isinstance(entry, str):
+            continue
+        name = entry.strip()
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def build_auto_load_prompt(
+    task_id: str | None = None,
+    user_config: dict | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Load auto_load skills and build their prompt block.
+
+    Reads skills.auto_load from config, loads each skill, and returns
+    (prompt_text, loaded_names, missing_names).  Missing skills are
+    listed in ``missing_names`` rather than raising an error — callers
+    should log a warning for them.
+    """
+    auto_skills = resolve_auto_load_skills(user_config)
+    if not auto_skills:
+        return "", [], []
+
+    prompt_text, loaded, missing = build_preloaded_skills_prompt(
+        auto_skills, task_id=task_id
+    )
+
+    # Rewrite the activation note to be origin-agnostic (not CLI-specific).
+    if prompt_text:
+        prompt_text = prompt_text.replace(
+            'The user launched this CLI session with the',
+            'The',
+        )
+        prompt_text = prompt_text.replace(
+            'preloaded. Treat its instructions as active guidance for the duration of this session unless the user overrides them.]',
+            'skill is auto-loaded from skills.auto_load config. Treat its instructions as active guidance for the duration of this session unless the user overrides them.]',
+        )
+
+    return prompt_text, loaded, missing

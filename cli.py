@@ -15848,6 +15848,18 @@ def main(
     
     parsed_skills = _parse_skills_argument(skills)
 
+    # Resolve skills.auto_load for dedup. The actual injection of auto_load
+    # skills happens once in AIAgent._build_system_prompt_parts (gated on
+    # new-session). Here we only need the list so we can avoid injecting the
+    # same skill twice when --skills overlaps with auto_load, and so the
+    # "Activated skills" display reflects both sources.
+    # --ignore-rules suppresses all auto-injection (AGENTS.md, SOUL.md,
+    # memory, skills), so auto_load is skipped in that mode.
+    from agent.skill_commands import resolve_auto_load_skills
+    auto_load_skills = resolve_auto_load_skills(CLI_CONFIG) if not ignore_rules else []
+    auto_load_set = set(auto_load_skills)
+    cli_only_skills = [s for s in parsed_skills if s not in auto_load_set]
+
     # Create CLI instance
     cli = HermesCLI(
         model=model,
@@ -15864,9 +15876,9 @@ def main(
         ignore_rules=ignore_rules,
     )
 
-    if parsed_skills:
+    if cli_only_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
-            parsed_skills,
+            cli_only_skills,
             task_id=cli.session_id,
         )
         if missing_skills:
@@ -15890,7 +15902,16 @@ def main(
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part
             ).strip()
-            cli.preloaded_skills = loaded_skills
+
+    # Display includes both CLI --skills and auto_load (deduped, auto_load first).
+    # Functional injection of auto_load happens in AIAgent; CLI just shows the
+    # combined activated set so users see what's loaded.
+    if auto_load_skills or parsed_skills:
+        display = list(auto_load_skills)
+        for s in parsed_skills:
+            if s not in auto_load_set:
+                display.append(s)
+        cli.preloaded_skills = display
 
     # Inject worktree context into agent's system prompt
     if wt_info:

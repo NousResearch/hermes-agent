@@ -2450,6 +2450,7 @@ DEFAULT_CONFIG = {
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
         # scripts without the agent having to join paths.
+        "auto_load": [],
         "template_vars": True,
         # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
         # body.  Their stdout is inlined into the skill message before the

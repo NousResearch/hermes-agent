@@ -519,6 +519,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    "gemini": "gemini-2.5-flash",
 }
 
 
@@ -5457,6 +5458,15 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "deepinfra",
 )
 
+# Vision-capable direct API-key providers, checked after aggregators fail.
+# These require only an API key in .env (no OAuth) and have known working
+# vision models.  Checked last because aggregators can use any key, while
+# direct providers need a provider-specific key the user may not have set.
+_VISION_DIRECT_PROVIDER_FALLBACK = (
+    "gemini",
+    "nvidia",
+)
+
 
 def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     """Return True when ``provider``/``model`` is known to accept image input.
@@ -5557,6 +5567,17 @@ def get_available_vision_backends() -> List[str]:
     for p in _VISION_AUTO_PROVIDER_ORDER:
         if p not in available and _strict_vision_backend_available(p):
             available.append(p)
+    # 4. Direct API-key providers with vision support — checked last
+    #    because they need a provider-specific API key, while aggregators
+    #    can route through any key the user has configured.
+    for p in _VISION_DIRECT_PROVIDER_FALLBACK:
+        if p not in available:
+            try:
+                client, _ = resolve_provider_client(p, is_vision=True)
+                if client is not None:
+                    available.append(p)
+            except Exception:
+                continue
     return available
 
 
@@ -5730,6 +5751,37 @@ def resolve_vision_provider_client(
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)
+
+        # 4. Fall back through direct API-key providers with vision support.
+        #    These are providers that require only an API key in .env (no OAuth)
+        #    and have known working vision models.  Checked after aggregators
+        #    because aggregators work with any provider's key, while direct
+        #    providers need a specific API key the user may not have configured.
+        for direct_provider in _VISION_DIRECT_PROVIDER_FALLBACK:
+            if direct_provider == main_provider:
+                continue
+            try:
+                # Use vision-specific model override if one exists for this
+                # provider; otherwise let resolve_provider_client pick the
+                # default aux model.
+                fallback_client, fallback_model = resolve_provider_client(
+                    direct_provider,
+                    model=_PROVIDER_VISION_MODELS.get(direct_provider, ""),
+                    is_vision=True,
+                )
+                if fallback_client is not None:
+                    logger.info(
+                        "Vision auto-detect: using direct provider %s (%s)",
+                        direct_provider,
+                        fallback_model or _get_aux_model_for_provider(direct_provider),
+                    )
+                    return _finalize(direct_provider, fallback_client, fallback_model)
+            except Exception as exc:
+                logger.debug(
+                    "Vision auto-detect: direct provider %s failed: %s",
+                    direct_provider, exc,
+                )
+                continue
 
         logger.debug("Auxiliary vision client: none available")
         return None, None, None

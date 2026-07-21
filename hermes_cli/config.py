@@ -1001,6 +1001,19 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "models": {
+        # Google/Gemini model IDs to force-show in the interactive model and
+        # fallback pickers despite agent/models_dev.py's built-in
+        # _GOOGLE_HIDDEN_MODELS filter (which hides some Gemma IDs by
+        # default — their low TPM quotas trip under agent-style traffic for
+        # most users, a reasonable default, just not a universal one).
+        # Config-driven so an override survives `hermes update` instead of
+        # needing a source patch to _GOOGLE_HIDDEN_MODELS reapplied every
+        # release. Only affects picker visibility — raw config entries
+        # (fallback_providers, a manually-typed model id, etc.) already
+        # bypass the filter entirely and always worked. Case-insensitive.
+        "show_hidden_google_models": [],
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

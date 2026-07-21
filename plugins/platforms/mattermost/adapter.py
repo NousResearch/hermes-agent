@@ -51,21 +51,27 @@ _RECONNECT_JITTER = 0.2
 
 
 def check_mattermost_requirements() -> bool:
-    """Return True if the Mattermost adapter can be used."""
-    token = os.getenv("MATTERMOST_TOKEN", "")
-    url = os.getenv("MATTERMOST_URL", "")
-    if not token:
-        logger.debug("Mattermost: MATTERMOST_TOKEN not set")
-        return False
-    if not url:
-        logger.warning("Mattermost: MATTERMOST_URL not set")
-        return False
+    """Return True if the Mattermost adapter runtime dependency is available."""
     try:
         import aiohttp  # noqa: F401
         return True
     except ImportError:
         logger.warning("Mattermost: aiohttp not installed")
         return False
+
+
+def validate_mattermost_config(config: PlatformConfig) -> bool:
+    """Return True when Mattermost has enough config to connect."""
+    extra = getattr(config, "extra", {}) or {}
+    token = (getattr(config, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    url = (extra.get("url", "") or os.getenv("MATTERMOST_URL", "")).strip()
+    if not token:
+        logger.debug("Mattermost: MATTERMOST_TOKEN not set")
+        return False
+    if not url:
+        logger.warning("Mattermost: MATTERMOST_URL not set")
+        return False
+    return True
 
 
 class MattermostAdapter(BasePlatformAdapter):
@@ -117,6 +123,9 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _api_get(self, path: str) -> Dict[str, Any]:
         """GET /api/v4/{path}."""
         import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -134,6 +143,9 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """POST /api/v4/{path} with JSON body."""
         import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         self._last_post_status = None
         self._last_post_error = ""
@@ -213,6 +225,9 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """PUT /api/v4/{path} with JSON body."""
         import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.put(
@@ -256,7 +271,7 @@ class MattermostAdapter(BasePlatformAdapter):
     # Required overrides
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Mattermost and start the WebSocket listener."""
         import aiohttp
 
@@ -869,6 +884,8 @@ class MattermostAdapter(BasePlatformAdapter):
         # Determine message type.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
+        if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
+            message_text = message_text.lstrip()
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
 
@@ -1237,6 +1254,7 @@ def register(ctx) -> None:
         label="Mattermost",
         adapter_factory=_build_adapter,
         check_fn=check_mattermost_requirements,
+        validate_config=validate_mattermost_config,
         is_connected=_is_connected,
         required_env=["MATTERMOST_URL", "MATTERMOST_TOKEN"],
         install_hint="pip install aiohttp",

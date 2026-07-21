@@ -26,7 +26,7 @@ from __future__ import annotations
 import subprocess
 import time
 
-from tests.docker.conftest import docker_exec_sh
+from tests.docker.conftest import docker_exec_sh, start_container
 
 PROFILE = "test-harness-profile"
 
@@ -66,15 +66,29 @@ def _svstat_wants_up(container: str) -> bool:
     return "want up" in state
 
 
+
+def _wait_for_want_state(container_name: str, want_up: bool, timeout: float = 15.0) -> None:
+    """Poll s6 want-state until it matches, instead of a fixed sleep.
+
+    s6 state transitions are asynchronous; fixed two-second sleeps flaked
+    on loaded CI hosts.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _svstat_wants_up(container_name) == want_up:
+            return
+        time.sleep(0.5)
+    state = "up" if want_up else "down"
+    raise AssertionError(
+        f"slot want-state never became {state} within {timeout}s: "
+        f"{_svstat(container_name)!r}"
+    )
+
+
 def test_profile_create_then_gateway_start(
     built_image: str, container_name: str,
 ) -> None:
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name, built_image,
-         "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
-    )
-    time.sleep(3)
+    start_container(built_image, container_name, cmd="sleep 120")
 
     r = _sh(container_name, f"hermes profile create {PROFILE}")
     assert r.returncode == 0, f"profile create failed: {r.stderr}"
@@ -93,20 +107,12 @@ def test_profile_create_then_gateway_start(
     # supervision-state contract holds. See ``_svstat_wants_up`` for
     # why we accept both ``up …`` (currently up) and ``down …, want
     # up`` (down but s6 wants up).
-    time.sleep(2)
-    assert _svstat_wants_up(container_name), (
-        f"slot want-state is not up after gateway start: "
-        f"{_svstat(container_name)!r}"
-    )
+    _wait_for_want_state(container_name, want_up=True)
 
     r = _sh(container_name, f"hermes -p {PROFILE} gateway stop", timeout=30)
     assert r.returncode == 0
 
-    time.sleep(2)
-    assert not _svstat_wants_up(container_name), (
-        f"slot want-state still up after gateway stop: "
-        f"{_svstat(container_name)!r}"
-    )
+    _wait_for_want_state(container_name, want_up=False)
 
 
 def test_profile_delete_stops_gateway(
@@ -114,16 +120,11 @@ def test_profile_delete_stops_gateway(
 ) -> None:
     """Deleting a profile should stop its gateway and remove the s6
     service slot."""
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name, built_image,
-         "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
-    )
-    time.sleep(3)
+    start_container(built_image, container_name, cmd="sleep 120")
 
     _sh(container_name, f"hermes profile create {PROFILE}")
     _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
-    time.sleep(3)
+    _wait_for_want_state(container_name, want_up=True)
 
     r = _sh(
         container_name,
@@ -132,7 +133,11 @@ def test_profile_delete_stops_gateway(
     )
     assert r.returncode == 0, f"profile delete failed: {r.stderr}"
 
-    time.sleep(2)
-    # Service slot should be gone.
-    r = _sh(container_name, f"test -d /run/service/gateway-{PROFILE}")
+    # Poll for slot removal instead of a fixed sleep.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        r = _sh(container_name, f"test -d /run/service/gateway-{PROFILE}")
+        if r.returncode != 0:
+            break
+        time.sleep(0.5)
     assert r.returncode != 0, "s6 service slot still present after profile delete"

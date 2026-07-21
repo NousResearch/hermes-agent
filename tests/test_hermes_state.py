@@ -4760,6 +4760,17 @@ class TestConcurrentWriteSafety:
 # =========================================================================
 
 class TestStateMeta:
+    def test_default_db_path_follows_current_home_unless_explicitly_pinned(self, tmp_path, monkeypatch):
+        """Import-time defaults must not bypass a task/profile home override."""
+        home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        session_db = SessionDB()
+        try:
+            assert session_db.db_path == home / "state.db"
+        finally:
+            session_db.close()
+
     def test_get_meta_missing_returns_none(self, db):
         assert db.get_meta("nonexistent") is None
 

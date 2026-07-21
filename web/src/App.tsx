@@ -531,7 +531,7 @@ export default function App() {
           onClick={closeMobile}
           className={cn(
             "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/70",
+            "bg-black/70 hover:bg-black/70",
           )}
         />
       )}

@@ -7038,12 +7038,11 @@ def _discard_stashed_changes(
 # Fork detection and upstream management for `hermes update`
 # =========================================================================
 
-OFFICIAL_REPO_URLS = {
-    "https://github.com/NousResearch/hermes-agent.git",
-    "git@github.com:NousResearch/hermes-agent.git",
-    "https://github.com/NousResearch/hermes-agent",
-    "git@github.com:NousResearch/hermes-agent",
-}
+# Lowercased host/owner/repo identity of the official repository, compared
+# against the parsed origin URL so every spelling (scp-like, ssh://,
+# https://, any letter case) matches. Same identity shape as banner.py's
+# _OFFICIAL_REPO_CANONICAL.
+OFFICIAL_REPO_IDENTITY = "github.com/nousresearch/hermes-agent"
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
@@ -7064,21 +7063,85 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     return None
 
 
+def _get_stored_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Read remote.origin.url exactly as stored in .git/config.
+
+    Unlike ``git remote get-url`` (used by ``_get_origin_url``), this does
+    NOT apply ``url.<base>.insteadOf`` rewrites, so it reflects the URL the
+    remote was actually configured with — the canonical value on installs
+    where the user's git config rewrites GitHub URLs to an SSH alias,
+    mirror, or proxy at transport time.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd + ["config", "--get", "remote.origin.url"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            value = result.stdout.strip()
+            return value or None
+    except Exception:
+        pass
+    return None
+
+
+def _origin_is_official_repo(origin_url: str) -> bool:
+    """Return True if *origin_url* addresses the official repository.
+
+    Parses the URL into a lowercased ``host/owner/repo`` identity and
+    compares it exactly (same identity shape as ``banner.py``'s
+    ``_canonical_github_remote``), so the scp-like
+    (``git@github.com:owner/repo``), ``ssh://`` and ``https://`` spellings
+    all match, regardless of letter case, trailing ``.git``, user component
+    or port. Extra path segments (``.../hermes-agent/tree/main``) do not
+    match — the identity must be exactly the official repo.
+
+    Hosts that are not literally ``github.com`` — SSH config aliases such as
+    ``gh-work:owner/repo``, mirrors, proxies, and the effective URLs produced
+    by ``url.<base>.insteadOf`` rewrites — return False: they cannot be
+    resolved to a physical host from here, so they are conservatively treated
+    as non-canonical.
+    """
+    url = origin_url.strip().rstrip("/")
+    if url.lower().endswith(".git"):
+        url = url[:-4]
+
+    if "://" in url:
+        # https://github.com/owner/repo, ssh://git@github.com[:port]/owner/repo
+        host, sep, path = url.split("://", 1)[1].partition("/")
+        if not sep:
+            return False
+    elif ":" in url:
+        # scp-like: git@github.com:owner/repo, gh-work:owner/repo
+        host, path = url.split(":", 1)
+    else:
+        return False
+
+    host = host.rsplit("@", 1)[-1]  # drop any user component
+    host = host.rsplit(":", 1)[0]  # drop any port component
+
+    segments = [s for s in path.split("/") if s]
+    if len(segments) != 2:
+        return False
+
+    identity = f"{host}/{segments[0]}/{segments[1]}".casefold()
+    return identity == OFFICIAL_REPO_IDENTITY
+
+
 def _is_fork(origin_url: Optional[str]) -> bool:
-    """Check if the origin remote points to a fork (not the official repo)."""
+    """Check if the origin remote is not the official repository.
+
+    Returns True for anything that does not parse as the official repo under
+    a recognized URL spelling: genuine forks, mirrors, and origins reached
+    through SSH aliases or ``url.insteadOf`` rewrites. The update flow uses
+    this as "origin is not confirmed canonical" — the host behind an aliased
+    URL cannot be verified from here, so this is never proof of forkhood.
+    """
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
-    for official in OFFICIAL_REPO_URLS:
-        official_normalized = official.rstrip("/")
-        if official_normalized.endswith(".git"):
-            official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
-            return False
-    return True
+    return not _origin_is_official_repo(origin_url)
 
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
@@ -7177,7 +7240,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
         # Ask user if they want to add upstream
         print()
-        print("ℹ Your fork is not tracking the official Hermes repository.")
+        print("ℹ This origin is not the canonical Hermes repository URL.")
         print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
         try:
@@ -7234,7 +7297,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     # If origin/main has commits not on upstream, don't trample
     if origin_ahead > 0:
         print()
-        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
+        print(f"ℹ Origin has {origin_ahead} commit(s) not on upstream.")
         print("  Skipping upstream sync to preserve your changes.")
         print("  If you want to merge upstream changes, run:")
         print("    git pull upstream main")
@@ -7242,12 +7305,12 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:
-        print("  ✓ Fork is up to date with upstream")
+        print("  ✓ Origin is up to date with upstream")
         return
 
     # origin/main is strictly behind upstream/main (can fast-forward)
     print()
-    print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
+    print(f"→ Origin is {upstream_ahead} commit(s) behind upstream")
     print("→ Pulling from upstream...")
 
     try:
@@ -7264,15 +7327,22 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     print("  ✓ Updated from upstream")
 
-    # Try to sync fork back to origin
-    print("→ Syncing fork...")
+    # Try to push the updated main back to origin. For a fork on GitHub this
+    # fast-forwards its main; for a read-only mirror or an aliased URL of the
+    # official repo the push fails harmlessly — the local repo is already
+    # updated.
+    print("→ Syncing origin with upstream...")
     if _sync_fork_with_upstream(git_cmd, cwd):
-        print("  ✓ Fork synced with upstream")
+        print("  ✓ Origin synced with upstream")
     else:
+        print("  ℹ Got updates from upstream but couldn't push to origin.")
         print(
-            "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
+            "    No write access? Origin may also be a read-only mirror or an"
         )
-        print("    Your local repo is updated, but your fork on GitHub may be behind.")
+        print(
+            "    aliased URL of the official repository (SSH alias / url.insteadOf)."
+        )
+        print("    Your local repo is updated, but origin's main may be behind.")
 
 
 def _invalidate_update_cache():
@@ -10172,12 +10242,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
-    # Detect if we're updating from a fork (before any branch logic)
+    # Detect if we're updating from a fork (before any branch logic).
+    # `git remote get-url` applies url.<base>.insteadOf rewrites, so also
+    # read the stored, unrewritten remote.origin.url: an origin counts as
+    # the official repo if EITHER spelling parses as official. Users who
+    # bind a specific SSH identity or proxy via insteadOf keep a canonical
+    # stored URL and must not be treated as a fork; genuine forks and
+    # mirrors are non-canonical under both readings.
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
-    is_fork = _is_fork(origin_url)
+    stored_origin_url = _get_stored_origin_url(git_cmd, PROJECT_ROOT)
+    is_fork = _is_fork(origin_url) and (
+        stored_origin_url is None or _is_fork(stored_origin_url)
+    )
 
     if is_fork:
-        print("⚠ Updating from fork:")
+        print(
+            "⚠ Updating from a non-canonical origin (fork, mirror, or rewritten URL):"
+        )
         print(f"  {origin_url}")
         print()
 

@@ -44,8 +44,9 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
 
 def test_home_relative_cwd_leaves_abs_path_alone(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "other"))
-    result = _home_relative_cwd(str(tmp_path / "outside" / "dir"))
-    assert result == str(tmp_path / "outside" / "dir")
+    outside = tmp_path / "outside" / "dir"
+    result = _home_relative_cwd(str(outside))
+    assert result == os.path.abspath(str(outside))
 
 
 def test_home_relative_cwd_empty_returns_empty():
@@ -71,6 +72,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
 
 
 def test_format_footer_skips_missing_context_length():
+    cwd = os.path.abspath("/tmp/wd")
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=500,
@@ -81,7 +83,7 @@ def test_format_footer_skips_missing_context_length():
     # context_pct dropped silently; no "?%" artifact
     assert "%" not in out
     assert "gpt-5.4" in out
-    assert "/tmp/wd" in out
+    assert cwd in out
 
 
 def test_format_footer_context_pct_clamped_to_100():
@@ -163,6 +165,12 @@ def test_resolve_global_enable():
     assert cfg["fields"] == ["model", "context_pct", "cwd"]
 
 
+def test_resolve_global_quoted_false_disables_footer():
+    user = {"display": {"runtime_footer": {"enabled": "false"}}}
+    cfg = resolve_footer_config(user, "telegram")
+    assert cfg["enabled"] is False
+
+
 def test_resolve_platform_override_wins():
     user = {
         "display": {
@@ -175,6 +183,18 @@ def test_resolve_platform_override_wins():
     # Telegram picks up the global enable
     assert resolve_footer_config(user, "telegram")["enabled"] is True
     # Slack overrides to off
+    assert resolve_footer_config(user, "slack")["enabled"] is False
+
+
+def test_resolve_platform_quoted_off_overrides_global_enable():
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True},
+            "platforms": {
+                "slack": {"runtime_footer": {"enabled": "off"}},
+            },
+        },
+    }
     assert resolve_footer_config(user, "slack")["enabled"] is False
 
 

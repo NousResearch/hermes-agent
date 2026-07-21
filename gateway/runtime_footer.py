@@ -28,6 +28,8 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
+from utils import is_truthy_value
+
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
 
@@ -37,10 +39,17 @@ def _home_relative_cwd(cwd: str) -> str:
     if not cwd:
         return ""
     try:
-        home = os.path.expanduser("~")
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        home_abs = os.path.abspath(home) if home else ""
         p = os.path.abspath(cwd)
-        if home and (p == home or p.startswith(home + os.sep)):
-            return "~" + p[len(home):]
+        if home_abs:
+            norm_home = os.path.normcase(home_abs)
+            norm_p = os.path.normcase(p)
+            if norm_p == norm_home:
+                return "~"
+            if norm_p.startswith(norm_home + os.sep):
+                suffix = p[len(home_abs):].replace(os.sep, "/")
+                return "~" + suffix
         return p
     except Exception:
         return cwd
@@ -70,7 +79,9 @@ def resolve_footer_config(
     global_cfg = cfg.get("runtime_footer")
     if isinstance(global_cfg, dict):
         if "enabled" in global_cfg:
-            resolved["enabled"] = bool(global_cfg.get("enabled"))
+            resolved["enabled"] = is_truthy_value(
+                global_cfg.get("enabled"), default=False
+            )
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
 
@@ -81,7 +92,9 @@ def resolve_footer_config(
             plat_footer = plat_cfg.get("runtime_footer")
             if isinstance(plat_footer, dict):
                 if "enabled" in plat_footer:
-                    resolved["enabled"] = bool(plat_footer.get("enabled"))
+                    resolved["enabled"] = is_truthy_value(
+                        plat_footer.get("enabled"), default=False
+                    )
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
 

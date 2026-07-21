@@ -380,8 +380,11 @@ class _SlashWorker:
         with self._lock:
             self._seq += 1
             rid = self._seq
-            self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
-            self.proc.stdin.flush()
+            try:
+                self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
+                self.proc.stdin.flush()
+            except (BrokenPipeError, OSError) as pipe_err:
+                raise RuntimeError(f"slash worker pipe broken: {pipe_err}") from pipe_err
 
             while True:
                 try:

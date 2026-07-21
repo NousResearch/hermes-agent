@@ -2046,6 +2046,32 @@ def discover_plugins(force: bool = False) -> None:
     get_plugin_manager().discover_and_load(force=force)
 
 
+def load_platform_cli_commands_for(command_name: str) -> bool:
+    """Load the deferred platform that owns a plugin CLI command.
+
+    Platform adapters stay lazy during normal CLI startup.  When argparse is
+    already resolving an unknown top-level command, progressively match its
+    hyphen-separated prefix to a registered platform and materialize only that
+    adapter.  Its ``register()`` callback can then contribute commands through
+    ``PluginContext.register_cli_command()`` without any platform-specific core
+    dispatch.
+    """
+    clean = str(command_name or "").strip().lower()
+    if not clean:
+        return False
+
+    from gateway.platform_registry import platform_registry
+
+    parts = clean.split("-")
+    for length in range(len(parts), 0, -1):
+        prefixes = {"-".join(parts[:length]), "_".join(parts[:length])}
+        for platform_name in prefixes:
+            if platform_registry.is_registered(platform_name):
+                platform_registry.get(platform_name)
+                return True
+    return False
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook on all loaded plugins.
 

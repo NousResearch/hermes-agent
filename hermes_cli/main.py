@@ -13986,7 +13986,11 @@ def main():
     if _plugin_cli_discovery_needed():
         try:
             from plugins.memory import discover_plugin_cli_commands
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from hermes_cli.plugins import (
+                discover_plugins,
+                get_plugin_manager,
+                load_platform_cli_commands_for,
+            )
 
             seen_plugin_commands = set()
             for cmd_info in discover_plugin_cli_commands():
@@ -14002,6 +14006,9 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
+            plugin_command = _first_positional_argv()
+            if plugin_command:
+                load_platform_cli_commands_for(plugin_command)
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

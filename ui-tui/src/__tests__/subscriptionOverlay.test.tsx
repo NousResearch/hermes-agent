@@ -353,11 +353,11 @@ describe('SubscriptionOverlay — overview actions', () => {
 })
 
 describe('SubscriptionOverlay — step-up', () => {
-  it('prompts to enable terminal billing (never leaks the raw scope)', () => {
+  it('prompts to allow Remote Spending (never leaks the raw scope)', () => {
     const out = render(at('stepup', subscriber(), { stepUpRetry: { kind: 'preview', tierId: 'ultra' } }))
 
-    expect(out).toContain('Terminal billing')
-    expect(out).toContain('Enable terminal billing')
+    expect(out).toContain('Remote Spending')
+    expect(out).toContain('Allow Remote Spending')
     expect(out).not.toContain('billing:manage')
   })
 })

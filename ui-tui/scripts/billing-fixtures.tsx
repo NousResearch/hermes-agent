@@ -205,7 +205,7 @@ const FIXTURES: Record<string, Fixture> = {
     node: billEl(billState({ is_admin: false }))
   },
   'topup-disabled': {
-    desc: '/topup overview — terminal billing OFF for org',
+    desc: '/topup overview — remote spending OFF for org',
     node: billEl(billState({ cli_billing_enabled: false }))
   },
   'topup-buy': {

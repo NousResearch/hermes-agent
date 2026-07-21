@@ -8136,7 +8136,7 @@ def _(rid, params: dict) -> dict:
 
 
 # ===========================================================================
-# Phase 2b terminal billing RPC methods
+# Phase 2b Remote Spending RPC methods
 # ===========================================================================
 #
 # These return STRUCTURED success envelopes (result.ok / result.error) rather

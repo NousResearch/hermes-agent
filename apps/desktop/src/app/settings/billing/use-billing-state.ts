@@ -458,7 +458,7 @@ function deriveUsageRows(
               value: clamp01(usedFraction)
             }
           : undefined,
-      caption: cap.is_default_ceiling ? 'Default ceiling' : 'Monthly terminal billing spend',
+      caption: cap.is_default_ceiling ? 'Default ceiling' : 'Monthly remote spending',
       id: 'monthly_cap',
       title: 'Monthly spend cap',
       value

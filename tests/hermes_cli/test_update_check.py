@@ -308,9 +308,50 @@ def test_check_for_updates_non_docker_still_checks(tmp_path, monkeypatch):
          patch("hermes_cli.banner.check_via_pypi", return_value=1) as mock_pypi:
         result = banner.check_for_updates()
 
-    assert result == 1
+    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
     mock_pypi.assert_called_once()
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_pypi_up_to_date_returns_zero(tmp_path, monkeypatch):
+    """When PyPI reports up-to-date, check_for_updates() returns 0 — not -1."""
+    import hermes_cli.banner as banner
+
+    fake_banner = tmp_path / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+
+    with patch("hermes_cli.config.detect_install_method", return_value="pip"), \
+         patch("hermes_cli.banner.subprocess.run") as mock_run, \
+         patch("hermes_cli.banner.check_via_pypi", return_value=0) as mock_pypi:
+        result = banner.check_for_updates()
+
+    assert result == 0
+    mock_pypi.assert_called_once()
+    mock_run.assert_not_called()
+
+
+def test_check_for_updates_pypi_none_passthrough(tmp_path, monkeypatch):
+    """When PyPI check fails (returns None), propagate None — don't normalise."""
+    import hermes_cli.banner as banner
+
+    fake_banner = tmp_path / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+
+    with patch("hermes_cli.config.detect_install_method", return_value="pip"), \
+         patch("hermes_cli.banner.subprocess.run") as mock_run, \
+         patch("hermes_cli.banner.check_via_pypi", return_value=None) as mock_pypi:
+        result = banner.check_for_updates()
+
+    assert result is None
+    mock_pypi.assert_called_once()
 
 
 def test_prefetch_non_blocking():

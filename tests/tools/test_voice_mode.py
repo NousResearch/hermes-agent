@@ -1476,3 +1476,282 @@ class TestSilenceCallbackLock:
         recorder.cancel()
         with recorder._lock:
             assert recorder._on_silence_stop is None
+
+
+# ============================================================================
+# _termux_api_app_installed: fallback to binary (#31015)
+# ============================================================================
+
+class TestTermuxApiAppInstalledFallback:
+    """Pin the fallback behaviour introduced in #31015.
+
+    Truth table for ``_termux_api_app_installed``:
+
+    ===========  ============  ===========  ===========
+    pm result    binary on PATH   returned    rationale
+    ===========  ============  ===========  ===========
+    found pkg    (don't care)  True        authoritative
+    exception    present       True        fallback
+    exception    absent        False       nothing to trust
+    ===========  ============  ===========  ===========
+    """
+
+    def _force_termux(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+
+    def _pm_success(self, found):
+        """Return a fake subprocess.run that succeeds, optionally listing
+        the package."""
+        stdout = "package:com.termux.api\n" if found else ""
+        import subprocess
+        return lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0] if a else [], returncode=0, stdout=stdout, stderr=""
+        )
+
+    def _pm_raises(self, exc):
+        return lambda *a, **kw: (_ for _ in ()).throw(exc)
+
+    def _binary(self, present, monkeypatch):
+        path = "/data/data/com.termux/files/usr/bin/termux-microphone-record" if present else None
+        monkeypatch.setattr(
+            "tools.voice_mode.shutil.which",
+            lambda cmd: path if cmd == "termux-microphone-record" else None,
+        )
+
+    # -- pm confirms package (happy path, back-compat) --
+
+    def test_pm_finds_package_returns_true(self, monkeypatch):
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr("tools.voice_mode.subprocess.run", self._pm_success(True))
+        self._binary(False, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is True
+
+    # -- pm fails, binary present (core #31015 case) --
+
+    def test_pm_not_found_binary_present_returns_true(self, monkeypatch):
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            self._pm_raises(FileNotFoundError("pm not on PATH")),
+        )
+        self._binary(True, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is True
+
+    def test_pm_permission_denied_binary_present_returns_true(self, monkeypatch):
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            self._pm_raises(PermissionError("pm: permission denied")),
+        )
+        self._binary(True, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is True
+
+    def test_pm_timeout_binary_present_returns_true(self, monkeypatch):
+        import subprocess as _sp
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            self._pm_raises(_sp.TimeoutExpired(cmd="pm", timeout=5)),
+        )
+        self._binary(True, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is True
+
+    def test_pm_nonzero_exit_binary_present_returns_true(self, monkeypatch):
+        import subprocess
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                args=["pm"], returncode=1, stdout="", stderr="error"
+            ),
+        )
+        self._binary(True, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is True
+
+    # -- pm fails, binary absent (genuine "not installed") --
+
+    def test_pm_not_found_binary_absent_returns_false(self, monkeypatch):
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            self._pm_raises(FileNotFoundError("pm not on PATH")),
+        )
+        self._binary(False, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is False
+
+    def test_pm_timeout_binary_absent_returns_false(self, monkeypatch):
+        import subprocess as _sp
+        self._force_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            self._pm_raises(_sp.TimeoutExpired(cmd="pm", timeout=5)),
+        )
+        self._binary(False, monkeypatch)
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is False
+
+    # -- not Termux environment --
+
+    def test_non_termux_returns_false(self, monkeypatch):
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+        from tools.voice_mode import _termux_api_app_installed
+        assert _termux_api_app_installed() is False
+
+
+# ============================================================================
+# detect_audio_environment: end-to-end fallback (#31015)
+# ============================================================================
+
+class TestDetectAudioEnvironmentTermuxFallback:
+    """Verify that detect_audio_environment no longer emits the misleading
+    "Termux:API Android app is not installed" warning when pm fails but
+    the binary is on PATH (issue #31015)."""
+
+    def _setup_termux(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+
+    def test_pm_not_found_binary_present_voice_available(self, monkeypatch):
+        """Core #31015 repro: pm fails but binary works → voice available."""
+        self._setup_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("pm not found")),
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.shutil.which",
+            lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record"
+            if cmd == "termux-microphone-record" else None,
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio",
+            lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
+        )
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert not any(
+            "Termux:API Android app is not installed" in w
+            for w in result["warnings"]
+        ), f"Should not warn about missing app when binary is present: {result['warnings']}"
+        assert any("Termux:API" in n for n in result.get("notices", []))
+
+    def test_pm_not_found_binary_absent_voice_blocked(self, monkeypatch):
+        """pm fails and no binary → voice blocked. The warning mentions
+        the install hint rather than the "app not installed" message,
+        because without the binary _termux_microphone_command also
+        returns None and we never enter the termux-specific branch."""
+        self._setup_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("pm not found")),
+        )
+        monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: None)
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio",
+            lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
+        )
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is False
+        # Without the binary we get the generic install hint, not the
+        # "Termux:API app not installed" warning.
+        assert len(result["warnings"]) > 0
+
+    def test_pm_permission_denied_binary_present_voice_available(self, monkeypatch):
+        """pm permission denied + binary present → voice available."""
+        self._setup_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(PermissionError("permission denied")),
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.shutil.which",
+            lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record"
+            if cmd == "termux-microphone-record" else None,
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio",
+            lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
+        )
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert not any(
+            "Termux:API Android app is not installed" in w
+            for w in result["warnings"]
+        )
+
+    def test_pm_timeout_binary_present_voice_available(self, monkeypatch):
+        """pm hangs (timeout) + binary present → voice available."""
+        import subprocess as _sp
+        self._setup_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(_sp.TimeoutExpired(cmd="pm", timeout=5)),
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.shutil.which",
+            lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record"
+            if cmd == "termux-microphone-record" else None,
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio",
+            lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
+        )
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert not any(
+            "Termux:API Android app is not installed" in w
+            for w in result["warnings"]
+        )
+
+    def test_pm_nonzero_binary_present_voice_available(self, monkeypatch):
+        """pm returns non-zero (error) + binary present → voice available."""
+        import subprocess
+        self._setup_termux(monkeypatch)
+        monkeypatch.setattr(
+            "tools.voice_mode.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                args=["pm"], returncode=1, stdout="", stderr="error"
+            ),
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.shutil.which",
+            lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record"
+            if cmd == "termux-microphone-record" else None,
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode._import_audio",
+            lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
+        )
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert not any(
+            "Termux:API Android app is not installed" in w
+            for w in result["warnings"]
+        )

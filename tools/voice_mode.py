@@ -68,6 +68,8 @@ def _termux_microphone_command() -> Optional[str]:
 def _termux_api_app_installed() -> bool:
     if not _is_termux_environment():
         return False
+    # Primary check: pm list packages (requires Android package manager
+    # accessible and Termux having permission to call it).
     try:
         result = subprocess.run(
             ["pm", "list", "packages", "com.termux.api"],
@@ -77,9 +79,17 @@ def _termux_api_app_installed() -> bool:
             check=False,
             stdin=subprocess.DEVNULL,
         )
-        return "package:com.termux.api" in (result.stdout or "")
+        if "package:com.termux.api" in (result.stdout or ""):
+            return True
     except Exception:
-        return False
+        pass
+    # Fallback: if termux-microphone-record binary exists and is
+    # executable, the Termux:API app is almost certainly present — the
+    # CLI package (termux-api) is a thin wrapper that only works when
+    # the companion Android app is installed.  The pm-based check can
+    # fail when the binary is not on PATH or the Termux process lacks
+    # permission to invoke the Android package manager.
+    return shutil.which("termux-microphone-record") is not None
 
 
 def _termux_voice_capture_available() -> bool:

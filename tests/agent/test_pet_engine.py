@@ -165,13 +165,26 @@ def test_store_remove(boba_like):
 # render — decode + every encoder produces output
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_renderer_decodes_frames(boba_like):
+def test_renderer_decodes_frames(boba_like, monkeypatch):
+    # Simulate an interactive TTY so the isatty guard in available does not
+    # block the renderer-functionality assertions below (issue #61964).
+    monkeypatch.setattr("sys.stdout", type("_FakeTTY", (), {"isatty": lambda self: True})())
     sprite = store.load_pet("boba").spritesheet
     r = render.PetRenderer(str(sprite), mode="unicode", scale=0.5, unicode_cols=12)
     assert r.available
     # standard sheet yields FRAMES_PER_STATE frames per state
     assert r.frame_count("idle") == constants.FRAMES_PER_STATE
     assert r.frame_count(PetState.RUN) == constants.FRAMES_PER_STATE
+
+
+def test_renderer_unavailable_in_non_tty(boba_like, monkeypatch):
+    """When stdout is not a TTY (e.g. Docker json-file log driver, pipe),
+    available must return False so the animation loop never fires and floods
+    the container log with ~68 ANSI frame lines/second (issue #61964)."""
+    monkeypatch.setattr("sys.stdout", type("_Pipe", (), {"isatty": lambda self: False})())
+    sprite = store.load_pet("boba").spritesheet
+    r = render.PetRenderer(str(sprite), mode="unicode", scale=0.5, unicode_cols=12)
+    assert not r.available
 
 
 def test_trims_trailing_blank_frames(tmp_path):

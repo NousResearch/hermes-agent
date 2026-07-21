@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import shlex
+import tempfile
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -401,7 +402,21 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Atomic write: .env holds API keys — never leave it partially written.
+    content = "\n".join(new_lines) + "\n"
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(env_path.parent), prefix=f".{env_path.name}.tmp.",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, env_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     # Restrict permissions — .env holds API keys and tokens.
     try:
         import stat

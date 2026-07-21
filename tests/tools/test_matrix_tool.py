@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -100,7 +100,7 @@ class TestAuthorizeRoom:
 class TestCoreAndAdminActions:
     def test_send_reaction(self):
         adapter = MagicMock()
-        adapter._send_reaction = AsyncMock(return_value="$rxn")
+        adapter._send_reaction = MagicMock(return_value="$rxn")
         with patch("tools.matrix_tool._matrix_adapter", return_value=(adapter, "")), patch(
             "tools.matrix_tool.get_session_env",
             side_effect=lambda k, d="": {
@@ -138,7 +138,7 @@ class TestCoreAndAdminActions:
 
     def test_redaction_enabled_via_config(self):
         adapter = MagicMock()
-        adapter.redact_message = AsyncMock(return_value=True)
+        adapter.redact_message = MagicMock(return_value=True)
         with patch("tools.matrix_tool._matrix_adapter", return_value=(adapter, "")), patch(
             "tools.matrix_tool.get_session_env",
             side_effect=lambda k, d="": {

@@ -153,6 +153,89 @@ def _flush_session_db_after_tool_progress(
     except Exception as exc:
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
 
+_DELEGATE_LIVE_RESEARCH_TOOL_COUNTS_ATTR = "_delegate_live_research_tool_counts"
+_DELEGATE_LIVE_RESEARCH_TOOL_LIMITS = {
+    "web_search": 1,
+    "x_search": 1,
+    "web_extract": 0,
+    "web_crawl": 0,
+}
+_DELEGATE_MCP_LIVE_RESEARCH_LIMITS = {
+    "search": 1,
+    "extract": 0,
+    "crawl": 0,
+    "scrape": 0,
+}
+
+
+def _is_delegate_agent(agent) -> bool:
+    """Return True for subagents spawned by delegate_task."""
+    try:
+        return int(getattr(agent, "_delegate_depth", 0) or 0) > 0
+    except Exception:
+        return False
+
+
+def _delegate_live_research_budget(tool_name: str) -> tuple[str, int] | None:
+    normalized = (tool_name or "").replace("__", "_")
+    if normalized in _DELEGATE_LIVE_RESEARCH_TOOL_LIMITS:
+        return normalized, _DELEGATE_LIVE_RESEARCH_TOOL_LIMITS[normalized]
+
+    if not normalized.startswith("mcp_"):
+        return None
+
+    for suffix, limit in _DELEGATE_MCP_LIVE_RESEARCH_LIMITS.items():
+        if normalized.endswith(f"_{suffix}"):
+            return f"mcp_{suffix}", limit
+    return None
+
+
+def _delegate_external_tool_guardrail(agent, tool_name: str) -> ToolGuardrailDecision | None:
+    """Enforce live-research tool budgets for delegated agents before dispatch."""
+    if not _is_delegate_agent(agent):
+        return None
+
+    budget = _delegate_live_research_budget(tool_name)
+    if budget is None:
+        return None
+
+    key, limit = budget
+    if limit <= 0:
+        return ToolGuardrailDecision(
+            action="block",
+            code="delegate_live_research_tool_block",
+            message=(
+                f"Blocked {tool_name}: delegated agents may not call live extraction "
+                "or crawl tools by default. The parent agent must pre-fetch live "
+                "evidence or explicitly widen the delegation runtime policy."
+            ),
+            tool_name=tool_name,
+            count=1,
+        )
+
+    counts = getattr(agent, _DELEGATE_LIVE_RESEARCH_TOOL_COUNTS_ATTR, None)
+    if not isinstance(counts, dict):
+        counts = {}
+        setattr(agent, _DELEGATE_LIVE_RESEARCH_TOOL_COUNTS_ATTR, counts)
+
+    count = int(counts.get(key, 0) or 0) + 1
+    counts[key] = count
+    if count <= limit:
+        return None
+
+    return ToolGuardrailDecision(
+        action="block",
+        code="delegate_live_research_tool_budget",
+        message=(
+            f"Blocked {tool_name}: delegated agents may call live search tools in "
+            f"this category at most {limit} time per delegation. Use the earlier "
+            "result, ask the parent agent to pre-fetch more evidence, or finish "
+            "with the evidence already available."
+        ),
+        tool_name=tool_name,
+        count=count,
+    )
+
 
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
@@ -502,7 +585,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             else:
-                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                guardrail_decision = _delegate_external_tool_guardrail(agent, function_name)
+                if guardrail_decision is None:
+                    guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
@@ -1154,7 +1239,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+            guardrail_decision = _delegate_external_tool_guardrail(agent, function_name)
+            if guardrail_decision is None:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 

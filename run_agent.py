@@ -6152,6 +6152,13 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code in {"delegate_live_research_tool_budget", "delegate_live_research_tool_block"}:
+            return (
+                f"I stopped {tool} because it hit the delegation runtime guardrail "
+                f"({decision.code}). The parent agent should pre-fetch live research "
+                "evidence, or the delegate should finish using the evidence already "
+                "available instead of opening more live-research paths."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "

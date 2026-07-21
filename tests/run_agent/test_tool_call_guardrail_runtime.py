@@ -238,6 +238,139 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
+def test_delegate_live_research_budget_blocks_second_mcp_search_before_execution():
+    agent = _make_agent("mcp_research_web_search", "mcp__research__web_search")
+    agent._delegate_depth = 1
+    args = {"query": "Hermes releases"}
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"ok": True})) as mock_hfc:
+        first = SimpleNamespace(
+            content="",
+            tool_calls=[_mock_tool_call("mcp_research_web_search", json.dumps(args), "c-search-1")],
+        )
+        second = SimpleNamespace(
+            content="",
+            tool_calls=[_mock_tool_call("mcp__research__web_search", json.dumps(args), "c-search-2")],
+        )
+        agent._execute_tool_calls_sequential(first, messages, "task-1")
+        agent._execute_tool_calls_sequential(second, messages, "task-1")
+
+    mock_hfc.assert_called_once()
+    assert [m["tool_call_id"] for m in messages] == ["c-search-1", "c-search-2"]
+    assert json.loads(messages[0]["content"]) == {"ok": True}
+    assert "delegate_live_research_tool_budget" in messages[1]["content"]
+    assert "at most 1 time per delegation" in messages[1]["content"]
+    assert agent._tool_guardrail_halt_decision is not None
+    assert agent._tool_guardrail_halt_decision.code == "delegate_live_research_tool_budget"
+
+
+def test_delegate_live_research_budget_applies_to_native_web_search():
+    agent = _make_agent("web_search")
+    agent._delegate_depth = 1
+    args = {"query": "Hermes releases"}
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"ok": True})) as mock_hfc:
+        first = SimpleNamespace(
+            content="",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(args), "c-web-search-1")],
+        )
+        second = SimpleNamespace(
+            content="",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(args), "c-web-search-2")],
+        )
+        agent._execute_tool_calls_sequential(first, messages, "task-1")
+        agent._execute_tool_calls_sequential(second, messages, "task-1")
+
+    mock_hfc.assert_called_once()
+    assert [m["tool_call_id"] for m in messages] == ["c-web-search-1", "c-web-search-2"]
+    assert json.loads(messages[0]["content"]) == {"ok": True}
+    assert "delegate_live_research_tool_budget" in messages[1]["content"]
+
+
+def test_delegate_live_research_budget_does_not_block_non_live_mcp_search_helpers():
+    agent = _make_agent("mcp_filesystem_search_files")
+    agent._delegate_depth = 1
+    args = {"path": ".", "pattern": "*.py"}
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"ok": True})) as mock_hfc:
+        first = SimpleNamespace(
+            content="",
+            tool_calls=[_mock_tool_call("mcp_filesystem_search_files", json.dumps(args), "c-file-search-1")],
+        )
+        second = SimpleNamespace(
+            content="",
+            tool_calls=[_mock_tool_call("mcp_filesystem_search_files", json.dumps(args), "c-file-search-2")],
+        )
+        agent._execute_tool_calls_sequential(first, messages, "task-1")
+        agent._execute_tool_calls_sequential(second, messages, "task-1")
+
+    assert mock_hfc.call_count == 2
+    assert all("delegate_live_research_tool_" not in m["content"] for m in messages)
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_delegate_live_research_blocks_native_extract_before_execution_but_parent_is_not():
+    args = {"urls": ["https://example.com"]}
+
+    delegate = _make_agent("web_extract")
+    delegate._delegate_depth = 1
+    delegate_msg = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call("web_extract", json.dumps(args), "c-web-delegate")],
+    )
+    delegate_messages = []
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+        delegate._execute_tool_calls_sequential(delegate_msg, delegate_messages, "task-1")
+
+    mock_hfc.assert_not_called()
+    assert "delegate_live_research_tool_block" in delegate_messages[0]["content"]
+    assert "live extraction" in delegate_messages[0]["content"]
+
+    parent = _make_agent("web_extract")
+    parent._delegate_depth = 0
+    parent_msg = SimpleNamespace(
+        content="",
+        tool_calls=[_mock_tool_call("web_extract", json.dumps(args), "c-web-parent")],
+    )
+    parent_messages = []
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"ok": "parent"})) as mock_hfc:
+        parent._execute_tool_calls_sequential(parent_msg, parent_messages, "task-1")
+
+    mock_hfc.assert_called_once()
+    assert json.loads(parent_messages[0]["content"]) == {"ok": "parent"}
+    assert parent._tool_guardrail_halt_decision is None
+
+
+def test_delegate_live_research_budget_blocks_duplicate_concurrent_mcp_searches_in_same_batch():
+    agent = _make_agent("mcp_research_web_search")
+    agent._delegate_depth = 1
+    args = {"query": "Hermes releases"}
+    calls = [
+        _mock_tool_call("mcp_research_web_search", json.dumps(args), "c-search-1"),
+        _mock_tool_call("mcp_research_web_search", json.dumps(args), "c-search-2"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+    executed = []
+
+    def fake_handle(name, call_args, task_id, **kwargs):
+        executed.append((name, call_args, kwargs["tool_call_id"]))
+        return json.dumps({"ok": kwargs["tool_call_id"]})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert executed == [("mcp_research_web_search", args, "c-search-1")]
+    assert [m["tool_call_id"] for m in messages] == ["c-search-1", "c-search-2"]
+    assert json.loads(messages[0]["content"]) == {"ok": "c-search-1"}
+    assert "delegate_live_research_tool_budget" in messages[1]["content"]
+    assert agent._tool_guardrail_halt_decision is not None
+    assert agent._tool_guardrail_halt_decision.code == "delegate_live_research_tool_budget"
+
+
 def test_default_run_conversation_warns_without_guardrail_halt():
     agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}

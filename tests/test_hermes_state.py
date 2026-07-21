@@ -6271,6 +6271,155 @@ class TestGetMessagesPagination:
 # Lone-surrogate persistence
 # =========================================================================
 
+class TestLegacyTimestampNormalization:
+    """Legacy/imported ISO-8601 TEXT timestamps must become REAL epoch seconds.
+
+    ISO TEXT in sessions.started_at / messages.timestamp breaks SQL-level
+    ORDER BY and MAX (TEXT sorts after REAL regardless of instant) and blows
+    up ``time.time() - ts`` arithmetic in the CLI and dashboard. The contract:
+    SessionDB normalizes at the source — a one-time v23 migration for existing
+    rows, plus coercion in import_sessions — so every reader sees numbers.
+    """
+
+    ISO_OLD = "2026-04-09T12:00:00+00:00"
+    ISO_OLD_EPOCH = 1775736000.0
+
+    def _reopen_with_downgraded_schema(self, db, tmp_path):
+        """Simulate a pre-v23 DB: plant legacy rows, mark schema v22, reopen."""
+        db._conn.execute("UPDATE schema_version SET version = 22")
+        db._conn.commit()
+        path = db.db_path
+        db.close()
+        return SessionDB(db_path=path)
+
+    def test_v23_migration_normalizes_session_and_message_timestamps(self, db, tmp_path):
+        db.create_session("legacy", "cli")
+        db.append_message("legacy", "user", "hello from the past")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=? WHERE id=?",
+            (self.ISO_OLD, "2026-04-09T13:00:00+00:00", "legacy"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp=? WHERE session_id=?",
+            (self.ISO_OLD, "legacy"),
+        )
+        db._conn.commit()
+
+        migrated = self._reopen_with_downgraded_schema(db, tmp_path)
+        try:
+            row = migrated._conn.execute(
+                "SELECT started_at, ended_at, typeof(started_at) AS t1, "
+                "typeof(ended_at) AS t2 FROM sessions WHERE id='legacy'"
+            ).fetchone()
+            assert row["t1"] == "real"
+            assert row["t2"] == "real"
+            assert row["started_at"] == self.ISO_OLD_EPOCH
+
+            mrow = migrated._conn.execute(
+                "SELECT timestamp, typeof(timestamp) AS t "
+                "FROM messages WHERE session_id='legacy'"
+            ).fetchone()
+            assert mrow["t"] == "real"
+            assert mrow["timestamp"] == self.ISO_OLD_EPOCH
+        finally:
+            migrated.close()
+
+    def test_v23_migration_fixes_sql_ordering_against_numeric_rows(self, db, tmp_path):
+        # Legacy ISO row is OLDER than the numeric row, but TEXT sorts after
+        # REAL — so before normalization it would incorrectly sort first.
+        db.create_session("legacy-old", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (self.ISO_OLD, "legacy-old"),
+        )
+        db._conn.commit()
+        db.create_session("numeric-new", "cli")
+
+        migrated = self._reopen_with_downgraded_schema(db, tmp_path)
+        try:
+            sessions = migrated.list_sessions_rich(order_by_last_active=True)
+            ids = [s["id"] for s in sessions]
+            assert ids.index("numeric-new") < ids.index("legacy-old")
+            # last_active must be numeric for downstream arithmetic.
+            for s in sessions:
+                assert isinstance(s["last_active"], float)
+                _ = time.time() - s["last_active"]
+        finally:
+            migrated.close()
+
+    def test_v23_migration_leaves_unparseable_text_untouched(self, db, tmp_path):
+        db.create_session("garbage", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            ("not-a-timestamp", "garbage"),
+        )
+        db._conn.commit()
+
+        migrated = self._reopen_with_downgraded_schema(db, tmp_path)
+        try:
+            row = migrated._conn.execute(
+                "SELECT started_at FROM sessions WHERE id='garbage'"
+            ).fetchone()
+            assert row["started_at"] == "not-a-timestamp"
+        finally:
+            migrated.close()
+
+    def test_import_sessions_coerces_iso_timestamps(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "imported-iso",
+                    "source": "import",
+                    "started_at": self.ISO_OLD,
+                    "ended_at": "2026-04-09T13:00:00Z",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "imported message",
+                            "timestamp": self.ISO_OLD,
+                        }
+                    ],
+                }
+            ]
+        )
+        assert result["ok"] is True
+        assert result["imported"] == 1
+
+        row = db._conn.execute(
+            "SELECT started_at, ended_at, typeof(started_at) AS t1, "
+            "typeof(ended_at) AS t2 FROM sessions WHERE id='imported-iso'"
+        ).fetchone()
+        assert row["t1"] == "real"
+        assert row["t2"] == "real"
+        assert row["started_at"] == self.ISO_OLD_EPOCH
+
+        mrow = db._conn.execute(
+            "SELECT timestamp, typeof(timestamp) AS t "
+            "FROM messages WHERE session_id='imported-iso'"
+        ).fetchone()
+        assert mrow["t"] == "real"
+        assert mrow["timestamp"] == self.ISO_OLD_EPOCH
+
+    def test_cron_job_runs_last_active_stays_numeric(self, db):
+        sid = "cron_tsjob_00000001"
+        db.create_session(session_id=sid, source="cron")
+        db.append_message(sid, role="user", content="tick")
+        runs = db.list_cron_job_runs("tsjob")
+        assert len(runs) == 1
+        assert isinstance(runs[0]["last_active"], float)
+        _ = time.time() - runs[0]["last_active"]
+
+    def test_timestamp_or_none_contract(self):
+        assert SessionDB._timestamp_or_none(None) is None
+        assert SessionDB._timestamp_or_none("") is None
+        assert SessionDB._timestamp_or_none(1700000000) == 1700000000.0
+        assert SessionDB._timestamp_or_none("1700000000.5") == 1700000000.5
+        assert SessionDB._timestamp_or_none(self.ISO_OLD) == self.ISO_OLD_EPOCH
+        # Naive ISO is treated as UTC (matches the SQL migration).
+        assert SessionDB._timestamp_or_none("2026-04-09T12:00:00") == self.ISO_OLD_EPOCH
+        assert SessionDB._timestamp_or_none("garbage") is None
+
+
 class TestLoneSurrogatePersistence:
     """sqlite3 encodes bound str params as UTF-8 and raises UnicodeEncodeError
     on lone surrogates (U+D800..U+DFFF). Tool results scraped from the web can

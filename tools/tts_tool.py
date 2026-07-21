@@ -1000,6 +1000,20 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         output_format = "mp3_44100_128"
 
+    voice_settings = None
+    _vs_keys = ("stability", "similarity_boost", "style", "use_speaker_boost")
+    if any(k in el_config for k in _vs_keys):
+        try:
+            from elevenlabs import VoiceSettings as _VoiceSettings
+            voice_settings = _VoiceSettings(
+                stability=float(el_config.get("stability", 0.5)),
+                similarity_boost=float(el_config.get("similarity_boost", 0.75)),
+                style=float(el_config.get("style", 0.0)),
+                use_speaker_boost=bool(el_config.get("use_speaker_boost", True)),
+            )
+        except Exception:
+            pass
+
     ElevenLabs = _import_elevenlabs()
     client = ElevenLabs(api_key=api_key)
     audio_generator = client.text_to_speech.convert(
@@ -1007,6 +1021,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
         voice_id=voice_id,
         model_id=model_id,
         output_format=output_format,
+        **( {"voice_settings": voice_settings} if voice_settings is not None else {} ),
     )
 
     # audio_generator yields chunks -- write them all

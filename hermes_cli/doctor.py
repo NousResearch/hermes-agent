@@ -2367,7 +2367,7 @@ def run_doctor(args):
                 capture_output=True, timeout=10,
             )
             return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
             return False
 
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")

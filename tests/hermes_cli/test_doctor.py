@@ -944,6 +944,37 @@ class TestGitHubTokenCheck:
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
+    def test_permission_error_from_gh_shows_warn(self, monkeypatch, tmp_path):
+        """PermissionError from subprocess.run (e.g. WSL gh.exe) should not crash doctor."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        import subprocess
+
+        real_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "auth"]:
+                raise PermissionError("[Errno 13] Permission denied: 'gh'")
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        # Should NOT crash — should show warning instead
+        assert "No GITHUB_TOKEN" in out
+        assert "Traceback" not in out
+
 
 def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch,

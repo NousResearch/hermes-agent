@@ -429,4 +429,4 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
-| Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |
+| Cron jobs | Inherits the full `fallback_providers` chain, two ways: tried at job start if the primary fails auth, and carried into the agent for mid-run failover on rate limits / quota / transport errors (credential-pool rotation tried first); optional per-job primary override | `fallback_providers:` (config.yaml); per-job `provider` / `model` |

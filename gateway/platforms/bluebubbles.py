@@ -310,9 +310,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """Compute the external webhook URL for BlueBubbles registration."""
+        """Compute the external webhook URL for BlueBubbles registration.
+
+        Keep ``127.0.0.1`` literal (do NOT rewrite to ``localhost``). On macOS
+        ``localhost`` resolves to IPv6 ``::1`` first, but the aiohttp listener
+        binds IPv4 ``127.0.0.1`` only — so a ``localhost`` URL makes BlueBubbles
+        POST to ``::1`` and the delivery silently fails. ``0.0.0.0``/``::`` still
+        become ``localhost`` so the server can reach the listener via loopback.
+        """
         host = self.webhook_host
-        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
+        if host in {"0.0.0.0", "::"}:
             host = "localhost"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 

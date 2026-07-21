@@ -658,19 +658,31 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url chooses a loopback host the listener actually binds.
+
+    The aiohttp webhook server binds IPv4 127.0.0.1 only. On macOS
+    'localhost' resolves to IPv6 ::1 first, so a 'localhost' URL makes
+    BlueBubbles POST to ::1 and the delivery silently fails. Keep 127.0.0.1
+    literal; only the wildcard binds (0.0.0.0 / ::) normalize to 'localhost'
+    so an external caller can still reach the listener via loopback.
+    """
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 127.0.0.1 → kept literal (IPv4 listener)
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
-    def test_local_hosts_normalized(self, monkeypatch, host):
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+    def test_wildcard_hosts_normalized_to_localhost(self, monkeypatch, host):
         adapter = _make_adapter(monkeypatch, webhook_host=host)
         assert adapter._webhook_url.startswith("http://localhost:")
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+    def test_loopback_hosts_preserved(self, monkeypatch, host):
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith(f"http://{host}:")
 
     def test_custom_host_preserved(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")

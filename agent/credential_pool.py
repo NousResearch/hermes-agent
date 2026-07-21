@@ -1532,8 +1532,24 @@ class CredentialPool:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
+            #
+            # Sync fires in two cases:
+            #   1. The entry is already EXHAUSTED/DEAD — recover stale state
+            #      when fresh tokens are sitting on disk.
+            #   2. The entry is OK but about to be proactively refreshed
+            #      (access token within the expiry skew).  Anthropic refresh
+            #      tokens are single-use: if another process (a `claude
+            #      /login` in a second terminal, or another Hermes profile)
+            #      already consumed our refresh token and wrote a fresh pair
+            #      to ~/.claude/.credentials.json, refreshing with OUR stale
+            #      copy fails and marks the entry exhausted (last_error_code
+            #      null).  Adopting the file's fresh tokens BEFORE the refresh
+            #      attempt closes that race — we either no longer need to
+            #      refresh, or refresh with the live token.  See the
+            #      OAuth-refresh-race incident notes.
             if (self.provider == "anthropic" and entry.source == "claude_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
+                    and (entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}
+                         or (refresh and self._entry_needs_refresh(entry)))):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
                 if synced is not entry:
                     entry = synced

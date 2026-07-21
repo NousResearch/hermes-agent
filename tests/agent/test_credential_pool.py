@@ -1555,6 +1555,88 @@ def test_load_pool_removes_nous_device_code_when_singleton_quarantined(tmp_path,
     assert [entry["id"] for entry in auth_payload["credential_pool"]["nous"]] == ["manual-key"]
 
 
+def test_anthropic_ok_entry_adopts_fresh_file_tokens_before_proactive_refresh(
+    tmp_path, monkeypatch
+):
+    """Regression: single-use OAuth refresh-token race.
+
+    The gateway holds a CredentialPool in memory across turns.  If another
+    process (a `claude /login` in a second terminal, or another Hermes
+    profile) consumes the entry's single-use refresh token and writes a
+    fresh pair to ~/.claude/.credentials.json, the in-memory entry is now
+    stale and seeding (which only runs at load_pool time) won't re-run.
+
+    When that in-memory entry's access token next enters the refresh skew,
+    _available_entries(refresh=True) must adopt the file's fresh tokens
+    BEFORE attempting the doomed network refresh with the stale token —
+    otherwise the refresh fails and the entry is marked exhausted with
+    last_error_code=null.
+
+    Tested at the method level (CredentialPool built directly) to isolate
+    the _available_entries sync path from load_pool's seeding/upsert.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from agent.credential_pool import (
+        CredentialPool,
+        PooledCredential,
+        AUTH_TYPE_OAUTH,
+        STATUS_OK,
+    )
+
+    # OK entry whose access token is within the 120s refresh skew, holding
+    # the STALE refresh token already consumed by another process.
+    near_expiry_ms = int(time.time() * 1000) + 30_000
+    stale_entry = PooledCredential.from_dict(
+        "anthropic",
+        {
+            "id": "racey",
+            "label": "claude-code",
+            "auth_type": AUTH_TYPE_OAUTH,
+            "priority": 0,
+            "source": "claude_code",
+            "access_token": "stale-access-token",
+            "refresh_token": "stale-consumed-refresh-token",
+            "expires_at_ms": near_expiry_ms,
+            "last_status": STATUS_OK,
+        },
+    )
+
+    # The credentials file holds the FRESH pair written by the other process,
+    # with an access token far outside the skew (so no refresh is needed once
+    # adopted).
+    fresh_expiry_ms = int(time.time() * 1000) + 8 * 3600 * 1000
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "fresh-access-token",
+            "refreshToken": "fresh-rotated-refresh-token",
+            "expiresAt": fresh_expiry_ms,
+        },
+    )
+
+    # Guard: the doomed network refresh must never be called.  If the fix
+    # regresses, selection falls through to this and fails loudly instead of
+    # silently attempting a network refresh with the stale token.
+    def _boom(*_a, **_kw):
+        raise AssertionError(
+            "refresh_anthropic_oauth_pure was called — the stale refresh "
+            "token should have been replaced by the file sync first"
+        )
+
+    monkeypatch.setattr("agent.anthropic_adapter.refresh_anthropic_oauth_pure", _boom)
+
+    pool = CredentialPool("anthropic", [stale_entry])
+    entry = pool.select()
+
+    assert entry is not None
+    # Adopted the fresh file tokens, status healthy, no exhaustion.
+    assert entry.refresh_token == "fresh-rotated-refresh-token"
+    assert entry.access_token == "fresh-access-token"
+    assert entry.last_status in (None, "ok")
+    assert entry.last_error_code is None
+
+
 def test_load_pool_removes_stale_file_backed_singleton_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

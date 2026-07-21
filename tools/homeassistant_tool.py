@@ -142,8 +142,22 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
 def _build_service_payload(
     entity_id: Optional[str] = None,
     data: Optional[Dict[str, Any]] = None,
+    domain: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build the JSON payload for a HA service call."""
+    """Build the JSON payload for a HA service call.
+
+    Home Assistant 2023+ requires ``todo`` domain services to target entities
+    via a ``target`` object rather than a top-level ``entity_id`` field.
+    All other domains continue to use the flat ``entity_id`` for backward
+    compatibility.
+    """
+    if domain == "todo" and entity_id:
+        # HA 2023+ requires todo domain to use target object
+        result: Dict[str, Any] = {"target": {"entity_id": entity_id}}
+        if data:
+            result["data"] = data
+        return result
+
     payload: Dict[str, Any] = {}
     if data:
         payload.update(data)
@@ -185,7 +199,7 @@ async def _async_call_service(
 
     hass_url, hass_token = _get_config()
     url = f"{hass_url}/api/services/{domain}/{service}"
-    payload = _build_service_payload(entity_id, data)
+    payload = _build_service_payload(entity_id, data, domain)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(

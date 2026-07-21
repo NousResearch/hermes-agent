@@ -215,7 +215,7 @@ Gateway hooks are Python modules that respond to lifecycle events:
 | `agent:end` | Agent finishes and returns response |
 | `command:*` | Any slash command is executed |
 
-Hooks are discovered from `gateway/builtin_hooks/` (an extension point — currently empty in the shipped distribution; `_register_builtin_hooks()` is a no-op stub) and `~/.hermes/hooks/` (user-installed). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
+Hooks are discovered from `gateway/builtin_hooks/` (an extension point — currently empty in the shipped distribution; `_register_builtin_hooks()` is a no-op stub) and `~/.hermes/hooks/` (user-installed). Each user hook is a directory with a `HOOK.yaml` manifest and `handler.py`, and is imported only when its manifest name or directory name matches `hooks.enabled` in `~/.hermes/config.yaml`. `hooks.disabled` is an optional deny-list and wins over enabled matches.
 
 ## Memory Provider Integration
 

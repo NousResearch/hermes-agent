@@ -476,6 +476,18 @@ class TestParseHooksBlock:
         })
         assert specs == []
 
+    def test_gateway_hook_policy_keys_do_not_warn(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            specs = shell_hooks._parse_hooks_block({
+                "enabled": ["long-task-alert"],
+                "disabled": ["old-experiment"],
+            })
+
+        assert specs == []
+        assert caplog.records == []
+
     def test_missing_command_skipped(self):
         specs = shell_hooks._parse_hooks_block({
             "pre_tool_call": [{"matcher": "terminal"}],

@@ -37,16 +37,63 @@ and ``thread_id`` is non-empty.
 """
 
 import asyncio
+import fnmatch
 import importlib.util
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import get_hermes_home, load_config_readonly
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"
+
+
+def _as_config_patterns(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _get_user_hook_policy() -> tuple[List[str], List[str]]:
+    try:
+        hooks_config = load_config_readonly().get("hooks", {})
+    except Exception as exc:
+        print(f"[hooks] Skipping user hooks: could not read config.yaml: {exc}", flush=True)
+        return [], ["*"]
+
+    if not isinstance(hooks_config, dict):
+        return [], []
+
+    return (
+        _as_config_patterns(hooks_config.get("enabled")),
+        _as_config_patterns(hooks_config.get("disabled")),
+    )
+
+
+def _matches_any(patterns: List[str], *names: str) -> bool:
+    return any(
+        fnmatch.fnmatch(name, pattern)
+        for pattern in patterns
+        for name in names
+        if name
+    )
+
+
+def _user_hook_enabled(
+    hook_name: str,
+    hook_dir_name: str,
+    enabled: List[str],
+    disabled: List[str],
+) -> tuple[bool, str]:
+    if _matches_any(disabled, hook_name, hook_dir_name):
+        return False, "disabled via config"
+    if not _matches_any(enabled, hook_name, hook_dir_name):
+        return False, "not enabled in config"
+    return True, ""
 
 
 class HookRegistry:
@@ -93,6 +140,8 @@ class HookRegistry:
         if not HOOKS_DIR.exists():
             return
 
+        enabled_hooks, disabled_hooks = _get_user_hook_policy()
+
         for hook_dir in sorted(HOOKS_DIR.iterdir()):
             if not hook_dir.is_dir():
                 continue
@@ -113,6 +162,16 @@ class HookRegistry:
                 events = manifest.get("events", [])
                 if not events:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
+                    continue
+
+                is_enabled, disabled_reason = _user_hook_enabled(
+                    str(hook_name),
+                    hook_dir.name,
+                    enabled_hooks,
+                    disabled_hooks,
+                )
+                if not is_enabled:
+                    print(f"[hooks] Skipping {hook_name}: {disabled_reason}", flush=True)
                     continue
 
                 # Dynamically load the handler module.

@@ -13188,6 +13188,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _turn_count = None
+                try:
+                    _turn_count = sum(1 for _m in (history or []) if _m.get("role") == "user") + 1
+                except Exception:
+                    _turn_count = None
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -13195,6 +13200,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    turn_count=_turn_count,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

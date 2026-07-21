@@ -10,6 +10,8 @@ Config (``~/.hermes/config.yaml``)::
       runtime_footer:
         enabled: true                       # off by default
         fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        # Optional: include ``turn_count`` for a subtle ``12/100`` session tracker.
+        turn_limit: 100                      # denominator for turn_count
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -53,6 +55,17 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    """Return *value* as a positive int, or ``None`` when invalid/missing."""
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return None
+    if coerced <= 0:
+        return None
+    return coerced
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -64,7 +77,7 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
+    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS), "turn_limit": 100}
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")
@@ -73,6 +86,9 @@ def resolve_footer_config(
             resolved["enabled"] = bool(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
+        turn_limit = _coerce_positive_int(global_cfg.get("turn_limit"))
+        if turn_limit is not None:
+            resolved["turn_limit"] = turn_limit
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -84,6 +100,9 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+                turn_limit = _coerce_positive_int(plat_footer.get("turn_limit"))
+                if turn_limit is not None:
+                    resolved["turn_limit"] = turn_limit
 
     return resolved
 
@@ -94,6 +113,8 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    turn_count: Optional[int] = None,
+    turn_limit: int = 100,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -115,6 +136,10 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "turn_count":
+            if turn_count is not None and turn_limit > 0:
+                shown_count = max(1, int(turn_count))
+                parts.append(f"{shown_count}/{int(turn_limit)}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +155,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    turn_count: Optional[int] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -145,5 +171,7 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        turn_count=turn_count,
+        turn_limit=int(cfg.get("turn_limit") or 100),
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

@@ -147,13 +147,36 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+def test_format_footer_turn_count_only():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50, context_length=100,
+        cwd="/x",
+        turn_count=12,
+        fields=("turn_count",),
+    )
+    assert out == "12/100"
+
+
+def test_format_footer_turn_count_custom_limit():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50, context_length=100,
+        cwd="/x",
+        turn_count=7,
+        turn_limit=50,
+        fields=("turn_count",),
+    )
+    assert out == "7/50"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "turn_limit": 100}
 
 
 def test_resolve_global_enable():
@@ -161,6 +184,12 @@ def test_resolve_global_enable():
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
     assert cfg["fields"] == ["model", "context_pct", "cwd"]
+
+
+def test_resolve_global_turn_limit():
+    user = {"display": {"runtime_footer": {"enabled": True, "turn_limit": 75}}}
+    cfg = resolve_footer_config(user, "telegram")
+    assert cfg["turn_limit"] == 75
 
 
 def test_resolve_platform_override_wins():
@@ -229,6 +258,47 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+def test_build_footer_turn_count_platform_override():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "platforms": {
+                    "discord": {
+                        "runtime_footer": {"enabled": True, "fields": ["turn_count"]}
+                    }
+                }
+            }
+        },
+        platform_key="discord",
+        model="openai/gpt-5.4",
+        context_tokens=25,
+        context_length=100,
+        cwd="/tmp",
+        turn_count=42,
+    )
+    assert out == "42/100"
+
+
+def test_build_footer_turn_count_uses_configured_platform_limit():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {"enabled": True, "fields": ["turn_count"], "turn_limit": 100},
+                "platforms": {
+                    "discord": {"runtime_footer": {"turn_limit": 250}}
+                },
+            }
+        },
+        platform_key="discord",
+        model="openai/gpt-5.4",
+        context_tokens=25,
+        context_length=100,
+        cwd="/tmp",
+        turn_count=42,
+    )
+    assert out == "42/250"
 
 
 def test_build_footer_per_platform_off_suppresses():

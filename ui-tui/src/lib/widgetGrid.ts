@@ -237,6 +237,7 @@ export function resolveGridTracks(total: number, gap: number, tracks: GridTrackS
       Math.max(0, remaining),
       unpinned.map(idx => trackFr(tracks[idx]!))
     )
+
     const violating = unpinned.filter((idx, i) => shares[i]! < trackMin(tracks[idx]!))
 
     if (!violating.length) {

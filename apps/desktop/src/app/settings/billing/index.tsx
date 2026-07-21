@@ -287,7 +287,14 @@ function AutoReloadRow({
     resetFeedback()
     setSaving(true)
 
-    const result = await api.updateAutoReload({ enabled: false })
+    // The gateway's billing.auto_reload handler unconditionally requires threshold
+    // + top_up_amount (invalid_request otherwise), so a disable must still carry the
+    // current amounts — mirroring the TUI, which always sends both.
+    const result = await api.updateAutoReload({
+      enabled: false,
+      reload_to_usd: initialAutoReloadAmount(autoReload.reload_to_usd, autoReload.reload_to_display),
+      threshold_usd: initialAutoReloadAmount(autoReload.threshold_usd, autoReload.threshold_display)
+    })
 
     setSaving(false)
 

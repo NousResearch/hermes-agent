@@ -134,6 +134,20 @@ describe('deriveBillingView', () => {
     expect(autoReload?.action?.url).toBe('https://portal.nousresearch.com/billing')
   })
 
+  it('renders the normal enabled auto-refill row when the card is null (no crash)', () => {
+    // The gateway emits auto_reload.card: null for a missing/unknown-kind card.
+    const view = deriveBillingView(
+      okBilling({ ...todayBillingState, auto_reload: { ...todayBillingState.auto_reload, card: null } }),
+      okSubscription(todaySubscriptionState)
+    )
+
+    expect(view.accountRows.find(row => row.id === 'auto_reload')).toMatchObject({
+      action: { label: 'Manage' },
+      description: 'Charges $10 automatically when your balance falls below $5.',
+      pill: { label: 'Enabled', tone: 'primary' }
+    })
+  })
+
   it('keeps buy credit controls visible but disabled when no card is on file', () => {
     const fixture = billingDevFixtures['no-card']
     const view = deriveBillingView(fixture.billing, fixture.subscription)

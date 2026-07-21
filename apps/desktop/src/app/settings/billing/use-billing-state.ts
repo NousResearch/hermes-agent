@@ -513,7 +513,9 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
     }
   }
 
-  if (autoReload.card.kind === 'distinct') {
+  // A null card (gateway emits it for a missing/unknown-kind card) falls through to
+  // the default enabled path below — the same treatment as a canonical card.
+  if (autoReload.card?.kind === 'distinct') {
     const { brand, last4 } = autoReload.card
     const cardLabel = brand && last4 ? `${capitalize(brand)} ••${last4}` : 'a different card'
     const portalUrl = billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL

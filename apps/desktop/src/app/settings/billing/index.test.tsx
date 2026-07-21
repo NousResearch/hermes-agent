@@ -166,6 +166,17 @@ describe('BillingSettings', () => {
     expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
   })
 
+  it('renders the enabled auto-refill row without crashing when the card is null', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(
+      okBilling({ ...todayBillingState, auto_reload: { ...todayBillingState.auto_reload, card: null } })
+    )
+
+    renderBilling()
+
+    expect(await screen.findByText('Charges $10 automatically when your balance falls below $5.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Manage' })).toBeTruthy()
+  })
+
   it('requires inline confirmation before disabling auto-refill', async () => {
     renderBilling()
 
@@ -179,7 +190,15 @@ describe('BillingSettings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Turn off' }))
 
-    await waitFor(() => expect(apiMocks.updateAutoReload).toHaveBeenCalledWith({ enabled: false }))
+    // The gateway requires threshold + top_up_amount even to disable, so the current
+    // amounts ride along (todayBillingState: threshold $5, reload-to $10).
+    await waitFor(() =>
+      expect(apiMocks.updateAutoReload).toHaveBeenCalledWith({
+        enabled: false,
+        reload_to_usd: '10',
+        threshold_usd: '5'
+      })
+    )
   })
 
   it('opens auto-refill edit without a validation error even when the saved config is below the minimum', async () => {

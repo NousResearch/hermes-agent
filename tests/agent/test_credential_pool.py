@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from agent import secret_scope as ss
+
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
@@ -22,6 +24,122 @@ def _jwt_with_claims(claims: dict) -> str:
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
+
+
+@pytest.fixture(autouse=True)
+def _reset_secret_scope():
+    ss.set_multiplex_active(False)
+    yield
+    ss.set_multiplex_active(False)
+
+
+def _load_openrouter_pool_in_scope(profile_home, secrets):
+    from agent.credential_pool import load_pool
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_token = set_hermes_home_override(profile_home)
+    secret_token = ss.set_secret_scope(secrets)
+    try:
+        return load_pool("openrouter").entries()
+    finally:
+        ss.reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+
+
+def test_pool_does_not_seed_another_profiles_process_env_key(tmp_path, monkeypatch):
+    """A scoped profile with no key must not re-import a global profile's key."""
+    profile_home = tmp_path / "profiles" / "profile-a"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-other-profile")
+    ss.set_multiplex_active(True)
+
+    assert _load_openrouter_pool_in_scope(profile_home, {}) == []
+
+
+def test_pool_does_not_resolve_profile_op_reference_from_another_profiles_env(tmp_path, monkeypatch):
+    """An unresolved profile reference must not borrow a process-global key."""
+    profile_home = tmp_path / "profiles" / "profile-a"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text("OPENROUTER_API_KEY=op://profile-a/key\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-other-profile")
+    ss.set_multiplex_active(True)
+
+    assert _load_openrouter_pool_in_scope(profile_home, {"OPENROUTER_API_KEY": "op://profile-a/key"}) == []
+
+
+def test_pool_keeps_process_env_key_without_profile_scope(tmp_path, monkeypatch):
+    """Single-profile deployments retain the legacy environment fallback."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-single-profile")
+
+    from agent.credential_pool import load_pool
+
+    entries = load_pool("openrouter").entries()
+
+    assert len(entries) == 1
+    assert entries[0].access_token == "sk-single-profile"
+
+
+def test_pool_keeps_single_profile_resolved_op_reference(tmp_path, monkeypatch):
+    """The legacy one-password resolution path still works outside multiplexing."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=op://single-profile/key\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-single-profile")
+
+    from agent.credential_pool import load_pool
+
+    entries = load_pool("openrouter").entries()
+
+    assert len(entries) == 1
+    assert entries[0].access_token == "sk-single-profile"
+
+
+def test_pool_fails_closed_for_unscoped_op_reference_when_multiplex_active(tmp_path, monkeypatch):
+    """A raw profile reference must not borrow a global key outside its scope."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=op://profile-a/key\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-other-profile")
+
+    scope_token = ss.set_secret_scope(None)
+    ss.set_multiplex_active(True)
+    try:
+        from agent.credential_pool import _seed_from_env
+
+        with pytest.raises(ss.UnscopedSecretError):
+            _seed_from_env("openrouter", [])
+    finally:
+        ss.set_multiplex_active(False)
+        ss.reset_secret_scope(scope_token)
+
+
+def test_pool_uses_scoped_resolution_for_op_reference_when_multiplex_active(tmp_path, monkeypatch):
+    """A scoped profile resolves its own 1Password value, never the global one."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=op://profile-a/key\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-other-profile")
+
+    scope_token = ss.set_secret_scope({"OPENROUTER_API_KEY": "sk-profile-a"})
+    ss.set_multiplex_active(True)
+    try:
+        from agent.credential_pool import _seed_from_env
+
+        entries = []
+        changed, active_sources = _seed_from_env("openrouter", entries)
+    finally:
+        ss.set_multiplex_active(False)
+        ss.reset_secret_scope(scope_token)
+
+    assert changed is True
+    assert active_sources == {"env:OPENROUTER_API_KEY"}
+    assert [entry.access_token for entry in entries] == ["sk-profile-a"]
 
 
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):

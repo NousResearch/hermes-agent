@@ -20614,7 +20614,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return "[clarify prompt could not be delivered]"
 
                 timeout = _clarify_mod.get_clarify_timeout()
-                response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+                response = _clarify_mod.wait_for_response(
+                    clarify_id,
+                    timeout=float(timeout),
+                    on_interrupt_check=lambda: getattr(agent, '_interrupt_requested', False),
+                )
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
                     return f"[user did not respond within {int(timeout / 60)}m]"

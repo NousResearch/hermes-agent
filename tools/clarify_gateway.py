@@ -100,7 +100,11 @@ def register(
     return entry
 
 
-def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
+def wait_for_response(
+    clarify_id: str,
+    timeout: float,
+    on_interrupt_check: Optional[Callable[[], bool]] = None,
+) -> Optional[str]:
     """Block on the entry's event until resolved or timeout fires.
 
     Polls in 1-second slices so the agent's inactivity heartbeat keeps
@@ -108,7 +112,12 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     for 10 minutes with zero activity touches and the gateway's inactivity
     watchdog kills the agent while the user is still typing.
 
-    Returns the resolved response string, or ``None`` on timeout.
+    *on_interrupt_check* is an optional callback that returns ``True`` when
+    the agent thread has been interrupted (e.g. ``/stop`` command).  When
+    set, the poll loop checks it each second and aborts early so the agent
+    can unwind instead of deadlocking until the full timeout.
+
+    Returns the resolved response string, or ``None`` on timeout / interrupt.
     """
     with _lock:
         entry = _entries.get(clarify_id)
@@ -126,6 +135,16 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+        # Check for agent interrupt before blocking on the event.
+        if on_interrupt_check is not None:
+            try:
+                if on_interrupt_check():
+                    logger.info(
+                        "Clarify %s interrupted — aborting wait", clarify_id,
+                    )
+                    break
+            except Exception:
+                pass
         if entry.event.wait(timeout=min(1.0, remaining)):
             break
         if touch_activity_if_due is not None:

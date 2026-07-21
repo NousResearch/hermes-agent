@@ -202,6 +202,72 @@ class TestClarifyPrimitive:
         assert isinstance(timeout, int)
         assert timeout > 0
 
+    def test_interrupt_check_aborts_wait(self):
+        """wait_for_response returns None early when on_interrupt_check fires."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id_int", "sk_int", "Q?", ["A"])
+
+        # Simulate interrupt flag flipping after a short delay.
+        interrupt_state = {"interrupted": False}
+
+        def set_interrupt():
+            time.sleep(0.1)
+            interrupt_state["interrupted"] = True
+
+        threading.Thread(target=set_interrupt).start()
+
+        result = cm.wait_for_response(
+            "id_int",
+            timeout=10.0,
+            on_interrupt_check=lambda: interrupt_state["interrupted"],
+        )
+        # Interrupt fired → returns None (no response).
+        assert result is None
+        # Should have returned well before the 10s timeout.
+        # (The test itself would hang for 10s if interrupt didn't work.)
+
+    def test_interrupt_check_false_keeps_waiting(self):
+        """wait_for_response blocks normally when interrupt check returns False."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id_no_int", "sk_no_int", "Q?", ["A"])
+
+        def resolver():
+            time.sleep(0.05)
+            cm.resolve_gateway_clarify("id_no_int", "X")
+
+        threading.Thread(target=resolver).start()
+
+        result = cm.wait_for_response(
+            "id_no_int",
+            timeout=5.0,
+            on_interrupt_check=lambda: False,
+        )
+        assert result == "X"
+
+    def test_interrupt_check_exception_is_ignored(self):
+        """Exceptions in on_interrupt_check are swallowed — wait continues."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id_exc", "sk_exc", "Q?", ["A"])
+
+        def resolver():
+            time.sleep(0.05)
+            cm.resolve_gateway_clarify("id_exc", "Y")
+
+        threading.Thread(target=resolver).start()
+
+        def bad_check():
+            raise RuntimeError("oops")
+
+        result = cm.wait_for_response(
+            "id_exc",
+            timeout=5.0,
+            on_interrupt_check=bad_check,
+        )
+        assert result == "Y"
+
 
 class TestGatewayTextIntercept:
     """The gateway's _handle_message intercepts text replies to pending clarifies."""

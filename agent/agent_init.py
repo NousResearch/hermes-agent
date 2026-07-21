@@ -28,7 +28,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urlparse, parse_qs, urlunparse
+from urllib.parse import parse_qs, urlparse, urlsplit, urlunparse, urlunsplit
 
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
@@ -66,6 +66,112 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _normalize_route_base_url(base_url: Any) -> str:
+    """Canonicalize an endpoint URL for model-route identity comparisons."""
+    raw = str(base_url or "")
+    if not raw:
+        return ""
+    if any(ord(char) <= 0x20 for char in raw):
+        return raw
+    had_query_delimiter = "?" in raw.split("#", 1)[0]
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        if not parsed.scheme or not hostname:
+            return raw
+        scheme = parsed.scheme.lower()
+        if "%" in hostname:
+            address, zone = hostname.split("%", 1)
+            host = f"{address.lower()}%{zone}"
+        else:
+            host = hostname.lower()
+        port = parsed.port
+    except (TypeError, ValueError):
+        return raw
+
+    route_host = parsed.netloc.rsplit("@", 1)[-1]
+    if route_host.startswith("[") or ":" in host:
+        host = f"[{host}]"
+    if port is not None and (scheme, port) not in {("http", 80), ("https", 443)}:
+        host = f"{host}:{port}"
+    if "@" in parsed.netloc:
+        host = f"{parsed.netloc.rsplit('@', 1)[0]}@{host}"
+
+    path = parsed.path
+    if path.endswith("/") and not had_query_delimiter:
+        path = path[:-1]
+
+    normalized = urlunsplit(
+        (
+            scheme,
+            host,
+            path,
+            parsed.query,
+            "",
+        )
+    )
+    if had_query_delimiter and not parsed.query:
+        normalized += "?"
+    return normalized
+
+
+def _provider_default_routes(provider: str) -> set[str]:
+    """Return known exact default routes for a canonical provider id."""
+    routes: set[str] = set()
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
+
+        overlay = HERMES_OVERLAYS.get(provider)
+        provider_def = get_provider(provider)
+        for value in (
+            getattr(overlay, "base_url_override", ""),
+            getattr(provider_def, "base_url", ""),
+        ):
+            route = _normalize_route_base_url(value)
+            if route:
+                routes.add(route)
+    except Exception:
+        pass
+
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        route = _normalize_route_base_url(
+            getattr(profile, "base_url", "")
+        )
+        if route:
+            routes.add(route)
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.models import normalize_provider as normalize_model_provider
+        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+
+        for provider_id, config in PROVIDER_REGISTRY.items():
+            canonical_id = normalize_registry_provider(
+                normalize_model_provider(provider_id)
+            )
+            if canonical_id != provider:
+                continue
+            route = _normalize_route_base_url(
+                getattr(config, "inference_base_url", "")
+            )
+            if route:
+                routes.add(route)
+    except Exception:
+        pass
+
+    if provider == "gemini":
+        routes.update(
+            f"{route.rstrip('/')}/openai"
+            for route in list(routes)
+        )
+    return routes
 
 
 def _build_codex_gpt5_autoraise_notice(
@@ -1792,7 +1898,9 @@ def init_agent(
             except Exception:
                 pass
         _configured_provider = str(_model_cfg.get("provider") or "").strip()
-        _configured_base_url = str(_model_cfg.get("base_url") or "").rstrip("/")
+        _configured_base_url = _normalize_route_base_url(
+            _model_cfg.get("base_url")
+        )
         if not _configured_base_url and _configured_provider.lower().startswith("custom:"):
             _configured_custom_name = _configured_provider.split(":", 1)[1].lower()
             for _provider_entry in _custom_providers:
@@ -1800,11 +1908,25 @@ def init_agent(
                     continue
                 if str(_provider_entry.get("name") or "").strip().lower() != _configured_custom_name:
                     continue
-                _configured_base_url = str(
-                    _provider_entry.get("base_url") or ""
-                ).rstrip("/")
+                _configured_base_url = _normalize_route_base_url(
+                    _provider_entry.get("base_url")
+                )
                 break
-        _active_base_url = str(agent.base_url or "").rstrip("/")
+        _active_route_url = str(agent.base_url or "")
+        _requested_route_url = str(base_url or "")
+        if "?" in _requested_route_url.split("#", 1)[0]:
+            try:
+                _requested_parts = urlparse(_requested_route_url)
+                _requested_without_query = urlunparse(
+                    _requested_parts._replace(query="")
+                )
+                if _normalize_route_base_url(
+                    _requested_without_query
+                ) == _normalize_route_base_url(_active_route_url):
+                    _active_route_url = _requested_route_url
+            except (TypeError, ValueError):
+                pass
+        _active_base_url = _normalize_route_base_url(_active_route_url)
         _route_mismatch = bool(
             _configured_base_url
             and _active_base_url
@@ -1812,19 +1934,43 @@ def init_agent(
         )
         if not _configured_base_url:
             _active_provider = str(agent.provider or "").strip()
+            _normalize_provider_fn = None
+            _normalize_registry_provider_fn = None
             try:
-                from hermes_cli.models import normalize_provider
+                from hermes_cli.models import normalize_provider as _normalize_provider_fn
 
-                _configured_provider = normalize_provider(_configured_provider)
-                _active_provider = normalize_provider(_active_provider)
+                _configured_provider = _normalize_provider_fn(_configured_provider)
+                _active_provider = _normalize_provider_fn(_active_provider)
             except Exception:
                 _configured_provider = _configured_provider.lower()
                 _active_provider = _active_provider.lower()
-            _route_mismatch = bool(
-                _configured_provider
-                and _active_provider
-                and _configured_provider != _active_provider
-            )
+            try:
+                from hermes_cli.providers import (
+                    normalize_provider as _normalize_registry_provider_fn,
+                )
+
+                _configured_provider = _normalize_registry_provider_fn(
+                    _configured_provider
+                )
+                _active_provider = _normalize_registry_provider_fn(
+                    _active_provider
+                )
+            except Exception:
+                pass
+            if _active_base_url:
+                _configured_routes = _provider_default_routes(
+                    _configured_provider
+                )
+                _route_mismatch = bool(
+                    not _configured_routes
+                    or _active_base_url not in _configured_routes
+                )
+            else:
+                _route_mismatch = bool(
+                    _configured_provider
+                    and _active_provider
+                    and _configured_provider != _active_provider
+                )
         _model_mismatch = bool(
             _configured_default_runtime_model
             and _configured_default_runtime_model != _active_runtime_model

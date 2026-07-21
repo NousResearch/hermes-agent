@@ -196,6 +196,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                # `"tool_calls": []` appears in histories written by older
+                # versions; strict providers (DeepSeek) reject it with
+                # HTTP 400 "Expected an array with minimum length 1".
+                if not tool_calls:
+                    needs_sanitize = True
+                    break
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
                         "call_id" in tc
@@ -252,6 +258,10 @@ class ChatCompletionsTransport(ProviderTransport):
 
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                if not tool_calls:
+                    out_msg = mutable_msg()
+                    out_msg.pop("tool_calls", None)
+                    continue
                 copied_tool_calls: list[Any] | None = None
                 for tc_idx, tc in enumerate(tool_calls):
                     if isinstance(tc, dict):

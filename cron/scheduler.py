@@ -2436,6 +2436,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
+    job_id = (job.get("id") or "").strip()
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
@@ -2445,8 +2446,17 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more."
     )
+    if job_id:
+        cron_hint += (
+            f" YOUR JOB ID: {job_id}. You can use "
+            f"cronjob(action='update', job_id='{job_id}', ...) to modify your "
+            f"own schedule, or cronjob(action='pause', job_id='{job_id}') / "
+            f"cronjob(action='remove', job_id='{job_id}') to stop yourself.]\n\n"
+        )
+    else:
+        cron_hint += "]\n\n"
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")

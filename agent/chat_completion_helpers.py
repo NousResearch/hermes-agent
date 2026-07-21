@@ -1223,7 +1223,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_kimi=_is_kimi,
         is_tokenhub=_is_tokenhub,
         is_lmstudio=_is_lmstudio,
-        is_custom_provider=agent.provider == "custom",
+        is_custom_provider=(
+            (agent.provider or "").strip().lower() == "custom"
+            or (agent.provider or "").strip().lower().startswith("custom:")
+        ),
         ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,

@@ -1505,6 +1505,52 @@ def _dispatch_tick_lock(db_path: Path):
                 handle.close()
 
 
+# Periodic WAL checkpoint state for the dispatcher tick path. The kanban
+# connections run with ``wal_autocheckpoint=100``, but a passive
+# autocheckpoint can be starved forever on a busy multi-process board (any
+# reader with an open snapshot blocks the WAL reset), letting the -wal file
+# grow without bound between gateway restarts. Once per coarse interval the
+# dispatcher — the board's single writer during a tick, and holding the
+# dispatch flock — issues an explicit ``wal_checkpoint(TRUNCATE)``.
+# Best-effort: a busy/locked checkpoint is logged at DEBUG and retried next
+# interval. Keyed per resolved DB path so multi-board dispatchers checkpoint
+# each board on its own clock.
+_WAL_CHECKPOINT_INTERVAL_SECONDS = 300.0
+_LAST_WAL_CHECKPOINT: dict[str, float] = {}
+_WAL_CHECKPOINT_LOCK = threading.Lock()
+
+
+def _maybe_checkpoint_wal(conn: sqlite3.Connection, db_path: Path) -> None:
+    """Run ``PRAGMA wal_checkpoint(TRUNCATE)`` at a coarse interval.
+
+    Called from the dispatcher tick while the board's dispatch lock is
+    held. No-ops (cheaply) until ``_WAL_CHECKPOINT_INTERVAL_SECONDS`` has
+    elapsed since this process last checkpointed this board. Never raises:
+    the checkpoint is pure hygiene and must not fail a dispatch tick.
+    """
+    try:
+        key = str(db_path.resolve())
+    except OSError:
+        key = str(db_path)
+    now = time.monotonic()
+    with _WAL_CHECKPOINT_LOCK:
+        last = _LAST_WAL_CHECKPOINT.get(key)
+        if last is not None and (now - last) < _WAL_CHECKPOINT_INTERVAL_SECONDS:
+            return
+        # Claim the slot before doing the work so concurrent ticks (other
+        # threads in this process) don't double-checkpoint on the boundary.
+        _LAST_WAL_CHECKPOINT[key] = now
+    try:
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        _log.debug(
+            "kanban WAL checkpoint (TRUNCATE) on %s -> %s "
+            "(busy, wal_frames, checkpointed_frames)",
+            key, tuple(row) if row is not None else None,
+        )
+    except sqlite3.Error as exc:
+        _log.debug("kanban WAL checkpoint on %s skipped: %s", key, exc)
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -7669,7 +7715,7 @@ def dispatch_once(
     with _dispatch_tick_lock(db_path) as held:
         if not held:
             return DispatchResult(skipped_locked=True)
-        return _dispatch_once_locked(
+        result = _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
             ttl_seconds=ttl_seconds,
@@ -7682,6 +7728,10 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
+        # Still under the dispatch lock: opportunistically truncate the WAL
+        # at a coarse interval so it cannot grow unbounded between restarts.
+        _maybe_checkpoint_wal(conn, db_path)
+        return result
 
 
 def _dispatch_once_locked(

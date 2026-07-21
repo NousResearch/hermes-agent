@@ -259,6 +259,79 @@ describe('useRouteResume', () => {
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
   })
+
+  it("does not re-resume the old session when the new profile gateway opens before /new commits (#68594)", () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: "runtime-a" }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([["session-a", "runtime-a"]]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: "session-a" }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-a"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-a"
+        resumeSession={resumeSession}
+        routedSessionId="session-a"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-a"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // Profile switch: clear refs, set freshDraftReady, close profile A gateway.
+    activeSessionIdRef.current = null
+    selectedStoredSessionIdRef.current = null
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="closed"
+        locationPathname="/session-a"
+        resumeSession={resumeSession}
+        routedSessionId="session-a"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    // Profile B gateway opens before React Router commits /new.
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/session-a"
+        resumeSession={resumeSession}
+        routedSessionId="session-a"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    // Must NOT resume session-a: the fresh draft transition is active.
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
 })
 
 describe('useRouteResume bounded auto-retry after a failed resume', () => {
@@ -472,3 +545,4 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     expect($resumeExhaustedSessionId.get()).toBeNull()
   })
 })
+

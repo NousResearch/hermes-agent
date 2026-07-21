@@ -356,62 +356,90 @@ _SHELL_NAMES = frozenset({"sh", "bash", "zsh", "dash", "ash", "ksh"})
 
 
 def _shell_command_executes_git(command: str) -> bool:
-    """True when a shell -c/-lc payload has git in command position (not echo text)."""
-    import shlex
+    """True when a shell -c/-lc payload executes git (not quoted/echoed text)."""
     try:
-        tokens = shlex.split(command)
+        tokens = _shell_payload_tokens(command)
     except ValueError:
         return "git" in command and (" -c " in f" {command} " or " -lc " in f" {command} ")
 
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        name = Path(tok).name
-        if name in _SHELL_NAMES and i + 1 < len(tokens):
-            j = i + 1
-            # skip shell flags like -e -u -o pipefail until -c/-lc
-            while j < len(tokens) and tokens[j].startswith("-") and tokens[j] not in {"-c", "-lc"}:
-                # flags that take args
-                if tokens[j] in {"-o", "-O"} and j + 1 < len(tokens):
-                    j += 2
-                    continue
-                j += 1
-            if j < len(tokens) and tokens[j] in {"-c", "-lc"} and j + 1 < len(tokens):
-                payload = tokens[j + 1]
-                if _payload_has_git_command(payload):
-                    return True
-                i = j + 2
-                continue
-        i += 1
+    command_position = True
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _SHELL_CONNECTORS:
+            command_position = True
+            index += 1
+            continue
+        if not command_position:
+            index += 1
+            continue
+        if _env_assignment_name(token):
+            index += 1
+            continue
+
+        name = Path(token).name
+        if name in _SHELL_NAMES:
+            payload = _shell_c_payload(tokens, index)
+            if payload is not None and _payload_has_git_command(payload):
+                return True
+        command_position = False
+        index += 1
     return False
+
+
+_SHELL_CONNECTORS = frozenset({";", "|", "||", "&&", "&"})
+
+
+def _shell_payload_tokens(payload: str) -> list[str]:
+    lexer = shlex.shlex(payload, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _shell_c_payload(tokens: list[str], shell_index: int) -> Optional[str]:
+    index = shell_index + 1
+    while index < len(tokens) and tokens[index].startswith("-"):
+        if tokens[index] in {"-c", "-lc"}:
+            return tokens[index + 1] if index + 1 < len(tokens) else None
+        if tokens[index] in {"-o", "-O"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        index += 1
+    return None
 
 
 def _payload_has_git_command(payload: str) -> bool:
     """Return True if git appears as an executable token in a shell payload."""
-    import shlex
-    if _shell_command_executes_git(payload):
-        return True
     try:
-        parts = shlex.split(payload)
+        parts = _shell_payload_tokens(payload)
     except ValueError:
         return bool(re.search(r"(?:^|[;|&\n\t ])git(?:[;|&\n\t ]|$)", payload))
 
-    prev_connector = True  # start of payload is a command position
-    idx = 0
-    while idx < len(parts):
-        part = parts[idx]
-        if part in {";", "|", "||", "&&", "&"}:
-            prev_connector = True
-            idx += 1
+    command_position = True
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part in _SHELL_CONNECTORS:
+            command_position = True
+            index += 1
             continue
-        # skip env assignments before a command
-        if "=" in part and not part.startswith("-") and Path(part).name != "git":
-            idx += 1
+        if not command_position:
+            index += 1
             continue
-        if prev_connector and Path(part).name == "git":
+        if _env_assignment_name(part):
+            index += 1
+            continue
+
+        name = Path(part).name
+        if name == "git":
             return True
-        prev_connector = False
-        idx += 1
+        if name in _SHELL_NAMES:
+            nested_payload = _shell_c_payload(parts, index)
+            if nested_payload is not None and _payload_has_git_command(nested_payload):
+                return True
+        command_position = False
+        index += 1
     return False
 
 

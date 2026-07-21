@@ -222,7 +222,8 @@ tts:
   provider: nous
 
 browser:
-  backend: nous
+  cloud_provider: browser-use   # browser automation routes through Tool Gateway
+  use_gateway: true
 ```
 
 The OAuth refresh token is stored separately at `~/.hermes/auth.json` (not in `config.yaml` — credentials and configuration are kept separate by design).

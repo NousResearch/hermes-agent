@@ -21,6 +21,7 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+ASSISTANT_RESPONSE_MIDDLEWARE = "assistant_response"
 
 # Back-compat aliases for older PoC branches that used API terminology.
 API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE
@@ -31,6 +32,7 @@ VALID_MIDDLEWARE: set[str] = {
     TOOL_EXECUTION_MIDDLEWARE,
     LLM_REQUEST_MIDDLEWARE,
     LLM_EXECUTION_MIDDLEWARE,
+    ASSISTANT_RESPONSE_MIDDLEWARE,
 }
 
 
@@ -42,6 +44,21 @@ class RequestMiddlewareResult:
     original_payload: Any
     changed: bool = False
     trace: List[Dict[str, Any]] = field(default_factory=list)
+    control: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AssistantResponseMiddlewareResult:
+    """Structured decision from assistant-response validation middleware."""
+
+    action: str = "pass"
+    response_text: str = ""
+    message: str = ""
+    feedback: str = ""
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    max_retries: Optional[int] = None
+    trace: List[Dict[str, Any]] = field(default_factory=list)
+    raw_decision: Dict[str, Any] = field(default_factory=dict)
 
 
 def observer_payload(**kwargs: Any) -> Dict[str, Any]:
@@ -89,11 +106,13 @@ def apply_llm_request_middleware(
             original_payload=request,
             changed=False,
             trace=[],
+            control={},
         )
 
     original_request = _safe_copy(request)
     current_request = _safe_copy(original_request)
     trace: List[Dict[str, Any]] = []
+    control: Dict[str, Any] = {}
 
     for result in _invoke_middleware(
         LLM_REQUEST_MIDDLEWARE,
@@ -104,16 +123,20 @@ def apply_llm_request_middleware(
         if not isinstance(result, dict):
             continue
         next_request = result.get("request")
-        if not isinstance(next_request, dict):
-            continue
-        current_request = _safe_copy(next_request)
-        trace.append(_trace_entry(result))
+        if isinstance(next_request, dict):
+            current_request = _safe_copy(next_request)
+        next_control = result.get("control")
+        if isinstance(next_control, dict):
+            control.update(_safe_copy(next_control))
+        if isinstance(next_request, dict) or isinstance(next_control, dict):
+            trace.append(_trace_entry(result))
 
     return RequestMiddlewareResult(
         payload=current_request,
         original_payload=original_request,
         changed=bool(trace),
         trace=trace,
+        control=control,
     )
 
 
@@ -170,6 +193,46 @@ def apply_api_request_middleware(
     return apply_llm_request_middleware(request, **context)
 
 
+def apply_assistant_response_middleware(
+    response_text: str,
+    **context: Any,
+) -> AssistantResponseMiddlewareResult:
+    """Apply final-draft assistant response validation middleware.
+
+    Middleware may return a structured decision dict with action:
+    ``pass``, ``rewrite``, ``retry_with_feedback``, ``require_tool``, or
+    ``block``. The first decisive non-pass action wins; pass decisions are
+    traced and evaluation continues so multiple validators can observe.
+    """
+    original_text = response_text or ""
+    if not _has_middleware(ASSISTANT_RESPONSE_MIDDLEWARE):
+        return AssistantResponseMiddlewareResult(
+            action="pass",
+            response_text=original_text,
+            trace=[],
+        )
+
+    trace: List[Dict[str, Any]] = []
+    for result in _invoke_middleware(
+        ASSISTANT_RESPONSE_MIDDLEWARE,
+        response_text=original_text,
+        **context,
+    ):
+        if not isinstance(result, dict):
+            continue
+        decision = _normalize_assistant_response_decision(result, original_text)
+        trace.append(_trace_entry(result))
+        decision.trace = list(trace)
+        if decision.action != "pass":
+            return decision
+
+    return AssistantResponseMiddlewareResult(
+        action="pass",
+        response_text=original_text,
+        trace=trace,
+    )
+
+
 def run_llm_execution_middleware(
     request: Dict[str, Any],
     next_call: Callable[[Dict[str, Any]], Any],
@@ -217,6 +280,84 @@ def run_api_execution_middleware(
 ) -> Any:
     """Compatibility wrapper for older ``api_execution`` naming."""
     return run_llm_execution_middleware(request, next_call, **context)
+
+
+def _normalize_tool_call(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    name = value.get("name") or value.get("tool_name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    raw_args = value.get("args", value.get("arguments", {}))
+    if not isinstance(raw_args, dict):
+        raw_args = {}
+    normalized: Dict[str, Any] = {
+        "name": name.strip(),
+        "args": _safe_copy(raw_args),
+    }
+    reason = value.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        normalized["reason"] = reason.strip()
+    read_only = value.get("read_only")
+    if isinstance(read_only, bool):
+        normalized["read_only"] = read_only
+    return normalized
+
+
+def _normalize_tool_calls(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    calls: List[Dict[str, Any]] = []
+    for item in value:
+        call = _normalize_tool_call(item)
+        if call is not None:
+            calls.append(call)
+    return calls
+
+
+def _normalize_assistant_response_decision(
+    result: Dict[str, Any],
+    original_text: str,
+) -> AssistantResponseMiddlewareResult:
+    action = str(result.get("action") or result.get("verdict") or "pass").strip().lower()
+    aliases = {
+        "allow": "pass",
+        "ok": "pass",
+        "revise": "rewrite",
+        "retry": "retry_with_feedback",
+        "retry_with_feedback": "retry_with_feedback",
+        "require_evidence": "require_tool",
+        "evidence_required": "require_tool",
+        "tool": "require_tool",
+        "deny": "block",
+    }
+    action = aliases.get(action, action)
+    if action not in {"pass", "rewrite", "retry_with_feedback", "require_tool", "block"}:
+        action = "block"
+
+    message = result.get("message", "")
+    replacement = result.get("response_text", result.get("revised_response"))
+    if replacement is None and action == "rewrite":
+        replacement = message or original_text
+    elif replacement is None:
+        replacement = original_text
+    response_text = str(replacement) if replacement is not None else original_text
+    feedback = result.get("feedback", "")
+    try:
+        max_retries = result.get("max_retries")
+        max_retries = int(max_retries) if max_retries is not None else None
+    except Exception:
+        max_retries = None
+
+    return AssistantResponseMiddlewareResult(
+        action=action,
+        response_text=response_text,
+        message=str(message or ""),
+        feedback=str(feedback or ""),
+        tool_calls=_normalize_tool_calls(result.get("tool_calls")),
+        max_retries=max_retries,
+        raw_decision=_safe_copy(result),
+    )
 
 
 def _invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

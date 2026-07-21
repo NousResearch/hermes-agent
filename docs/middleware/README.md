@@ -19,6 +19,8 @@ With middleware enabled, plugins can:
   streaming, interrupt, and hook behavior.
 - Wrap the actual tool execution callback while preserving Hermes guardrails,
   approval, post-tool hooks, and tool-result transformation.
+- Validate a final assistant draft before it is committed, with structured
+  control over pass, rewrite, retry, evidence-tool execution, or block.
 
 ## Contract
 
@@ -28,6 +30,7 @@ Plugins register middleware from `register(ctx)`:
 def register(ctx):
     ctx.register_middleware("llm_request", on_llm_request)
     ctx.register_middleware("llm_execution", on_llm_execution)
+    ctx.register_middleware("assistant_response", on_assistant_response)
     ctx.register_middleware("tool_request", on_tool_request)
     ctx.register_middleware("tool_execution", on_tool_execution)
 ```
@@ -44,10 +47,11 @@ Supported middleware kinds:
 
 | Kind | Payload | Return shape | Purpose |
 | --- | --- | --- | --- |
-| `llm_request` | `request`, `original_request` | `{"request": {...}}` | Replace effective provider kwargs before provider execution. |
+| `llm_request` | `request`, `original_request` | `{"request": {...}}`, optional `{"control": {...}}` | Replace effective provider kwargs before provider execution and optionally set per-turn runtime controls. |
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `assistant_response` | `response_text`, `messages`, `response_message` | `{"action": "pass|rewrite|retry_with_feedback|require_tool|block", ...}` | Validate the final assistant draft before persistence and final delivery. |
 
 Request middleware can return optional trace fields:
 
@@ -61,6 +65,21 @@ return {
 
 Hermes stores those trace entries in later observer hook payloads as
 `middleware_trace`.
+
+`llm_request` middleware may also return per-turn `control`. Currently Hermes
+recognizes `stream_policy: "buffer_until_validated"` (aliases: `buffer`,
+`validate_first`, `disable`, `off`) and disables user-visible streaming for
+that provider attempt so a later `assistant_response` validator can approve or
+transform the draft before final delivery:
+
+```python
+return {
+    "request": updated_request,
+    "control": {"stream_policy": "buffer_until_validated"},
+    "source": "judgment-integrity",
+    "reason": "risky-turn",
+}
+```
 
 Execution middleware receives a `next_call` callback. Call it to continue the
 chain:
@@ -92,6 +111,51 @@ Request middleware sees the full provider kwargs, including `messages` or
 Responses API `input`, model settings, tool definitions, stream options, and
 provider-specific options. Execution middleware receives the same effective
 request plus `next_call`.
+
+### Assistant Final Drafts
+
+When the model produces a text final answer rather than tool calls, Hermes
+builds the assistant draft and then applies `assistant_response` middleware
+before the draft is appended to durable conversation history or returned as the
+turn's final answer.
+
+The first decisive non-`pass` decision wins. Supported decisions are:
+
+| Action | Required fields | Runtime effect |
+| --- | --- | --- |
+| `pass` | none | Commit the original draft. |
+| `rewrite` | `response_text` or `message` | Replace the final assistant text before commit. |
+| `block` | `message` or `response_text` | Replace the final assistant text with a visible block explanation. |
+| `retry_with_feedback` | `feedback` | Append internal validator feedback and re-enter the provider loop in the same user turn, capped by `HERMES_ASSISTANT_RESPONSE_VALIDATION_MAX_ATTEMPTS` or decision `max_retries`. |
+| `require_tool` | `tool_calls` | Convert concrete tool calls into a normalized assistant tool-call turn, execute them through Hermes' normal tool path, append tool results, and re-enter the provider loop in the same user turn. |
+
+Example:
+
+```python
+def on_assistant_response(**kwargs):
+    draft = kwargs["response_text"]
+    if "I checked" in draft and not has_recorded_evidence(kwargs):
+        return {
+            "action": "require_tool",
+            "tool_calls": [
+                {
+                    "name": "read_file",
+                    "args": {"path": "README.md"},
+                    "reason": "verify source before reversing",
+                    "read_only": True,
+                }
+            ],
+            "feedback": "Gather actual evidence before changing the answer.",
+            "max_retries": 1,
+            "source": "judgment-integrity",
+        }
+    return {"action": "pass", "source": "judgment-integrity"}
+```
+
+Validator-requested tools do not bypass existing tool policy. They still flow
+through tool availability checks, `tool_request` middleware, `pre_tool_call`,
+guardrails, approvals, execution middleware, `post_tool_call`, and
+`transform_tool_result` before their result is appended back to context.
 
 ### Tool Calls
 
@@ -242,6 +306,9 @@ For NeMo Relay adaptive execution middleware, see
   routing to a dynamic external system.
 - Request middleware should return complete replacement payloads, not partial
   patches.
+- `assistant_response` middleware should be bounded. Use `max_retries` and
+  concrete, read-only `tool_calls` for evidence acquisition; do not synthesize
+  broad or destructive tool calls from validator output.
 - Execution middleware should call `next_call(...)` exactly once unless it is
   intentionally short-circuiting execution.
 - If execution middleware raises before calling `next_call(...)`, Hermes treats

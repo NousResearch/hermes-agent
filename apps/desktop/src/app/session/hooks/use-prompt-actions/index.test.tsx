@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { $busy, $connection, $messages, $sessions, $turnStartedAt, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -337,6 +338,113 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
+  })
+
+  it('queues the /goal kickoff instead of dropping it when the session is busy (#63352)', async () => {
+    // The backend sets the goal the moment slash.exec runs — dropping the
+    // returned kickoff message because busyRef was true left a goal the agent
+    // never heard about. The busy path must park the kickoff on the composer
+    // queue so the settle drain sends it.
+    $queuedPromptsBySession.set({})
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): ship the release notes',
+          message: 'ship the release notes'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal ship the release notes')
+
+    // The kickoff must NOT submit mid-turn — and must NOT vanish either.
+    expect(calls.map(c => c.method)).toEqual(['slash.exec'])
+
+    const queued = getQueuedPrompts(RUNTIME_SESSION_ID)
+    expect(queued.map(entry => entry.text)).toEqual(['ship the release notes'])
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    // The notice still renders, and the busy line reports a queue, not a demand
+    // to /interrupt.
+    expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
+    expect(renderedText).toContain('queued')
+
+    $queuedPromptsBySession.set({})
+  })
+
+  it('slash status header carries the command token, not the full invocation', async () => {
+    // `/goal <long prose>` used to echo the entire invocation in the mono
+    // header AND the goal text again in the backend notice right under it.
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set: build the whole thing',
+          message: 'build the whole thing end to end with tests'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal build the whole thing end to end with tests')
+
+    const systemTexts = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ role?: string; parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages
+          .filter(message => message.role === 'system')
+          .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(systemTexts).toContain('slash:/goal\n')
+    expect(systemTexts).not.toContain('slash:/goal build the whole thing')
   })
 
   it('dispatches a slash command with a multiline arg instead of "empty slash command" (#41323, #55510)', async () => {

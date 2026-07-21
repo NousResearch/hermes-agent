@@ -73,6 +73,14 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/browser')?.args).toBe(true)
   })
 
+  it('keeps /goal arg text editable instead of sealing it into a chip', () => {
+    // /goal takes free prose (the goal itself) plus subcommands. Without
+    // args:true, Space after the command name committed a sealed directive
+    // chip and the goal text rendered awkwardly after a pill.
+    expect(resolveDesktopCommand('/goal')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/goal')?.args).toBe(true)
+  })
+
   it('routes /journey (and aliases) to the memory graph overlay action', () => {
     expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
     expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })

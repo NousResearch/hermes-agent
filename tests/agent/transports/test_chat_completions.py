@@ -318,6 +318,29 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
+    def test_custom_provider_gets_provider_prefs(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_preferences={"only": ["openai"]},
+            is_custom_provider=True,
+        )
+        assert kw["extra_body"]["provider"] == {"only": ["openai"]}
+    
+    def test_non_openrouter_non_custom_provider_skips_provider_prefs(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_preferences={"only": ["openai"]},
+            is_openrouter=False,
+            is_custom_provider=False,
+        )
+        assert "provider" not in kw.get("extra_body", {})
+
     def test_openrouter_pareto_min_coding_score(self, transport):
         """Profile path: model=openrouter/pareto-code + score → plugins block."""
         from providers import get_provider_profile

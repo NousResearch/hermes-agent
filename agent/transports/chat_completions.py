@@ -436,13 +436,14 @@ class ChatCompletionsTransport(ProviderTransport):
         extra_body: dict[str, Any] = {}
 
         is_openrouter = params.get("is_openrouter", False)
+        is_custom_provider = params.get("is_custom_provider", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
 
         provider_prefs = params.get("provider_preferences")
-        if provider_prefs and is_openrouter:
+        if provider_prefs and (is_openrouter or is_custom_provider):
             extra_body["provider"] = provider_prefs
 
         # Pareto Code router plugin — model-gated. Same shape as the

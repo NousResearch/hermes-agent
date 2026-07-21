@@ -1891,7 +1891,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_click",
-        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.\n\nThe click is dispatched as a real compositor-level (native) mouse event at the element's location so React onChange/onClick handlers fire the same way a real user click does.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -3128,22 +3128,337 @@ def browser_snapshot(
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_click(ref: str, task_id: Optional[str] = None) -> str:
+# ---------------------------------------------------------------------------
+# Session cache for CDP coordinate clicks
+#
+# Target.getTargets + Target.attachToTarget cost one round-trip each and
+# their results (page targetId + session_id) are stable across clicks on
+# the same page.  We cache them keyed by CDP endpoint URL and invalidate
+# automatically when the browser reports a stale session error.
+#
+# Pattern: browser-harness daemon keeps session_id on the daemon object and
+# retries once on "Session with given id not found" to self-heal after
+# navigation or crash.  We replicate that here without a persistent daemon
+# process by storing it in a module-level dict.
+# ---------------------------------------------------------------------------
+
+_CDP_SESSION_CACHE: dict[tuple[str, str], str] = {}  # (ws_url, task_id) → cached session_id
+
+
+async def _cdp_resolve_session(
+    ws: Any,
+    ws_url: str,
+    task_id: str,
+    deadline: float,
+    msg_id_ref: list,
+) -> Optional[str]:
+    """Resolve (and cache) the page-scoped CDP session ID.
+
+    Sends Target.getTargets + Target.attachToTarget on *ws* and caches the
+    resulting session_id for future clicks.  Returns None if no page target
+    is found (Input.dispatchMouseEvent will be sent at browser level, which
+    works for simple cases).  The cache is keyed by (ws_url, task_id) so
+    concurrent tasks sharing one browser endpoint don't collide.
     """
-    Click on an element.
+    import asyncio as _asyncio
+
+    async def _send(method: str, params: dict, sid: Optional[str] = None) -> int:
+        msg_id_ref[0] += 1
+        call_id = msg_id_ref[0]
+        req: dict = {"id": call_id, "method": method, "params": params}
+        if sid:
+            req["sessionId"] = sid
+        await ws.send(json.dumps(req))
+        return call_id
+
+    async def _recv_until(call_id: int) -> dict:
+        while True:
+            remaining = deadline - _asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(f"CDP timed out waiting for id={call_id}")
+            raw = await _asyncio.wait_for(ws.recv(), timeout=remaining)
+            msg = json.loads(raw)
+            if msg.get("id") == call_id:
+                if "error" in msg:
+                    raise RuntimeError(f"CDP error: {msg['error']}")
+                return msg.get("result", {})
+
+    gt_id = await _send("Target.getTargets", {})
+    gt_result = await _recv_until(gt_id)
+    page_target_id: Optional[str] = None
+    for t in gt_result.get("targetInfos", []):
+        if t.get("type") == "page" and t.get("attached", True):
+            page_target_id = t["targetId"]
+            break
+
+    if not page_target_id:
+        return None
+
+    at_id = await _send("Target.attachToTarget",
+                        {"targetId": page_target_id, "flatten": True})
+    at_result = await _recv_until(at_id)
+    session_id = at_result.get("sessionId") or None
+    if session_id:
+        _CDP_SESSION_CACHE[(ws_url, task_id)] = session_id
+    return session_id
+
+
+async def _cdp_native_click_async(
+    ws_url: str,
+    x: int,
+    y: int,
+    task_id: str,
+    button: str,
+    timeout: float,
+) -> None:
+    """Dispatch a compositor-level (native, trusted) mouse click on a single
+    persistent CDP WebSocket connection.
+
+    Trusted CDP ``Input.dispatchMouseEvent`` events are the same low-level
+    input Chrome generates for a real user click, so React ``onChange`` /
+    ``onClick`` handlers fire — unlike synthetic ``.click()`` calls.
+    """
+    import asyncio as _asyncio
+    from tools.browser_cdp_tool import websockets as _ws
+
+    async with _ws.connect(
+        ws_url,
+        max_size=None,
+        open_timeout=timeout,
+        close_timeout=5,
+        ping_interval=None,
+        compression=None,
+    ) as ws:
+        deadline = _asyncio.get_running_loop().time() + timeout
+        msg_id_ref = [0]
+
+        def _next_id() -> int:
+            msg_id_ref[0] += 1
+            return msg_id_ref[0]
+
+        async def _send_mouse(event_type: str, sid: Optional[str]) -> int:
+            call_id = _next_id()
+            req: dict = {
+                "id": call_id,
+                "method": "Input.dispatchMouseEvent",
+                "params": {"type": event_type, "x": x, "y": y,
+                           "button": button, "clickCount": 1},
+            }
+            if sid:
+                req["sessionId"] = sid
+            await ws.send(json.dumps(req))
+            return call_id
+
+        async def _recv_until(call_id: int) -> dict:
+            while True:
+                remaining = deadline - _asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError(f"CDP timed out waiting for id={call_id}")
+                raw = await _asyncio.wait_for(ws.recv(), timeout=remaining)
+                msg = json.loads(raw)
+                if msg.get("id") == call_id:
+                    if "error" in msg:
+                        raise RuntimeError(f"CDP error: {msg['error']}")
+                    return msg.get("result", {})
+
+        session_id: Optional[str] = _CDP_SESSION_CACHE.get((ws_url, task_id))
+        if not session_id:
+            session_id = await _cdp_resolve_session(ws, ws_url, task_id, deadline, msg_id_ref)
+
+        _press_id = await _send_mouse("mousePressed", session_id)
+        release_id = await _send_mouse("mouseReleased", session_id)
+        try:
+            await _recv_until(_press_id)
+            await _recv_until(release_id)
+        except RuntimeError as exc:
+            if "Session with given id not found" in str(exc) and session_id:
+                _CDP_SESSION_CACHE.pop((ws_url, task_id), None)
+                session_id = await _cdp_resolve_session(ws, ws_url, task_id, deadline, msg_id_ref)
+                _press_id = await _send_mouse("mousePressed", session_id)
+                release_id = await _send_mouse("mouseReleased", session_id)
+                await _recv_until(_press_id)
+                await _recv_until(release_id)
+            else:
+                raise
+
+
+def _native_click_via_agent_browser(
+    x: float,
+    y: float,
+    task_id: str,
+    button: str = "left",
+    ref_for_response: str = "",
+) -> str:
+    """Native click fallback via agent-browser low-level mouse subcommands.
+
+    ``agent-browser mouse move/down/up`` drives real input at viewport
+    coordinates, which also produces trusted events (unlike ``click <ref>``).
+    Used when no CDP endpoint is configured.
+    """
+    effective_task_id = _last_session_key(task_id)
+    ix, iy = int(round(x)), int(round(y))
+
+    move_result = _run_browser_command(effective_task_id, "mouse", ["move", str(ix), str(iy)])
+    if not move_result.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": f"mouse move failed: {move_result.get('error', 'unknown')}",
+        }, ensure_ascii=False)
+
+    btn_arg = [] if button == "left" else [button]
+    down_result = _run_browser_command(effective_task_id, "mouse", ["down"] + btn_arg)
+    if not down_result.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": f"mouse down failed: {down_result.get('error', 'unknown')}",
+        }, ensure_ascii=False)
+
+    up_result = _run_browser_command(effective_task_id, "mouse", ["up"] + btn_arg)
+    if not up_result.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": f"mouse up failed: {up_result.get('error', 'unknown')}",
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": True,
+        "clicked": ref_for_response,
+        "clicked_at": {"x": ix, "y": iy},
+        "method": "agent_browser_mouse",
+    }, ensure_ascii=False)
+
+
+def _resolve_ref_box(ref: str, task_id: str) -> Optional[dict]:
+    """Resolve a snapshot ref to its viewport bounding box via agent-browser.
+
+    Returns ``{"x": cx, "y": cy}`` (element center) or ``None`` if the box
+    can't be resolved (element gone, off-screen, etc.).
+    """
+    effective_task_id = _last_session_key(task_id)
+    box_result = _run_browser_command(effective_task_id, "get", ["box", ref])
+    if not box_result.get("success"):
+        return None
+    data = box_result.get("data", {})
+    # agent-browser returns x/y/width/height (numeric) or a string blob.
+    try:
+        if isinstance(data, dict):
+            # Require at least x and y; reject missing/zero size so we don't
+            # click at the top-left corner from a malformed box result.
+            if not any(k in data for k in ("x", "left")):
+                return None
+            if not any(k in data for k in ("y", "top")):
+                return None
+            x = float(data.get("x", data.get("left", 0)))
+            y = float(data.get("y", data.get("top", 0)))
+            w = float(data.get("width", 0))
+            h = float(data.get("height", 0))
+        elif isinstance(data, str):
+            # Parse "x=.. y=.. width=.. height=.." style output defensively.
+            parts = dict(
+                kv.split("=") for kv in data.replace(",", " ").split()
+                if "=" in kv
+            )
+            if "x" not in parts or "y" not in parts:
+                return None
+            x = float(parts.get("x", 0))
+            y = float(parts.get("y", 0))
+            w = float(parts.get("width", 0))
+            h = float(parts.get("height", 0))
+        else:
+            return None
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return {"x": x + w / 2.0, "y": y + h / 2.0}
+
+
+def _native_click(ref: str, task_id: str, button: str = "left") -> str:
+    """Click ``ref`` with a real compositor-level (native, trusted) mouse
+    event so React handlers fire.
+
+    Resolution order:
+      1. Resolve the element's viewport center via ``agent-browser get box``.
+      2. If a CDP endpoint is available, dispatch ``Input.dispatchMouseEvent``
+         at that center (highest fidelity, trusted events).
+      3. Else fall back to ``agent-browser mouse move/down/up`` at the center.
+      4. If the box can't be resolved, fall back to the plain ``click <ref>``
+         command so behavior degrades gracefully (no regression).
+    """
+    center = _resolve_ref_box(ref, task_id)
+    if center is None:
+        # Can't get coordinates — use the plain ref click as a safe fallback.
+        result = _run_browser_command(_last_session_key(task_id), "click", [ref])
+        if result.get("success"):
+            response = {"success": True, "clicked": ref, "method": "agent_browser_ref"}
+            return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        response = {"success": False, "error": result.get("error", f"Failed to click {ref}")}
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+    cx, cy = center["x"], center["y"]
+    ix, iy = int(round(cx)), int(round(cy))
+
+    try:
+        from tools.browser_cdp_tool import _run_async, _resolve_cdp_endpoint, _WS_AVAILABLE
+    except ImportError:
+        return _native_click_via_agent_browser(cx, cy, task_id, button, ref)
+
+    endpoint = _resolve_cdp_endpoint()
+    if not endpoint or not endpoint.startswith(("ws://", "wss://")):
+        return _native_click_via_agent_browser(cx, cy, task_id, button, ref)
+
+    if not _WS_AVAILABLE:
+        return _native_click_via_agent_browser(cx, cy, task_id, button, ref)
+
+    try:
+        _run_async(_cdp_native_click_async(endpoint, ix, iy, task_id, button, 10.0))
+    except Exception as exc:
+        return json.dumps({
+            "success": False,
+            "error": f"CDP native click failed: {type(exc).__name__}: {exc}",
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": True,
+        "clicked": ref,
+        "clicked_at": {"x": ix, "y": iy},
+        "method": "cdp_native",
+    }, ensure_ascii=False)
+
+
+def browser_click(
+    ref: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Click on an element identified by its ref ID from the snapshot.
+
+    The click is dispatched as a real compositor-level (native, trusted) mouse
+    event at the element's location, so React ``onChange``/``onClick`` handlers
+    fire the same way a real user click does (unlike synthetic ``.click()``
+    calls, which React ignores).
 
     Args:
-        ref: Element reference (e.g., "@e5")
+        ref: Element reference from the snapshot (e.g., "@e5")
         task_id: Task identifier for session isolation
 
     Returns:
         JSON string with click result
     """
+    has_ref = ref is not None and str(ref).strip() != ""
+
+    if not has_ref:
+        return json.dumps({
+            "success": False,
+            "error": "Provide a 'ref' (element reference from the snapshot, e.g. '@e5').",
+        }, ensure_ascii=False)
+
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_click
         return camofox_click(ref, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # --- Private-page action guard (must wrap ALL click dispatch) -----------
     blocked = _blocked_private_page_action(effective_task_id, "click")
     if blocked is not None:
         return blocked
@@ -3152,20 +3467,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    result = _run_browser_command(effective_task_id, "click", [ref])
-
-    if result.get("success"):
-        response = {
-            "success": True,
-            "clicked": ref
-        }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
-    else:
-        response = {
-            "success": False,
-            "error": result.get("error", f"Failed to click {ref}")
-        }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+    return _native_click(ref, task_id or "default")
 
 
 def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
@@ -4882,7 +5184,7 @@ registry.register(
     name="browser_click",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
-    handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_click(ref=args.get("ref"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👆",
 )

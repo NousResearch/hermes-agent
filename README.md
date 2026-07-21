@@ -257,20 +257,6 @@ scripts/run_tests.sh
 
 ---
 
-## Fork Navigation
-
-This repository tracks upstream Hermes while keeping fork-only behavior at the
-extension and operations edges. See [`fork/README.md`](fork/README.md) for the
-layout and merge policy. Before upstream intake, run the policy dry-run; on
-Windows, use the stack restart script for routine recovery:
-
-```powershell
-py -3 scripts\sync_all.py --dry-run --allow-preflight-blockers
-powershell -ExecutionPolicy Bypass -File scripts\windows\restart-hermes-stack.ps1
-```
-
----
-
 ## License
 
 MIT — see [LICENSE](LICENSE).

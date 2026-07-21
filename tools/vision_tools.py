@@ -802,6 +802,10 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
         return True
 
+    # Kimi (Moonshot) — K2.5/K2.6 support vision in tool results
+    if p in {"kimi-coding", "kimi-coding-cn", "kimi", "moonshot"}:
+        return True
+
     # Gemini — gate on model name; older Gemini variants did not support
     # multimodal functionResponse. Gemini 3.x does.
     if p in {"google", "gemini", "google-gemini", "google-vertex-gemini"}:

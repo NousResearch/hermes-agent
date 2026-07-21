@@ -444,6 +444,21 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
         if mid.lower() == model_lower and isinstance(mdata, dict):
             return mdata
 
+    # Alias match: some providers use friendly names in config that differ
+    # from the canonical model IDs in models.dev.
+    _MODEL_ALIASES: Dict[str, str] = {
+        "kimi-for-coding": "k2p6",
+    }
+    aliased_id = _MODEL_ALIASES.get(model_lower)
+    if aliased_id:
+        entry = models.get(aliased_id)
+        if isinstance(entry, dict):
+            return entry
+        # Also try case-insensitive alias lookup
+        for mid, mdata in models.items():
+            if mid.lower() == aliased_id.lower() and isinstance(mdata, dict):
+                return mdata
+
     return None
 
 

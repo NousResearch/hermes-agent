@@ -3567,6 +3567,142 @@ class TestCORS:
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Max-Age") == "600"
+
+
+# ---------------------------------------------------------------------------
+# SSE run events endpoint — CORS
+# ---------------------------------------------------------------------------
+
+
+class TestRunEventsCORS:
+    """CORS tests for GET /v1/runs/{run_id}/events (SSE).
+
+    StreamResponse flushes headers on prepare(), so CORS headers must be
+    computed up-front and passed at construction time — the middleware cannot
+    inject them afterward.  These tests verify that pattern is applied.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_events_cors_headers_present_for_allowed_origin(self):
+        """Allowed origin gets CORS headers on the SSE StreamResponse."""
+        import asyncio
+
+        adapter = _make_adapter(api_key="sk-secret", cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        # Register the SSE route (not in _create_app by default)
+        app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+        # Prime the run stream so the handler finds it immediately
+        run_id = "test_run_123"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_streams_created[run_id] = 0.0
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "Origin": "http://localhost:3000",
+                    "Accept": "text/event-stream",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "text/event-stream"
+            assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
+            assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+            assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
+            assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Content-Type" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+            # Drain the queue so the handler exits cleanly
+            q.put_nowait(None)
+
+    @pytest.mark.asyncio
+    async def test_run_events_cors_headers_absent_without_origin(self):
+        """No CORS headers when browser sends no Origin header (same-origin call)."""
+        import asyncio
+
+        adapter = _make_adapter(api_key="sk-secret", cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+        run_id = "test_run_456"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_streams_created[run_id] = 0.0
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "Accept": "text/event-stream",
+                },
+                # explicitly no Origin header
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "text/event-stream"
+            # No CORS headers when Origin is absent
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+            q.put_nowait(None)
+
+    @pytest.mark.asyncio
+    async def test_run_events_returns_404_for_unknown_run(self):
+        """Unknown run_id returns 404 with proper CORS headers (origin allowed)."""
+        adapter = _make_adapter(api_key="sk-secret", cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/runs/nonexistent_run/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "Origin": "http://localhost:3000",
+                },
+            )
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_run_events_streams_sse_event(self):
+        """SSE endpoint correctly streams a JSON event from the queue."""
+        import asyncio
+
+        adapter = _make_adapter(api_key="sk-secret", cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+        run_id = "test_run_sse"
+        q: asyncio.Queue = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_streams_created[run_id] = 0.0
+
+        test_event = {"event": "message.delta", "delta": "hello world"}
+        q.put_nowait(test_event)
+
+        async def close_stream():
+            # Give the SSE handler time to write the event, then signal stream end
+            await asyncio.sleep(0.1)
+            q.put_nowait(None)
+
+        async with TestClient(TestServer(app)) as cli:
+            # Start stream close task before reading to avoid deadlock
+            close_task = asyncio.create_task(close_stream())
+            try:
+                resp = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "Origin": "http://localhost:3000",
+                        "Accept": "text/event-stream",
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert f"data: {json.dumps(test_event)}\n\n" in body
+            finally:
+                await close_task
+
+
 # ---------------------------------------------------------------------------
 # Conversation parameter
 # ---------------------------------------------------------------------------

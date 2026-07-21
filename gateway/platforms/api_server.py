@@ -5167,14 +5167,19 @@ class APIServerAdapter(BasePlatformAdapter):
         q = self._run_streams[run_id]
         self._run_stream_subscribers.add(run_id)
 
-        response = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        # CORS middleware can't inject headers into StreamResponse after
+        # prepare() flushes them, so resolve CORS headers up front.
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        if cors:
+            sse_headers.update(cors)
+
+        response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
         try:

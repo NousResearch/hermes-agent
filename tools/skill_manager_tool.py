@@ -1308,6 +1308,11 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         new_string=payload_kwargs.get("new_string") or "",
     )
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    if record is None:
+        return tool_error(
+            "Pending skill write could not be persisted; no changes were made. Please retry.",
+            success=False,
+        )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "gist": gist, "message": decision.message},

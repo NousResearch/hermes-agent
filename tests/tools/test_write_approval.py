@@ -11,6 +11,8 @@ import json
 import os
 import tempfile
 import shutil
+import threading
+from pathlib import Path
 
 import pytest
 
@@ -284,6 +286,350 @@ def test_pending_store_roundtrip(hermes_home):
     assert wa.discard_pending("memory", rec["id"]) is True
     assert wa.pending_count("memory") == 0
     assert wa.get_pending("memory", rec["id"]) is None
+
+
+def test_stage_write_failure_is_explicit_and_leaves_no_record(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("utils.atomic_json_write", _fail)
+    assert wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    ) is None
+    assert wa.pending_count("memory") == 0
+
+
+def test_stage_does_not_follow_existing_pending_leaf_symlink(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+
+    pending_id = "0123abcd"
+    pending_dir = Path(hermes_home) / "pending" / "memory"
+    pending_dir.mkdir(parents=True)
+    external_target = Path(hermes_home).parent / "outside-pending.json"
+    external_target.write_text('{"sentinel": true}', encoding="utf-8")
+    leaf = pending_dir / f"{pending_id}.json"
+    try:
+        leaf.symlink_to(external_target)
+    except OSError:
+        pytest.skip("Windows account cannot create a symlink")
+
+    class _FixedUUID:
+        def __init__(self, value):
+            self.hex = value
+
+    ids = iter((_FixedUUID(pending_id + "0" * 24), _FixedUUID("1" * 32)))
+    monkeypatch.setattr(wa.uuid, "uuid4", lambda: next(ids))
+
+    assert wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    ) is None
+    assert json.loads(external_target.read_text(encoding="utf-8")) == {"sentinel": True}
+    assert leaf.is_symlink()
+
+
+@pytest.mark.parametrize("redirect_name", ["memory", "pending"])
+def test_stage_rejects_pending_junction(hermes_home, monkeypatch, redirect_name):
+    from tools import write_approval as wa
+
+    monkeypatch.setattr(
+        Path, "is_junction", lambda path: path.name == redirect_name, raising=False,
+    )
+    assert wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    ) is None
+    assert wa.pending_count("memory") == 0
+
+
+def test_pending_redirect_detects_windows_reparse_attribute(tmp_path, monkeypatch):
+    from tools import write_approval as wa
+
+    class _ReparsePoint:
+        st_file_attributes = 0x400
+
+    monkeypatch.setattr(Path, "is_symlink", lambda _path: False)
+    monkeypatch.setattr(Path, "lstat", lambda _path: _ReparsePoint())
+    assert wa._is_path_redirect(tmp_path) is True
+
+
+def test_memory_stage_failure_returns_tool_error(hermes_home, monkeypatch):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setattr(wa, "stage_write", lambda *_args, **_kwargs: None)
+    store = MemoryStore(); store.load_from_disk()
+    result = json.loads(memory_tool("add", "memory", "not persisted", store=store))
+
+    assert result["success"] is False
+    assert result.get("staged") is None
+    assert result.get("pending_id") is None
+    assert store.memory_entries == []
+
+
+def test_memory_batch_stage_failure_returns_tool_error(hermes_home, monkeypatch):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setattr(wa, "stage_write", lambda *_args, **_kwargs: None)
+    store = MemoryStore(); store.load_from_disk()
+    result = json.loads(memory_tool(
+        target="memory", operations=[{"action": "add", "content": "not persisted"}],
+        store=store,
+    ))
+
+    assert result["success"] is False
+    assert result.get("staged") is None
+    assert result.get("pending_id") is None
+    assert store.memory_entries == []
+
+
+def test_skill_stage_failure_returns_tool_error(hermes_home, monkeypatch):
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+
+    _set_approval("skills", True)
+    monkeypatch.setattr(wa, "stage_write", lambda *_args, **_kwargs: None)
+    result = json.loads(smt.skill_manage("create", "not-persisted", content=_SKILL))
+
+    assert result["success"] is False
+    assert result.get("staged") is None
+    assert result.get("pending_id") is None
+    assert smt._find_skill("not-persisted") is None
+
+
+@pytest.mark.parametrize("pending_id", ["", "../outside", "..\\outside", "C:\\outside", "abcd.json", "ABCDEF12", "abc"])
+def test_pending_id_rejects_path_like_input(hermes_home, pending_id):
+    from tools import write_approval as wa
+
+    assert wa.valid_pending_id(pending_id) is False
+    assert wa.get_pending("memory", pending_id) is None
+    assert wa.discard_pending("memory", pending_id) is False
+    assert wa.claim_pending("memory", pending_id) is None
+
+
+def test_list_and_get_skip_pending_leaf_symlink(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+
+    pending_id = "0123abcd"
+    path = Path(hermes_home) / "pending" / "memory" / f"{pending_id}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"id": pending_id, "subsystem": "memory", "payload": {"action": "add"}}),
+        encoding="utf-8",
+    )
+    real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda candidate: candidate == path or real_is_symlink(candidate))
+
+    assert wa.list_pending("memory") == []
+    assert wa.get_pending("memory", pending_id) is None
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"id": "deadbeef", "subsystem": "memory", "payload": {"action": "add"}},
+        {"id": "0123abcd", "subsystem": "skills", "payload": {"action": "add"}},
+        {"id": "0123abcd", "subsystem": "memory", "payload": []},
+    ],
+)
+def test_list_and_get_skip_mismatched_pending_records(hermes_home, record):
+    from tools import write_approval as wa
+
+    pending_id = "0123abcd"
+    path = Path(hermes_home) / "pending" / "memory" / f"{pending_id}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert wa.list_pending("memory") == []
+    assert wa.get_pending("memory", pending_id) is None
+
+
+def test_approve_claims_record_once_under_concurrency(hermes_home, monkeypatch):
+    from hermes_cli import write_approval_commands as commands
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    )
+    assert record is not None
+    claimed = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def _apply(*_args, **_kwargs):
+        calls.append(1)
+        claimed.set()
+        assert release.wait(timeout=5)
+        return True, ""
+
+    monkeypatch.setattr(commands, "_apply_one", _apply)
+    outputs = []
+
+    def _approve():
+        outputs.append(commands.handle_pending_subcommand("memory", ["approve", record["id"]]))
+
+    first = threading.Thread(target=_approve)
+    first.start()
+    assert claimed.wait(timeout=5)
+    second = threading.Thread(target=_approve)
+    second.start()
+    second.join(timeout=5)
+    release.set()
+    first.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert calls == [1]
+    assert wa.pending_count("memory") == 0
+    assert sum("Approved 1" in output for output in outputs) == 1
+
+
+def test_failed_approval_releases_claim_for_retry(hermes_home, monkeypatch):
+    from hermes_cli import write_approval_commands as commands
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    )
+    assert record is not None
+    monkeypatch.setattr(commands, "_apply_one", lambda *_args, **_kwargs: (False, "apply failed"))
+
+    output = commands.handle_pending_subcommand("memory", ["approve", record["id"]])
+    assert "apply failed" in output
+    assert wa.get_pending("memory", record["id"]) is not None
+    assert wa.pending_count("memory") == 1
+
+
+def test_release_claim_never_overwrites_a_new_pending_record(hermes_home):
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "old"},
+        summary="old", origin="foreground",
+    )
+    assert record is not None
+    claimed = wa.claim_pending("memory", record["id"])
+    assert claimed is not None
+    _old, claim_path = claimed
+
+    destination = os.path.join(hermes_home, "pending", "memory", f"{record['id']}.json")
+    replacement = {
+        "id": record["id"], "subsystem": "memory", "payload": {"action": "add"},
+        "summary": "new", "created_at": 0,
+    }
+    with open(destination, "w", encoding="utf-8") as handle:
+        json.dump(replacement, handle)
+
+    assert wa.release_claim("memory", record["id"], claim_path) is False
+    assert json.loads(open(destination, encoding="utf-8").read())["summary"] == "new"
+    assert claim_path.exists()
+
+
+@pytest.mark.parametrize(
+    "foreign_subsystem,foreign_id",
+    [("skills", "0123abcd"), ("memory", "deadbeef")],
+)
+def test_release_claim_rejects_foreign_claim_path(hermes_home, foreign_subsystem, foreign_id):
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "old"},
+        summary="old", origin="foreground",
+    )
+    assert record is not None
+    claimed = wa.claim_pending("memory", record["id"])
+    assert claimed is not None
+    _old, claim_path = claimed
+    foreign = Path(hermes_home) / "pending" / foreign_subsystem / f".{foreign_id}.token.claim"
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_text("foreign", encoding="utf-8")
+
+    assert wa.release_claim("memory", record["id"], foreign) is False
+    assert wa.get_pending("memory", record["id"]) is None
+    assert claim_path.exists()
+    assert foreign.exists()
+
+
+def test_release_claim_reports_published_retry_when_cleanup_fails(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "old"},
+        summary="old", origin="foreground",
+    )
+    assert record is not None
+    claimed = wa.claim_pending("memory", record["id"])
+    assert claimed is not None
+    _old, claim_path = claimed
+    real_unlink = Path.unlink
+
+    def _fail_only_claim(path, *args, **kwargs):
+        if path == claim_path:
+            raise OSError("cleanup blocked")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _fail_only_claim)
+    assert wa.release_claim("memory", record["id"], claim_path) is None
+    assert wa.get_pending("memory", record["id"]) is not None
+    assert claim_path.exists()
+
+
+def test_failed_approval_keeps_retry_available_when_claim_cleanup_fails(hermes_home, monkeypatch):
+    from hermes_cli import write_approval_commands as commands
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    )
+    assert record is not None
+    monkeypatch.setattr(commands, "_apply_one", lambda *_args, **_kwargs: (False, "apply failed"))
+    monkeypatch.setattr(wa, "release_claim", lambda *_args, **_kwargs: None)
+
+    output = commands.handle_pending_subcommand("memory", ["approve", record["id"]])
+    assert "retry remains available" in output
+    assert "retry is held" not in output
+
+
+def test_reject_cleanup_failure_reports_manual_recovery(hermes_home, monkeypatch):
+    from hermes_cli import write_approval_commands as commands
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory", {"action": "add", "target": "memory", "content": "x"},
+        summary="x", origin="foreground",
+    )
+    assert record is not None
+    monkeypatch.setattr(wa, "complete_claim", lambda _claim: False)
+
+    output = commands.handle_pending_subcommand("memory", ["reject", record["id"]])
+    assert "manual recovery" in output
+    assert wa.pending_count("memory") == 0
+
+
+def test_claim_rejects_mismatched_subsystem_record(hermes_home):
+    from tools import write_approval as wa
+
+    pending_dir = os.path.join(hermes_home, "pending", "memory")
+    os.makedirs(pending_dir)
+    pending_id = "0123abcd"
+    with open(os.path.join(pending_dir, f"{pending_id}.json"), "w", encoding="utf-8") as handle:
+        json.dump(
+            {"id": pending_id, "subsystem": "skills", "payload": {"action": "add"}},
+            handle,
+        )
+
+    assert wa.claim_pending("memory", pending_id) is None
+    assert wa.pending_count("memory") == 0
 
 
 # ---------------------------------------------------------------------------

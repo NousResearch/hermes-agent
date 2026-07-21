@@ -46,10 +46,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import stat
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 
@@ -59,6 +61,7 @@ logger = logging.getLogger(__name__)
 MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
+_PENDING_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 
 # Config key (per subsystem). The boolean gates foreground writes: OFF by
 # default preserves foreground pre-gate behaviour, and ON means stage / prompt
@@ -115,8 +118,76 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _valid_subsystem(subsystem: str) -> bool:
+    return subsystem in _SUBSYSTEMS
+
+
+def _safe_pending_dir(subsystem: str) -> Optional[Path]:
+    """Return the private pending directory, rejecting symlinked queue roots."""
+    if not _valid_subsystem(subsystem):
+        return None
+    directory = _pending_dir(subsystem)
+    # The queue and its immediate parent are application-owned directories.
+    # Following either as a symlink would send proposals or claims outside the
+    # configured Hermes home.
+    for candidate in (directory, directory.parent):
+        if _is_path_redirect(candidate):
+            logger.error("Refusing symlinked pending directory: %s", candidate)
+            return None
+    return directory
+
+
+def _is_path_redirect(path: Path) -> bool:
+    """Return whether an existing path can redirect queue writes elsewhere.
+
+    ``Path.is_junction`` is only available on newer Python versions.  The
+    Windows reparse-point attribute covers junctions on the older supported
+    runtimes too.  A missing directory is safe to create; an unreadable
+    existing path fails closed because its type cannot be established.
+    """
+    try:
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.error("Could not inspect pending directory redirect state: %s", path)
+        return True
+
+
+def valid_pending_id(pending_id: str) -> bool:
+    """True only for IDs issued by :func:`stage_write`.
+
+    Pending IDs are part of slash-command input, so accepting a path-like ID
+    would let callers escape the per-subsystem pending directory on Windows or
+    POSIX.  Keep the current eight-lowercase-hex creation contract explicit.
+    """
+    return isinstance(pending_id, str) and bool(_PENDING_ID_RE.fullmatch(pending_id))
+
+
+def _pending_path(subsystem: str, pending_id: str) -> Optional[Path]:
+    if not _valid_subsystem(subsystem) or not valid_pending_id(pending_id):
+        return None
+    directory = _safe_pending_dir(subsystem)
+    if directory is None:
+        return None
+    return directory / f"{pending_id}.json"
+
+
+def _valid_record(record: Any, subsystem: str, pending_id: str) -> bool:
+    """Return whether a disk record still belongs to this queue entry."""
+    return (
+        isinstance(record, dict)
+        and record.get("id") == pending_id
+        and record.get("subsystem") == subsystem
+        and isinstance(record.get("payload"), dict)
+    )
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str) -> Dict[str, Any]:
+                *, summary: str, origin: str) -> Optional[Dict[str, Any]]:
     """Persist a pending write and return a short record describing it.
 
     Args:
@@ -129,10 +200,13 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
 
-    Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
-    logs and still returns a record (the write is simply lost, which is the
-    safe failure for an approval gate — nothing is silently committed).
+    Returns a dict with ``id`` and metadata, or ``None`` when the proposal
+    cannot be persisted.  A lost proposal must never be reported to a caller
+    as successfully staged.
     """
+    if not _valid_subsystem(subsystem):
+        logger.error("Refusing to stage unknown pending subsystem: %r", subsystem)
+        return None
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid,
@@ -144,26 +218,46 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "payload": payload,
     }
     try:
-        d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        from utils import atomic_json_write
+
+        directory = _safe_pending_dir(subsystem)
+        if directory is None:
+            return None
+        # Pending records are new immutable queue entries.  Publish through a
+        # private sibling plus a no-clobber hard link so an injected final-path
+        # symlink is never followed by atomic_json_write's normal symlink
+        # preservation behavior.
+        destination = directory / f"{pid}.json"
+        staging = directory / f".{pid}.{uuid.uuid4().hex}.stage"
+        atomic_json_write(staging, record)
+        try:
+            if staging.is_symlink() or not staging.is_file():
+                return None
+            os.link(staging, destination)
+        finally:
+            try:
+                staging.unlink()
+            except OSError:
+                pass
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        return None
     return record
 
 
 def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     """Return all pending records for ``subsystem``, oldest first."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
+    d = _safe_pending_dir(subsystem)
+    if d is None or not d.exists():
         return []
     records: List[Dict[str, Any]] = []
     for p in d.glob("*.json"):
+        if p.is_symlink() or not p.is_file() or not valid_pending_id(p.stem):
+            continue
         try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
+            record = json.loads(p.read_text(encoding="utf-8"))
+            if _valid_record(record, subsystem, p.stem):
+                records.append(record)
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
     records.sort(key=lambda r: r.get("created_at", 0))
@@ -172,18 +266,21 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     """Return a single pending record by id, or None."""
-    path = _pending_dir(subsystem) / f"{pending_id}.json"
-    if not path.exists():
+    path = _pending_path(subsystem, pending_id)
+    if path is None or not path.exists() or path.is_symlink():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
+        return record if _valid_record(record, subsystem, pending_id) else None
     except Exception:
         return None
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
-    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    path = _pending_path(subsystem, pending_id)
+    if path is None or path.is_symlink():
+        return False
     try:
         if path.exists():
             path.unlink()
@@ -193,10 +290,90 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     return False
 
 
+PendingClaim = Tuple[Dict[str, Any], Path]
+
+
+def claim_pending(subsystem: str, pending_id: str) -> Optional[PendingClaim]:
+    """Atomically remove one actionable proposal from the approval queue.
+
+    The source is renamed to a unique sibling claim file with raw
+    :func:`os.replace`.  Claim publication intentionally has no copy fallback:
+    a claimant that did not win the one-step rename must not apply the payload.
+    A stranded claim is non-actionable, which is safer than automatic replay
+    after an interrupted mutation.
+    """
+    source = _pending_path(subsystem, pending_id)
+    if source is None or source.is_symlink() or not source.is_file():
+        return None
+    claim = source.with_name(f".{pending_id}.{uuid.uuid4().hex}.claim")
+    try:
+        os.replace(source, claim)
+    except (FileNotFoundError, OSError) as e:
+        logger.info("Pending %s/%s could not be claimed: %s", subsystem, pending_id, e)
+        return None
+    if claim.is_symlink() or not claim.is_file():
+        logger.error("Claimed pending %s/%s is not a regular file", subsystem, pending_id)
+        return None
+    try:
+        record = json.loads(claim.read_text(encoding="utf-8"))
+    except Exception as e:
+        # Keep unreadable claimed input non-actionable for manual recovery.
+        logger.error("Claimed pending %s/%s is unreadable: %s", subsystem, pending_id, e)
+        return None
+    if not _valid_record(record, subsystem, pending_id):
+        logger.error("Claimed pending %s/%s has invalid content", subsystem, pending_id)
+        return None
+    return record, claim
+
+
+def release_claim(subsystem: str, pending_id: str, claim_path: Path) -> Optional[bool]:
+    """Return a known-failed claim without overwriting a new queue record.
+
+    Returns ``True`` when the claim was requeued and removed, ``False`` when
+    no actionable record was published, and ``None`` when the requeue was
+    published but only stale-claim cleanup failed.  The latter remains safe to
+    retry because the raw pending JSON is already actionable again.
+    """
+    destination = _pending_path(subsystem, pending_id)
+    if destination is None or destination.exists() or claim_path.is_symlink():
+        return False
+    expected_prefix = f".{pending_id}."
+    if claim_path.parent != destination.parent or not (
+        claim_path.name.startswith(expected_prefix) and claim_path.name.endswith(".claim")
+    ):
+        return False
+    try:
+        # ``os.replace`` would overwrite a concurrently created pending record
+        # after the exists() check.  A hard link is an atomic no-clobber publish
+        # on the same queue filesystem; only then can the private claim vanish.
+        os.link(claim_path, destination)
+    except OSError as e:
+        logger.error("Failed to release pending claim %s/%s: %s", subsystem, pending_id, e)
+        return False
+    try:
+        claim_path.unlink()
+        return True
+    except OSError as e:
+        logger.error("Released pending claim %s/%s but could not clean it up: %s", subsystem, pending_id, e)
+        return None
+
+
+def complete_claim(claim_path: Path) -> bool:
+    """Finalize a known terminal claim without making it actionable again."""
+    if claim_path.is_symlink():
+        return False
+    try:
+        claim_path.unlink()
+        return True
+    except OSError as e:
+        logger.error("Failed to clean up terminal pending claim %s: %s", claim_path, e)
+        return False
+
+
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
+    d = _safe_pending_dir(subsystem)
+    if d is None or not d.exists():
         return 0
     try:
         return sum(1 for _ in d.glob("*.json"))

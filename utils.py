@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_WINDOWS_REPLACE_RETRY_DELAYS = (0.005, 0.01, 0.02, 0.04, 0.08)
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -112,7 +114,19 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
     try:
-        os.replace(tmp_str, real_path)
+        for delay in _WINDOWS_REPLACE_RETRY_DELAYS:
+            try:
+                os.replace(tmp_str, real_path)
+                break
+            except PermissionError as exc:
+                # A concurrent replacement can leave a Windows destination
+                # handle briefly locked. Retrying the same rename preserves
+                # atomicity; copy/unlink would not.
+                if os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32):
+                    raise
+                time.sleep(delay)
+        else:
+            os.replace(tmp_str, real_path)
     except OSError as exc:
         if exc.errno not in (errno.EXDEV, errno.EBUSY):
             raise

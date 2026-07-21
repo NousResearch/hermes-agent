@@ -115,21 +115,34 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         return f"No pending {subsystem} writes."
 
     if target.lower() == "all":
-        targets = list(records)
+        targets = [str(record.get("id", "")) for record in records]
     else:
-        rec = wa.get_pending(subsystem, target)
-        if not rec:
+        if not wa.valid_pending_id(target) or not wa.get_pending(subsystem, target):
             return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
+        targets = [target]
 
     applied, failed = 0, []
-    for rec in targets:
+    for pending_id in targets:
+        claimed = wa.claim_pending(subsystem, pending_id)
+        if claimed is None:
+            failed.append(f"{pending_id}: no longer pending or already being processed")
+            continue
+        rec, claim_path = claimed
         ok, msg = _apply_one(subsystem, rec, memory_store)
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
+            if not wa.complete_claim(claim_path):
+                failed.append(f"{pending_id}: applied; cleanup is pending and will not be replayed")
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            release_result = wa.release_claim(subsystem, pending_id, claim_path)
+            if release_result is False:
+                failed.append(f"{pending_id}: {msg}; retry is held for manual recovery")
+            elif release_result is None:
+                failed.append(
+                    f"{pending_id}: {msg}; retry remains available, but stale claim cleanup needs manual recovery"
+                )
+            else:
+                failed.append(f"{pending_id}: {msg}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if failed:
@@ -160,13 +173,27 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if err or target is None:
         return err or f"Usage: /{subsystem} reject <id>"
     if target.lower() == "all":
-        n = 0
+        n, failed = 0, []
         for rec in wa.list_pending(subsystem):
-            if wa.discard_pending(subsystem, rec["id"]):
+            pending_id = str(rec.get("id", ""))
+            claimed = wa.claim_pending(subsystem, pending_id)
+            if claimed is not None and wa.complete_claim(claimed[1]):
                 n += 1
-        return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
-        return f"Rejected pending {subsystem} write '{target}'."
+            elif claimed is not None:
+                failed.append(f"{pending_id}: cleanup is pending and requires manual recovery")
+        out = [f"Rejected {n} pending {subsystem} write(s)."]
+        if failed:
+            out.append("Failed:")
+            out.extend(f"  {item}" for item in failed)
+        return "\n".join(out)
+    claimed = wa.claim_pending(subsystem, target)
+    if claimed is not None:
+        if wa.complete_claim(claimed[1]):
+            return f"Rejected pending {subsystem} write '{target}'."
+        return (
+            f"Rejected pending {subsystem} write '{target}', but cleanup is pending "
+            "and requires manual recovery."
+        )
     return f"No pending {subsystem} write with id '{target}'."
 
 

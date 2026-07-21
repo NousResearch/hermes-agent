@@ -426,6 +426,13 @@ export interface UseComposerStateOptions {
   onClipboardPaste: (quiet?: boolean) => Promise<void> | void
   onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
+  /**
+   * Ref that always points at the current `dispatchSubmission` function.
+   * `openEditor` uses this to submit the editor text directly — bypassing
+   * `submit()`'s `composerState.inputBuf` concatenation, which would
+   * double-prepend buffered lines that are already in the file. (#20640)
+   */
+  dispatchRef: MutableRefObject<(value: string) => void>
 }
 
 export interface UseComposerStateResult {

@@ -223,6 +223,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
+  const dispatchRef = useRef<(value: string) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
@@ -290,7 +291,8 @@ export function useMainApp(gw: GatewayClient) {
     onImageAttached: info => {
       sys(attachedImageNotice(info))
     },
-    submitRef
+    submitRef,
+    dispatchRef
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
@@ -709,6 +711,8 @@ export function useMainApp(gw: GatewayClient) {
     submitRef,
     sys
   })
+
+  dispatchRef.current = dispatchSubmission
 
   // Drain one queued message whenever the session settles (busy → false):
   // agent turn ends, interrupt, shell.exec finishes, error recovered, or the

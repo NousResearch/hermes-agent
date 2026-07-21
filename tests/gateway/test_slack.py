@@ -1029,6 +1029,50 @@ class TestSlackProxyBehavior:
 
 
 # ---------------------------------------------------------------------------
+# TestStandaloneSendMedia
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneSendMedia:
+    @pytest.mark.asyncio
+    async def test_uploads_local_media_with_message_as_caption(self, tmp_path):
+        """Standalone cron sends should use files_upload_v2, not omit the image."""
+        image = tmp_path / "daily-report.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        client = MagicMock()
+        client.files_upload_v2 = AsyncMock(
+            return_value={"ok": True, "files": [{"id": "F123"}]}
+        )
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+
+        with (
+            patch.object(_slack_mod, "AsyncWebClient", return_value=client),
+            patch.object(_slack_mod, "resolve_proxy_url", return_value=None),
+            patch.object(
+                _slack_mod.aiohttp,
+                "ClientSession",
+                side_effect=AssertionError("media delivery used text-only chat.postMessage"),
+            ),
+        ):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "daily report",
+                thread_id=None,
+                media_files=[(str(image), False)],
+            )
+
+        assert result["success"] is True
+        client.files_upload_v2.assert_awaited_once_with(
+            channel="C123",
+            file=str(image),
+            filename="daily-report.png",
+            initial_comment="daily report",
+            thread_ts=None,
+        )
+
+
+# ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
 

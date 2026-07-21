@@ -1032,6 +1032,32 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: route both text and native files through the plugin's
+    # standalone sender.  This path is used by out-of-process cron runs where
+    # no live gateway adapter is available; dropping ``media_files`` here made
+    # MEDIA directives disappear while the text delivery still reported
+    # success.
+    if platform == Platform.SLACK:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get("slack")
+        if entry is None or entry.standalone_sender_fn is None:
+            return {"error": "Slack plugin not registered or missing standalone_sender_fn"}
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            result = await entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
@@ -1049,19 +1075,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.SLACK:
-            # Slack migrated to a bundled plugin (#41112); delivery flows
-            # through the registry's standalone_sender_fn, which applies
-            # mrkdwn formatting and posts via the Slack Web API.
-            from gateway.platform_registry import platform_registry
-            _slack_entry = platform_registry.get("slack")
-            if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
-                result = {"error": "Slack plugin not registered or missing standalone_sender_fn"}
-            else:
-                result = await _slack_entry.standalone_sender_fn(
-                    pconfig, chat_id, chunk, thread_id=thread_id
-                )
-        elif platform == Platform.WHATSAPP:
+        if platform == Platform.WHATSAPP:
             result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)

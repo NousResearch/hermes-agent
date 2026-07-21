@@ -755,6 +755,44 @@ class TestSendToPlatformChunking:
             thread_ts=None,
         )
 
+    def test_slack_media_is_forwarded_to_standalone_plugin(self, monkeypatch, tmp_path):
+        """Out-of-process cron delivery must not silently drop Slack MEDIA files."""
+        _ensure_slack_mock(monkeypatch)
+        media_path = tmp_path / "daily-report.png"
+        media_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        media_files = [(str(media_path), False)]
+        pconfig = SimpleNamespace(enabled=True, token="***", extra={})
+
+        entry = _slack_entry()
+        assert entry is not None
+        original = entry.standalone_sender_fn
+        send = AsyncMock(
+            return_value={"success": True, "platform": "slack", "message_id": "1"}
+        )
+        entry.standalone_sender_fn = send
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    pconfig,
+                    "C123",
+                    "daily report",
+                    media_files=media_files,
+                )
+            )
+        finally:
+            entry.standalone_sender_fn = original
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            pconfig,
+            "C123",
+            "daily report",
+            thread_id=None,
+            media_files=media_files,
+            force_document=False,
+        )
+
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
         """Bold+italic ***text*** survives tool-layer formatting."""
         _ensure_slack_mock(monkeypatch)

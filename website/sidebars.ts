@@ -540,6 +540,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
                     'user-guide/skills/optional/productivity/productivity-telephony',
+                    'user-guide/skills/optional/productivity/productivity-weather',
                   ],
                 },
                 {

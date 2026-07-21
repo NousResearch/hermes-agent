@@ -182,6 +182,7 @@ hermes skills uninstall <skill-name>
 | [**shopify**](/docs/user-guide/skills/optional/productivity/productivity-shopify) | Shopify Admin & Storefront GraphQL APIs via curl. Products, orders, customers, inventory, metafields. |
 | [**siyuan**](/docs/user-guide/skills/optional/productivity/productivity-siyuan) | SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base via curl. |
 | [**telephony**](/docs/user-guide/skills/optional/productivity/productivity-telephony) | Give Hermes phone capabilities without core tool changes. Provision and persist a Twilio number, send and receive SMS/MMS, make direct calls, and place AI-driven outbound calls through Bland.ai or Vapi. |
+| [**weather**](/docs/user-guide/skills/optional/productivity/productivity-weather) | Current weather and forecasts via Open-Meteo, no API key. |
 
 ## research
 

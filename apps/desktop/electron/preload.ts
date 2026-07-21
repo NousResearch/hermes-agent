@@ -6,7 +6,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
-  openNewSessionWindow: () => ipcRenderer.invoke('hermes:window:openNewSession'),
+  openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.

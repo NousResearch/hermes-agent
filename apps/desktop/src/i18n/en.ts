@@ -225,7 +225,7 @@ export const en: Translations = {
       'nav.agents': 'Open agents',
       'session.new': 'New session',
       'session.newTab': 'New session tab',
-      'session.newWindow': 'New session in window',
+      'session.newWindow': 'New window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
       'session.slot.1': 'Switch to recent session 1',

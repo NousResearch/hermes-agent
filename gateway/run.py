@@ -731,13 +731,14 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    ``interactive`` selects how an empty startup turn is reported.  Both
+    variants continue the interrupted work automatically: interactive chat
+    platforms may briefly report that recovery succeeded, while non-interactive
+    event platforms (webhook, API server — adapters with
+    ``interactive_resume = False``) must not emit an acknowledgement that has
+    nowhere useful to go (#57056).  Neither variant asks the user what to do
+    next; startup auto-resume exists specifically to finish the interrupted
+    task without requiring another message.
     """
     reason_phrase = (
         "a gateway restart"
@@ -757,12 +758,15 @@ def build_resume_recovery_note(
         )
     elif interactive:
         resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
+            "The session was restored successfully. Do NOT ask the user what "
+            "to do next and do not stop at a recovery acknowledgement. Review "
+            "the conversation history and CONTINUE the interrupted task to "
+            "completion, then report the completed result to the user."
         )
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
+            "Do NOT re-run tool calls whose results already "
+            "appear in the history — resume from the first step "
+            "that has no recorded result."
         )
     else:
         resume_guidance = (
@@ -20895,12 +20899,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_user_message = "" if _empty_internal_auto_resume else message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address.  Guidance is adapter-aware:
-                # interactive platforms report the restore and ask what next;
-                # non-interactive event platforms (webhook, API server)
-                # continue the interrupted work instead, because nobody is
-                # present to answer and an acknowledgement would silently
-                # abandon the task (#57056).
+                # no NEW user message to address. Guidance is adapter-aware,
+                # but every platform continues the interrupted work. Interactive
+                # chat may mention restoration before reporting the final result;
+                # non-interactive event platforms suppress that acknowledgement
+                # because nobody is present to benefit from it (#57056).
                 _resume_adapter = self._adapter_for_source(source)
                 _interactive_resume = bool(
                     getattr(_resume_adapter, "interactive_resume", True)

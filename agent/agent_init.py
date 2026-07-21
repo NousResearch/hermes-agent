@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -66,6 +66,56 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def scoped_config_context_length(
+    model_cfg: Any, active_model: str, normalize: Optional[Callable[[str], str]] = None,
+) -> Tuple[Optional[Any], Optional[Tuple[str, str, Any]]]:
+    """Return the ``model.context_length`` override, or ``None`` if it is out of scope.
+
+    ``model.context_length`` describes ``model.model``. When the active model came
+    from somewhere else — a CLI ``--model`` flag, a skill, a fallback — the number
+    describes a *different* window, and applying it silently mis-sizes the
+    compaction threshold. A too-small window drops ``threshold_tokens`` below the
+    incompressible floor (system prompt + tool schemas), so ``should_compress()``
+    is true on every turn and the agent compacts forever without making progress.
+
+    ``active_model`` has already been through ``normalize_model_for_provider()``,
+    which strips a provider prefix for non-aggregator providers ("zai/glm-4.6" ->
+    "glm-4.6"). The config value has not. Pass the same normalizer as ``normalize``
+    so both sides are compared in the same form; otherwise a valid config that
+    names its model with a prefix would look like a mismatch and lose its override.
+
+    When both ``model.default`` and legacy ``model.model`` are present,
+    ``default`` wins — matching how the active model is actually resolved
+    (``cli.py`` promotes ``model.model`` only when ``default`` is absent, and
+    ``gateway.run._resolve_gateway_model`` reads ``default`` first). The
+    override therefore describes the model those resolvers would run.
+
+    Returns ``(context_length, mismatch)``. ``mismatch`` is ``None`` when the
+    override applies; otherwise ``(config_model, active_model, ignored_value)`` so
+    the caller can log why the override was dropped.
+    """
+    if not isinstance(model_cfg, dict):
+        return None, None
+    context_length = model_cfg.get("context_length")
+    if context_length is None:
+        return None, None
+    cfg_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+    model = str(active_model or "").strip()
+    if not cfg_model or not model:
+        return context_length, None
+
+    cfg_model_cmp = cfg_model
+    if normalize is not None:
+        try:
+            cfg_model_cmp = normalize(cfg_model)
+        except Exception:  # noqa: BLE001 — normalizer unavailable: compare raw
+            cfg_model_cmp = cfg_model
+
+    if cfg_model_cmp != model:
+        return None, (cfg_model, model, context_length)
+    return context_length, None
 
 
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
@@ -1724,11 +1774,30 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
-    # Read explicit context_length override from model config
-    if isinstance(_model_cfg, dict):
-        _config_context_length = _model_cfg.get("context_length")
-    else:
-        _config_context_length = None
+    # Read explicit context_length override from model config, scoped to the
+    # model it actually describes (see scoped_config_context_length). Normalize
+    # the config's model name the same way agent.model was normalized above, so
+    # a prefixed-but-correct config ("zai/glm-4.6") is not read as a mismatch.
+    def _normalize_cfg_model(name: str) -> str:
+        from hermes_cli.model_normalize import (
+            _AGGREGATOR_PROVIDERS,
+            normalize_model_for_provider,
+        )
+        if agent.provider in _AGGREGATOR_PROVIDERS:
+            return name
+        return normalize_model_for_provider(name, agent.provider)
+
+    _config_context_length, _override_mismatch = scoped_config_context_length(
+        _model_cfg, getattr(agent, "model", ""), normalize=_normalize_cfg_model,
+    )
+    if _override_mismatch is not None:
+        _cfg_model, _active_model, _ignored = _override_mismatch
+        _ra().logger.warning(
+            "Ignoring model.context_length=%r from config.yaml: it describes "
+            "model %r, but the active model is %r. Falling back to "
+            "auto-detection for %r.",
+            _ignored, _cfg_model, _active_model, _active_model,
+        )
     if _config_context_length is not None:
         try:
             _config_context_length = int(_config_context_length)

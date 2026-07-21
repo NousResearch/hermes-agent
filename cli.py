@@ -1319,10 +1319,29 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         _single_query_finalize_attempted_session_ids.add(session_id)
 
 
+def _close_single_query_agent(cli) -> None:
+    """Close the agent-owned state.db session before a one-shot process exits.
+
+    ``chat -q`` does not enter the interactive CLI shutdown path, so resource
+    cleanup alone never calls :meth:`AIAgent.close`.  This is also deliberately
+    safe from the Kanban SIGTERM handler: ``end_session`` is autocommitted and
+    must happen before that handler uses ``os._exit`` to avoid orphaning a
+    worker process.
+    """
+    agent = getattr(cli, "agent", None)
+    close = getattr(agent, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.debug("single-query agent close failed", exc_info=True)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
         _notify_single_query_session_finalize(cli)
+        _close_single_query_agent(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
@@ -15855,6 +15874,11 @@ def main(
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # This path deliberately bypasses ``finally`` via os._exit() to
+            # prevent a stuck worker thread from being reparented. Persist the
+            # agent-owned session end marker first; otherwise every killed
+            # Kanban worker leaves an ``ended_at IS NULL`` row in state.db.
+            _close_single_query_agent(cli)
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):

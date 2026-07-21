@@ -20,6 +20,7 @@ rather than parsing the raw JSON themselves.
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,10 +34,13 @@ logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
+_MODELS_DEV_STALE_GRACE_SECONDS = 300  # Retry background refresh after 5 min
 
 # In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+_models_dev_refresh_lock = threading.Lock()
+_models_dev_refresh_in_flight = False
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +241,59 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
+def _fetch_models_dev_from_network() -> Dict[str, Any]:
+    """Fetch the live models.dev registry without touching local caches."""
+    response = requests.get(MODELS_DEV_URL, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    if isinstance(data, dict) and data:
+        return data
+    return {}
+
+
+def _mark_stale_cache_grace() -> None:
+    """Give stale cache data a short in-memory grace before retrying refresh."""
+    global _models_dev_cache_time
+    _models_dev_cache_time = (
+        time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_STALE_GRACE_SECONDS
+    )
+
+
+def _background_refresh_models_dev() -> None:
+    """Best-effort refresh after serving stale cache data."""
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_refresh_in_flight
+    try:
+        data = _fetch_models_dev_from_network()
+        if data:
+            _models_dev_cache = data
+            _models_dev_cache_time = time.time()
+            _save_disk_cache(data)
+            logger.debug(
+                "Refreshed models.dev registry in background: %d providers",
+                len(data),
+            )
+    except Exception as e:
+        logger.debug("Background models.dev refresh failed: %s", e)
+    finally:
+        with _models_dev_refresh_lock:
+            _models_dev_refresh_in_flight = False
+
+
+def _start_background_refresh_models_dev() -> None:
+    """Start one daemon refresh worker if none is already running."""
+    global _models_dev_refresh_in_flight
+    with _models_dev_refresh_lock:
+        if _models_dev_refresh_in_flight:
+            return
+        _models_dev_refresh_in_flight = True
+    thread = threading.Thread(
+        target=_background_refresh_models_dev,
+        name="models-dev-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
 def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     """Fetch models.dev registry. Cache hierarchy: in-mem → disk → network.
 
@@ -244,17 +301,21 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
 
     Cache hierarchy (when ``force_refresh=False``):
       1. In-memory cache, populated and < TTL old → return immediately.
-      2. **Disk cache file < TTL old by mtime → load, populate in-mem, return.**
+      2. Stale in-memory cache → return immediately and refresh in background.
+      3. Disk cache file exists → load, populate in-mem, return immediately.
+         Fresh disk caches keep their original TTL. Stale disk caches get a
+         short in-memory grace and refresh in background.
          No network call. Saves ~500 ms per cold-start agent construction;
          ``models.dev`` only changes when providers add new models, so a
-         1 hour staleness window is acceptable (same TTL as in-mem cache).
-      3. Network fetch → on success, save to disk + in-mem and return.
-      4. Network fails → fall back to ANY available disk cache (even stale)
-         with a short 5 min in-mem grace period before retrying network.
+         stale cache is preferable to blocking foreground provider resolution.
+      4. Network fetch (only when no cache is available) → on success, save
+         to disk + in-mem and return.
+      5. Network fails → fall back to ANY available disk cache (even stale)
+         with a short 5 min in-mem grace period before retrying.
 
     When ``force_refresh=True`` (used by ``hermes config refresh``, the
-    \"refresh model catalog\" code path), stages 1 and 2 are skipped. The
-    function always hits the network and only falls back to disk if the
+    \"refresh model catalog\" code path), cache fast paths are skipped. The
+    function always hits the network and only falls back to cache if the
     network call fails.
     """
     global _models_dev_cache, _models_dev_cache_time
@@ -268,32 +329,49 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     ):
         return _models_dev_cache
 
-    # Stage 2: fresh-by-mtime disk cache short-circuits the network call.
+    # Stage 2: stale in-memory cache is still better than blocking provider
+    # resolution on a foreground network timeout. Refresh it in the background.
+    if not force_refresh and _models_dev_cache:
+        _mark_stale_cache_grace()
+        _start_background_refresh_models_dev()
+        logger.warning(
+            "Using stale in-memory models.dev cache; refreshing in background"
+        )
+        return _models_dev_cache
+
+    # Stage 3: disk cache short-circuits the network call.
     # Only kicks in on cold-start processes (in-mem cache is empty or
     # expired) and only when the user hasn't asked for a forced refresh.
-    # Skipped if the disk cache file is missing, unreadable, or older
-    # than _MODELS_DEV_CACHE_TTL.
+    # A stale disk cache is deliberately usable: provider/model resolution
+    # should not hang just because models.dev is unreachable.
     if not force_refresh:
         disk_age = _disk_cache_age_seconds()
-        if disk_age is not None and disk_age < _MODELS_DEV_CACHE_TTL:
+        if disk_age is not None:
             disk_data = _load_disk_cache()
             if disk_data:
                 _models_dev_cache = disk_data
-                # Anchor in-mem TTL to the disk file's age so we don't
-                # extend an already-aging cache by another full hour.
-                _models_dev_cache_time = time.time() - disk_age
-                logger.debug(
-                    "Loaded models.dev from fresh disk cache "
-                    "(%d providers, age=%.0fs)", len(disk_data), disk_age,
-                )
+                if disk_age < _MODELS_DEV_CACHE_TTL:
+                    # Anchor in-mem TTL to the disk file's age so we don't
+                    # extend an already-aging cache by another full hour.
+                    _models_dev_cache_time = time.time() - disk_age
+                    logger.debug(
+                        "Loaded models.dev from fresh disk cache "
+                        "(%d providers, age=%.0fs)", len(disk_data), disk_age,
+                    )
+                else:
+                    _mark_stale_cache_grace()
+                    _start_background_refresh_models_dev()
+                    logger.warning(
+                        "Using stale models.dev disk cache (age=%.0fs); "
+                        "refreshing in background",
+                        disk_age,
+                    )
                 return _models_dev_cache
 
-    # Stage 3: network fetch.
+    # Stage 4: network fetch.
     try:
-        response = requests.get(MODELS_DEV_URL, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict) and data:
+        data = _fetch_models_dev_from_network()
+        if data:
             _models_dev_cache = data
             _models_dev_cache_time = time.time()
             _save_disk_cache(data)
@@ -306,13 +384,13 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("Failed to fetch models.dev: %s", e)
 
-    # Stage 4: network failed — fall back to whatever disk cache exists,
+    # Stage 5: network failed — fall back to whatever disk cache exists,
     # even if it's stale. Give it a short 5 min in-mem TTL so we retry
     # the network soon instead of serving stale data for a full hour.
     if not _models_dev_cache:
         _models_dev_cache = _load_disk_cache()
         if _models_dev_cache:
-            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
+            _mark_stale_cache_grace()
             logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
 
     return _models_dev_cache

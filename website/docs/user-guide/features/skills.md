@@ -10,7 +10,7 @@ Skills are on-demand knowledge documents the agent can load when needed. They fo
 
 All skills live in **`~/.hermes/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
 
-You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
+You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. This is the foundation of a [repo-centric setup](/docs/user-guide/repo-centric-setup), where shared project skills live inside the repository instead of only under `~/.hermes/skills/`.
 
 See also:
 
@@ -314,7 +314,7 @@ scanner version, findings, timestamp, and fresh-or-cached status in
 
 ## External Skill Directories
 
-If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
+If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools, or a repo-owned `.claude/skills/` directory checked into Git — you can tell Hermes to scan those directories too.
 
 Add `external_dirs` under the `skills` section in `~/.hermes/config.yaml`:
 
@@ -327,6 +327,8 @@ skills:
 ```
 
 Paths support `~` expansion and `${VAR}` environment variable substitution.
+
+If you want the full shared-repository workflow, including how to review checked-in skill changes, see [Repo-Centric Agent Setup](/docs/user-guide/repo-centric-setup).
 
 ### How it works
 

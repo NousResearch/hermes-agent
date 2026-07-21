@@ -2638,6 +2638,7 @@ export const zh: Translations = {
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '复制',
+      copyPromptAndResponse: '复制提示和回复',
       refresh: '刷新',
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',

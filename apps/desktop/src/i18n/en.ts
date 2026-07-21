@@ -2465,6 +2465,7 @@ export const en: Translations = {
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
+      copyPromptAndResponse: 'Copy prompt + response',
       refresh: 'Refresh',
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',

@@ -431,6 +431,7 @@ from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.terminal_setup import build_terminal_setup_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
@@ -2899,6 +2900,13 @@ def cmd_setup(args):
     from hermes_cli.setup import run_setup_wizard
 
     run_setup_wizard(args)
+
+
+def cmd_terminal_setup(args):
+    """Terminal emulator configuration wizard for Shift+Enter newline support."""
+    from hermes_cli.terminal_setup import run_terminal_setup
+
+    run_terminal_setup(args)
 
 
 def cmd_postinstall(args):
@@ -12855,7 +12863,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "terminal-setup", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13551,6 +13559,8 @@ def main():
     # setup command  (parser built in hermes_cli/subcommands/setup.py)
     # =========================================================================
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
+
+    build_terminal_setup_parser(subparsers, cmd_terminal_setup=cmd_terminal_setup)
 
     # =========================================================================
     # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)

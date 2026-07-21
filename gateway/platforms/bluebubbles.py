@@ -313,7 +313,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
         if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+            # BlueBubbles dispatches webhooks with Node/Axios. On macOS,
+            # localhost commonly resolves to ::1 before 127.0.0.1, while the
+            # Hermes webhook listener is typically bound to IPv4 loopback.
+            # Advertise explicit IPv4 loopback to avoid ECONNREFUSED ::1.
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

@@ -52,7 +52,7 @@ class AnthropicTransport(ProviderTransport):
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""
         from agent.anthropic_message_convert import convert_tools_to_anthropic
-        return convert_tools_to_anthropic(tools)
+        return convert_tools_to_anthropic(self.project_tools(tools) or [])
 
     def build_kwargs(
         self, model: str, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **params,
@@ -60,7 +60,7 @@ class AnthropicTransport(ProviderTransport):
         """Build Anthropic messages.create() kwargs (converts messages and tools internally)."""
         from agent.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
-            model=model, messages=messages, tools=tools,
+            model=model, messages=messages, tools=self.project_tools(tools),
             **{key: params.get(key, default) for key, default in _BUILD_KWARG_DEFAULTS.items()},
         )
 

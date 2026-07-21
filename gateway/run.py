@@ -6595,6 +6595,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
+    def _stuck_loop_threshold(self) -> Optional[int]:
+        raw = os.getenv("HERMES_STUCK_LOOP_THRESHOLD")
+        if raw is None or raw.strip() == "":
+            return self._STUCK_LOOP_THRESHOLD
+
+        value = raw.strip().lower()
+        if value in {"0", "false", "off", "disabled", "none", "never"}:
+            return None
+
+        try:
+            threshold = int(value)
+        except ValueError:
+            logger.warning(
+                "Invalid HERMES_STUCK_LOOP_THRESHOLD=%r; using default %d",
+                raw,
+                self._STUCK_LOOP_THRESHOLD,
+            )
+            return self._STUCK_LOOP_THRESHOLD
+
+        if threshold <= 0:
+            return None
+        return threshold
+
     def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
         """Increment restart-failure counters for sessions active at shutdown.
 
@@ -6640,8 +6663,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 0
 
+        threshold = self._stuck_loop_threshold()
+        if threshold is None:
+            return 0
+
         suspended = 0
-        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+        stuck_keys = [k for k, v in counts.items() if v >= threshold]
 
         for session_key in stuck_keys:
             try:
@@ -6663,11 +6690,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        # Clear the file — counters start fresh after suspension
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        # Clear the file only after threshold-reaching sessions were handled.
+        # Below-threshold counts must survive startup so consecutive restarts
+        # can accumulate toward the configured limit.
+        if stuck_keys:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         return suspended
 

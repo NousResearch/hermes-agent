@@ -78,6 +78,45 @@ class TestStuckLoopDetection:
         assert suspended == 0
         assert mock_entry.suspended is False
 
+    def test_env_override_raises_suspend_threshold(self, runner_with_home, monkeypatch):
+        runner, home = runner_with_home
+        monkeypatch.setenv("HERMES_STUCK_LOOP_THRESHOLD", "5")
+        for _ in range(4):
+            runner._increment_restart_failure_counts({"session:a"})
+
+        mock_entry = MagicMock()
+        mock_entry.suspended = False
+        runner.session_store._entries = {"session:a": mock_entry}
+        runner.session_store._save = MagicMock()
+
+        suspended = runner._suspend_stuck_loop_sessions()
+        assert suspended == 0
+        assert mock_entry.suspended is False
+
+        runner._increment_restart_failure_counts({"session:a"})
+        suspended = runner._suspend_stuck_loop_sessions()
+        assert suspended == 1
+        assert mock_entry.suspended is True
+
+    @pytest.mark.parametrize("value", ["0", "off", "disabled"])
+    def test_env_override_can_disable_auto_suspend(
+        self, runner_with_home, monkeypatch, value
+    ):
+        runner, home = runner_with_home
+        monkeypatch.setenv("HERMES_STUCK_LOOP_THRESHOLD", value)
+        for _ in range(5):
+            runner._increment_restart_failure_counts({"session:a"})
+
+        mock_entry = MagicMock()
+        mock_entry.suspended = False
+        runner.session_store._entries = {"session:a": mock_entry}
+        runner.session_store._save = MagicMock()
+
+        suspended = runner._suspend_stuck_loop_sessions()
+        assert suspended == 0
+        assert mock_entry.suspended is False
+        assert (home / runner._STUCK_LOOP_FILE).exists()
+
     def test_clear_on_success(self, runner_with_home):
         runner, home = runner_with_home
         runner._increment_restart_failure_counts({"session:a", "session:b"})

@@ -1538,6 +1538,49 @@ class TestGatewayServiceDetection:
 
         assert gateway_cli._is_service_running() is False
 
+    def test_get_gateway_runtime_snapshot_windows_installed(self, monkeypatch):
+        """On Windows with a Scheduled Task installed and the gateway running,
+        get_gateway_runtime_snapshot() must report manager='Scheduled Task',
+        service_installed=True, and service_running=True.
+
+        Before the fix, the Windows branch was absent and the function fell
+        through to manager='manual process' with service_installed=False.
+        """
+        import hermes_cli.gateway_windows as gw
+
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [12345])
+        monkeypatch.setattr(gw, "is_installed", lambda: True)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "Scheduled Task"
+        assert snapshot.service_installed is True
+        assert snapshot.service_running is True
+        assert 12345 in snapshot.gateway_pids
+
+    def test_get_gateway_runtime_snapshot_windows_not_installed(self, monkeypatch):
+        """When the Scheduled Task is not installed and no gateway PIDs exist,
+        service_installed and service_running must both be False."""
+        import hermes_cli.gateway_windows as gw
+
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
+        monkeypatch.setattr(gw, "is_installed", lambda: False)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "Scheduled Task"
+        assert snapshot.service_installed is False
+        assert snapshot.service_running is False
+        assert snapshot.running is False
+
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []

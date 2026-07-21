@@ -1366,6 +1366,16 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_scope="launchd",
         )
 
+    if is_windows():
+        from hermes_cli import gateway_windows
+        return GatewayRuntimeSnapshot(
+            manager="Scheduled Task",
+            service_installed=gateway_windows.is_installed(),
+            service_running=bool(gateway_pids),
+            gateway_pids=gateway_pids,
+            service_scope="Scheduled Task",
+        )
+
     return GatewayRuntimeSnapshot(
         manager="manual process",
         gateway_pids=gateway_pids,

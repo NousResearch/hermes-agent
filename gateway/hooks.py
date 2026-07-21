@@ -111,6 +111,8 @@ class HookRegistry:
 
                 hook_name = manifest.get("name", hook_dir.name)
                 events = manifest.get("events", [])
+                if isinstance(events, str):
+                    events = [events]
                 if not events:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue

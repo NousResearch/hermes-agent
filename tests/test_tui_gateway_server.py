@@ -8207,6 +8207,78 @@ def test_queued_compute_host_prompt_is_restored_when_finalization_wins_before_di
         worker.join(5)
 
 
+def test_queued_compute_host_rollback_merges_prompt_queued_during_reservation(
+    monkeypatch,
+):
+    q1_transport = object()
+    q1_metadata = object()
+    queued = {
+        "text": "first prompt",
+        "transport": q1_transport,
+        "metadata": q1_metadata,
+    }
+    session = _session(queued_prompt=queued)
+    reserved = threading.Event()
+    finalized = threading.Event()
+    result = []
+    dispatched = []
+
+    def _pause_during_compute_host_selection(_session):
+        reserved.set()
+        if not finalized.wait(5):
+            raise TimeoutError("timed out waiting for finalization")
+        return True
+
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(
+        server, "_session_uses_compute_host", _pause_during_compute_host_selection
+    )
+    monkeypatch.setattr(
+        server, "_submit_prompt_to_compute_host", lambda *args: dispatched.append(args)
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda **_kwargs: None
+    )
+
+    worker = threading.Thread(
+        target=lambda: result.append(
+            server._drain_queued_prompt("rid", "sid", session)
+        ),
+        name="queued-compute-host-merge-finalize-race",
+    )
+    try:
+        worker.start()
+        assert reserved.wait(5)
+
+        q2_transport = object()
+        response = server._handle_busy_submit(
+            "busy", "sid", session, "second prompt", q2_transport
+        )
+        assert response["result"]["status"] == "queued"
+
+        server._finalize_session(session)
+        finalized.set()
+        worker.join(5)
+        assert not worker.is_alive()
+
+        assert result == [False]
+        assert dispatched == []
+        assert session["queued_prompt"] is queued
+        assert queued == {
+            "text": "first prompt\n\nsecond prompt",
+            "transport": q1_transport,
+            "metadata": q1_metadata,
+        }
+        assert session["running"] is False
+        assert session.get("_finalized") is True
+        assert "inflight_turn" not in session
+    finally:
+        finalized.set()
+        worker.join(5)
+
+
 def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     """Stop during lazy agent startup must not start the turn after init finishes."""
     threads = []

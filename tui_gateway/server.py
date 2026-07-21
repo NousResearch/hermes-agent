@@ -5747,7 +5747,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         with session["history_lock"]:
             session["running"] = False
             if session.get("_finalized"):
-                if session.get("queued_prompt") is None:
+                pending = session.get("queued_prompt")
+                session["queued_prompt"] = queued
+                if pending is not None:
+                    # Merge normally, then keep Q1's pinned transport and metadata.
+                    _enqueue_prompt(
+                        session, pending.get("text"), pending.get("transport")
+                    )
+                    queued["text"] = session["queued_prompt"]["text"]
                     session["queued_prompt"] = queued
                 return False
     return True

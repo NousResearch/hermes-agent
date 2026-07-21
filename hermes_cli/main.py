@@ -6888,9 +6888,8 @@ def _restore_stashed_changes(
     if prompt_user:
         print()
         print("⚠ Local changes were stashed before updating.")
-        print(
-            "  Restoring them may reapply local customizations onto the updated codebase."
-        )
+        print(f"  CWD: {cwd}")
+        print("  Restoring them may reapply local customizations onto the updated codebase.")
         print("  Review the result afterward if Hermes behaves unexpectedly.")
         print("Restore local changes now? [Y/n]")
         if input_fn is not None:

@@ -8032,6 +8032,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "pricing": {},
         }
         self._invalidate(min_interval=0.0)
 
@@ -8141,6 +8142,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
+
+    @staticmethod
+    def _format_price_tag(model_id: str, pricing: dict) -> str:
+        """Return a compact inline price tag, or '' if no pricing."""
+        p = pricing.get(model_id, {})
+        if not p:
+            return ""
+        inp = p.get("prompt", "")
+        out = p.get("completion", "")
+        if not inp and not out:
+            return ""
+
+        from hermes_cli.models import _format_price_per_mtok
+        inp_str = _format_price_per_mtok(inp)
+        out_str = _format_price_per_mtok(out)
+
+        return f"  (I:{inp_str}/O:{out_str})"
 
     @staticmethod
     def _compute_model_picker_viewport(
@@ -8331,6 +8349,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
+            # Fetch live pricing for this provider (best-effort — don't block the picker)
+            slug = provider_data.get("slug", "")
+            try:
+                if slug and slug not in state.get("pricing", {}):
+                    from hermes_cli.models import get_pricing_for_provider
+                    prov_pricing = get_pricing_for_provider(slug)
+                    if prov_pricing:
+                        state["pricing"][slug] = prov_pricing
+            except Exception:
+                pass
             state["selected"] = 0
             self._invalidate(min_interval=0.0)
             return
@@ -14769,7 +14797,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
+                # Append price tags for models that have live pricing data
+                slug = provider_data.get("slug", "")
+                pricing = state.get("pricing", {}).get(slug, {})
+                choices = [m + HermesCLI._format_price_tag(m, pricing) for m in model_list]
+                choices += ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"
                 else:

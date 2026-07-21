@@ -75,7 +75,7 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 # Use the project's HERMES_HOME helper so the token follows the user's
 # profile (e.g. tests can override via HERMES_HOME=/tmp/...).
 try:
-    from hermes_constants import display_hermes_home, get_hermes_home
+    from hermes_constants import display_hermes_home, get_hermes_home, secure_parent_dir
 except (ModuleNotFoundError, ImportError):
     # Fallback for environments where hermes_constants isn't importable
     # (mirrors the same fallback used by the google-workspace skill's
@@ -90,6 +90,15 @@ except (ModuleNotFoundError, ImportError):
             return "~/" + str(home.relative_to(Path.home()))
         except ValueError:
             return str(home)
+
+    def secure_parent_dir(path: Path) -> None:
+        parent = path.parent.resolve()
+        if parent == Path("/") or len(parent.parts) < 3:
+            return
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
 
 from utils import atomic_replace
 
@@ -329,10 +338,7 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 def _write_private_json(path: Path, data: Any) -> None:
     """Atomically write JSON with 0o600 permissions where supported."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    secure_parent_dir(path)
 
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
     try:

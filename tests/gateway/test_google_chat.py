@@ -2006,6 +2006,52 @@ class TestUserOAuthHelper:
             },
         )
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+    def test_write_private_json_skips_chmod_on_shallow_parent(self, tmp_path):
+        """secure_parent_dir() must not chmod / or depth-1 dirs.
+
+        Regression guard for the parity gap with 4ead464f9: _write_private_json
+        previously called os.chmod(path.parent, 0o700) directly, which would
+        brick the host if HERMES_HOME resolved to /.
+        """
+        from plugins.platforms.google_chat.oauth import _write_private_json
+
+        called_paths = []
+        original_chmod = os.chmod
+
+        def _spy_chmod(path, mode, **kw):
+            called_paths.append((str(path), mode))
+            return original_chmod(path, mode, **kw)
+
+        # Write to a normal nested path — chmod on parent is safe and expected.
+        target = tmp_path / "subdir" / "token.json"
+        with patch("os.chmod", side_effect=_spy_chmod):
+            _write_private_json(target, {"key": "val"})
+
+        # The parent (tmp_path/subdir) must have been chmod'd 0o700.
+        parent_str = str(target.parent.resolve())
+        assert any(p == parent_str and m == 0o700 for p, m in called_paths), (
+            f"Expected chmod 0o700 on {parent_str!r}; calls were {called_paths}"
+        )
+
+        # Now verify that a shallow path (depth < 3) is NOT chmod'd.
+        # We can't actually point at / in a test, so we verify secure_parent_dir
+        # logic directly using the imported (or fallback) implementation.
+        from plugins.platforms.google_chat.oauth import secure_parent_dir
+
+        shallow_calls = []
+
+        def _spy2(path, mode, **kw):
+            shallow_calls.append(str(path))
+
+        from pathlib import Path as _Path
+        with patch("os.chmod", side_effect=_spy2):
+            secure_parent_dir(_Path("/tmp"))  # depth-1 child of /
+
+        assert shallow_calls == [], (
+            f"secure_parent_dir must not chmod /tmp; got {shallow_calls}"
+        )
+
 
 class TestPerUserAttachmentRouting:
     """The bot must use the *requesting user's* OAuth token when sending

@@ -37,8 +37,6 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { recordPreviewArtifact } from '@/store/preview-status'
-import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
@@ -51,7 +49,6 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   isFileEditTool,
-  isPreviewableTarget,
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
@@ -281,7 +278,8 @@ function ToolEntry({ part }: ToolEntryProps) {
     [args, isError, result, toolCallId, toolName]
   )
 
-  const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(stablePart)}`
+  const toolDisclosureId = toolPartDisclosureId(stablePart)
+  const disclosureId = `tool-entry:${messageId}:${toolDisclosureId}`
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined
   // Subscribe to this tool's diff only, so a live patch for one tool doesn't
@@ -307,27 +305,6 @@ function ToolEntry({ part }: ToolEntryProps) {
 
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, result, stablePart])
-
-  // Surface a previewable artifact (HTML file / localhost URL) as a compact link
-  // in the composer status stack rather than a bulky inline card. Uses the same
-  // detected target the old inline card did, keyed to the active session the
-  // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
-  const previewTarget = view.previewTarget
-
-  useEffect(() => {
-    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
-      return
-    }
-
-    // Read (don't subscribe) session/cwd: this only fires when a previewable
-    // target appears, and subscribing re-rendered every tool row on any session
-    // or cwd change.
-    const activeSessionId = $activeSessionId.get()
-
-    if (activeSessionId) {
-      recordPreviewArtifact(activeSessionId, previewTarget, $currentCwd.get() || '')
-    }
-  }, [isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

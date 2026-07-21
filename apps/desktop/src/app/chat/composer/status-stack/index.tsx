@@ -32,8 +32,8 @@ import { StatusItemRow } from './status-row'
 const BACKGROUND_POLL_MS = 5_000
 
 // A localhost/loopback preview is only meaningful while its dev server is up, so
-// we tie it to a live background process rather than persisting dismissals or
-// letting dead URLs pile up. File previews (a real on-disk artifact) stand alone.
+// we tie its visibility to a live background process. File previews (a real
+// on-disk artifact) stand alone.
 const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/i.test(target)
 
 // Real codicons per group (no sparkles): a checklist for todos, the agent glyph

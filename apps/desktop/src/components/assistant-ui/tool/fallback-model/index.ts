@@ -685,6 +685,12 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
   return toolErrorText(part, resultRecord) ? 'error' : 'success'
 }
 
+/** Cheap completion gate for session-level preview discovery. Keeps preview
+ * publication aligned with the exact success semantics used by ToolEntry
+ * without constructing the full render model for every historical tool. */
+export const isSuccessfulToolPart = (part: ToolPart): boolean =>
+  toolStatus(part, parseMaybeObject(part.result)) === 'success'
+
 function durationLabel(resultRecord: Record<string, unknown>): string | undefined {
   const seconds = numberValue(resultRecord.duration_s)
 
@@ -717,6 +723,9 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
 
   return ''
 }
+
+export const previewTargetFromToolPart = (part: ToolPart): string =>
+  toolPreviewTarget(part.toolName, parseMaybeObject(part.args), parseMaybeObject(part.result))
 
 function toolImageUrl(args: Record<string, unknown>, result: Record<string, unknown>): string {
   const candidate =

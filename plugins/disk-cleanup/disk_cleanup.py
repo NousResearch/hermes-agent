@@ -216,18 +216,31 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
 
-    size = path.stat().st_size if path.is_file() else 0
+    st = path.stat()
+    size = st.st_size if path.is_file() else 0
     tracked = load_tracked()
 
-    # Deduplicate
-    if any(item["path"] == str(path) for item in tracked):
-        return False
+    # Deduplicate by physical identity (inode + device), falling back to the
+    # resolved path string. Hard links share one inode under multiple paths,
+    # so a pure path comparison would track the same physical file twice —
+    # double-counting its size and double-deleting it during cleanup. On
+    # platforms without real inode numbers (e.g. Windows, where st_ino may be
+    # 0) we rely on the path comparison alone.
+    new_path = str(path)
+    new_ino, new_dev = st.st_ino, st.st_dev
+    for item in tracked:
+        if item["path"] == new_path:
+            return False
+        if new_ino and item.get("ino") == new_ino and item.get("dev") == new_dev:
+            return False
 
     tracked.append({
-        "path": str(path),
+        "path": new_path,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "category": category,
         "size": size,
+        "ino": new_ino,
+        "dev": new_dev,
     })
     save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")

@@ -347,6 +347,27 @@ class TestTrackForgetQuick:
         # Second call returns False (already tracked)
         assert dg.track(str(p), "test", silent=True) is False
 
+    def test_track_dedup_hard_link(self, _isolate_env):
+        """A hard link to an already-tracked file is the same physical file.
+
+        Tracking both paths would double-count the file's size and make
+        ``quick()`` try to delete it twice. Dedup must key on inode/device,
+        not just the path string.
+        """
+        import os
+
+        dg = _load_lib()
+        a = _isolate_env / "test_a.py"
+        a.write_text("payload")
+        b = _isolate_env / "test_b.py"
+        os.link(a, b)  # hard link: same inode, different path
+
+        assert a.stat().st_ino == b.stat().st_ino  # sanity: same physical file
+        assert dg.track(str(a), "test", silent=True) is True
+        # Second hard link points at the same inode → must not be re-tracked.
+        assert dg.track(str(b), "test", silent=True) is False
+        assert len(dg.load_tracked()) == 1
+
     def test_track_rejects_outside_home(self, _isolate_env):
         dg = _load_lib()
         # /etc/hostname exists on most Linux boxes; fall back if not.

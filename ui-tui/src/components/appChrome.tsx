@@ -209,8 +209,9 @@ function batteryColor(info: BatteryInfo, t: Theme): string {
 }
 
 // Compact battery label: a bolt while charging, else a battery glyph.
+// Renders `--` for an unknown percent so a null can never surface as "null%".
 function batteryLabel(info: BatteryInfo): string {
-  return `${info.plugged ? '⚡' : '🔋'} ${info.percent}%`
+  return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its

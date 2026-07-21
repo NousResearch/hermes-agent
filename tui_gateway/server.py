@@ -11319,31 +11319,6 @@ def _(rid, params: dict) -> dict:
 # ── Methods: config ──────────────────────────────────────────────────
 
 
-@method("system.battery")
-def _(rid, params: dict) -> dict:
-    """Return the host battery status for the status-bar read-out.
-
-    Always resolves with a payload; ``available: false`` means there is no
-    battery (desktop/server/VM) or the read failed. The TUI only polls this
-    while the battery indicator is enabled.
-    """
-    try:
-        from agent.battery import battery_category, read_battery
-
-        batt = read_battery()
-        return _ok(
-            rid,
-            {
-                "available": batt.available,
-                "percent": batt.percent,
-                "plugged": batt.plugged,
-                "category": battery_category(batt),
-            },
-        )
-    except Exception:
-        return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
-
-
 @method("config.set")
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
@@ -12771,6 +12746,31 @@ def _(rid, params: dict) -> dict:
 
 
 # ── Methods: tools & system ──────────────────────────────────────────
+
+
+@method("system.battery")
+def _(rid, params: dict) -> dict:
+    """Return the host battery status for the status-bar read-out.
+
+    Always resolves with a payload; ``available: false`` means there is no
+    battery (desktop/server/VM) or the read failed. The TUI only polls this
+    while the battery indicator is enabled.
+    """
+    try:
+        from agent.battery import battery_category, read_battery
+
+        batt = read_battery()
+        return _ok(
+            rid,
+            {
+                "available": batt.available,
+                "percent": batt.percent,
+                "plugged": batt.plugged,
+                "category": battery_category(batt),
+            },
+        )
+    except Exception:
+        return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
 
 
 @method("process.stop")

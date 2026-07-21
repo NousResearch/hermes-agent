@@ -121,6 +121,24 @@ class TestUnifiedDashboardRouting:
         # and the .install_method stamp actually live.
         assert env.get("HERMES_HOME") == "/opt/data"
 
+    def test_profile_reroute_preserves_light_dashboard_mode(self, main_mod, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        execs = []
+
+        def fake_exec(exe, argv, env):
+            execs.append((exe, argv, env))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+
+        with pytest.raises(SystemExit):
+            main_mod.cmd_dashboard(_args(light_dashboard=True))
+
+        assert "--light" in execs[0][1]
+
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT
         reroute into the machine dashboard. The reroute re-execs as the default
@@ -232,3 +250,22 @@ class TestUnifiedDashboardRouting:
                 "thread_name": "dashboard-mcp-discovery",
             }
         ]
+
+    def test_light_dashboard_skips_mcp_discovery(self, main_mod, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.start_background_mcp_discovery",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.lightweight_dashboard",
+            types.SimpleNamespace(run_lightweight_dashboard=lambda **_kwargs: None),
+        )
+
+        main_mod.cmd_dashboard(_args(light_dashboard=True))
+
+        assert calls == []

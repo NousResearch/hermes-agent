@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 
 
@@ -58,6 +60,11 @@ def test_serve_takes_the_same_runtime_flags_as_dashboard():
         assert getattr(serve, field) == getattr(dash, field)
 
 
+def test_serve_does_not_accept_dashboard_light_mode():
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["serve", "--light"])
+
+
 def test_serve_supports_the_lifecycle_flags():
     for flag in ("--stop", "--status"):
         assert getattr(_parser().parse_args(["serve", flag]), flag.lstrip("-")) is True
@@ -68,3 +75,8 @@ def test_serve_is_a_headless_backend_but_dashboard_is_not():
     # build; only `serve` carries it.
     assert getattr(_parser().parse_args(["serve"]), "headless_backend", False) is True
     assert getattr(_parser().parse_args(["dashboard"]), "headless_backend", False) is False
+
+
+def test_dashboard_accepts_lightweight_aliases():
+    assert _parser().parse_args(["dashboard", "--light"]).light_dashboard is True
+    assert _parser().parse_args(["dashboard", "--legacy"]).light_dashboard is True

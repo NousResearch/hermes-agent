@@ -36,11 +36,12 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
-vi.mock('@/app/messaging/platform-icon', () => ({
-  PlatformAvatar: ({ platformName, ...rest }: { platformName: string } & Record<string, unknown>) => (
-    <span {...rest}>{platformName}</span>
-  )
-}))
+// PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
+// #67500, Gille's third pass): it's a forwardRef component that spreads its
+// props onto the rendered span, and mocking it with a stand-in that spreads
+// props itself only proves the MOCK forwards them, not that the real
+// component does. This file exercises the actual production component so a
+// regression in its ref/prop forwarding fails here again.
 vi.mock('@/lib/chat-runtime', () => ({ sessionTitle: (s: SessionInfo) => (s as unknown as { title: string }).title }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
@@ -147,7 +148,7 @@ describe('SidebarSessionRow', () => {
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {
-    render(
+    const { container } = render(
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
@@ -160,11 +161,15 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    expect(screen.queryByText('telegram')).toBeNull()
+    // PlatformAvatar's span is the only aria-hidden SPAN this row ever
+    // renders (idle dot / arc-border / branch-stem are all inactive here) —
+    // Codicon icons (e.g. the kebab trigger) are also aria-hidden but render
+    // as <i>, not <span>, so this selector doesn't accidentally match them.
+    expect(container.querySelector('span[aria-hidden="true"]')).toBeNull()
   })
 
   it('wraps the handoff platform avatar in a Tip for a session started on another platform', () => {
-    render(
+    const { container } = render(
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
@@ -181,10 +186,14 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    // PlatformAvatar is stubbed to render its platformName as text, and
-    // sessionSourceLabel is mocked as an identity function, so the visible
-    // text is the raw platform id.
-    const avatar = screen.getByText('telegram')
-    expect(tipTrigger(avatar)).toBeTruthy()
+    // PlatformAvatar is the REAL component here (see the note above the vi.mock
+    // block, #67500 third pass) — it renders the Telegram brand SVG rather
+    // than the platform name as text, so query the avatar span itself (the
+    // row's only aria-hidden span in this state) rather than text content,
+    // and confirm its tooltip trigger actually attaches to it — proving the
+    // real forwardRef/...rest path works, not a mock that fakes it.
+    const avatar = container.querySelector('span[aria-hidden="true"]')
+    expect(avatar).toBeTruthy()
+    expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
   })
 })

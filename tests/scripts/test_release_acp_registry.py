@@ -29,6 +29,9 @@ def _load_release_module(monkeypatch, tmp_root: Path):
     monkeypatch.setattr(
         module, "ACP_REGISTRY_MANIFEST", tmp_root / "acp_registry" / "agent.json"
     )
+    monkeypatch.setattr(
+        module, "DESKTOP_PACKAGE_JSON", tmp_root / "apps" / "desktop" / "package.json"
+    )
     return module
 
 
@@ -97,6 +100,12 @@ def test_update_version_files_bumps_manifest_alongside_pyproject(
         encoding="utf-8",
     )
 
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    (desktop_dir / "package.json").write_text(
+        '{\n  "name": "hermes",\n  "version": "0.13.0"\n}\n', encoding="utf-8"
+    )
+
     module = _load_release_module(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "VERSION_FILE", version_dir / "__init__.py")
     monkeypatch.setattr(module, "PYPROJECT_FILE", tmp_path / "pyproject.toml")
@@ -111,3 +120,10 @@ def test_update_version_files_bumps_manifest_alongside_pyproject(
     )
     assert manifest["version"] == "0.14.0"
     assert manifest["distribution"]["uvx"]["package"] == "hermes-agent[acp]==0.14.0"
+
+    # The desktop Electron package.json must move in lockstep too -- the
+    # v0.18.2 release drifted because it was rewritten but never staged.
+    desktop_pkg = json.loads(
+        (tmp_path / "apps" / "desktop" / "package.json").read_text(encoding="utf-8")
+    )
+    assert desktop_pkg["version"] == "0.14.0"

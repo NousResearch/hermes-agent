@@ -39,6 +39,11 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 # bump touches both files atomically.
 ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
+# Desktop Electron app package.json -- its "version" field is packaging
+# metadata (app.getVersion()) and must track pyproject; the release bump
+# rewrites AND stages it so it cannot drift behind the Python version.
+DESKTOP_PACKAGE_JSON = REPO_ROOT / "apps" / "desktop" / "package.json"
+
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -2192,7 +2197,7 @@ def update_version_files(semver: str, calver_date: str):
     # Python package version. The desktop About panel reads the live Hermes
     # version at runtime, but app.getVersion()/packaging metadata still come
     # from this field, so it must track pyproject to avoid drift.
-    desktop_pkg = REPO_ROOT / "apps" / "desktop" / "package.json"
+    desktop_pkg = DESKTOP_PACKAGE_JSON
     if desktop_pkg.exists():
         pkg_text = desktop_pkg.read_text(encoding="utf-8")
         pkg_text = re.sub(
@@ -2608,6 +2613,8 @@ def main():
             add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
             if ACP_REGISTRY_MANIFEST.exists():
                 add_files.append(str(ACP_REGISTRY_MANIFEST))
+            if DESKTOP_PACKAGE_JSON.exists():
+                add_files.append(str(DESKTOP_PACKAGE_JSON))
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")

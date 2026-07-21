@@ -56,6 +56,23 @@ def _error(text: str):
     print(color(f"  ✗ {text}", Colors.RED))
 
 
+def _normalize_mcp_cfg(name: str, cfg):
+    """Coerce a raw config value to a dict, or return None if unparseable.
+
+    String shorthand (``"https://example.com/mcp"``) is converted to
+    ``{"url": <str>}``.  Non-dict values that are not strings are skipped
+    with a warning so that one malformed entry doesn't abort the entire
+    listing.
+    """
+    if isinstance(cfg, dict):
+        return cfg
+    if isinstance(cfg, str):
+        _warning(f"Server '{name}': string shorthand coerced to URL")
+        return {"url": cfg}
+    _warning(f"Server '{name}': expected dict, got {type(cfg).__name__} — skipped")
+    return None
+
+
 def _confirm(question: str, default: bool = True) -> bool:
     default_str = "Y/n" if default else "y/N"
     try:
@@ -672,6 +689,10 @@ def cmd_mcp_list(args=None):
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
+        cfg = _normalize_mcp_cfg(name, cfg)
+        if cfg is None:
+            continue
+
         # Transport info
         if "url" in cfg:
             url = cfg["url"]
@@ -731,6 +752,9 @@ def cmd_mcp_test(args):
         return
 
     cfg = servers[name]
+    cfg = _normalize_mcp_cfg(name, cfg)
+    if cfg is None:
+        return
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
 
@@ -960,6 +984,9 @@ def cmd_mcp_configure(args):
         return
 
     cfg = servers[name]
+    cfg = _normalize_mcp_cfg(name, cfg)
+    if cfg is None:
+        return
 
     # Discover all available tools
     print()

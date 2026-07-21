@@ -58,6 +58,8 @@ from gateway.platforms.base import (
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import (
         blocks_fallback_text,
+        demote_tables,
+        has_table_block,
         progress_context_blocks,
         render_blocks,
         segment_blocks,
@@ -65,6 +67,8 @@ try:  # sibling module; support both package and flat plugin-dir import
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import (  # type: ignore
         blocks_fallback_text,
+        demote_tables,
+        has_table_block,
         progress_context_blocks,
         render_blocks,
         segment_blocks,
@@ -1427,22 +1431,40 @@ class SlackAdapter(BasePlatformAdapter):
     async def _post_with_block_fallback(self, client, kwargs: Dict[str, Any]):
         """``chat.postMessage`` that survives a rejected ``blocks`` payload.
 
-        A workspace/API tier that refuses a block type (e.g. the newer
-        ``table`` block) must degrade that one message to its ``text``
-        fallback — not lose it. Non-block errors propagate unchanged.
+        A workspace/API tier that refuses a block type (usually the newer
+        ``table`` block) must not lose the message. First retry demotes any
+        native ``table`` block to aligned monospace (keeping every other
+        block), so a rejected table degrades to a lined-up grid rather than
+        raw pipes; only if that *also* fails do we drop blocks entirely and
+        resend the ``text`` fallback. Non-block errors propagate unchanged.
         """
         try:
             return await client.chat_postMessage(**kwargs)
         except Exception as exc:
             if "blocks" not in kwargs or not self._is_blocks_rejection(exc):
                 raise
-            logger.warning(
-                "[Slack] blocks payload rejected (%s); resending as plain text",
-                exc,
-            )
             logger.debug(
                 "[Slack] rejected blocks payload: %r", kwargs.get("blocks")
             )
+            if has_table_block(kwargs["blocks"]):
+                logger.warning(
+                    "[Slack] blocks rejected (%s); retrying with monospace tables",
+                    exc,
+                )
+                demoted = {**kwargs, "blocks": demote_tables(kwargs["blocks"])}
+                try:
+                    return await client.chat_postMessage(**demoted)
+                except Exception as exc2:
+                    if not self._is_blocks_rejection(exc2):
+                        raise
+                    logger.warning(
+                        "[Slack] monospace retry also rejected (%s); plain text", exc2
+                    )
+            else:
+                logger.warning(
+                    "[Slack] blocks payload rejected (%s); resending as plain text",
+                    exc,
+                )
             retry_kwargs = {k: v for k, v in kwargs.items() if k != "blocks"}
             return await client.chat_postMessage(**retry_kwargs)
 
@@ -1649,18 +1671,42 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if "blocks" not in update_kwargs or not self._is_blocks_rejection(exc):
                     raise
-                logger.warning(
-                    "[Slack] blocks payload rejected on edit (%s); keeping plain text",
-                    exc,
-                )
                 logger.debug(
                     "[Slack] rejected blocks payload: %r",
                     update_kwargs.get("blocks"),
                 )
-                retry_kwargs = {
-                    k: v for k, v in update_kwargs.items() if k != "blocks"
-                }
-                await client.chat_update(**retry_kwargs)
+                # Same degradation ladder as send(): demote native tables to
+                # aligned monospace first (keeps the rest of the blocks), and
+                # only drop to plain text if that is rejected too.
+                demoted_ok = False
+                if has_table_block(update_kwargs["blocks"]):
+                    logger.warning(
+                        "[Slack] blocks rejected on edit (%s); retrying monospace tables",
+                        exc,
+                    )
+                    demoted = {
+                        **update_kwargs,
+                        "blocks": demote_tables(update_kwargs["blocks"]),
+                    }
+                    try:
+                        await client.chat_update(**demoted)
+                        demoted_ok = True
+                    except Exception as exc2:
+                        if not self._is_blocks_rejection(exc2):
+                            raise
+                        logger.warning(
+                            "[Slack] monospace retry also rejected on edit (%s)", exc2
+                        )
+                else:
+                    logger.warning(
+                        "[Slack] blocks payload rejected on edit (%s); plain text",
+                        exc,
+                    )
+                if not demoted_ok:
+                    retry_kwargs = {
+                        k: v for k, v in update_kwargs.items() if k != "blocks"
+                    }
+                    await client.chat_update(**retry_kwargs)
             if finalize:
                 await self.stop_typing(chat_id, metadata=metadata)
             return SendResult(success=True, message_id=message_id)

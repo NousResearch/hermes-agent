@@ -260,6 +260,41 @@ class TestBlocksRejectionFallback:
         assert len(client.chat_postMessage.await_args_list) == 1
 
     @pytest.mark.asyncio
+    async def test_rejected_table_retries_with_monospace_then_keeps_blocks(self):
+        # A table-bearing message rejected once must retry with the table
+        # DEMOTED to aligned monospace (keeping blocks), not dropped to raw text.
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage = AsyncMock(
+            side_effect=[Exception("invalid_blocks"), {"ts": "1.2"}]
+        )
+        md = "| 指标 | 判断 |\n|------|------|\n| LCP | 良好 |"
+        res = await adapter.send("C1", md)
+        assert res.success
+        calls = client.chat_postMessage.await_args_list
+        assert len(calls) == 2
+        assert any(b.get("type") == "table" for b in calls[0].kwargs["blocks"])
+        assert all(b.get("type") != "table" for b in calls[1].kwargs["blocks"])
+        assert "blocks" in calls[1].kwargs  # blocks kept, not stripped to text
+
+    @pytest.mark.asyncio
+    async def test_rejected_table_twice_falls_back_to_text(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage = AsyncMock(
+            side_effect=[
+                Exception("invalid_blocks"),
+                Exception("invalid_blocks"),
+                {"ts": "1.2"},
+            ]
+        )
+        md = "| 指标 | 判断 |\n|------|------|\n| LCP | 良好 |"
+        res = await adapter.send("C1", md)
+        assert res.success
+        calls = client.chat_postMessage.await_args_list
+        assert len(calls) == 3
+        assert "blocks" not in calls[2].kwargs  # finally plain text
+        assert calls[2].kwargs["text"]
+
+    @pytest.mark.asyncio
     async def test_finalize_edit_retries_without_blocks(self):
         adapter, client = _make_adapter({"rich_blocks": True})
         client.chat_update = AsyncMock(

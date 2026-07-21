@@ -7,6 +7,8 @@ from plugins.platforms.slack.block_kit import (
     _display_width,
     _render_table,
     blocks_fallback_text,
+    demote_tables,
+    has_table_block,
     render_blocks,
     segment_blocks,
 )
@@ -410,3 +412,66 @@ class TestProgressContextBlocks:
         [block] = progress_context_blocks("fetch <https://e.io> & parse")
         text = block["elements"][0]["text"]
         assert "&lt;" in text and "&amp;" in text
+
+
+class TestAmbiguousWidthAlignment:
+    def test_ambiguous_width_wide_in_cjk_table(self):
+        # Arrows/✓/… are East Asian "Ambiguous": two columns in a CJK font.
+        # A table that contains CJK must count them as two or rows drift.
+        rows = ["| 名称 | 状态 |", "| 首页→详情 | ✓ 好 |", "| API… | 差 |"]
+        out = _render_table(rows)
+        lines = out.split("\n")
+        data_lines = [lines[0]] + lines[2:]
+        cols = {
+            _display_width(line[: line.index("|")], wide_ambiguous=True)
+            for line in data_lines
+        }
+        assert len(cols) == 1  # first separator aligned across all rows
+
+    def test_ascii_table_keeps_ambiguous_one_column(self):
+        assert _display_width("a→b") == 3  # no CJK context: → is one column
+        assert _display_width("甲→乙", wide_ambiguous=True) == 6  # CJK: → is two
+
+
+class TestLongParagraphSplit:
+    def test_split_preserves_bold_across_seam(self):
+        # A >3000-char paragraph full of bold spans must split WITHOUT
+        # bisecting a ``**...**`` span into literal asterisks.
+        big = "说明 **关键指标** 数据 " * 300
+        blocks = render_blocks(big)
+        assert len(blocks) > 1
+        assert "**" not in str(blocks)  # no leaked markup at any seam
+        bolds = {
+            el["text"]
+            for b in blocks
+            for sec in b["elements"]
+            for el in sec["elements"]
+            if el.get("style", {}).get("bold")
+        }
+        assert bolds == {"关键指标"}  # every bold span intact
+
+
+class TestDemoteTables:
+    _TABLE_MD = "| 指标 | 判断 |\n|------|------|\n| LCP | 良好 |\n| INP | 需改进 |"
+
+    def test_has_table_block(self):
+        blocks = render_blocks(self._TABLE_MD)
+        assert has_table_block(blocks)
+        assert not has_table_block(render_blocks("just text"))
+
+    def test_demote_converts_table_to_monospace(self):
+        blocks = render_blocks(self._TABLE_MD)
+        demoted = demote_tables(blocks)
+        assert not has_table_block(demoted)
+        # the table became an aligned monospace preformatted block
+        pre = [b for b in demoted if b["type"] == "rich_text"]
+        assert pre and pre[0]["elements"][0]["type"] == "rich_text_preformatted"
+        text = pre[0]["elements"][0]["elements"][0]["text"]
+        assert "指标" in text and "LCP" in text and "|" in text  # a grid, not raw md
+
+    def test_demote_keeps_other_blocks(self):
+        blocks = render_blocks(f"# Title\n\n{self._TABLE_MD}\n\nafter")
+        demoted = demote_tables(blocks)
+        types = [b["type"] for b in demoted]
+        assert "header" in types  # non-table blocks untouched
+        assert not has_table_block(demoted)

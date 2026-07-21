@@ -379,7 +379,7 @@ def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
     return block
 
 
-def _display_width(s: str) -> int:
+def _display_width(s: str, wide_ambiguous: bool = False) -> int:
     """Monospace display width of ``s`` in Slack's code font.
 
     East Asian Wide/Fullwidth chars occupy two columns; combining marks and
@@ -388,18 +388,44 @@ def _display_width(s: str) -> int:
     decomposed ``e`` + U+0301 from being counted as two columns and drifting
     the table — full grapheme clustering (multi-codepoint ZWJ emoji) is still
     approximate, since the stdlib can't cluster them.
+
+    ``wide_ambiguous`` widens East Asian *Ambiguous* ("A") codepoints —
+    arrows (→), check/cross marks (✓ ✗ ×), the ellipsis (…), roman numerals
+    (①), Greek/Cyrillic — to two columns. In a CJK font context Slack renders
+    these at two columns, so a table that already contains CJK must count them
+    as two or every row with an arrow/✓ drifts. Pure-ASCII tables keep them at
+    one (the width they actually render at without a CJK font).
     """
     width = 0
     for ch in s:
         if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
             continue
-        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        eaw = unicodedata.east_asian_width(ch)
+        if eaw in ("W", "F") or (wide_ambiguous and eaw == "A"):
+            width += 2
+        else:
+            width += 1
     return width
 
 
-def _pad_display(s: str, width: int) -> str:
+def _pad_display(s: str, width: int, wide_ambiguous: bool = False) -> str:
     """Right-pad ``s`` with spaces to ``width`` display columns."""
-    return s + " " * max(0, width - _display_width(s))
+    return s + " " * max(0, width - _display_width(s, wide_ambiguous))
+
+
+def _has_east_asian_wide(rows: List[List[str]]) -> bool:
+    """True if any cell holds a Wide/Fullwidth (CJK) codepoint.
+
+    Used to decide whether East Asian *Ambiguous* glyphs should be measured
+    at two columns: a table with CJK is rendered in a CJK font, where they are
+    two wide; an all-Latin table is not.
+    """
+    return any(
+        unicodedata.east_asian_width(ch) in ("W", "F")
+        for r in rows
+        for cell in r
+        for ch in cell
+    )
 
 
 def _render_table(rows: List[str]) -> str:
@@ -407,6 +433,8 @@ def _render_table(rows: List[str]) -> str:
 
     Column widths are computed in display columns, not codepoints, so CJK
     cell content (two columns per glyph in the monospace font) stays aligned.
+    When the table contains any CJK, East Asian *Ambiguous* glyphs (arrows,
+    ✓/✗, …) are also counted as two columns so those rows don't drift.
     """
     parsed: List[List[str]] = []
     for r in rows:
@@ -417,10 +445,15 @@ def _render_table(rows: List[str]) -> str:
     ncols = max(len(r) for r in parsed)
     for r in parsed:
         r.extend([""] * (ncols - len(r)))
-    widths = [max(_display_width(r[c]) for r in parsed) for c in range(ncols)]
+    wide_amb = _has_east_asian_wide(parsed)
+    widths = [
+        max(_display_width(r[c], wide_amb) for r in parsed) for c in range(ncols)
+    ]
     out_lines = []
     for ri, r in enumerate(parsed):
-        line = " | ".join(_pad_display(r[c], widths[c]) for c in range(ncols))
+        line = " | ".join(
+            _pad_display(r[c], widths[c], wide_amb) for c in range(ncols)
+        )
         out_lines.append(line.rstrip())
         if ri == 0:  # header underline
             out_lines.append("-+-".join("-" * widths[c] for c in range(ncols)))
@@ -471,9 +504,20 @@ def render_blocks(
                 return
             # rich_text (not mrkdwn section): explicit style objects survive
             # CJK-adjacent emphasis that mrkdwn's word-boundary parser drops.
-            # Split oversized paragraphs on the 3000-char text-object limit.
-            for chunk in _split_text(text, MAX_SECTION_TEXT):
-                blocks.append(_rich_para_block(chunk))
+            # Parse inline markup ONCE, then split the resulting element list
+            # on the 3000-char text-object limit — splitting the raw string
+            # (old behaviour) could bisect a ``**bold**`` span and strand
+            # literal asterisks at the seam. Splitting parsed elements never
+            # can: each half keeps its style object.
+            for section_elems in _pack_elements(_inline_elements(text), MAX_SECTION_TEXT):
+                blocks.append(
+                    {
+                        "type": "rich_text",
+                        "elements": [
+                            {"type": "rich_text_section", "elements": section_elems}
+                        ],
+                    }
+                )
 
         while i < n:
             line = lines[i]
@@ -611,12 +655,64 @@ def _split_text(text: str, limit: int) -> List[str]:
     while len(remaining) > limit:
         cut = remaining.rfind("\n", 0, limit)
         if cut <= 0:
+            cut = remaining.rfind(" ", 0, limit)  # avoid cutting mid-word
+        if cut <= 0:
             cut = limit
         out.append(remaining[:cut])
         remaining = remaining[cut:].lstrip("\n")
     if remaining:
         out.append(remaining)
     return out
+
+
+def _element_len(el: Dict[str, Any]) -> int:
+    """Approximate character cost of a rich_text child element."""
+    t = el.get("type")
+    if t == "text":
+        return len(el.get("text", ""))
+    if t == "link":
+        return len(el.get("text") or el.get("url", ""))
+    return 1  # user/channel/broadcast/emoji render short — count nominally
+
+
+def _pack_elements(
+    elements: List[Dict[str, Any]], limit: int
+) -> List[List[Dict[str, Any]]]:
+    """Pack parsed inline elements into <= ``limit``-char rich_text sections.
+
+    Splits *between* elements, and only ever splits *inside* a plain ``text``
+    element (preserving its style on both halves) — never inside a link or a
+    styled span, so no ``**``/`` ` `` markup can leak at a seam. One section is
+    always returned so the caller can build at least one block.
+    """
+    out: List[List[Dict[str, Any]]] = []
+    cur: List[Dict[str, Any]] = []
+    cur_len = 0
+
+    def flush() -> None:
+        nonlocal cur, cur_len
+        if cur:
+            out.append(cur)
+            cur = []
+            cur_len = 0
+
+    for el in elements:
+        elen = _element_len(el)
+        # A single text run longer than the limit: split its text, keeping
+        # style, into standalone sections.
+        if el.get("type") == "text" and elen > limit:
+            flush()
+            for piece in _split_text(el.get("text", ""), limit):
+                seg = dict(el)
+                seg["text"] = piece
+                out.append([seg])
+            continue
+        if cur and cur_len + elen > limit:
+            flush()
+        cur.append(el)
+        cur_len += elen
+    flush()
+    return out or [[{"type": "text", "text": ""}]]
 
 
 # ----------------------------------------------------------------------------
@@ -751,3 +847,57 @@ def blocks_fallback_text(segment: List[Block], limit: int = 39000) -> str:
     if len(out) > limit:
         out = out[: limit - 1] + "…"
     return out or " "
+
+
+# ----------------------------------------------------------------------------
+# Table-block demotion — native ``table`` block → aligned monospace
+# ----------------------------------------------------------------------------
+
+
+def _cell_plain(cell: Block) -> str:
+    """Plain-text of a native table cell (a ``rich_text`` block), single line."""
+    return " ".join(_rich_text_plain(cell).split())
+
+
+def _table_block_to_preformatted(table: Block) -> Block:
+    """Render a native ``table`` block as an aligned-monospace preformatted block.
+
+    Used when a workspace/app tier rejects the native ``table`` block: instead
+    of dropping the grid to raw text, re-render it as the same CJK-aligned
+    monospace table :func:`_render_table` produces, so the columns still line
+    up. Pure block→block transform — needs no source markdown.
+    """
+    grid = [[_cell_plain(c) for c in row] for row in table.get("rows", [])]
+    if not grid:
+        return _preformatted_block("")
+    ncols = max((len(r) for r in grid), default=0)
+    for r in grid:
+        r.extend([""] * (ncols - len(r)))
+    wide = _has_east_asian_wide(grid)
+    widths = [max(_display_width(r[c], wide) for r in grid) for c in range(ncols)]
+    lines: List[str] = []
+    for ri, r in enumerate(grid):
+        line = " | ".join(_pad_display(r[c], widths[c], wide) for c in range(ncols))
+        lines.append(line.rstrip())
+        if ri == 0:
+            lines.append("-+-".join("-" * widths[c] for c in range(ncols)))
+    return _preformatted_block("\n".join(lines))
+
+
+def demote_tables(blocks: List[Block]) -> List[Block]:
+    """Replace every native ``table`` block with a monospace preformatted one.
+
+    The retry path when a ``blocks`` payload is rejected: keeps all the other
+    rich structure (headers, lists, styled text) and only demotes the block
+    type workspaces most often refuse, so a rejected message degrades to an
+    *aligned* table rather than losing its blocks entirely (raw pipes).
+    """
+    return [
+        _table_block_to_preformatted(b) if b.get("type") == "table" else b
+        for b in blocks
+    ]
+
+
+def has_table_block(blocks: List[Block]) -> bool:
+    """True if any block in the list is a native ``table`` block."""
+    return any(b.get("type") == "table" for b in blocks)

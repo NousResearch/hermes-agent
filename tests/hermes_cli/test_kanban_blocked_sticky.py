@@ -65,6 +65,7 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
         assert kb.block_task(
             conn, tid,
             reason="review-required: please verify ACL change",
+            kind="needs_input",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "blocked"
@@ -75,6 +76,19 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             promoted = kb.recompute_ready(conn)
             assert promoted == 0, "worker-blocked task must not auto-promote"
             assert kb.get_task(conn, tid).status == "blocked"
+
+        # Recovery can preserve the classified blocked task row while losing
+        # the event tail. Fail closed on that durable classification instead
+        # of silently promoting the recovered task.
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id=? AND kind='blocked'", (tid,),
+        )
+        conn.commit()
+        assert kb.recompute_ready(conn) == 0
+        recovered = kb.get_task(conn, tid)
+        assert recovered is not None
+        assert recovered.status == "blocked"
+        assert kb.claim_task(conn, tid) is None
 
 
 def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
@@ -146,6 +160,48 @@ def test_bridge_block_is_sticky_until_bridge_clear_transition(
         ready_task = kb.get_task(conn, tid)
         assert ready_task is not None
         assert ready_task.status == "ready"
+
+        # A canonical operator unblock is also authorized to clear an older
+        # bridge block.
+        canonical_clear = kb.create_task(conn, title="bridge block, operator clear")
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (canonical_clear,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'bridge_blocked', NULL, ?)",
+            (canonical_clear, now + 2),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, canonical_clear)
+        assert not kb._has_sticky_block(conn, canonical_clear)
+
+        # Bridge receipts only clear the bridge channel. They must never
+        # substitute for the canonical `unblocked` event required to release
+        # an operator block.
+        canonical = kb.create_task(conn, title="canonical operator review")
+        assert kb.claim_task(conn, canonical) is not None
+        canonical_task = kb.get_task(conn, canonical)
+        assert canonical_task is not None
+        assert kb.block_task(
+            conn,
+            canonical,
+            reason="review-required: operator approval",
+            kind="needs_input",
+            expected_run_id=canonical_task.current_run_id,
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, ?, NULL, ?)",
+            (canonical, clear_event, now + 2),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        canonical_task = kb.get_task(conn, canonical)
+        assert canonical_task is not None
+        assert canonical_task.status == "blocked"
+        assert kb.claim_task(conn, canonical) is None
 
 
 # ---------------------------------------------------------------------------

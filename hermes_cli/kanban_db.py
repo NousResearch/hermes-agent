@@ -3362,7 +3362,7 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
       ``hermes kanban block <id>``).  This is a deliberate handoff that
       should stay blocked until an operator unblocks it.  The block tool
-      The block tool emits a ``"blocked"`` event row in ``task_events``.
+      emits a ``"blocked"`` event row in ``task_events``.
       Out-of-process bridge workers use the equivalent ``"bridge_blocked"``
       transition and clear it with ``"bridge_requeued"`` or
       ``"bridge_dispatched"``.
@@ -3373,26 +3373,44 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       automatically once the underlying conditions change (e.g. parents
       finish, transient infra error clears).
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
-
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Canonical and bridge lifecycles are independent: only ``unblocked``
+    clears a canonical block, while a bridge block is cleared by a later
+    bridge clear transition or by ``unblocked``.  A persisted, non-dependency
+    ``block_kind`` is a fail-closed fallback when recovery preserved the task
+    row but lost its sticky event.  Circuit-breaker rows have no such block
+    classification and retain their pre-#28712 auto-recover semantics.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
+        "SELECT "
+        "MAX(CASE WHEN kind = 'blocked' THEN id END) AS canonical_block, "
+        "MAX(CASE WHEN kind = 'unblocked' THEN id END) AS canonical_unblock, "
+        "MAX(CASE WHEN kind = 'bridge_blocked' THEN id END) AS bridge_block, "
+        "MAX(CASE WHEN kind IN ('bridge_requeued', 'bridge_dispatched') "
+        "THEN id END) AS bridge_clear "
+        "FROM task_events "
         "WHERE task_id = ? AND kind IN "
         "('blocked', 'unblocked', 'bridge_blocked', "
-        "'bridge_requeued', 'bridge_dispatched') "
-        "ORDER BY id DESC LIMIT 1",
+        "'bridge_requeued', 'bridge_dispatched')",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] in {"blocked", "bridge_blocked"}
+    canonical_block = int(row["canonical_block"] or 0)
+    canonical_unblock = int(row["canonical_unblock"] or 0)
+    bridge_block = int(row["bridge_block"] or 0)
+    bridge_clear = int(row["bridge_clear"] or 0)
+
+    if canonical_block > canonical_unblock:
+        return True
+    if bridge_block > max(bridge_clear, canonical_unblock):
+        return True
+
+    task = conn.execute(
+        "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    return bool(
+        task
+        and task["status"] == "blocked"
+        and task["block_kind"] in (VALID_BLOCK_KINDS - {"dependency"})
+    )
 
 
 def recompute_ready(

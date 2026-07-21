@@ -390,6 +390,14 @@ class TestCreateProfile:
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
 
+    def test_fresh_profile_default_soul_suggests_next_goal(self, profile_env):
+        """Fresh profile SOULs should teach agents to think one move ahead."""
+        profile_dir = create_profile("coder", no_alias=True)
+        soul = (profile_dir / "SOUL.md").read_text(encoding="utf-8")
+        assert "think one move ahead" in soul
+        assert "Next goal:" in soul
+        assert "do not execute side effects without approval" in soul
+
 
 # ===================================================================
 # TestNoSkillsOptOut

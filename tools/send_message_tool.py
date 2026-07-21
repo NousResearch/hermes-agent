@@ -230,7 +230,11 @@ SEND_MESSAGE_SCHEMA = {
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
             }
         },
-        "required": []
+        "required": [],
+        "anyOf": [
+            {"properties": {"action": {"const": "list"}}, "required": ["action"]},
+            {"required": ["target", "message"]},
+        ]
     }
 }
 

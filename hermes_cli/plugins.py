@@ -308,7 +308,15 @@ def _get_extra_plugin_paths() -> List[Path]:
     deduped: List[Path] = []
     seen: Set[str] = set()
     for path in paths:
-        path = path.resolve(strict=False)
+        try:
+            path = path.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            logger.warning(
+                "Could not resolve configured plugin extra path %s: %s",
+                path,
+                exc,
+            )
+            continue
         key = str(path)
         if key in seen:
             continue

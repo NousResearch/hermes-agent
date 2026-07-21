@@ -30,14 +30,7 @@ def reject_disallowed_controls(text: str) -> None:
 
 
 def validate_x_weighted_length(text: str) -> None:
-    try:
-        from twitter_text import parse_tweet
-    except ImportError as exc:
-        raise RuntimeError(
-            f"Twitter weighted-text parser is not installed; run: {TWITTER_TEXT_INSTALL_HINT}"
-        ) from exc
-
-    parsed = parse_tweet(text)
+    parsed = _parse_x_text(text)
     if parsed.weightedLength > X_WEIGHTED_LIMIT:
         raise ValueError(
             f"Twitter content exceeds the X weighted limit of {X_WEIGHTED_LIMIT}"
@@ -46,10 +39,61 @@ def validate_x_weighted_length(text: str) -> None:
         raise ValueError("Twitter content is empty or contains unsupported characters")
 
 
-def format_message(markdown: str) -> str:
+def _parse_x_text(text: str):
+    try:
+        from twitter_text import parse_tweet
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Twitter weighted-text parser is not installed; run: {TWITTER_TEXT_INSTALL_HINT}"
+        ) from exc
+    return parse_tweet(text)
+
+
+def _plain_text(markdown: str) -> str:
     text = markdown_links_to_text(markdown)
     text = strip_markdown(text)
     text = unicodedata.normalize("NFC", text)
     reject_disallowed_controls(text)
+    return text
+
+
+def _utf16_prefix_index(text: str, units: int) -> int:
+    consumed = 0
+    for index, char in enumerate(text):
+        consumed += 2 if ord(char) > 0xFFFF else 1
+        if consumed >= units:
+            return index + 1
+    return len(text)
+
+
+def format_message(markdown: str) -> str:
+    text = _plain_text(markdown)
     validate_x_weighted_length(text)
     return text
+
+
+def format_thread_messages(markdown: str) -> list[str]:
+    remaining = _plain_text(markdown)
+    parts: list[str] = []
+    while remaining:
+        parsed = _parse_x_text(remaining)
+        if parsed.weightedLength <= X_WEIGHTED_LIMIT:
+            validate_x_weighted_length(remaining)
+            parts.append(remaining)
+            break
+
+        prefix_end = _utf16_prefix_index(remaining, parsed.validRangeEnd + 1)
+        candidate = remaining[:prefix_end]
+        split_at = max(candidate.rfind(" "), candidate.rfind("\n"), candidate.rfind("\t"))
+        if split_at <= 0:
+            split_at = prefix_end
+        part = remaining[:split_at].rstrip()
+        if not part:
+            raise ValueError("Twitter content is empty or contains unsupported characters")
+        validate_x_weighted_length(part)
+        parts.append(part)
+        remaining = remaining[split_at:].lstrip()
+
+    if not parts:
+        validate_x_weighted_length(remaining)
+    return parts

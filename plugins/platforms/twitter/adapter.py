@@ -35,6 +35,7 @@ from .oauth import (
 from .presentation import (
     TWITTER_TEXT_INSTALL_HINT,
     format_message,
+    format_thread_messages,
     weighted_parser_available,
 )
 from .state import TwitterState, mutate_state
@@ -567,6 +568,7 @@ class TwitterAdapter(BasePlatformAdapter):
         reserved_reply_id = ""
         reserved_reply_kind = ""
         write_confirmed = False
+        sent_message_ids: list[str] = []
 
         def release_reservation(state: TwitterState) -> None:
             if reserved_reply_kind == "tweet":
@@ -587,7 +589,6 @@ class TwitterAdapter(BasePlatformAdapter):
                 logger.exception("Failed to finalize Twitter reply reservation")
 
         try:
-            content = format_message(content)
             if reply_to is None and chat_id.startswith(("tweet:", "dm:")):
                 routed_reply_to = (metadata or {}).get("thread_id")
                 if routed_reply_to is not None:
@@ -609,6 +610,10 @@ class TwitterAdapter(BasePlatformAdapter):
                     "Twitter destination must be timeline, "
                     "tweet:<conversation_id>:<anchor_id>, or dm:<conversation_id>"
                 )
+            content_parts = (
+                format_thread_messages(content) if valid_public else [format_message(content)]
+            )
+            content = content_parts[0]
             is_dm = chat_id.startswith("dm:")
             if chat_id == "timeline" and _MENTION_RE.search(content):
                 raise TwitterPolicyError(
@@ -676,22 +681,28 @@ class TwitterAdapter(BasePlatformAdapter):
                         await self._client.create_post(content)
                     )
             elif valid_public:
-                send_args: dict[str, Any] = {
-                    "reply_to": str(reply_to)
-                }
-                if media_ids:
-                    send_args["media_ids"] = media_ids
-                message_id = _confirmed_x_id(
-                    await self._client.create_post(content, **send_args)
-                )
-                write_confirmed = True
-                await self._mutate_state(
-                    lambda state: state.confirm_public_reply(
-                        reserved_reply_id,
-                        message_id,
-                        chat_id.rsplit(":", 1)[1],
+                parent_id = str(reply_to)
+                anchor_id = chat_id.rsplit(":", 1)[1]
+                for index, part in enumerate(content_parts):
+                    send_args: dict[str, Any] = {"reply_to": parent_id}
+                    if index == 0 and media_ids:
+                        send_args["media_ids"] = media_ids
+                    message_id = _confirmed_x_id(
+                        await self._client.create_post(part, **send_args)
                     )
-                )
+                    sent_message_ids.append(message_id)
+                    if index == 0:
+                        write_confirmed = True
+                        await self._mutate_state(
+                            lambda state: state.confirm_public_reply(
+                                reserved_reply_id, message_id, anchor_id
+                            )
+                        )
+                    else:
+                        await self._mutate_state(
+                            lambda state: state.map_bot_post(message_id, anchor_id)
+                        )
+                    parent_id = message_id
             elif valid_dm:
                 dm_ready = False
 
@@ -738,7 +749,11 @@ class TwitterAdapter(BasePlatformAdapter):
                         "tweet:<conversation_id>:<anchor_id>, or dm:<conversation_id>"
                     ),
                 )
-            return SendResult(success=True, message_id=str(message_id))
+            return SendResult(
+                success=True,
+                message_id=str(message_id),
+                continuation_message_ids=tuple(sent_message_ids[1:]),
+            )
         except OperationNotStartedError:
             if reserved_reply_id:
                 await update_reservation(release_reservation)

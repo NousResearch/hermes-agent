@@ -276,6 +276,22 @@ def test_format_message_rejects_over_x_weighted_limit(text):
         format_message(text)
 
 
+def test_format_thread_messages_uses_x_weighted_boundaries():
+    from twitter_text import parse_tweet
+    from plugins.platforms.twitter.presentation import format_thread_messages
+
+    url = "https://example.com/" + "x" * 400
+    family = "👨‍👩‍👧‍👦"
+    parts = format_thread_messages(
+        f"{'word ' * 60}{family * 30} {url} {'界' * 100}"
+    )
+
+    assert len(parts) > 1
+    assert all(parse_tweet(part).valid for part in parts)
+    assert sum(url in part for part in parts) == 1
+    assert all(not part.startswith("\u200d") and not part.endswith("\u200d") for part in parts)
+
+
 def test_settings_reject_unsafe_limits():
     from plugins.platforms.twitter.adapter import TwitterSettings
 
@@ -2105,6 +2121,80 @@ async def test_adapter_send_uses_typed_routes(monkeypatch, tmp_path):
     assert not duplicate_dm.success
     adapter._client.create_post.assert_awaited_once_with("public", reply_to="101")
     adapter._client.send_dm.assert_awaited_once_with("42-7", "private")
+
+
+@pytest.mark.asyncio
+async def test_public_reply_over_weighted_limit_sends_reply_thread(
+    monkeypatch, tmp_path
+):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.presentation import format_thread_messages
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.conversation_posts = AsyncMock(return_value={})
+    adapter._client.create_post = AsyncMock(side_effect=["700", "701"])
+    adapter.handle_message = AsyncMock()
+    await adapter._process_mention(
+        {
+            "id": "101",
+            "author_id": "42",
+            "conversation_id": "100",
+            "text": "@bot explain",
+            "entities": {"mentions": [{"id": "7"}]},
+        },
+        {},
+    )
+    message = "word " * 100
+    parts = format_thread_messages(message)
+
+    result = await adapter.send("tweet:100:101", message, reply_to="101")
+
+    assert result.success and result.message_id == "701"
+    assert result.continuation_message_ids == ("701",)
+    assert len(parts) == 2
+    assert adapter._client.create_post.await_args_list[0].args == (parts[0],)
+    assert adapter._client.create_post.await_args_list[0].kwargs == {"reply_to": "101"}
+    assert adapter._client.create_post.await_args_list[1].args == (parts[1],)
+    assert adapter._client.create_post.await_args_list[1].kwargs == {"reply_to": "700"}
+    assert adapter._state.bot_posts_for_anchor("101") == {"700", "701"}
+
+
+@pytest.mark.asyncio
+async def test_partial_reply_thread_is_not_duplicated_on_retry(monkeypatch, tmp_path):
+    from plugins.platforms.twitter.adapter import TwitterAdapter
+    from plugins.platforms.twitter.client import XApiError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TwitterAdapter(ready_twitter_config(allow_all_users=True))
+    adapter._account_id = "7"
+    adapter._client = Mock()
+    adapter._client.conversation_posts = AsyncMock(return_value={})
+    adapter._client.create_post = AsyncMock(
+        side_effect=["700", XApiError(500, "/2/tweets", "failed")]
+    )
+    adapter.handle_message = AsyncMock()
+    await adapter._process_mention(
+        {
+            "id": "101",
+            "author_id": "42",
+            "conversation_id": "100",
+            "text": "@bot explain",
+            "entities": {"mentions": [{"id": "7"}]},
+        },
+        {},
+    )
+    message = "word " * 100
+
+    partial = await adapter.send("tweet:100:101", message, reply_to="101")
+    retry = await adapter.send("tweet:100:101", message, reply_to="101")
+
+    assert not partial.success and partial.retryable
+    assert not retry.success and "not eligible" in retry.error
+    assert adapter._client.create_post.await_count == 2
+    assert adapter._state.bot_posts_for_anchor("101") == {"700"}
 
 
 @pytest.mark.asyncio

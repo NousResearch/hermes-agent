@@ -4,9 +4,11 @@ import type { ComposerAttachment } from './composer'
 export type { QueuedPromptEntry }
 export { QueueManager } from '@/lib/queue-manager'
 
+const EMPTY: QueuedPromptEntry[] = []
+
 export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEntry[] => {
   const sid = key?.trim()
-  return sid ? QueueManager.getAll(sid) : []
+  return sid ? QueueManager.getAll(sid) : EMPTY
 }
 
 export const enqueueQueuedPrompt = (

@@ -140,6 +140,39 @@ hermes teams-pipeline maintain-subscriptions --dry-run   # should show "0 expiri
 
 If you ever see your Graph webhook mysteriously "stop working" after exactly ~72 hours, this is the first thing to check: did the renewal job actually run?
 
+### Optional auto-ingestion health cron
+
+Subscription renewal keeps Graph notifications alive, but it does not prove the full auto-ingestion path is healthy. Add a lightweight daily health check if this pipeline is production-facing. The check should verify config, token health, subscription freshness, and recent failed ingestion jobs.
+
+Create a script-only cron job:
+
+```bash
+mkdir -p ~/.hermes/scripts
+cat > ~/.hermes/scripts/check-teams-auto-ingestion.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+hermes teams-pipeline validate
+hermes teams-pipeline token-health
+hermes teams-pipeline subscriptions
+hermes teams-pipeline list --status failed --limit 10
+hermes teams-pipeline list --limit 10
+EOF
+chmod +x ~/.hermes/scripts/check-teams-auto-ingestion.sh
+```
+
+Then schedule it once per morning:
+
+```bash
+hermes cron create "0 8 * * *" \
+  --name "teams-pipeline-auto-ingestion-health" \
+  --no-agent \
+  --script check-teams-auto-ingestion.sh \
+  --deliver local
+```
+
+For chat delivery, replace `--deliver local` with your configured cron delivery target. Treat any failed command, expired subscription, or repeated failed job as an ingestion incident; inspect the job with `hermes teams-pipeline show <job-id>` and replay only after fixing the underlying cause.
+
 ### Inspect recent jobs
 
 ```bash

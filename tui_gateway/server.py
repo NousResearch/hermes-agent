@@ -28,6 +28,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from hermes_cli.quick_commands import quick_command_subprocess_args
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -13296,9 +13297,15 @@ def _(rid, params: dict) -> dict:
             # has all API keys in os.environ.
             from tools.environments.local import _sanitize_subprocess_env
             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+            try:
+                exec_cmd, use_shell = quick_command_subprocess_args(qc)
+            except ValueError as e:
+                return _err(rid, 4018, f"invalid quick command: {e}")
+            if not exec_cmd:
+                return _err(rid, 4018, "invalid quick command: empty command")
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                exec_cmd,
+                shell=use_shell,
                 capture_output=True,
                 text=True,
                 timeout=30,

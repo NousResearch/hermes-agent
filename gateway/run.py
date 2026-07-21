@@ -11202,7 +11202,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return _denied
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
+                    from hermes_cli.quick_commands import quick_command_subprocess_args
+                    try:
+                        exec_cmd, use_shell = quick_command_subprocess_args(qcmd)
+                    except ValueError as e:
+                        return f"Quick command error: invalid command: {e}"
                     if exec_cmd:
                         try:
                             # Sanitize env to prevent credential leakage —
@@ -11210,12 +11214,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # has all API keys in os.environ.
                             from tools.environments.local import _sanitize_subprocess_env
                             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                env=sanitized_env,
-                            )
+                            if use_shell:
+                                proc = await asyncio.create_subprocess_shell(
+                                    exec_cmd,
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
+                                    env=sanitized_env,
+                                )
+                            else:
+                                proc = await asyncio.create_subprocess_exec(
+                                    *exec_cmd,
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE,
+                                    env=sanitized_env,
+                                )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                             output = (stdout or stderr).decode().strip()
                             # Redact any remaining sensitive patterns in output

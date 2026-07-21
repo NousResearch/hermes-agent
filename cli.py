@@ -9307,18 +9307,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
                     import subprocess
-                    exec_cmd = qcmd.get("command", "")
+                    from hermes_cli.quick_commands import quick_command_subprocess_args
+                    try:
+                        exec_cmd, use_shell = quick_command_subprocess_args(qcmd)
+                    except ValueError as e:
+                        self._console_print(f"[bold red]Quick command error: invalid command: {e}[/]")
+                        return True
                     if exec_cmd:
                         try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the CLI process which
                             # has all API keys in os.environ.
                             from tools.environments.local import _sanitize_subprocess_env
                             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
+                                exec_cmd, shell=use_shell, capture_output=True,
                                 text=True, timeout=30, env=sanitized_env
                             )
                             output = result.stdout.strip() or result.stderr.strip()

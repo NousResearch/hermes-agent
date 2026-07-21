@@ -6325,6 +6325,66 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_command_dispatch_exec_defaults_to_argv_not_shell(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "quick_commands": {
+                "safe": {"type": "exec", "command": "printf hello"}
+            }
+        },
+    )
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stdout="hello", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "safe"}}
+    )
+
+    assert resp["result"]["output"] == "hello"
+    assert seen["args"][0] == ["printf", "hello"]
+    assert seen["kwargs"]["shell"] is False
+
+
+def test_command_dispatch_exec_shell_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "quick_commands": {
+                "pipe": {
+                    "type": "exec",
+                    "command": "printf hello | tr a-z A-Z",
+                    "shell": True,
+                }
+            }
+        },
+    )
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stdout="HELLO", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "pipe"}}
+    )
+
+    assert resp["result"]["output"] == "HELLO"
+    assert seen["args"][0] == "printf hello | tr a-z A-Z"
+    assert seen["kwargs"]["shell"] is True
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(

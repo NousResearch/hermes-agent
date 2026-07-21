@@ -138,7 +138,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 ### Quick Commands
 
-User-defined quick commands map a short slash command to either a shell command or another slash command. Configure them in `~/.hermes/config.yaml`:
+User-defined quick commands map a short slash command to either a local command or another slash command. Configure them in `~/.hermes/config.yaml`:
 
 ```yaml
 quick_commands:
@@ -147,13 +147,19 @@ quick_commands:
     command: systemctl status hermes-agent
   deploy:
     type: exec
-    command: scripts/deploy.sh
+    command: scripts/deploy.sh --check
+  deploy-full:
+    type: exec
+    command: cd ~/app && scripts/deploy.sh
+    shell: true
   inbox:
     type: alias
     target: /gmail unread
 ```
 
-Then type `/status`, `/deploy`, or `/inbox` in the CLI or a messaging platform. Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
+Then type `/status`, `/deploy`, `/deploy-full`, or `/inbox` in the CLI or a messaging platform. Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
+
+Exec quick commands run without a shell by default. Add `shell: true` only for commands that intentionally need shell features such as `cd`, pipes, redirects, glob expansion, or `&&`.
 
 String-only prompt shortcuts are not supported as quick commands. Put longer reusable prompts in a skill, or use `type: alias` to point at an existing slash command.
 

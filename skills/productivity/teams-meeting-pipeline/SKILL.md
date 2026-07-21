@@ -101,6 +101,33 @@ When the user reports "the pipeline worked yesterday but nothing is arriving tod
 2. Recreate with `subscribe` as shown above.
 3. **Set up automated renewal immediately** via `hermes cron add`, a systemd timer, or plain crontab. The operator runbook at `/docs/guides/operate-teams-meeting-pipeline#automating-subscription-renewal-required-for-production` has all three options. 12-hour interval is safe (6x headroom against the 72h limit).
 
+## Optional auto-ingestion health cron
+
+For production pipelines, recommend a second daily health cron that checks the end-to-end ingestion surface in addition to subscription renewal:
+
+```bash
+mkdir -p ~/.hermes/scripts
+cat > ~/.hermes/scripts/check-teams-auto-ingestion.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+hermes teams-pipeline validate
+hermes teams-pipeline token-health
+hermes teams-pipeline subscriptions
+hermes teams-pipeline list --status failed --limit 10
+hermes teams-pipeline list --limit 10
+EOF
+chmod +x ~/.hermes/scripts/check-teams-auto-ingestion.sh
+
+hermes cron create "0 8 * * *" \
+  --name "teams-pipeline-auto-ingestion-health" \
+  --no-agent \
+  --script check-teams-auto-ingestion.sh \
+  --deliver local
+```
+
+This does not replace `maintain-subscriptions`; it catches token, webhook, transcript, and delivery failures after notifications are still technically subscribed.
+
 ## Other pitfalls
 
 - **Transcript not available yet.** Teams takes some time after a meeting ends to generate the transcript artifact. `fetch --meeting-id` on a just-ended meeting may return empty. Wait 2-5 minutes and retry, or let the Graph webhook drive ingestion naturally.

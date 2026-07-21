@@ -54,7 +54,7 @@ class TestCLIQuickCommands:
         cli.console.print.assert_not_called()
 
     def test_exec_command_stderr_shown_on_no_stdout(self):
-        cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2"}})
+        cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2", "shell": True}})
         result = cli.process_command("/err")
         assert result is True
         # stderr fallback — should print something
@@ -127,6 +127,46 @@ class TestCLIQuickCommands:
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
+
+    def test_exec_command_defaults_to_argv_not_shell(self):
+        cli = self._make_cli({"safe": {"type": "exec", "command": "printf hello"}})
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+            return subprocess.CompletedProcess(args[0], 0, stdout="hello", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = cli.process_command("/safe")
+
+        assert result is True
+        assert seen["args"][0] == ["printf", "hello"]
+        assert seen["kwargs"]["shell"] is False
+
+    def test_exec_command_shell_requires_explicit_opt_in(self):
+        cli = self._make_cli(
+            {
+                "pipe": {
+                    "type": "exec",
+                    "command": "printf hello | tr a-z A-Z",
+                    "shell": True,
+                }
+            }
+        )
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+            return subprocess.CompletedProcess(args[0], 0, stdout="HELLO", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = cli.process_command("/pipe")
+
+        assert result is True
+        assert seen["args"][0] == "printf hello | tr a-z A-Z"
+        assert seen["kwargs"]["shell"] is True
 
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
@@ -245,3 +285,75 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_defaults_to_exec_not_shell(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"safe": {"type": "exec", "command": "printf hello"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        seen = {}
+
+        class _Proc:
+            async def communicate(self):
+                return b"hello", b""
+
+        async def fake_exec(*args, **kwargs):
+            seen["exec_args"] = args
+            seen["exec_kwargs"] = kwargs
+            return _Proc()
+
+        async def fail_shell(*_args, **_kwargs):
+            raise AssertionError("quick command should not use shell by default")
+
+        event = self._make_event("safe")
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec), patch(
+            "asyncio.create_subprocess_shell", side_effect=fail_shell
+        ):
+            result = await runner._handle_message(event)
+
+        assert result == "hello"
+        assert seen["exec_args"] == ("printf", "hello")
+
+    @pytest.mark.asyncio
+    async def test_exec_command_shell_requires_explicit_opt_in(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "pipe": {
+                    "type": "exec",
+                    "command": "printf hello | tr a-z A-Z",
+                    "shell": True,
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        seen = {}
+
+        class _Proc:
+            async def communicate(self):
+                return b"HELLO", b""
+
+        async def fake_shell(*args, **kwargs):
+            seen["shell_args"] = args
+            seen["shell_kwargs"] = kwargs
+            return _Proc()
+
+        async def fail_exec(*_args, **_kwargs):
+            raise AssertionError("shell quick command should use create_subprocess_shell")
+
+        event = self._make_event("pipe")
+        with patch("asyncio.create_subprocess_exec", side_effect=fail_exec), patch(
+            "asyncio.create_subprocess_shell", side_effect=fake_shell
+        ):
+            result = await runner._handle_message(event)
+
+        assert result == "HELLO"
+        assert seen["shell_args"] == ("printf hello | tr a-z A-Z",)

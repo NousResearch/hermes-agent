@@ -1755,7 +1755,7 @@ whatsapp:
 
 ## Quick Commands
 
-Define custom commands that either run shell commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+Define custom commands that either run local commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
 
 ```yaml
 quick_commands:
@@ -1768,6 +1768,7 @@ quick_commands:
   update:
     type: exec
     command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+    shell: true
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
@@ -1777,6 +1778,8 @@ quick_commands:
 ```
 
 Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
+
+By default, `exec` commands are parsed into an argv list and do not invoke a shell. Add `shell: true` only when the command deliberately needs shell syntax such as pipes, redirects, glob expansion, environment assignments, `&&`, or `cd`.
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names

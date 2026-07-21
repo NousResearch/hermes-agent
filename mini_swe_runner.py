@@ -34,7 +34,9 @@ from typing import List, Dict, Any, Optional
 
 import fire
 from dotenv import load_dotenv
+from agent.openrouter_zdr import enforce_openrouter_zdr
 from agent.tool_dispatch_helpers import make_tool_result_message
+from utils import base_url_host_matches
 
 # Load environment variables
 load_dotenv()
@@ -464,6 +466,13 @@ Complete the user's task step by step."""
                     )
                     if fixed_temperature is not None:
                         api_kwargs["temperature"] = fixed_temperature
+
+                    _client_base = str(getattr(self.client, "base_url", "") or "")
+                    enforce_openrouter_zdr(
+                        api_kwargs,
+                        is_openrouter=base_url_host_matches(_client_base, "openrouter.ai"),
+                        base_url=_client_base,
+                    )
 
                     response = self.client.chat.completions.create(**api_kwargs)
                 except Exception as e:

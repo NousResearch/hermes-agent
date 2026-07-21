@@ -15,6 +15,7 @@ from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
+from agent.openrouter_zdr import enforce_openrouter_zdr
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -126,37 +127,6 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
-
-
-def _enforce_openrouter_zdr(
-    api_kwargs: dict[str, Any],
-    *,
-    is_openrouter: bool,
-) -> None:
-    """Force ``provider.zdr=true`` at the final OpenRouter wire boundary.
-
-    Enforcement happens after caller additions and request overrides so an
-    auxiliary-task ``extra_body`` or custom request override cannot silently
-    weaken the defense-in-depth setting. The config helper is mtime-cached, so
-    a Desktop toggle applies to the next request without rebuilding a session.
-    """
-    if not is_openrouter:
-        return
-    try:
-        from hermes_cli.config import openrouter_zdr_enabled
-
-        if not openrouter_zdr_enabled():
-            return
-    except Exception:
-        return
-
-    raw_extra = api_kwargs.get("extra_body")
-    extra_body = dict(raw_extra) if isinstance(raw_extra, dict) else {}
-    raw_provider = extra_body.get("provider")
-    provider = dict(raw_provider) if isinstance(raw_provider, dict) else {}
-    provider["zdr"] = True
-    extra_body["provider"] = provider
-    api_kwargs["extra_body"] = extra_body
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -540,7 +510,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if overrides:
             api_kwargs.update(overrides)
 
-        _enforce_openrouter_zdr(api_kwargs, is_openrouter=bool(is_openrouter))
+        enforce_openrouter_zdr(
+            api_kwargs,
+            is_openrouter=bool(is_openrouter),
+            base_url=params.get("base_url"),
+        )
         return api_kwargs
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
@@ -684,13 +658,13 @@ class ChatCompletionsTransport(ProviderTransport):
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
-        _enforce_openrouter_zdr(
+        enforce_openrouter_zdr(
             api_kwargs,
             is_openrouter=(
                 bool(params.get("is_openrouter"))
                 or getattr(profile, "name", "") == "openrouter"
-            )
-            and not _native_gemini,
+            ),
+            base_url=params.get("base_url"),
         )
         return api_kwargs
 

@@ -189,6 +189,24 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     return preferences
 
 
+def _enforce_summary_openrouter_zdr(agent, api_kwargs: dict) -> None:
+    """Apply OpenRouter ZDR to direct iteration-limit summary calls."""
+    from agent.openrouter_zdr import enforce_openrouter_zdr
+
+    try:
+        is_openrouter = (
+            (agent.provider or "").strip().lower() == "openrouter"
+            or agent._is_openrouter_url()
+        )
+    except Exception:
+        is_openrouter = False
+    enforce_openrouter_zdr(
+        api_kwargs,
+        is_openrouter=is_openrouter,
+        base_url=getattr(agent, "base_url", None),
+    )
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -2088,6 +2106,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
+                _enforce_summary_openrouter_zdr(agent, summary_kwargs)
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
@@ -2131,6 +2150,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
+                _enforce_summary_openrouter_zdr(agent, summary_kwargs)
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()

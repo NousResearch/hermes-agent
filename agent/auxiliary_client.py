@@ -6796,6 +6796,23 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
 
+    # Auxiliary calls bypass ChatCompletionsTransport and invoke the SDK
+    # directly. Enforce the same request-time privacy control here, after all
+    # caller/profile merges, so explicit ``zdr: false`` cannot weaken it.
+    from agent.openrouter_zdr import enforce_openrouter_zdr
+
+    _provider_norm = _normalize_aux_provider(provider)
+    _is_openrouter = (
+        _provider_norm == "openrouter"
+        or base_url_host_matches(effective_base, "openrouter.ai")
+        or "(openrouter)" in str(provider or "").strip().lower()
+    )
+    enforce_openrouter_zdr(
+        kwargs,
+        is_openrouter=_is_openrouter,
+        base_url=effective_base,
+    )
+
     return kwargs
 
 

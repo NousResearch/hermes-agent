@@ -46,6 +46,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from agent.openrouter_zdr import enforce_openrouter_zdr
 from agent.retry_utils import jittered_backoff
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
@@ -656,6 +657,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     }
                     if summary_temperature is not None:
                         _create_kwargs["temperature"] = summary_temperature
+                    enforce_openrouter_zdr(
+                        _create_kwargs,
+                        is_openrouter=self._detect_provider() == "openrouter",
+                        base_url=self.config.base_url,
+                    )
                     response = self.client.chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)
@@ -725,6 +731,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     }
                     if summary_temperature is not None:
                         _create_kwargs["temperature"] = summary_temperature
+                    enforce_openrouter_zdr(
+                        _create_kwargs,
+                        is_openrouter=self._detect_provider() == "openrouter",
+                        base_url=self.config.base_url,
+                    )
                     response = await self._get_async_client().chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)

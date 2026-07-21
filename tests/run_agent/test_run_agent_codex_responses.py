@@ -430,10 +430,10 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
 
 
 def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
-    """Effort levels natively supported by the Responses API pass through unchanged."""
+    """Wire-supported effort levels pass through; Hermes max/ultra clamp to xhigh."""
     _patch_agent_bootstrap(monkeypatch)
 
-    for effort in ("low", "medium", "high", "xhigh", "max"):
+    for effort in ("low", "medium", "high", "xhigh"):
         agent = run_agent.AIAgent(
             model="gpt-5-codex",
             base_url="https://chatgpt.com/backend-api/codex",
@@ -455,6 +455,29 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
             ]
         )
         assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
+
+    for effort, wire in (("max", "xhigh"), ("ultra", "xhigh")):
+        agent = run_agent.AIAgent(
+            model="gpt-5-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            quiet_mode=True,
+            max_iterations=4,
+            skip_context_files=True,
+            skip_memory=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        agent._cleanup_task_resources = lambda task_id: None
+        agent._persist_session = lambda messages, history=None: None
+        agent._save_trajectory = lambda messages, user_message, completed: None
+
+        kwargs = agent._build_api_kwargs(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        assert kwargs["reasoning"]["effort"] == wire, f"{effort} should clamp to {wire}"
 
 
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):

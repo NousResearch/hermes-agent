@@ -548,6 +548,24 @@ class TestHistoryDisplay:
         called_with = mock_handler.call_args.args[0]
         assert called_with.lower().startswith("/sessions")
 
+    def test_whoami_command_is_dispatched_and_prints_cli_access(self, capsys):
+        """/whoami is advertised in classic CLI help and must not fall through.
+
+        Regression test: the command existed in the shared registry, so it
+        appeared in /help and completion, but classic CLI dispatch lacked a
+        matching branch and printed `Unknown command: /whoami`.
+        """
+        cli = _make_cli()
+
+        cli.process_command("/whoami")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "cli (local terminal)" in output
+        assert "Tier:" in output
+        assert "unrestricted" in output
+        assert "Slash commands: all available" in output
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

@@ -3018,6 +3018,60 @@ def test_tui_kanban_subscription_follows_compression_lineage(monkeypatch, tmp_pa
         server._sessions.pop("live", None)
 
 
+def test_tui_kanban_subscription_prefers_live_compressed_child(monkeypatch, tmp_path):
+    """A stale parent poller cannot claim a live child's subscription first."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="stale parent", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="parent-key")
+        kb.block_task(conn, task_id, reason="wake child")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'blocked'",
+            (task_id,),
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+
+    class _LineageDb:
+        def resolve_resume_session_id(self, key):
+            return "child-key" if key == "parent-key" else key
+
+    delivered = []
+    parent = _session(session_key="parent-key")
+    child = _session(agent=types.SimpleNamespace(session_id="child-key"), session_key="child-key")
+    server._sessions.update({"parent": parent, "child": child})
+    monkeypatch.setattr(server, "_get_db", lambda: _LineageDb())
+
+    def _deliver(_rid, sid, active_session, text):
+        delivered.append((sid, text))
+        active_session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("parent", parent) is False
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == 0
+        finally:
+            conn.close()
+
+        assert server._poll_tui_kanban_subscriptions("child", child) is True
+        assert delivered == [("child", f"⏸ Kanban {task_id} blocked: wake child")]
+        conn = kb.connect()
+        try:
+            assert kb.list_notify_subs(conn, task_id)[0]["last_event_id"] == event_id
+        finally:
+            conn.close()
+    finally:
+        server._sessions.pop("parent", None)
+        server._sessions.pop("child", None)
+
+
 def test_tui_kanban_completed_delivery_removes_only_final_subscription(monkeypatch, tmp_path):
     """Completed subscriptions end after delivery; retryable terminal states remain."""
     from hermes_cli import kanban_db as kb
@@ -3056,6 +3110,55 @@ def test_tui_kanban_completed_delivery_removes_only_final_subscription(monkeypat
         assert completed_task not in remaining
         assert blocked_task in remaining
         assert len(delivered) == 2
+    finally:
+        server._sessions.pop("live", None)
+
+
+def test_tui_kanban_completed_cleanup_failure_preserves_accepted_turn(monkeypatch, tmp_path):
+    """A failed completed-sub cleanup cannot roll back its accepted delivery."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="cleanup failure", assignee="worker")
+        kb.add_notify_sub(conn, task_id=task_id, platform="tui", chat_id="live-key")
+        kb.complete_task(conn, task_id, summary="done")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'completed'",
+            (task_id,),
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+
+    delivered = []
+    session = _session(session_key="live-key")
+    server._sessions["live"] = session
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    monkeypatch.setattr(
+        kb,
+        "remove_notify_sub",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("remove failed")),
+    )
+
+    try:
+        assert server._poll_tui_kanban_subscriptions("live", session) is True
+        assert delivered == [f"Kanban {task_id} completed"]
+        assert session["running"] is True
+        conn = kb.connect()
+        try:
+            sub = kb.list_notify_subs(conn, task_id)[0]
+            assert sub["last_event_id"] == event_id
+        finally:
+            conn.close()
+
+        assert server._poll_tui_kanban_subscriptions("live", session) is False
+        assert delivered == [f"Kanban {task_id} completed"]
     finally:
         server._sessions.pop("live", None)
 

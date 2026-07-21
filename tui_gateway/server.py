@@ -9725,9 +9725,10 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                     (sub.get("platform") or "").lower() != "tui"
                 ):
                     continue
-                if not _session_owns_notification_event(
-                    sid, session, {"session_key": str(sub.get("chat_id") or "")}
-                ):
+                sub_event = {"session_key": str(sub.get("chat_id") or "")}
+                if _notification_event_belongs_elsewhere(sid, session, sub_event):
+                    continue
+                if not _session_owns_notification_event(sid, session, sub_event):
                     continue
 
                 old_cursor = cursor = 0
@@ -9777,15 +9778,6 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                         session,
                         "\n\n".join(lines),
                     )
-                    if any(event.kind == "completed" for event in events):
-                        kb.remove_notify_sub(
-                            conn,
-                            task_id=sub["task_id"],
-                            platform=sub["platform"],
-                            chat_id=sub["chat_id"],
-                            thread_id=sub.get("thread_id") or "",
-                        )
-                    return True
                 except Exception as exc:
                     if cursor != old_cursor:
                         try:
@@ -9805,6 +9797,18 @@ def _poll_tui_kanban_subscriptions(sid: str, session: dict) -> bool:
                         with session["history_lock"]:
                             session["running"] = False
                     return False
+                if any(event.kind == "completed" for event in events):
+                    try:
+                        kb.remove_notify_sub(
+                            conn,
+                            task_id=sub["task_id"],
+                            platform=sub["platform"],
+                            chat_id=sub["chat_id"],
+                            thread_id=sub.get("thread_id") or "",
+                        )
+                    except Exception as exc:
+                        logger.warning("TUI Kanban completed subscription cleanup failed: %s", exc)
+                return True
         except Exception as exc:
             logger.debug("TUI Kanban poll failed for board %s: %s", board, exc)
         finally:

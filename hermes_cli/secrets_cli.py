@@ -71,6 +71,21 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     status = sub.add_parser("status", help="Show config + binary + last fetch")
     status.set_defaults(func=cmd_status)
 
+    token = sub.add_parser(
+        "token",
+        help="Rotate the access token: validate a new one and store it in .env",
+    )
+    token.add_argument(
+        "--access-token",
+        help="Provide the new token non-interactively (default: masked prompt)",
+    )
+    token.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Store without probing Bitwarden first (not recommended)",
+    )
+    token.set_defaults(func=cmd_token)
+
     sync = sub.add_parser("sync", help="Fetch secrets now and report what changed")
     sync.add_argument(
         "--apply",
@@ -333,6 +348,87 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not project_id:
         console.print(
             "\n  [yellow]Enabled but no project_id — nothing to fetch.[/yellow]"
+        )
+    return 0
+
+
+def cmd_token(args: argparse.Namespace) -> int:
+    """Rotate the BSM access token without re-running the whole setup wizard.
+
+    Prompts for (or accepts via ``--access-token``) a new machine-account
+    token, probes Bitwarden with it (unless ``--no-verify``), and only then
+    persists it to .env — so a bad paste never bricks the working token.
+    """
+    console = Console()
+    cfg = load_config()
+    bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
+    token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
+    server_url = str(bw_cfg.get("server_url", "") or "").strip()
+
+    token = (args.access_token or "").strip()
+    if not token:
+        if not sys.stdin.isatty():
+            console.print(
+                "[red]No TTY — pass the token with --access-token.[/red]"
+            )
+            return 1
+        console.print(
+            "Create a new token in the Bitwarden web app:\n"
+            "  Secrets Manager → Machine accounts → [your account] → "
+            "Access tokens → Create access token\n"
+        )
+        token = masked_secret_prompt(f"Paste new access token ({token_env}): ").strip()
+    if not token:
+        console.print("[red]Empty token, aborting.[/red]")
+        return 1
+    if not token.startswith("0."):
+        console.print(
+            "[yellow]Warning: token doesn't start with '0.' — usually that means "
+            "you pasted something other than a BSM access token.[/yellow]"
+        )
+
+    if not args.no_verify:
+        binary = bw.find_bws(install_if_missing=True)
+        if binary is None:
+            console.print(
+                "[red]bws binary not available — cannot verify.  "
+                "Re-run with --no-verify to store anyway.[/red]"
+            )
+            return 1
+        console.print("Verifying against Bitwarden…")
+        projects = _list_projects(binary, token, console, server_url=server_url)
+        if projects is None:
+            console.print(
+                "[red]✗ New token was rejected — nothing was changed.[/red]"
+            )
+            return 1
+        console.print(
+            f"[green]✓ Token accepted[/green] "
+            f"({len(projects)} project{'s' if len(projects) != 1 else ''} visible)."
+        )
+        project_id = str(bw_cfg.get("project_id", "") or "")
+        if project_id and projects and project_id not in {p["id"] for p in projects}:
+            console.print(
+                f"[yellow]Warning: configured project {project_id} is not visible "
+                "to this machine account.  Grant it access in the Bitwarden web "
+                "app or re-run `hermes secrets bitwarden setup` to pick a "
+                "different project.[/yellow]"
+            )
+
+    save_env_value(token_env, token)
+    os.environ[token_env] = token
+    # Old cached pulls are keyed on the previous token's fingerprint; drop
+    # them so the next startup fetches fresh with the new credential.
+    bw.clear_caches()
+    console.print(
+        f"[green]✓[/green] stored in {get_env_path()} as {token_env}.  "
+        "Takes effect on the next Hermes invocation."
+    )
+    if not bw_cfg.get("enabled"):
+        console.print(
+            "[yellow]Note: the Bitwarden integration is currently disabled — "
+            "run `hermes secrets bitwarden setup` (or set "
+            "secrets.bitwarden.enabled: true) to turn it on.[/yellow]"
         )
     return 0
 

@@ -1497,6 +1497,56 @@ class TestDeliverCrossPlatformThreadId:
             "12345", "hello", metadata=None
         )
 
+    @pytest.mark.asyncio
+    async def test_direct_messages_topic_id_passed_through(self):
+        """direct_messages_topic_id from deliver_extra is surfaced in metadata."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "thread_id": "999",
+                "direct_messages_topic_id": "42",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello",
+            metadata={"thread_id": "999", "direct_messages_topic_id": "42"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_telegram_reply_to_message_id_passed_through(self):
+        """telegram_reply_to_message_id from deliver_extra is surfaced in metadata."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "thread_id": "999",
+                "telegram_reply_to_message_id": "7777",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello",
+            metadata={"thread_id": "999", "telegram_reply_to_message_id": "7777"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_dm_routing_keys_without_thread_id(self):
+        """direct_messages_topic_id works even without thread_id in deliver_extra."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "direct_messages_topic_id": "42",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello",
+            metadata={"direct_messages_topic_id": "42"},
+        )
+
 
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a

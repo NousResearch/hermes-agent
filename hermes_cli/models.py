@@ -29,7 +29,26 @@ COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
+COPILOT_REASONING_EFFORTS_GPT5_MINI = ["low", "medium", "high"]
+COPILOT_REASONING_EFFORTS_GPT53 = ["low", "medium", "high", "xhigh"]
+COPILOT_REASONING_EFFORTS_GPT54_55 = ["none", "low", "medium", "high", "xhigh"]
+COPILOT_REASONING_EFFORTS_GPT56 = [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+_COPILOT_REASONING_EFFORT_ORDER = [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+]
 
 def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
     """Open catalog requests without forwarding headers across origins."""
@@ -3477,6 +3496,18 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
+    # Keep the no-catalog runtime path aligned with Copilot's current model
+    # capabilities. The live catalog remains authoritative when supplied to
+    # github_model_reasoning_efforts(); these fallbacks prevent normal agent
+    # requests from silently downgrading newer efforts while offline.
+    if normalized.startswith("gpt-5.6"):
+        return list(COPILOT_REASONING_EFFORTS_GPT56)
+    if normalized.startswith(("gpt-5.4", "gpt-5.5")):
+        return list(COPILOT_REASONING_EFFORTS_GPT54_55)
+    if normalized.startswith("gpt-5.3"):
+        return list(COPILOT_REASONING_EFFORTS_GPT53)
+    if normalized.startswith("gpt-5-mini"):
+        return list(COPILOT_REASONING_EFFORTS_GPT5_MINI)
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
     return []
@@ -3731,6 +3762,55 @@ def github_model_reasoning_efforts(
             return []
 
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
+
+
+def coerce_copilot_reasoning_effort(
+    requested_effort: str,
+    supported_efforts: list[str],
+) -> Optional[str]:
+    """Return the nearest Copilot-supported wire effort for a configured tier."""
+    supported = list(
+        dict.fromkeys(
+            str(effort).strip().lower()
+            for effort in supported_efforts
+            if str(effort).strip()
+        )
+    )
+    if not supported:
+        return None
+
+    requested = str(requested_effort or "medium").strip().lower() or "medium"
+    if requested == "none":
+        return "none" if "none" in supported else None
+
+    usable = [effort for effort in supported if effort != "none"]
+    if not usable:
+        return None
+
+    # Ultra is Hermes' product tier; OpenAI's strongest GPT-5.6 wire value is
+    # max. On models capped below max, the ordered fallback below chooses the
+    # nearest weaker tier instead of unexpectedly resetting to medium.
+    if requested == "ultra":
+        requested = "max"
+    if requested in usable:
+        return requested
+
+    try:
+        requested_index = _COPILOT_REASONING_EFFORT_ORDER.index(requested)
+    except ValueError:
+        return "medium" if "medium" in usable else usable[0]
+
+    ranked_supported = [
+        (index, effort)
+        for index, effort in enumerate(_COPILOT_REASONING_EFFORT_ORDER)
+        if effort in usable
+    ]
+    weaker = [item for item in ranked_supported if item[0] < requested_index]
+    if weaker:
+        return weaker[-1][1]
+    if ranked_supported:
+        return ranked_supported[0][1]
+    return "medium" if "medium" in usable else usable[0]
 
 
 def probe_api_models(

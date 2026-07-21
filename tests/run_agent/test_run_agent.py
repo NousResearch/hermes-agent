@@ -2062,6 +2062,32 @@ class TestBuildApiKwargs:
 
         assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
 
+    def test_core_responses_preserves_gpt56_extended_efforts(self, agent):
+        """Current GPT-5.6 Copilot levels must reach the wire without downgrading."""
+        agent.model = "gpt-5.6-sol"
+
+        for configured, wire in (
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ):
+            agent.reasoning_config = {"enabled": True, "effort": configured}
+            assert agent._github_models_reasoning_extra_body() == {"effort": wire}
+
+    def test_copilot_gpt56_final_request_kwargs_preserve_max(self, agent):
+        """Regression: the final Copilot Responses request must carry max."""
+        agent.provider = "copilot"
+        agent.base_url = "https://api.githubcopilot.com"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.reasoning_config = {"enabled": True, "effort": "max"}
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["model"] == "gpt-5.6-sol"
+        assert kwargs["reasoning"] == {"effort": "max"}
+
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"
         agent.model = "gpt-4.1"

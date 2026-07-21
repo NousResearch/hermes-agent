@@ -71,6 +71,28 @@ class TestCopilotReasoningEffortClamp:
         )
         assert extra_body["reasoning"] == {"effort": "low"}
 
+    def test_max_downgrades_to_xhigh_when_unsupported(self, copilot_profile, monkeypatch):
+        """A stronger configured tier uses the nearest weaker catalog tier."""
+        _patch_efforts(monkeypatch, ["none", "low", "medium", "high", "xhigh"])
+        extra_body, _ = copilot_profile.build_api_kwargs_extras(
+            model="gpt-5.5",
+            reasoning_config={"effort": "max"},
+            supports_reasoning=True,
+        )
+        assert extra_body["reasoning"] == {"effort": "xhigh"}
+
+    def test_ultra_uses_gpt56_max_wire_value(self, copilot_profile, monkeypatch):
+        _patch_efforts(
+            monkeypatch,
+            ["none", "low", "medium", "high", "xhigh", "max"],
+        )
+        extra_body, _ = copilot_profile.build_api_kwargs_extras(
+            model="gpt-5.6-sol",
+            reasoning_config={"effort": "ultra"},
+            supports_reasoning=True,
+        )
+        assert extra_body["reasoning"] == {"effort": "max"}
+
     def test_unsupported_effort_falls_back_to_medium(self, copilot_profile, monkeypatch):
         """An effort not in the set, with no specific rule, falls to medium."""
         _patch_efforts(monkeypatch, ["low", "medium", "high"])

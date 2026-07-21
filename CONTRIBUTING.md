@@ -67,6 +67,32 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ---
 
+### Should it be a Script? — the third option
+
+Hermes cron jobs support a `no_agent: true` mode that runs a script directly without spinning up the LLM — **zero token cost, perfect determinism**. Add this question to your decision process:
+
+| Option | Token cost | Reliability | Best for |
+|--------|:----------:|:-----------:|:---------|
+| **Tool** (`plugin/tools/`) | Low per-call | ★★★★★ | Binary data, streaming, real-time events, auth flows |
+| **Skill** (`skills/` or `optional-skills/`) | Variable (LLM-driven) | ★★★☆☆ | Tasks needing reasoning, judgment, or in-context adaptation |
+| **Script** (`no_agent` cron) | **Zero per-run** | ★★★★★ | Deterministic, repeatable, scheduled operations |
+
+**Make it a Script when:**
+
+- It runs on a schedule (cron) and the logic is purely deterministic — no LLM judgment needed
+- It is a validation, cleanup, or notification task with fixed structure
+- Examples: preflight environment checks, disk/memory watermark alerts, credential rotation, heartbeat pings
+
+**Keep it a Skill when:**
+
+- The logic changes frequently — editing a shell script is harder than updating skill prose
+- You need the LLM to decide *whether* to run or how to interpret the result
+- Example: "summarize new GitHub issues" needs judgment → skill; "alert if disk > 90%" is purely deterministic → script
+
+The most common mistake is defaulting to a Skill when a Script would do. Every LLM call burns tokens; scripts cost nothing to run and never hallucinate.
+
+---
+
 ## Memory Providers: Ship as a Standalone Plugin
 
 **We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).

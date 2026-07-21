@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,23 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_status_bar_config_helper_treats_persisted_off_as_hidden(self):
+        for value in (False, "off", "false", "hidden", "no", "0"):
+            assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is False
+
+        for value in (True, "top", "bottom", "on", None):
+            assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is True
+
+    def test_status_bar_initial_visibility_honors_tui_statusbar_config(self, monkeypatch):
+        config = deepcopy(cli_mod.CLI_CONFIG)
+        config.setdefault("display", {})["tui_statusbar"] = False
+        config["display"].pop("statusbar", None)
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
+
+        cli_obj = HermesCLI(model="test-model", toolsets=[], provider="auto")
+
+        assert cli_obj._status_bar_visible is False
+
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()
 

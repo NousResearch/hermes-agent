@@ -1901,6 +1901,12 @@ DEFAULT_CONFIG = {
         # behaves badly with replayed scrollback.
         "persistent_output": True,
         "persistent_output_max_lines": 200,
+        # Clear terminal scrollback as well as the visible viewport when the
+        # classic CLI performs a full redraw/resize recovery. Disabled by
+        # default because some users prefer preserving terminal history;
+        # enable when a terminal/tmux stack stamps stale prompt chrome into
+        # scrollback during fullscreen/restore resizes.
+        "cli_rebuild_scrollback_on_redraw": False,
         # Print a one-line summary of resolved modal prompts (approval /
         # clarify) into scrollback so the question and decision survive the
         # panel repaint. Set false to keep scrollback untouched.

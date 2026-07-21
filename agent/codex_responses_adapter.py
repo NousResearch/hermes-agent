@@ -237,6 +237,20 @@ def _derive_responses_function_call_id(
     return f"fc_{digest}"
 
 
+def _sanitize_responses_name(name: Any) -> str:
+    """Sanitize a function/tool name for the Responses API.
+
+    The Responses API requires ``function_call.name`` to match
+    ``^[a-zA-Z0-9_-]+$``.  Strips any character outside that set.
+    Returns an empty string when the input is not a valid string or
+    when all characters are stripped — callers must handle empty
+    names per their existing validation (skip, raise, or fall back).
+    """
+    if not isinstance(name, str) or not name:
+        return ""
+    return re.sub(r"[^a-zA-Z0-9_-]", "", name)
+
+
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------
@@ -254,7 +268,7 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
             continue
         converted.append({
             "type": "function",
-            "name": name,
+            "name": _sanitize_responses_name(name),
             "description": fn.get("description", ""),
             "strict": False,
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
@@ -547,7 +561,7 @@ def _chat_messages_to_responses_input(
                         items.append({
                             "type": "function_call",
                             "call_id": call_id,
-                            "name": fn_name,
+                            "name": _sanitize_responses_name(fn_name),
                             "arguments": arguments,
                         })
                 continue
@@ -634,7 +648,7 @@ def _preflight_codex_input_items(
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": _sanitize_responses_name(name),
                     "arguments": arguments,
                 }
             )
@@ -898,7 +912,7 @@ def _preflight_codex_api_kwargs(
             normalized_tools.append(
                 {
                     "type": "function",
-                    "name": name.strip(),
+                    "name": _sanitize_responses_name(name),
                     "description": description,
                     "strict": strict,
                     "parameters": parameters,

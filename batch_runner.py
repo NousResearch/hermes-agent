@@ -538,7 +538,7 @@ class BatchRunner:
         max_iterations: int = 10,
         base_url: str = None,
         api_key: str = None,
-        model: str = "claude-opus-4-20250514",
+        model: str = "anthropic/claude-sonnet-4.6",
         num_workers: int = 4,
         verbose: bool = False,
         ephemeral_system_prompt: str = None,
@@ -568,7 +568,7 @@ class BatchRunner:
             num_workers (int): Number of parallel workers
             verbose (bool): Enable verbose logging
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
-            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
+            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
             providers_allowed (List[str]): OpenRouter providers to allow (optional)
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
@@ -1177,7 +1177,7 @@ def main(
         batch_size (int): Number of prompts per batch
         run_name (str): Name for this run (used for output and checkpointing)
         distribution (str): Toolset distribution to use (default: "default")
-        model (str): Model name to use (default: "claude-opus-4-20250514")
+        model (str): Model name to use (default: "anthropic/claude-sonnet-4.6")
         api_key (str): API key for model authentication
         base_url (str): Base URL for model API
         max_turns (int): Maximum number of tool calling iterations per prompt (default: 10)
@@ -1186,7 +1186,7 @@ def main(
         verbose (bool): Enable verbose logging (default: False)
         list_distributions (bool): List available toolset distributions and exit
         ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
-        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
+        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
         providers_allowed (str): Comma-separated list of OpenRouter providers to allow (e.g. "anthropic,openai")
         providers_ignored (str): Comma-separated list of OpenRouter providers to ignore (e.g. "together,deepinfra")
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")

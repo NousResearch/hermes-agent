@@ -73,8 +73,10 @@ def _resolve_timezone_name() -> str:
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
                 return tz_cfg.strip()
-    except Exception:
-        pass
+    except yaml.YAMLError as exc:
+        logger.debug("Could not parse %s: %s", config_path, exc)
+    except OSError as exc:
+        logger.debug("Could not read %s: %s", config_path, exc)
 
     return ""
 

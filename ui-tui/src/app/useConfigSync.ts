@@ -188,9 +188,13 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  sid?: string | null
 ): Promise<ConfigFullResponse | null> {
-  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', {
+    key: 'full',
+    session_id: sid ?? null
+  })
   applyDisplay(cfg, setBell, setVoiceRecordKey)
 
   return cfg
@@ -252,10 +256,13 @@ export function useConfigSync({
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+    quietRpc<ConfigMtimeResponse>(gw, 'config.get', {
+      key: 'mtime',
+      session_id: sid
+    }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, sid)
   }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
@@ -264,7 +271,10 @@ export function useConfigSync({
     }
 
     const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+      quietRpc<ConfigMtimeResponse>(gw, 'config.get', {
+        key: 'mtime',
+        session_id: sid
+      }).then(r => {
         const next = Number(r?.mtime ?? 0)
 
         if (!mtimeRef.current) {
@@ -284,7 +294,7 @@ export function useConfigSync({
         quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
           r => r && turnController.pushActivity('MCP reloaded after config change')
         )
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, sid)
       })
     }, MTIME_POLL_MS)
 

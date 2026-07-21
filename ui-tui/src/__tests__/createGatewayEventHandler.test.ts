@@ -1142,6 +1142,55 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
   })
 
+  it('scopes the agents nudge config read to the active session profile', async () => {
+    const ctx = buildCtx([])
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { display: { tui_agents_nudge: true } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    patchUiState({ sid: 'sess-profile' })
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    await Promise.resolve()
+
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', {
+      key: 'full',
+      session_id: 'sess-profile'
+    })
+  })
+
+  it('refetches the agents nudge config after a launch-profile read when a session becomes active', async () => {
+    const ctx = buildCtx([])
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { display: { tui_agents_nudge: true } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    await Promise.resolve()
+
+    patchUiState({ sid: 'sess-profile' })
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { goal: 'child b', subagent_id: 'sa-b', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    await Promise.resolve()
+
+    expect(ctx.gateway.rpc).toHaveBeenNthCalledWith(1, 'config.get', { key: 'full' })
+    expect(ctx.gateway.rpc).toHaveBeenNthCalledWith(2, 'config.get', {
+      key: 'full',
+      session_id: 'sess-profile'
+    })
+  })
+
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {
     // Repro for the discord report: ctrl-c interrupts, but late reasoning/tool
     // events from the still-winding-down agent loop kept populating the UI for

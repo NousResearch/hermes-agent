@@ -396,8 +396,13 @@ describe('hydrateFullConfig', () => {
 
     await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
 
-    expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' }))
+    expect(gw.request).toHaveBeenCalledWith('config.get', {
+      key: 'full',
+      session_id: null
+    })
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
+    )
     expect(setBell).toHaveBeenCalledWith(false)
   })
 

@@ -7153,6 +7153,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                    logger.debug(
+                        "[Discord] require_mention: dropped message from %s in #%s "
+                        "(no mention; set discord.require_mention: false to allow)",
+                        getattr(message.author, "name", "unknown"),
+                        getattr(message.channel, "name", str(getattr(message.channel, "id", "?"))),
+                    )
                     return False
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

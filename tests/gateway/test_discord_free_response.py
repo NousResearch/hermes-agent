@@ -199,6 +199,33 @@ async def test_discord_defaults_to_require_mention(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_require_mention_drop_is_logged_at_debug(adapter, monkeypatch, caplog):
+    """A silently-dropped require_mention message must still be observable
+    via DEBUG logging, so operators can diagnose a misconfigured bot without
+    source-patching. Settled at DEBUG (not INFO) since every dropped message
+    in a busy server would otherwise flood production logs."""
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=123, name="general"), content="hello from channel")
+
+    with caplog.at_level("DEBUG", logger="plugins.platforms.discord.adapter"):
+        await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert any("require_mention" in r.getMessage() and "general" in r.getMessage() for r in debug_records), (
+        "expected a DEBUG log naming the channel when require_mention drops a message"
+    )
+    # It must NOT be logged at INFO or higher — that was tried and reverted
+    # for being too noisy in busy servers.
+    assert not any(
+        "require_mention" in r.getMessage() and r.levelname != "DEBUG"
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
@@ -1485,4 +1512,43 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
+
+
+class TestApplyYamlConfigAutoThreadPrecedence:
+    """Regression coverage for the established discord.auto_thread /
+    DISCORD_AUTO_THREAD precedence in _apply_yaml_config(): config.yaml
+    seeds the env var only when it isn't already explicitly set, and an
+    explicitly-set env var always wins. See the docstring on
+    _apply_yaml_config for why this stays env-driven rather than reading
+    PlatformConfig.extra directly in the ~50 adapter call sites."""
+
+    def setup_method(self):
+        os_environ = discord_platform.os.environ
+        self._saved = os_environ.pop("DISCORD_AUTO_THREAD", None)
+
+    def teardown_method(self):
+        os_environ = discord_platform.os.environ
+        if self._saved is None:
+            os_environ.pop("DISCORD_AUTO_THREAD", None)
+        else:
+            os_environ["DISCORD_AUTO_THREAD"] = self._saved
+
+    def test_config_value_seeds_env_when_unset(self):
+        discord_platform.os.environ.pop("DISCORD_AUTO_THREAD", None)
+        discord_platform._apply_yaml_config({}, {"auto_thread": False})
+        assert discord_platform.os.environ["DISCORD_AUTO_THREAD"] == "false"
+
+    def test_explicit_env_var_wins_over_config(self):
+        """An operator-set env var must not be clobbered by config.yaml —
+        this is what the original PR's inline config.extra read would have
+        broken by giving config priority over an explicitly-set env var."""
+        discord_platform.os.environ["DISCORD_AUTO_THREAD"] = "true"
+        discord_platform._apply_yaml_config({}, {"auto_thread": False})
+        assert discord_platform.os.environ["DISCORD_AUTO_THREAD"] == "true"
+
+    def test_no_config_value_leaves_env_untouched(self):
+        discord_platform.os.environ.pop("DISCORD_AUTO_THREAD", None)
+        discord_platform._apply_yaml_config({}, {})
+        assert "DISCORD_AUTO_THREAD" not in discord_platform.os.environ
+
 

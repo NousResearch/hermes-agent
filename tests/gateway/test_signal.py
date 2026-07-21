@@ -877,6 +877,19 @@ class TestSignalMediaExtraction:
         assert media[0][0] == "/tmp/reply.ogg"
         assert media[0][1] is True  # is_voice flag
 
+    @pytest.mark.parametrize("extension", ["md", "json", "yaml", "html", "log"])
+    def test_extract_media_finds_common_document_tags(self, extension):
+        """BasePlatformAdapter.extract_media should find generated document paths."""
+        from gateway.platforms.base import BasePlatformAdapter
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"Here's the generated report.\nMEDIA:/tmp/report.{extension}"
+        )
+
+        assert media == [(f"/tmp/report.{extension}", False)]
+        assert "MEDIA:" not in cleaned
+        assert f"report.{extension}" not in cleaned
+
     def test_signal_has_all_media_methods(self, monkeypatch):
         """SignalAdapter must override all media send methods used by gateway."""
         adapter = _make_signal_adapter(monkeypatch)

@@ -384,6 +384,37 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_media_markdown_document_tag_is_extracted_for_attachment(self, tmp_path):
+        doc = tmp_path / "report.md"
+        doc.write_text("# Report\n", encoding="utf-8")
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": f"Here is the report.\nMEDIA:{doc}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "Here is the report.",
+            thread_id=None,
+            media_files=[(str(doc.resolve()), False)],
+            force_document=False,
+        )
+
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
         cache_file = tmp_path / "channel_directory.json"

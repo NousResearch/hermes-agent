@@ -468,6 +468,66 @@ class TestQueryLocalContextLengthLmStudio:
         assert client_mock.get.call_args_list[0].args[0] == "http://127.0.0.1:1234/api/v1/models"
 
 
+    def test_lmstudio_model_not_loaded_skips_probes_and_returns_none(self):
+        """Bug #24102: when the requested model isn't in LM Studio's loaded list,
+        skip the OpenAI-compat /v1/models/{model} and /v1/models probes — they
+        would 404 in a loop. Return None and let the caller fall back to the
+        default context length."""
+        from agent import model_metadata
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {"key": "google/gemma-4-26b-a4b",
+                 "id": "google/gemma-4-26b-a4b",
+                 "loaded_instances": [{"config": {"context_length": 8192}}]},
+            ]
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.return_value = native_resp
+
+        model_metadata._LMSTUDIO_MISSING_MODEL_WARNED.clear()
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "google/gemini-3-flash-preview", "http://127.0.0.1:1234/v1"
+            )
+
+        assert result is None
+        # Exactly one GET — the LM Studio native /api/v1/models. The two
+        # follow-up probes that produced the 404 spam must NOT fire.
+        get_paths = [c.args[0] for c in client_mock.get.call_args_list]
+        assert get_paths == ["http://127.0.0.1:1234/api/v1/models"], get_paths
+
+    def test_lmstudio_missing_model_warning_dedup(self):
+        """The 'not loaded' warning fires once per (model, server) pair."""
+        from agent import model_metadata
+
+        models_in_list = [
+            {"id": "google/gemma-4-26b-a4b", "key": "google/gemma-4-26b-a4b"},
+        ]
+        model_metadata._LMSTUDIO_MISSING_MODEL_WARNED.clear()
+
+        with patch.object(model_metadata.logger, "warning") as warn:
+            model_metadata._warn_lmstudio_model_not_loaded(
+                "google/gemini-3-flash-preview", "http://127.0.0.1:1234", models_in_list
+            )
+            model_metadata._warn_lmstudio_model_not_loaded(
+                "google/gemini-3-flash-preview", "http://127.0.0.1:1234", models_in_list
+            )
+            # Different model → fires again
+            model_metadata._warn_lmstudio_model_not_loaded(
+                "openai/gpt-5", "http://127.0.0.1:1234", models_in_list
+            )
+
+        assert warn.call_count == 2
+
+
 class TestDetectLocalServerTypeAuth:
     def test_passes_bearer_token_to_probe_requests(self):
         from agent.model_metadata import detect_local_server_type

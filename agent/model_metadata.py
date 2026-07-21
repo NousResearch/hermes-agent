@@ -1093,9 +1093,56 @@ def fetch_endpoint_model_metadata(
                         props = props_resp.json()
                         gen_settings = props.get("default_generation_settings", {})
                         n_ctx = gen_settings.get("n_ctx")
-                        model_alias = props.get("model_alias", "")
-                        if n_ctx and model_alias and model_alias in cache:
-                            cache[model_alias]["context_length"] = n_ctx
+                        # llama.cpp PR ggml-org/llama.cpp#10704 (Dec 2024,
+                        # "server: various fixes") moved ``n_ctx`` from
+                        # ``slot_params`` to ``server_slot``. Since then,
+                        # ``default_generation_settings.n_ctx`` is the
+                        # **per-slot** context budget — i.e. ``-c`` divided
+                        # by ``--parallel`` (which now defaults to ``-1`` /
+                        # auto and is frequently >= 2 on modern builds).
+                        #
+                        # The total context the user asked for with ``-c``
+                        # — and the budget a single request can actually
+                        # use when ``--kv-unified`` is on (the default
+                        # when ``--parallel`` is auto) — is
+                        # ``n_ctx * total_slots``. Without this multiplier
+                        # the TUI showed exactly half of ``-c`` on every
+                        # auto-parallel llama-server, which the user reads
+                        # as a context-display regression
+                        # (#29802: "TUI Context Display shows exactly half").
+                        total_slots = props.get("total_slots", 1)
+                        if (
+                            isinstance(n_ctx, int)
+                            and isinstance(total_slots, int)
+                            and total_slots > 1
+                        ):
+                            n_ctx = n_ctx * total_slots
+                        # Cache update: prefer the documented ``model_alias``
+                        # match, then ``model_path`` basename (modern
+                        # llama.cpp replaced ``model_alias`` with
+                        # ``model_path``), then — when the cache contains
+                        # exactly one model entry (the common llama.cpp
+                        # case: one model per server) — update that lone
+                        # entry. Without these fallbacks a missing alias
+                        # silently dropped the props correction and the
+                        # cache retained the bogus per-slot value from
+                        # ``/v1/models``.
+                        if n_ctx:
+                            target_keys: list[str] = []
+                            model_alias = props.get("model_alias", "")
+                            if model_alias and model_alias in cache:
+                                target_keys.append(model_alias)
+                            else:
+                                model_path = props.get("model_path", "")
+                                if isinstance(model_path, str) and model_path:
+                                    import os as _os
+                                    basename = _os.path.basename(model_path)
+                                    if basename and basename in cache:
+                                        target_keys.append(basename)
+                                if not target_keys and len(cache) == 1:
+                                    target_keys.append(next(iter(cache)))
+                            for key in target_keys:
+                                cache[key]["context_length"] = n_ctx
                 except Exception:
                     pass
 

@@ -1171,3 +1171,273 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     assert FakeCompressAgent.last_instance is None, (
         "Compression should NOT fire at 12 messages with default hard_limit=5000"
     )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_context_override_does_not_leak_onto_session_model_override(
+    monkeypatch, tmp_path
+):
+    """Regression: model.context_length in config.yaml is written for the
+    config's default model, but the gateway hygiene pre-check used to read
+    it from the raw config BEFORE resolving which model the session is
+    actually running on. A session with a per-session model override
+    (different provider/model, e.g. the desktop/mobile picker) still got
+    sized against the DEFAULT model's window instead of its own.
+
+    Mirrors the agent-build-time fix in agent.agent_init
+    (_scope_config_context_length_to_default_model) — the gateway hygiene
+    path must apply the same scoping, using the model
+    _resolve_session_agent_runtime actually resolved for this session."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            self.session_id = f"{self.session_id}_compressed"
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    # config.yaml: model.default names "config-default-model" with an
+    # explicit context_length override written for it.
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: config-default-model\n"
+        "  context_length: 131072\n"
+        "compression:\n"
+        "  enabled: true\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    # The session is actually running "override-model" on a different
+    # provider — e.g. a per-session /model or channel override away from
+    # the config default. Stub _resolve_session_agent_runtime directly so
+    # this test targets only how its result is consumed by the hygiene
+    # block, not the override-key-computation logic exercised elsewhere.
+    monkeypatch.setattr(
+        GatewayRunner,
+        "_resolve_session_agent_runtime",
+        lambda self, **kwargs: (
+            "override-model",
+            {
+                "provider": "openai-codex",
+                "base_url": "https://example.test/v1",
+                "api_key": "override-key",
+            },
+        ),
+    )
+
+    _ctx_calls = []
+
+    def _record_get_model_context_length(model, **kwargs):
+        _ctx_calls.append({"model": model, **kwargs})
+        return 372_000
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        _record_get_model_context_length,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    assert _ctx_calls, "expected the hygiene pre-check to resolve a context length"
+    hygiene_call = _ctx_calls[0]
+    # Sized against the session's actual model ("override-model"), not the
+    # config default ("config-default-model").
+    assert hygiene_call["model"] == "override-model"
+    # The 131072 override written for the config default must NOT have
+    # leaked onto this session's different model.
+    assert hygiene_call.get("config_context_length") is None
+    assert hygiene_call.get("config_context_length") != 131072
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_context_override_applies_when_session_matches_default(
+    monkeypatch, tmp_path
+):
+    """Companion to the leak regression above: when the resolved session
+    model DOES match the config's default model, the explicit
+    model.context_length override must still apply to hygiene sizing."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            self.session_id = f"{self.session_id}_compressed"
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: config-default-model\n"
+        "  context_length: 131072\n"
+        "compression:\n"
+        "  enabled: true\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    # The session is running the SAME model as the config default —
+    # no per-session override in play.
+    monkeypatch.setattr(
+        GatewayRunner,
+        "_resolve_session_agent_runtime",
+        lambda self, **kwargs: (
+            "config-default-model",
+            {"provider": None, "base_url": None, "api_key": "fake"},
+        ),
+    )
+
+    _ctx_calls = []
+
+    def _record_get_model_context_length(model, **kwargs):
+        _ctx_calls.append({"model": model, **kwargs})
+        return kwargs.get("config_context_length") or 372_000
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        _record_get_model_context_length,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    assert _ctx_calls, "expected the hygiene pre-check to resolve a context length"
+    hygiene_call = _ctx_calls[0]
+    assert hygiene_call["model"] == "config-default-model"
+    assert hygiene_call.get("config_context_length") == 131072

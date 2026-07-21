@@ -883,6 +883,10 @@ class TestWhisperHallucinationFilter:
 class TestPlayAudioFile:
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
+        # Pin to a non-macOS platform: on macOS WAV output deliberately skips
+        # sounddevice (see TestMacOSAudioOutputPolicy), so this path is only
+        # exercised off Darwin.
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
 
         mock_sd_obj = MagicMock()
         # Simulate stream completing immediately (get_stream().active = False)
@@ -919,6 +923,106 @@ class TestPlayAudioFile:
 
         result = play_audio_file("/nonexistent/file.wav")
         assert result is False
+
+
+# ============================================================================
+# macOS output policy (no sounddevice for OUTPUT -> avoids TCC prompt)
+# ============================================================================
+
+class TestMacOSAudioOutputPolicy:
+    def test_output_disallowed_on_macos(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+        from tools.voice_mode import _sounddevice_output_allowed
+
+        assert _sounddevice_output_allowed() is False
+
+    def test_output_allowed_off_macos(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
+        from tools.voice_mode import _sounddevice_output_allowed
+
+        assert _sounddevice_output_allowed() is True
+
+    def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
+        """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+
+        def _forbidden_import():
+            raise AssertionError("sounddevice must not be imported for output on macOS")
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _forbidden_import)
+
+        popen_cmds = []
+
+        class _FakeProc:
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        def _fake_popen(cmd, **kwargs):
+            popen_cmds.append(cmd)
+            return _FakeProc()
+
+        monkeypatch.setattr("shutil.which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+        from tools.voice_mode import play_audio_file
+
+        result = play_audio_file(sample_wav)
+
+        assert result is True
+        assert popen_cmds, "expected a system player to be invoked"
+        assert popen_cmds[0][0] == "afplay"
+
+    def test_play_beep_routes_through_afplay_on_macos(self, monkeypatch):
+        """On macOS, beeps synthesize with numpy but play via the tempfile/afplay path."""
+        pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+
+        def _forbidden_import():
+            raise AssertionError("sounddevice must not be imported for beeps on macOS")
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _forbidden_import)
+
+        calls = []
+        monkeypatch.setattr(
+            "tools.voice_mode._play_int16_via_tempfile",
+            lambda audio, sample_rate: calls.append((len(audio), sample_rate)),
+        )
+
+        import tools.voice_mode as vm
+
+        vm.play_beep(frequency=880, count=1)
+
+        assert len(calls) == 1
+        n_samples, sample_rate = calls[0]
+        assert n_samples > 0
+        assert sample_rate == vm.SAMPLE_RATE
+
+    def test_play_beep_uses_sounddevice_off_macos(self, monkeypatch):
+        """Off macOS, beeps go straight through sounddevice."""
+        np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
+
+        mock_sd = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.active = False
+        mock_sd.get_stream.return_value = mock_stream
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (mock_sd, np))
+
+        tempfile_calls = []
+        monkeypatch.setattr(
+            "tools.voice_mode._play_int16_via_tempfile",
+            lambda audio, sample_rate: tempfile_calls.append(True),
+        )
+
+        import tools.voice_mode as vm
+
+        vm.play_beep(frequency=880, count=1)
+
+        mock_sd.play.assert_called_once()
+        assert not tempfile_calls, "off macOS should not use the tempfile/afplay path"
 
 
 # ============================================================================

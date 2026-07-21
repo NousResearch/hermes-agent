@@ -277,6 +277,19 @@ _SUMMARY_TOKENS_CEILING = 10_000
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+# Hard per-message cap for tool results inside the PROTECTED tail.  The
+# tail-budget walk protects recent messages wholesale, so a single recent
+# 60KB tool result (delegation transcript, build log, huge JSON list)
+# survives every compression pass untouched — the measured 26-07-20 failure:
+# a 246-message session compacted to 246 messages at ~398K tokens because
+# the oversized blobs all sat inside the protected tail, and the retry
+# loop ended in "Cannot compress further".  Tool results over the cap are
+# head+tail truncated (data-preserving, keeps the parts models actually
+# reference) instead of exempted.  ~16K chars ≈ 4K tokens per result.
+_TAIL_TOOL_RESULT_MAX_CHARS = 16_000
+_TAIL_TOOL_RESULT_HEAD = 10_000
+_TAIL_TOOL_RESULT_TAIL = 4_000
+
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 # Flat token cost per attached image part.  Real cost varies by provider and
@@ -1805,6 +1818,37 @@ class ContextCompressor(ContextEngine):
                 new_tcs.append(tc)
             if modified:
                 result[i] = {**msg, "tool_calls": new_tcs}
+
+        # Pass 4: Cap oversized tool results inside the PROTECTED tail.
+        # Tail protection is wholesale — a recent 60KB tool result (delegation
+        # transcript, build log, big JSON dump) is exempt from Pass 2 and
+        # survives every compaction, so a session whose bulk lives in recent
+        # tool results compacts to the same size and the retry loop dies with
+        # "Cannot compress further" (measured 26-07-20: 246 -> 246 messages at
+        # ~398K tokens).  Head+tail truncation keeps the parts models actually
+        # reference while bounding any single result to ~4K tokens.  The last
+        # few messages are exempt: the current exchange's tool output may be
+        # exactly what the model is working on right now.
+        _tail_exempt_last = 3
+        for i in range(prune_boundary, len(result) - _tail_exempt_last):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            if len(content) <= _TAIL_TOOL_RESULT_MAX_CHARS:
+                continue
+            omitted = len(content) - _TAIL_TOOL_RESULT_HEAD - _TAIL_TOOL_RESULT_TAIL
+            truncated = (
+                content[:_TAIL_TOOL_RESULT_HEAD]
+                + f"\n...[{omitted:,} chars truncated during context compression]...\n"
+                + content[-_TAIL_TOOL_RESULT_TAIL:]
+            )
+            new_msg = {**msg, "content": truncated}
+            drop_stale_api_content(new_msg)
+            result[i] = new_msg
+            pruned += 1
 
         return result, pruned
 

@@ -286,10 +286,17 @@ class TestMultiplePastVacations:
         assert out[0]["score"] == pytest.approx(0.9, rel=1e-6)
 
     def test_older_end_would_have_penalised(self):
-        """Confirm that if we used the older vacation_end instead, the score
-        would be lower — proving that the newest-end selection matters."""
-        older_end = NOW - timedelta(days=20)
-        # Only one past vacation whose end is 20 days ago
+        """Confirm that decay applies when a vacation ended long enough ago.
+
+        With the smooth-cliff fix, effective_now = now - grace_days when
+        days_since_return > grace_days.  A memory at vacation_end is then
+        days_old = days_since_return - grace_days days old from effective_now.
+        Decay kicks in when that value exceeds grace_days, i.e. when
+        days_since_return > 2 * grace_days.  Use 30 days (> 2*14=28) to
+        guarantee days_old = 30 - 14 = 16 > grace_days → decay < 1.0.
+        """
+        older_end = NOW - timedelta(days=30)
+        # Only one past vacation whose end is 30 days ago
         vacations = [
             {"start": _iso(older_end - timedelta(days=5)), "end": _iso(older_end)},
         ]
@@ -297,11 +304,12 @@ class TestMultiplePastVacations:
         mem_ts = _iso(older_end)
         r = _result(1.0, mem_ts)
 
-        # 20 days since return > default grace_days (14) → effective_now stays as now
+        # days_since_return=30 > grace_days(14) → effective_now = now - 14 days
+        # days_old = (now-14days) - (now-30days) = 16 days > grace_days → decay
         with _patch_now(NOW):
             out = _apply_staleness_weight([r], vacations=vacations)
 
-        # days_old measured from NOW: 20 days → beyond grace → decay < 1.0
+        # days_old=16 beyond grace → decay_factor < 1.0 → score < 1.0
         assert out[0]["score"] < 1.0
 
 

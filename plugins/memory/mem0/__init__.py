@@ -64,7 +64,7 @@ _DEFAULT_USER_ID = "hermes-user"
 # ---------------------------------------------------------------------------
 # Staleness / recency decay
 # ---------------------------------------------------------------------------
-# Blend formula: adjusted = (1 - alpha) * sim_score + alpha * decay_factor
+# Blend formula: adjusted = base_score * [(1 - alpha) + alpha * decay_factor]
 # decay_factor = 0.5 ** (days_past_grace / half_life)
 # The alpha=0.3 blend keeps semantic relevance dominant — an old but highly
 # relevant memory still beats a recent but irrelevant one. The grace period
@@ -141,6 +141,9 @@ def _apply_staleness_weight(
         days_since_return = (now - best_past_end).total_seconds() / 86400
         if days_since_return <= grace_days:
             effective_now = best_past_end
+        else:
+            # Smooth transition: shift by grace_days so there's no cliff at expiry
+            effective_now = now - timedelta(days=grace_days)
 
     scored = []
     for r in results:
@@ -595,7 +598,7 @@ class Mem0MemoryProvider(MemoryProvider):
         t = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
         with self._prefetch_lock:
             self._prefetch_thread = t
-        t.start()
+            t.start()
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall memories for the CURRENT question with a short hot-path wait."""

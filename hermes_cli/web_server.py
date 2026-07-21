@@ -18569,6 +18569,11 @@ class _AgentPluginInstallBody(BaseModel):
     enable: bool = True
 
 
+class _AgentPluginUpdateBody(BaseModel):
+    review_token: Optional[str] = None
+    renew_tool_override: bool = False
+
+
 def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in p.items() if not k.startswith("_")}
 
@@ -18753,12 +18758,20 @@ async def post_agent_plugin_disable(request: Request, name: str):
 
 
 @app.post("/api/dashboard/agent-plugins/{name:path}/update")
-async def post_agent_plugin_update(request: Request, name: str):
+async def post_agent_plugin_update(
+    request: Request,
+    name: str,
+    body: Optional[_AgentPluginUpdateBody] = None,
+):
     _require_token(request)
     name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
 
-    result = dashboard_update_user_plugin(name)
+    result = dashboard_update_user_plugin(
+        name,
+        review_token=body.review_token if body else None,
+        renew_tool_override=body.renew_tool_override if body else False,
+    )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
     _get_dashboard_plugins(force_rescan=True)

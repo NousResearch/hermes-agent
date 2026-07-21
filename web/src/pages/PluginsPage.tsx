@@ -4,6 +4,7 @@ import type { Translations } from "@/i18n/types";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import type {
+  AgentPluginUpdateResponse,
   HubAgentPluginRow,
   MemoryProviderConfig,
   MemoryProviderField,
@@ -928,6 +929,8 @@ function PluginRowCard(props: PluginRowCardProps) {
 
   const busy = rowBusy === row.name;
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<AgentPluginUpdateResponse | null>(null);
+  const [renewToolOverride, setRenewToolOverride] = useState(false);
 
   const badgeTone =
     row.runtime_status === "enabled"
@@ -1016,8 +1019,16 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.updateAgentPlugin(row.name);
-                    showToast(t.pluginsPage.updateGit, "success");
+                    const result = await api.updateAgentPlugin(row.name);
+                    if (result.review_required) {
+                      setPendingUpdate(result);
+                      setRenewToolOverride(false);
+                      return;
+                    }
+                    showToast(
+                      result.unchanged ? `${row.name} is already up to date` : t.pluginsPage.updateGit,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -1090,6 +1101,82 @@ function PluginRowCard(props: PluginRowCardProps) {
           <p className="text-xs italic text-text-disabled">
             {t.pluginsPage.noDashboardTab}
           </p>
+        ) : null}
+
+        {pendingUpdate?.review_required ? (
+          <div className="grid gap-3 border border-warning/50 bg-warning/5 p-4 text-xs">
+            <div className="grid gap-1">
+              <p className="font-semibold text-warning">Review update before activation</p>
+              <p className="text-text-secondary">
+                The live plugin has not changed. Candidate revision{" "}
+                <span className="font-mono">
+                  {pendingUpdate.candidate_revision?.slice(0, 12)}
+                </span>
+              </p>
+              <p className="break-all font-mono text-text-tertiary">
+                {pendingUpdate.candidate_hash}
+              </p>
+            </div>
+
+            {pendingUpdate.changed_files?.length ? (
+              <div className="max-h-32 overflow-auto border border-border bg-background/40 p-2 font-mono">
+                {pendingUpdate.changed_files.map((file) => (
+                  <div key={file}>{file}</div>
+                ))}
+              </div>
+            ) : null}
+
+            {pendingUpdate.scan_findings?.length ? (
+              <div className="grid gap-1 text-warning">
+                <p>Diagnostic scan findings: {pendingUpdate.scan_findings.length}</p>
+                {pendingUpdate.scan_findings.slice(0, 10).map((finding, index) => (
+                  <p key={`${finding.file}-${finding.line}-${finding.pattern}-${index}`}>
+                    {finding.file}:{finding.line} {finding.pattern} — {finding.description}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-success">Diagnostic scan found no dynamic import/access patterns.</p>
+            )}
+
+            {pendingUpdate.tool_override_was_granted ? (
+              <Label className="flex items-center gap-2">
+                <Switch
+                  checked={renewToolOverride}
+                  onCheckedChange={setRenewToolOverride}
+                />
+                Renew permission for this exact revision to replace built-in tools
+              </Label>
+            ) : null}
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button ghost size="sm" disabled={busy} onClick={() => setPendingUpdate(null)}>
+                Keep current version
+              </Button>
+              <Button
+                size="sm"
+                disabled={busy || !pendingUpdate.review_token}
+                onClick={() => {
+                  const reviewToken = pendingUpdate.review_token;
+                  if (!reviewToken) return;
+                  void setRuntimeLoading(row.name, async () => {
+                    const result = await api.updateAgentPlugin(row.name, {
+                      review_token: reviewToken,
+                      renew_tool_override: renewToolOverride,
+                    });
+                    setPendingUpdate(null);
+                    showToast(
+                      `${row.name} updated; restart Hermes to load the reviewed revision`,
+                      "success",
+                    );
+                    return result;
+                  });
+                }}
+              >
+                Accept reviewed update
+              </Button>
+            </div>
+          </div>
         ) : null}
       </CardContent>
 

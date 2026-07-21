@@ -34,11 +34,13 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
 import logging
 import os
+import subprocess
 import sys
 import threading
 import types
@@ -77,6 +79,53 @@ class PluginToolOverrideError(PermissionError):
 
 
 logger = logging.getLogger(__name__)
+
+
+def plugin_content_revision(path: Path) -> str:
+    """Return a stable revision for capability grants on a plugin tree.
+
+    Git plugins are bound to their exact commit.  Non-Git plugins fall back to
+    a deterministic hash of their executable/content files.  Mutable runtime
+    directories are excluded so caches cannot revoke an otherwise valid
+    operator grant.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(path),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        revision = result.stdout.strip()
+        if result.returncode == 0 and len(revision) == 40:
+            return revision
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    digest = hashlib.sha256()
+    ignored = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+    for file_path in sorted(path.rglob("*")):
+        if any(part in ignored for part in file_path.parts):
+            continue
+        if file_path.is_symlink():
+            relative = file_path.relative_to(path).as_posix()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0link\0")
+            digest.update(os.readlink(file_path).encode("utf-8", errors="replace"))
+            digest.update(b"\0")
+            continue
+        if not file_path.is_file():
+            continue
+        relative = file_path.relative_to(path).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(file_path.read_bytes())
+        except OSError:
+            continue
+        digest.update(b"\0")
+    return f"sha256:{digest.hexdigest()}"
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +518,21 @@ class PluginContext:
         plugin_id = self.manifest.key or self.manifest.name
         entries = (cfg.get("plugins") or {}).get("entries") or {}
         entry = entries.get(plugin_id) or {}
-        return bool(entry.get("allow_tool_override", False))
+        if not bool(entry.get("allow_tool_override", False)):
+            return False
+        approved_revision = entry.get("allow_tool_override_revision")
+        if not approved_revision or not self.manifest.path:
+            return False
+        current_revision = plugin_content_revision(Path(self.manifest.path))
+        if approved_revision != current_revision:
+            logger.warning(
+                "Plugin %s tool-override grant is stale: approved %s, current %s",
+                plugin_id,
+                approved_revision,
+                current_revision,
+            )
+            return False
+        return True
 
     # -- message injection --------------------------------------------------
 

@@ -940,10 +940,14 @@ export const api = {
       { method: "POST" },
     ),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (name: string, body: AgentPluginUpdateRequest = {}) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -2535,7 +2539,28 @@ export interface AgentPluginUpdateResponse {
   name?: string;
   output?: string;
   unchanged?: boolean;
+  review_required?: boolean;
+  review_token?: string;
+  candidate_revision?: string;
+  candidate_hash?: string;
+  changed_files?: string[];
+  scan_findings?: Array<{
+    file: string;
+    line: number;
+    pattern: string;
+    description: string;
+  }>;
+  was_enabled?: boolean;
+  tool_override_was_granted?: boolean;
+  accepted?: boolean;
+  enabled_after_update?: boolean;
+  tool_override_renewed?: boolean;
   error?: string;
+}
+
+export interface AgentPluginUpdateRequest {
+  review_token?: string;
+  renew_tool_override?: boolean;
 }
 
 export interface PluginProvidersPutRequest {

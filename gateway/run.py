@@ -4849,6 +4849,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
+    def get_queue_depth(self, session_key: str) -> int | None:
+        """Return the number of queued messages for a session (slot + overflow).
+
+        Returns None if the session_key is not found (no adapter, no queued events).
+        Returns 0 if the adapter exists but queue is empty.
+        Thread-safe — only reads internal state.
+        """
+        adapter = self.adapters.get(session_key.split(':')[0])
+        queued_events = getattr(self, "_queued_events", None) or {}
+        overflow = queued_events.get(session_key, [])
+        has_slot = (
+            adapter is not None
+            and session_key in getattr(adapter, "_pending_messages", {})
+        )
+        if adapter is None and len(overflow) == 0:
+            return None
+        return len(overflow) + (1 if has_slot else 0)
+
+    def get_queue_status(self, session_key: str) -> dict | None:
+        """Return structured queue status for a session.
+
+        Returns None if the session_key is not found (no adapter, no queued events).
+        Thread-safe — only reads internal state.
+        """
+        adapter = self.adapters.get(session_key.split(':')[0])
+        queued_events = getattr(self, "_queued_events", None) or {}
+        overflow = queued_events.get(session_key, [])
+        has_slot = (
+            adapter is not None
+            and session_key in getattr(adapter, "_pending_messages", {})
+        )
+        if adapter is None and len(overflow) == 0:
+            return None
+        return {
+            "session_key": session_key,
+            "depth": len(overflow) + (1 if has_slot else 0),
+            "has_slot_message": has_slot,
+            "overflow_count": len(overflow),
+        }
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.

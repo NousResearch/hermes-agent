@@ -354,3 +354,82 @@ def test_pid_start_time_mismatch_prunes_reused_pid(tmp_path, monkeypatch):
         "new-session"
     ]
     lease.release()
+
+
+def test_prune_stale_for_pid_reclaims_orphaned_same_pid_lease(tmp_path, monkeypatch):
+    """A same-pid lease whose live_session_id is no longer live is reclaimed.
+
+    Mirrors #68920: a desktop/TUI session-replacement flow can drop the OLD
+    in-memory session without ever releasing its lease. The lease is still
+    tagged with the (now-gone) in-memory sid via metadata.live_session_id, so
+    a pid-scoped sweep can tell it apart from a genuinely-live sibling lease.
+    """
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    stale_lease, message = active_sessions.try_acquire_active_session(
+        session_id="stale-key",
+        surface="tui",
+        config={"max_concurrent_sessions": 5},
+        metadata={"live_session_id": "sid-gone"},
+    )
+    assert message is None and stale_lease is not None
+
+    live_lease, message = active_sessions.try_acquire_active_session(
+        session_id="live-key",
+        surface="tui",
+        config={"max_concurrent_sessions": 5},
+        metadata={"live_session_id": "sid-still-live"},
+    )
+    assert message is None and live_lease is not None
+
+    reclaimed = active_sessions.prune_stale_for_pid(os.getpid(), {"sid-still-live"})
+
+    assert reclaimed == 1
+    remaining = active_sessions.active_session_registry_snapshot()
+    assert [entry["session_id"] for entry in remaining] == ["live-key"]
+    live_lease.release()
+
+
+def test_prune_stale_for_pid_ignores_other_pid_entries(tmp_path, monkeypatch):
+    """A PID-alive entry owned by another process must never be touched —
+    that process's live-session registry isn't visible from here."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    other_pid = os.getpid() + 1
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "other-proc",
+                "session_id": "other-proc-session",
+                "surface": "tui",
+                "pid": other_pid,
+                "started_at": 1,
+                "updated_at": 1,
+                "metadata": {"live_session_id": "not-in-my-registry"},
+            }
+        ],
+    )
+
+    reclaimed = active_sessions.prune_stale_for_pid(os.getpid(), set())
+
+    assert reclaimed == 0
+    assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
+        "other-proc-session"
+    ]
+
+
+def test_prune_stale_for_pid_fails_open_on_error(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        active_sessions,
+        "_read_entries",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    assert active_sessions.prune_stale_for_pid(os.getpid(), set()) == 0

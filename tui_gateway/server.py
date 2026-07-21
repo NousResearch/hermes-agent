@@ -468,12 +468,36 @@ def _notify_session_boundary(
         pass
 
 
+def _prune_stale_active_sessions_for_this_pid() -> None:
+    """Reclaim same-pid leases whose in-memory session is already gone.
+
+    Desktop/TUI session replacement (e.g. a superseding ``session.create``)
+    can leave the OLD session's dict out of ``_sessions`` without ever
+    calling ``_release_active_session_slot`` on it. Since every lease this
+    process minted carries the in-memory sid as ``metadata.live_session_id``
+    (see ``_claim_active_session_slot`` below), any lease owned by our own
+    pid whose sid is no longer a live key in ``_sessions`` is safe to
+    reclaim — sweeping it here, right before the next acquire, keeps a
+    single desktop process from starving itself at ``max_concurrent_sessions``.
+    Best-effort: never blocks or fails the caller's acquire.
+    """
+    try:
+        from hermes_cli.active_sessions import prune_stale_for_pid
+
+        with _sessions_lock:
+            live_ids = set(_sessions.keys())
+        prune_stale_for_pid(os.getpid(), live_ids)
+    except Exception:
+        logger.debug("Failed to prune stale active session leases", exc_info=True)
+
+
 def _claim_active_session_slot(
     session_key: str,
     *,
     live_session_id: str,
     surface: str = "tui",
 ) -> tuple[Any, str | None]:
+    _prune_stale_active_sessions_for_this_pid()
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
 

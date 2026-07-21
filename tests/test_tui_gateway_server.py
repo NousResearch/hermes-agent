@@ -81,6 +81,61 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
         reset_hermes_home_override(token)
 
 
+def test_session_create_reclaims_lease_dropped_without_release(monkeypatch, tmp_path):
+    """Regression for #68920: a session-replacement flow that drops the old
+    in-memory session dict WITHOUT calling ``_release_active_session_slot``
+    (e.g. desktop's ``/new`` superseding a prior draft) must not permanently
+    burn a slot. ``_claim_active_session_slot`` sweeps same-pid leases whose
+    ``live_session_id`` is no longer a live key in ``server._sessions``
+    before acquiring, so the orphaned lease is reclaimed and a 4th session
+    can be created even though only 2 sessions are actually live."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("max_concurrent_sessions: 3\n", encoding="utf-8")
+    token = set_hermes_home_override(home)
+
+    def _clear_server_sessions():
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
+
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        _clear_server_sessions()
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+
+        first = server._methods["session.create"]("r1", {"cols": 80})
+        second = server._methods["session.create"]("r2", {"cols": 80})
+        third = server._methods["session.create"]("r3", {"cols": 80})
+        assert "result" in first and "result" in second and "result" in third
+
+        # Simulate the replacement bug directly: the "first" session's
+        # in-memory dict is dropped WITHOUT going through
+        # _release_active_session_slot / _teardown_session, exactly as a
+        # buggy supersession path would (leaving its lease dangling).
+        dropped_sid = first["result"]["session_id"]
+        server._sessions.pop(dropped_sid, None)
+        assert len(active_session_registry_snapshot()) == 3
+
+        # At the cap (3 leases, 2 live sessions) a naive create still blocks...
+        blocked = server._methods["session.create"]("r4", {"cols": 80})
+        # ...but the sweep inside _claim_active_session_slot ran on THIS
+        # attempt too, reclaiming the dangling lease before the acquire
+        # check — so the very same call that would have been rejected
+        # under the old cap now succeeds.
+        assert "result" in blocked, blocked
+        assert len(active_session_registry_snapshot()) == 3
+    finally:
+        _clear_server_sessions()
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
 def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     """Desktop/TUI sessions must pin the agent cwd per session.
 

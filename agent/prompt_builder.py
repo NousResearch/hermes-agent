@@ -884,7 +884,13 @@ PLATFORM_HINTS = {
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
         "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural."
+        "brief and natural. "
+        "File/media delivery: do NOT emit MEDIA:/path tags in your response — "
+        "that convention is only intercepted on messaging platforms (Telegram, "
+        "WebUI, etc.); here it renders as literal, unusable text exposing a raw "
+        "host filesystem path to the caller. If a registered file-delivery tool "
+        "is available in your toolset, use it; otherwise there is no channel to "
+        "deliver a file on this platform."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "

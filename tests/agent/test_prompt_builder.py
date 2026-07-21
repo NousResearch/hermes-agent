@@ -1103,6 +1103,19 @@ class TestPromptBuilderConstants:
         hint = PLATFORM_HINTS["whatsapp_cloud"]
         assert "MEDIA:" in hint
 
+    def test_api_server_hint_forbids_media_tag(self):
+        """api_server has no MEDIA: interception (unlike telegram/webui/etc.,
+        which resolve it to an attachment or a validated/inlined data URL) —
+        _handle_runs never calls the resolver other api_server endpoints use.
+        Without an explicit prohibition, the model's general cross-platform
+        habit of using MEDIA:/path for file delivery (correct and taught for
+        several other platforms in this same dict) can surface here too, with
+        no interception to catch it: the tag renders as literal text in the
+        response, exposing a raw host filesystem path to the API caller."""
+        hint = PLATFORM_HINTS["api_server"]
+        assert "MEDIA:" in hint
+        assert "not" in hint.lower()
+
     def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
         """#12224 — WhatsApp (Baileys) and Signal adapters actively convert
         markdown to native formatting (gateway/platforms/whatsapp_common.py

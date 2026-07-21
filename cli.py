@@ -10351,7 +10351,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ("cancel", "Cancel", "keep current conversation"),
         ]
         raw = self._prompt_text_input_modal(
-            title=f"⚠️  /{command} — destroys conversation state",
+            title=f"⚠  /{command} — destroys conversation state",
             detail=detail,
             choices=choices,
         )
@@ -10412,7 +10412,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ("cancel", "Cancel", "leave MCP tools unchanged"),
         ]
         raw = self._prompt_text_input_modal(
-            title="⚠️  /reload-mcp — Prompt cache invalidation warning",
+            title="⚠  /reload-mcp — Prompt cache invalidation warning",
             detail=(
                 "Reloading MCP servers rebuilds the tool set for this session and\n"
                 "invalidates the provider prompt cache. The next message will\n"
@@ -11567,7 +11567,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        title = "⚠️  Dangerous Command"
+        title = "⚠  Dangerous Command"
         cmd_display = command
         choice_labels = {
             "once": "Allow once",

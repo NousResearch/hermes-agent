@@ -66,6 +66,48 @@ def test_gate_on_choice_once_returns_once():
     assert result == "once"
 
 
+def test_destructive_slash_modal_uses_text_warning_glyph():
+    """Kitty must not receive an emoji variation selector in modal titles."""
+    from cli import HermesCLI
+
+    captured = {}
+    self_ = _make_self(prompt_response="3")
+
+    def _capture_modal(**kwargs):
+        captured.update(kwargs)
+        return "3"
+
+    self_._prompt_text_input_modal = _capture_modal
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"destructive_slash_confirm": True}},
+    ):
+        _bound(HermesCLI._confirm_destructive_slash, self_)("new", "detail")
+
+    assert captured["title"] == "⚠  /new — destroys conversation state"
+
+
+def test_reload_mcp_modal_uses_text_warning_glyph():
+    """The MCP confirmation title must also avoid emoji-width rendering."""
+    from cli import HermesCLI
+
+    captured = {}
+    self_ = SimpleNamespace(
+        _prompt_text_input_modal=lambda **kwargs: captured.update(kwargs) or "cancel",
+    )
+    self_._normalize_slash_confirm_choice = _bound(
+        HermesCLI._normalize_slash_confirm_choice, self_,
+    )
+
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"mcp_reload_confirm": True}},
+    ):
+        _bound(HermesCLI._confirm_and_reload_mcp, self_)()
+
+    assert captured["title"] == "⚠  /reload-mcp — Prompt cache invalidation warning"
+
+
 def test_gate_on_choice_cancel_returns_none():
     """When the user picks '3' (cancel), return None — caller must abort."""
     from cli import HermesCLI

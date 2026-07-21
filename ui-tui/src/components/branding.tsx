@@ -98,9 +98,6 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
     return (
       <Box flexDirection="column" marginBottom={1}>
         <ArtLines lines={logoLines} />
-        <Text color={t.color.muted} wrap="truncate-end">
-          {t.brand.icon} {TAG_FULL}
-        </Text>
       </Box>
     )
   }

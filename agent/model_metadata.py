@@ -1701,6 +1701,24 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+def _model_name_suggests_deepseek_v4_alias(model: str) -> bool:
+    """Return True if the model name is a DeepSeek V4 alias with stale OR metadata.
+
+    ``deepseek-chat`` and ``deepseek-reasoner`` are now server-side mapped
+    to V4 Flash (1M context), but the OpenRouter catalog still lists the old
+    V3-era 128K values.  This guard rejects those stale entries so the
+    hardcoded 1M defaults at step 8 take over.
+
+    Only matches the bare alias or vendor-prefixed forms — does NOT match
+    the explicit V4 slugs (``deepseek-v4-pro``, ``deepseek-v4-flash``)
+    which already carry correct 1M values in the OR catalog.
+    """
+    lower = model.lower()
+    # Strip vendor prefix (openrouter/, deepseek/, nous/, etc.)
+    base = lower.rsplit("/", 1)[-1] if "/" in lower else lower
+    return base in {"deepseek-chat", "deepseek-reasoner"}
+
+
 def _model_name_suggests_minimax_m3(model: str) -> bool:
     """Return True if the model name looks like MiniMax M3.
 
@@ -2607,6 +2625,17 @@ def get_model_context_length(
                 logger.info(
                     "Rejecting OpenRouter metadata context=%s for %r "
                     "(Kimi-family underreport); falling through to hardcoded defaults",
+                    or_ctx, model,
+                )
+            # Guard against stale OpenRouter metadata for DeepSeek V4 aliases.
+            # ``deepseek-chat`` / ``deepseek-reasoner`` are now server-side
+            # mapped to V4 Flash (1M), but the OR catalog still lists the old
+            # V3-era 128K values.  Reject anything sub-400K so we fall through
+            # to the hardcoded 1M defaults at step 8.
+            elif or_ctx <= 400_000 and _model_name_suggests_deepseek_v4_alias(model):
+                logger.info(
+                    "Rejecting OpenRouter metadata context=%s for %r "
+                    "(DeepSeek V4 alias, OR catalog stale); falling through to hardcoded defaults",
                     or_ctx, model,
                 )
             else:

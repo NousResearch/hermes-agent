@@ -1251,6 +1251,12 @@ def estimate_usage_cost(
         amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
     if entry.output_cost_per_million is not None:
         amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
+    # Reasoning tokens (hidden chain-of-thought) are billed at the output-token
+    # rate by every major provider (OpenRouter, DeepSeek, Anthropic extended
+    # thinking, etc.).  Without this, cost estimates for reasoning models are
+    # systematically undercounted by 1.6-2.3x.  See issue #68081.
+    if usage.reasoning_tokens and entry.output_cost_per_million is not None:
+        amount += Decimal(usage.reasoning_tokens) * entry.output_cost_per_million / _ONE_MILLION
     if entry.cache_read_cost_per_million is not None:
         amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
     if entry.cache_write_cost_per_million is not None:

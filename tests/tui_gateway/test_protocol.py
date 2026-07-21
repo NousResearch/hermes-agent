@@ -100,20 +100,37 @@ def test_write_json_closed_stream_returns_false(server):
     assert server.write_json({"x": 1}) is False
 
 
-def test_write_json_unicode_encode_error_re_raises(server):
-    """A non-UTF-8 stdout encoding raises UnicodeEncodeError (a ValueError
-    subclass).  It must NOT be swallowed as 'peer gone' — that would let
-    `entry.py` exit cleanly via the False path and hide the real config
-    bug.  We re-raise so the existing crash-log infrastructure records it."""
+def test_write_json_ascii_stream_handles_non_ascii_payload(server):
+    """With ``ensure_ascii=True``, non-ASCII characters (e.g. CJK, accented
+    Latin) are escaped to ``\\uXXXX`` in the JSON output, so an ASCII-only
+    stream never raises ``UnicodeEncodeError``.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/44287
+    """
 
     class _AsciiOnly:
         def write(self, line):
-            line.encode("ascii")  # raises UnicodeEncodeError on non-ascii
+            line.encode("ascii")  # would raise on non-ASCII bytes
         def flush(self): pass
 
     server._real_stdout = _AsciiOnly()
-    with pytest.raises(UnicodeEncodeError):
-        server.write_json({"msg": "héllo"})
+    # Should succeed — payload is escaped to pure ASCII by ensure_ascii=True.
+    assert server.write_json({"msg": "héllo"}) is True
+
+
+def test_write_json_surrogates_do_not_crash(server, capture):
+    """Unpaired UTF-16 surrogates (\\ud800-\\udfff) in the payload must be
+    safely escaped by ``ensure_ascii=True`` instead of causing
+    ``UnicodeEncodeError: surrogates not allowed``.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/44287
+    """
+    s, buf = capture
+    # ``json.dumps(ensure_ascii=True)`` escapes surrogates to ``\\ud8xx``.
+    surrogate_str = "before\ud800after"
+    assert s.write_json({"msg": surrogate_str}) is True
+    output = json.loads(buf.getvalue())
+    assert output["msg"] == surrogate_str
 
 
 def test_write_json_unrelated_value_error_re_raises(server):

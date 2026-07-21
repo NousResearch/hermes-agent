@@ -417,6 +417,42 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_includes_database_url_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embed_database_url": "postgresql://user:pass@db.internal:5432/hindsight",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "postgresql://user:pass@db.internal:5432/hindsight"
+
+    def test_embedded_profile_env_includes_database_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_EMBED_API_DATABASE_URL", "postgresql://user:pass@db.internal:5432/hindsight")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_EMBED_API_DATABASE_URL"] == "postgresql://user:pass@db.internal:5432/hindsight"
+
+    def test_embedded_profile_env_omits_database_url_when_unset(self, monkeypatch):
+        monkeypatch.delenv("HINDSIGHT_EMBED_API_DATABASE_URL", raising=False)
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert "HINDSIGHT_EMBED_API_DATABASE_URL" not in env
+
+    def test_config_schema_exposes_embed_database_url(self, provider):
+        schema = provider.get_config_schema()
+        entry = next((e for e in schema if e["key"] == "embed_database_url"), None)
+        assert entry is not None, "embed_database_url must be discoverable in get_config_schema()"
+        assert entry.get("env_var") == "HINDSIGHT_EMBED_API_DATABASE_URL"
+        assert entry.get("when") == {"mode": "local_embedded"}
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

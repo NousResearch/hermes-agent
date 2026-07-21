@@ -8,9 +8,12 @@ Provides options for:
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -416,6 +419,95 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
 def _is_windows() -> bool:
     import sys
     return sys.platform == "win32"
+
+
+def _on_rmtree_error(func: Callable, path: str, _exc_info) -> None:
+    """shutil.rmtree onerror handler that recovers from common Windows failures.
+
+    Windows-specific cases the default rmtree can't handle:
+
+      * Read-only files (state.db-shm gets the read-only bit) — chmod and retry.
+      * Locked files (state.db, state.db-wal held open by a still-shutting-
+        down hermes process or by an old gateway service) — brief sleep and
+        retry, since the original process usually releases the handle within
+        a second of receiving SIGTERM. We don't loop forever — if the lock
+        persists, the outer code in _robust_rmtree_with_retry catches it.
+
+    See #34185 — the previous behavior was a single try/except around
+    shutil.rmtree(), so the first locked file aborted removal of the
+    whole tree and 13 directories of user data were left behind.
+    """
+    # Clear read-only bit and try once more.
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        pass
+    try:
+        func(path)
+        return
+    except OSError:
+        pass
+    # Brief sleep for the lock-release case, then try once more.
+    time.sleep(0.1)
+    try:
+        func(path)
+    except OSError:
+        # Last resort — re-raise so shutil.rmtree continues to the next entry
+        # rather than treating this one as success. The leftover detection in
+        # _robust_rmtree_with_retry will surface it to the user.
+        raise
+
+
+def _robust_rmtree_with_retry(
+    target: Path,
+    *,
+    max_attempts: int = 3,
+    sleep_between: float = 0.5,
+) -> tuple[bool, list[str]]:
+    """Remove ``target`` recursively, retrying on Windows-specific failures.
+
+    Returns ``(success, leftovers)`` where ``leftovers`` lists absolute paths
+    of files / directories that could not be removed after all retries. On
+    POSIX the first attempt almost always succeeds; the retry loop is for
+    Windows where SQLite WAL files and stale gateway-service handles
+    routinely cause PermissionError on the initial pass.
+
+    See #34185 — 'hermes uninstall' on Windows left 13 directories of user
+    data behind because the inner shutil.rmtree raised on the first locked
+    file and the outer except/log_warn block treated that as a soft failure.
+    """
+    target_str = str(target)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # onerror handler tries to recover from read-only / locked
+            # files in-place. If it raises, shutil.rmtree continues with
+            # remaining entries rather than aborting the whole walk.
+            shutil.rmtree(target_str, onerror=_on_rmtree_error)
+            # rmtree may report success even if onerror swallowed an error
+            # (the path then still exists). Verify.
+            if not target.exists():
+                return True, []
+        except Exception:  # noqa: BLE001 — catch everything; we report below
+            pass
+        if not target.exists():
+            return True, []
+        # Locked-file lifetime is typically < 1 second on Windows; back off.
+        if attempt < max_attempts:
+            time.sleep(sleep_between)
+    # Final pass failed. Collect the leftovers for the caller to surface.
+    leftovers: list[str] = []
+    if target.exists():
+        try:
+            for root, dirs, files in os.walk(target_str):
+                for name in files:
+                    leftovers.append(os.path.join(root, name))
+                for name in dirs:
+                    leftovers.append(os.path.join(root, name))
+            # Always include the root if we couldn't remove it.
+            leftovers.append(target_str)
+        except OSError:
+            leftovers.append(target_str)
+    return False, leftovers
 
 
 def _is_default_hermes_home(hermes_home: Path) -> bool:
@@ -876,13 +968,32 @@ def _perform_uninstall(
                 _uninstall_profile(prof)
 
         log_info("Removing configuration and data...")
-        try:
-            if hermes_home.exists():
-                shutil.rmtree(hermes_home)
+        if hermes_home.exists():
+            removal_ok, leftovers = _robust_rmtree_with_retry(hermes_home)
+            if removal_ok:
                 log_success(f"Removed {hermes_home}")
-        except Exception as e:
-            log_warn(f"Could not fully remove {hermes_home}: {e}")
-            log_info("You may need to manually remove it")
+            else:
+                log_warn(f"Could not fully remove {hermes_home}")
+                if leftovers:
+                    # Show the first few leftovers so the user knows what to
+                    # remove manually (#34185).
+                    log_info(
+                        f"Files / directories that could not be removed "
+                        f"({len(leftovers)} total):"
+                    )
+                    for path in leftovers[:8]:
+                        print(f"    {path}")
+                    if len(leftovers) > 8:
+                        print(f"    ... and {len(leftovers) - 8} more")
+                if _is_windows():
+                    log_info(
+                        "On Windows, locked files (state.db-wal, etc.) can "
+                        "prevent removal. Try closing all Hermes processes "
+                        "and re-running 'hermes uninstall', or remove "
+                        f"manually:  Remove-Item -Recurse -Force '{hermes_home}'"
+                    )
+                else:
+                    log_info(f"You may need to manually remove it: rm -rf '{hermes_home}'")
     else:
         log_info(f"Keeping configuration and data in {hermes_home}")
     

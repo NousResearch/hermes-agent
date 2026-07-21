@@ -256,6 +256,8 @@ Script-only jobs are already zero-token. For **LLM** cron jobs that attach a `sc
 
 The `NO_WORK` begin-line token is intentionally identical to OpenClaw's `job.precheck` gate, so the **same check script runs on both runtimes** (hermes#68809 / openclaw#112371).
 
+> **Dual-fleet:** the matching OpenClaw feature is [`job.precheck`](https://github.com/openclaw/openclaw/issues/112371), which uses the same `WORK_NEEDED` / `NO_WORK` convention — so one check script gates a cron job identically on Hermes or OpenClaw.
+
 ```bash
 #!/usr/bin/env bash
 # ~/.hermes/scripts/inbox-gate.sh

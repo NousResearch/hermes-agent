@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
-import { DEFAULT_THEME } from '../theme.js'
+import { initialThemeFromEnv } from '../theme.js'
 
 import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 
@@ -28,7 +28,7 @@ const buildUiState = (): UiState => ({
   status: 'summoning hermes…',
   statusBar: 'top',
   streaming: true,
-  theme: DEFAULT_THEME,
+  theme: initialThemeFromEnv(),
   usage: ZERO
 })
 

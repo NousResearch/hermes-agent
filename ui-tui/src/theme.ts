@@ -508,6 +508,51 @@ export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
   DEFAULT_LIGHT_MODE
 )
 
+// Initial theme honoring a skin handed in at launch via HERMES_TUI_SKIN_JSON
+// (a first-party payload the Python wrapper writes from the active profile's
+// display.skin). This lets the TUI paint the active skin on the FIRST frame
+// rather than flashing the default theme until the async gateway.ready skin
+// event arrives. Hardened: size-capped, parsed with a reviver that drops
+// prototype-pollution keys, and only known string/object fields are read (no
+// spread of the parsed value). Falls back to DEFAULT_THEME on any problem.
+// (fromSkin is a hoisted function declaration, defined below.)
+export function initialThemeFromEnv(): Theme {
+  const raw = process.env.HERMES_TUI_SKIN_JSON
+  if (!raw || raw.length > 64_000) {
+    return DEFAULT_THEME
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw, (k, v) =>
+      k === '__proto__' || k === 'constructor' || k === 'prototype' ? undefined : v
+    )
+  } catch {
+    return DEFAULT_THEME
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    return DEFAULT_THEME
+  }
+
+  const src = parsed as Record<string, unknown>
+  const objField = (k: string): Record<string, string> => {
+    const v = src[k]
+
+    return v && typeof v === 'object' ? (v as Record<string, string>) : {}
+  }
+  const strField = (k: string): string => (typeof src[k] === 'string' ? (src[k] as string) : '')
+
+  return fromSkin(
+    objField('colors'),
+    objField('branding'),
+    strField('banner_logo'),
+    strField('banner_hero'),
+    strField('tool_prefix'),
+    strField('help_header')
+  )
+}
+
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
 export function fromSkin(

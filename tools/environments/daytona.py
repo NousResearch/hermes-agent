@@ -241,6 +241,49 @@ class DaytonaEnvironment(BaseEnvironment):
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
+    _SYNC_BACK_MARKER = "/tmp/.hermes_cache_sync_marker"
+
+    def _after_execute(self) -> None:
+        """Pull agent-generated files under ``~/.hermes/cache/`` back to host.
+
+        ``sync_back`` tars the full ``.hermes/`` subtree, so we gate it on a
+        cheap probe: ``find`` exits at the first cache file newer than the
+        marker. When nothing was written we skip the round trip entirely.
+        On the first call the marker doesn't exist, so we treat the tree
+        as dirty and sync.
+        """
+        if self._sandbox is None or self._sync_manager is None:
+            return
+
+        marker = shlex.quote(self._SYNC_BACK_MARKER)
+        cache_dir = shlex.quote(f"{self._remote_home}/.hermes/cache")
+        probe = (
+            f"if [ ! -e {marker} ]; then echo dirty; exit 0; fi; "
+            f"[ -d {cache_dir} ] || exit 0; "
+            f"find {cache_dir} -type f ! -name .keep -newer {marker} "
+            f"-print -quit 2>/dev/null"
+        )
+        try:
+            res = self._sandbox.process.exec(f"bash -c {shlex.quote(probe)}", timeout=10)
+            dirty = bool((res.result or "").strip())
+        except Exception as e:
+            logger.debug("Daytona: post-execute probe failed (%s) — syncing anyway", e)
+            dirty = True
+
+        if not dirty:
+            return
+
+        try:
+            self._sync_manager.sync_back()
+        except Exception as e:
+            logger.warning("Daytona: post-execute sync_back failed: %s", e)
+            return
+
+        try:
+            self._sandbox.process.exec(f"touch {marker}", timeout=5)
+        except Exception as e:
+            logger.debug("Daytona: marker refresh failed: %s", e)
+
     def cleanup(self):
         with self._lock:
             if self._sandbox is None:

@@ -2051,6 +2051,10 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
+        # "full" runs the FastAPI + React admin dashboard. "lightweight" runs a
+        # stdlib loopback-only status/session dashboard for memory-constrained
+        # hosts that do not need the admin UI.
+        "mode": "full",
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
         # Process-isolation rollout controls. Runtime reads these through the
         # raw config loader, so tui_gateway.server also owns explicit defaults.

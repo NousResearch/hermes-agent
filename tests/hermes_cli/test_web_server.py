@@ -4602,6 +4602,13 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_dashboard_mode_schema_is_select(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["dashboard.mode"]
+        assert entry["type"] == "select"
+        assert entry["options"] == ["full", "lightweight"]
+
     def test_memory_provider_field_present_as_select(self):
         """memory.provider must stay in the config schema.
 

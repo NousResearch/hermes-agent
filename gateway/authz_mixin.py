@@ -345,6 +345,13 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                # WhatsApp group allowlist is chat-scoped (group JIDs), same
+                # shape as Telegram's GROUP_ALLOWED_CHATS. Without this entry,
+                # messages that already passed the adapter's group_policy still
+                # fail the gateway user allowlist for non-DM-allowlisted
+                # senders — so other members' text/voice in an allowlisted
+                # group is silently unauthorized.
+                Platform.WHATSAPP: "WHATSAPP_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -354,7 +361,23 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    # WhatsApp JIDs: accept bare numeric id or full @g.us form.
+                    if source.platform == Platform.WHATSAPP:
+                        bare = source.chat_id.split("@", 1)[0]
+                        expanded = set()
+                        for cid in allowed_group_ids:
+                            expanded.add(cid)
+                            expanded.add(cid.split("@", 1)[0])
+                            if "@" not in cid:
+                                expanded.add(f"{cid}@g.us")
+                        allowed_group_ids = expanded
+                        if (
+                            "*" in allowed_group_ids
+                            or source.chat_id in allowed_group_ids
+                            or bare in allowed_group_ids
+                        ):
+                            return True
+                    elif "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
 
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
@@ -403,6 +426,10 @@ class GatewayAuthorizationMixin:
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            # Chat-scoped WhatsApp groups (JIDs). Must match the early
+            # chat_allowlist_env map above so the later group_chat_allowlist
+            # branch also authorizes allowlisted @g.us chats.
+            Platform.WHATSAPP: "WHATSAPP_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",

@@ -33,6 +33,8 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { classifyFromMeGroupGate } from './from_me_group_gate.js';
+import { shouldEnforceDmSenderAllowlist } from './dm_allowlist_scope.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -546,17 +548,46 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        const isStatus = chatId.includes('status');
+        const groupDecision = classifyFromMeGroupGate({
+          isGroup,
+          fromMe: true,
+          isStatus,
+          mode: WHATSAPP_MODE,
+          forwardOwnerMessages: FORWARD_OWNER_MESSAGES,
+          recentlySent: recentlySentIds.has(msg.key.id),
+        });
+        if (groupDecision.action === 'drop_status') {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: 'from_me_status',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
         }
-
-        if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: separate bot number. fromMe inbound is either
+        if (groupDecision.action === 'drop_echo') {
+          continue;
+        }
+        if (groupDecision.action === 'drop_from_me_group') {
+          emitDebugEvent({
+            stage: 'ignored',
+            reason: 'from_me_group',
+            chatId: redactWhatsAppId(chatId),
+          });
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'from_me_group',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          continue;
+        }
+        if (groupDecision.action === 'forward_owner') {
+          fromOwner = true;
+        } else if (WHATSAPP_MODE === 'bot') {
+          // Bot mode DM: fromMe inbound is either
           //   (a) an echo of our own /send (recentlySentIds will catch it), or
           //   (b) a message the owner typed from their own phone using the
           //       linked-device session.
@@ -634,7 +665,18 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // DM allowlist applies to direct chats only. Group chats are gated by
+        // WHATSAPP_GROUP_POLICY / WHATSAPP_GROUP_ALLOWED_USERS in the Python
+        // adapter — applying the DM sender allowlist here blocked every
+        // non-owner participant (and made allowlisted groups look "dead").
+        if (
+          shouldEnforceDmSenderAllowlist({
+            isGroup,
+            fromMe: false,
+            dmPolicy: WHATSAPP_DM_POLICY,
+          })
+          && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)
+        ) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

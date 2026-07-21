@@ -67,18 +67,25 @@ class ToolCallGuardrailConfig:
     Warnings are enabled by default and never prevent tool execution. Hard stops
     are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
     the user enables circuit-breaker behavior in config.yaml.
+
+    Per-tool overrides (``per_tool_thresholds``) let callers set lower thresholds
+    for specific tools — e.g. ``terminal`` gets tighter limits because shell
+    failures are the most common source of token-wasting loops.  Keys in this
+    dict must match tool names exactly; unmatched tools fall back to the global
+    defaults.
     """
 
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
     exact_failure_warn_after: int = 2
-    exact_failure_block_after: int = 5
+    exact_failure_block_after: int = 3
     same_tool_failure_warn_after: int = 3
-    same_tool_failure_halt_after: int = 8
+    same_tool_failure_halt_after: int = 5
     no_progress_warn_after: int = 2
-    no_progress_block_after: int = 5
+    no_progress_block_after: int = 3
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    per_tool_thresholds: Mapping[str, dict] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -122,6 +129,32 @@ class ToolCallGuardrailConfig:
                 defaults.no_progress_block_after,
             ),
         )
+
+    def _effective_thresholds(self, tool_name: str) -> tuple[int, int]:
+        """Return (exact_failure_block_after, same_tool_failure_halt_after) for *tool_name*.
+
+        Falls back to global defaults when no per-tool override exists.
+        """
+        overrides = self.per_tool_thresholds.get(tool_name, {})
+        block_after = _positive_int(
+            overrides.get("exact_failure_block"), self.exact_failure_block_after,
+        )
+        halt_after = _positive_int(
+            overrides.get("same_tool_failure_halt"), self.same_tool_failure_halt_after,
+        )
+        return block_after, halt_after
+
+    def _effective_no_progress_block(self, tool_name: str) -> int:
+        overrides = self.per_tool_thresholds.get(tool_name, {})
+        return _positive_int(overrides.get("no_progress_block"), self.no_progress_block_after)
+
+    def effective_exact_failure_warn(self, tool_name: str) -> int:
+        overrides = self.per_tool_thresholds.get(tool_name, {})
+        return _positive_int(overrides.get("exact_failure_warn"), self.exact_failure_warn_after)
+
+    def effective_same_tool_failure_halt(self, tool_name: str) -> int:
+        overrides = self.per_tool_thresholds.get(tool_name, {})
+        return _positive_int(overrides.get("same_tool_failure_halt"), self.same_tool_failure_halt_after)
 
 
 @dataclass(frozen=True)
@@ -244,7 +277,8 @@ class ToolCallGuardrailController:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         exact_count = self._exact_failure_counts.get(signature, 0)
-        if exact_count >= self.config.exact_failure_block_after:
+        block_after, _ = self.config._effective_thresholds(tool_name)
+        if exact_count >= block_after:
             decision = ToolGuardrailDecision(
                 action="block",
                 code="repeated_exact_failure_block",
@@ -264,7 +298,8 @@ class ToolCallGuardrailController:
             record = self._no_progress.get(signature)
             if record is not None:
                 _result_hash, repeat_count = record
-                if repeat_count >= self.config.no_progress_block_after:
+                no_progress_block = self.config._effective_no_progress_block(tool_name)
+                if repeat_count >= no_progress_block:
                     decision = ToolGuardrailDecision(
                         action="block",
                         code="idempotent_no_progress_block",
@@ -303,7 +338,8 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
-            if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
+            halt_after = self.config.effective_same_tool_failure_halt(tool_name)
+            if self.config.hard_stop_enabled and same_count >= halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
                     code="same_tool_failure_halt",
@@ -318,7 +354,8 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
 
-            if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
+            warn_after = self.config.effective_exact_failure_warn(tool_name)
+            if self.config.warnings_enabled and exact_count >= warn_after:
                 return ToolGuardrailDecision(
                     action="warn",
                     code="repeated_exact_failure_warning",

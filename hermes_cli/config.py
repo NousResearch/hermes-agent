@@ -1449,15 +1449,18 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        # Lowered defaults: exact_failure blocks after 3 (was 5), same_tool
+        # halts after 5 (was 8).  This reduces token waste on common loops
+        # while still allowing the model to self-correct with a warning.
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
             "idempotent_no_progress": 2,
         },
         "hard_stop_after": {
-            "exact_failure": 5,
-            "same_tool_failure": 8,
-            "idempotent_no_progress": 5,
+            "exact_failure": 3,
+            "same_tool_failure": 5,
+            "idempotent_no_progress": 3,
         },
     },
 

@@ -33,6 +33,7 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import (
+    _compression_warrants_another_preflight_pass,
     build_turn_context,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
@@ -684,6 +685,8 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    _last_preflight_pressure: Optional[int] = None
+    _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -1125,6 +1128,37 @@ def run_conversation(
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
+        _preflight_threshold = int(
+            getattr(_compressor, "threshold_tokens", 0) or 0
+        )
+        # A previous mid-turn preflight pass deliberately continued the loop so
+        # API-only context and all sanitization could be rebuilt. Compare that
+        # fully assembled request with the fully assembled request that caused
+        # the pass. Raw ``messages`` are not equivalent here: they omit
+        # api_content/plugin injections, prefills, MoA context, and ephemeral
+        # system text.
+        _previous_preflight_pressure = _last_preflight_pressure
+        _last_preflight_pressure = None
+        if (
+            _previous_preflight_pressure is not None
+            and request_pressure_tokens >= _preflight_threshold
+            and not _compression_warrants_another_preflight_pass(
+                _previous_preflight_pressure,
+                request_pressure_tokens,
+                _preflight_threshold,
+            )
+        ):
+            # Stop proactive retries for this turn without consuming the
+            # shared overflow-recovery budget. If the provider proves the
+            # request truly does not fit, its error handler may still compact
+            # with that stronger signal.
+            _preflight_compression_blocked = True
+            logger.warning(
+                "Pre-API compression made insufficient progress: ~%s -> "
+                "~%s request tokens; skipping additional preflight passes",
+                f"{_previous_preflight_pressure:,}",
+                f"{request_pressure_tokens:,}",
+            )
         _defer_preflight = getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
         )
@@ -1135,6 +1169,7 @@ def run_conversation(
             agent.compression_enabled
             and len(messages) > 1
             and compression_attempts < 3
+            and not _preflight_compression_blocked
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
@@ -1153,6 +1188,7 @@ def run_conversation(
                 f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
                 f"near the context/output limit. Compacting before the next model call."
             )
+            _last_preflight_pressure = request_pressure_tokens
             messages, active_system_prompt = agent._compress_context(
                 messages,
                 system_message,

@@ -210,6 +210,23 @@ def _compression_made_progress(
     return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
 
 
+def _compression_warrants_another_preflight_pass(
+    orig_tokens: int, new_tokens: int, threshold_tokens: int
+) -> bool:
+    """Whether an over-threshold request merits another immediate summary.
+
+    Row-count progress is enough to prove that a compression boundary was real,
+    but not enough to justify another expensive pass before trying the provider.
+    Continue only when the request remains over threshold *and* the previous pass
+    materially reduced its estimated token pressure (>5%).
+    """
+    return (
+        new_tokens >= threshold_tokens
+        and orig_tokens > 0
+        and new_tokens < orig_tokens * 0.95
+    )
+
+
 def _should_run_preflight_estimate(
     messages: List[Dict[str, Any]],
     protect_first_n: int,
@@ -263,6 +280,8 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Turn-start preflight already proved an immediate retry ineffective.
+    preflight_compression_blocked: bool = False
 
 
 def build_turn_context(
@@ -565,6 +584,7 @@ def build_turn_context(
     # See ``_should_run_preflight_estimate`` for the OR semantics that fix
     # issue #27405 (a few very large messages slipping past the count gate).
     _preflight_compressed = False
+    _preflight_compression_blocked = False
     if agent.compression_enabled and _should_run_preflight_estimate(
         messages,
         agent.context_compressor.protect_first_n,
@@ -664,6 +684,7 @@ def build_turn_context(
                 if not _compression_made_progress(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
+                    _preflight_compression_blocked = True
                     break  # Cannot compress further: neither rows nor tokens moved
                 conversation_history = conversation_history_after_compression(
                     agent, messages
@@ -674,6 +695,19 @@ def build_turn_context(
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
                 if not _compressor.should_compress(_preflight_tokens):
+                    break
+                if not _compression_warrants_another_preflight_pass(
+                    _orig_tokens,
+                    _preflight_tokens,
+                    _compressor.threshold_tokens,
+                ):
+                    _preflight_compression_blocked = True
+                    logger.warning(
+                        "Preflight compression made insufficient progress: "
+                        "~%s -> ~%s request tokens; skipping additional passes",
+                        f"{_orig_tokens:,}",
+                        f"{_preflight_tokens:,}",
+                    )
                     break
 
     if _preflight_compressed:
@@ -899,4 +933,5 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        preflight_compression_blocked=_preflight_compression_blocked,
     )

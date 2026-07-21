@@ -11,6 +11,9 @@ Events:
   - session:start       -- New session created (first message of a new session)
   - session:end         -- Session ends (user ran /new or /reset)
   - session:reset       -- Session reset completed (new session entry created)
+  - message:received    -- Decision hook before agent processing; handlers
+                           may deny (swallow + optional reply) or rewrite
+                           (mutate message / append context prompt)
   - agent:start         -- Agent begins processing a message
   - agent:step          -- Each turn in the tool-calling loop
   - agent:end           -- Agent finishes processing

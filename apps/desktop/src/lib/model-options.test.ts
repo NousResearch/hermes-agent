@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { requestModelOptions } from './model-options'
+import { manualPickRemoved, requestModelOptions } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -46,5 +46,42 @@ describe('requestModelOptions', () => {
     await requestModelOptions({ refresh: true })
 
     expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true, refresh: true })
+  })
+})
+
+describe('manualPickRemoved', () => {
+  const providers = [
+    { name: 'OpenRouter', slug: 'openrouter', models: ['owl-alpha', 'gpt-5.5'] },
+    { name: 'Nous', slug: 'nous', models: [] } // present but unconfigured / re-auth
+  ]
+
+  it('flags a pick whose model was dropped from a populated provider', () => {
+    expect(manualPickRemoved(providers, 'openrouter', 'nemotron-removed')).toBe(true)
+  })
+
+  it('keeps a pick that is still in the catalog', () => {
+    expect(manualPickRemoved(providers, 'openrouter', 'gpt-5.5')).toBe(false)
+  })
+
+  it('matches the provider by name as well as slug', () => {
+    expect(manualPickRemoved(providers, 'OpenRouter', 'gpt-5.5')).toBe(false)
+    expect(manualPickRemoved(providers, 'OpenRouter', 'gone')).toBe(true)
+  })
+
+  it('never clobbers when the provider is absent (ambiguous / deauth)', () => {
+    expect(manualPickRemoved(providers, 'anthropic', 'claude-sonnet-4.6')).toBe(false)
+  })
+
+  it('never clobbers when the provider has an empty model list (re-auth)', () => {
+    expect(manualPickRemoved(providers, 'nous', 'hermes-4')).toBe(false)
+  })
+
+  it('never clobbers on a not-yet-loaded or empty catalog', () => {
+    expect(manualPickRemoved(undefined, 'openrouter', 'gpt-5.5')).toBe(false)
+    expect(manualPickRemoved([], 'openrouter', 'gpt-5.5')).toBe(false)
+  })
+
+  it('never clobbers when there is no pick', () => {
+    expect(manualPickRemoved(providers, '', '')).toBe(false)
   })
 })

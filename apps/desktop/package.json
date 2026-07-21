@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
+    "dev:mock": "node scripts/dev-mock.mjs",
     "dev:renderer": "node scripts/assert-root-install.mjs && vite --host 127.0.0.1 --port 5174",
     "dev:electron": "wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "profile:main": "wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
@@ -32,13 +33,15 @@
     "dist:win:msi": "npm run build && npm run builder -- --win msi",
     "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
+    "perf": "node scripts/perf/run.mjs",
+    "perf:serve": "node scripts/perf/serve.mjs",
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:desktop:all": "node scripts/test-desktop.mjs all",
     "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",
     "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
-    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
@@ -47,7 +50,10 @@
     "test:desktop:platforms": "vitest run --project electron",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
-    "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build"
+    "check": "npm run typecheck && npm run test && npm run test:desktop:all",
+    "test:e2e": "playwright test e2e/",
+    "test:e2e:visual": "WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
+    "test:e2e:update-snapshots": "WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.23",
@@ -122,6 +128,7 @@
   "devDependencies": {
     "@electron/rebuild": "^4.0.6",
     "@eslint/js": "^9.39.4",
+    "@playwright/test": "=1.58.2",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.2",
     "@types/d3-force": "^3.0.10",

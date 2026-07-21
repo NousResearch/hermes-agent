@@ -88,6 +88,43 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+/** True only when a gateway explicitly rejected the current OAuth session. */
+function isGatewayAuthRejection(error) {
+  if (error && typeof error === 'object' && (error as any).needsOauthLogin === true) {
+    return true
+  }
+
+  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  return statusCode === 401 || statusCode === 403
+}
+
+function gatewayTicketFailure(error, authMessage, transportMessage) {
+  const needsOauthLogin = isGatewayAuthRejection(error)
+  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  if (needsOauthLogin) {
+    ;(err as any).needsOauthLogin = true
+  }
+
+  err.cause = error
+
+  return err
+}
+
+/** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
+async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
+  try {
+    return { ok: true as const, wsUrl: await resolveWsUrl() }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      ...(isGatewayAuthRejection(error) ? { needsOauthLogin: true as const } : {}),
+      ok: false as const
+    }
+  }
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -102,12 +139,10 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  *   - oauth, mint ok       → ws(s)://…/api/ws?ticket=…
  *   - oauth, mint fails    → THROWS  (NOT a skip)
  *
- * The oauth-mint-failure throw is the important case: the real boot path
- * (resolveRemoteBackend in main.ts) treats a mint failure as a hard
- * "session expired" auth error and refuses to connect. Swallowing it here
- * would re-introduce the exact false-positive this test exists to catch —
- * HTTP /api/status passes, the test reports "reachable", then the renderer
- * can't authenticate /api/ws and boot dies with "Could not connect".
+ * The oauth-mint-failure throw is the important case: swallowing it here would
+ * re-introduce the exact false-positive this test exists to catch. An explicit
+ * 401/403 asks for sign-in; transport and server failures remain connectivity
+ * errors so a temporary outage is not mislabeled as an expired session.
  *
  * @param {string} baseUrl
  * @param {'token'|'oauth'} authMode
@@ -128,14 +163,12 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
-          '(it may have expired). Open Settings → Gateway and sign in again.'
+      throw gatewayTicketFailure(
+        error,
+        'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
+          'Open Settings → Gateway and sign in again.',
+        'Reached the gateway over HTTP, but could not mint a WebSocket ticket. Check the remote gateway connection and try again.'
       )
-
-      ;(err as any).needsOauthLogin = true
-      err.cause = error
-      throw err
     }
 
     return buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -337,6 +370,9 @@ export {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,

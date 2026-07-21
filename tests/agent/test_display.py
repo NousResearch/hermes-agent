@@ -492,3 +492,62 @@ class TestBuildToolLabel:
         for tool_name in _TOOL_VERBS:
             label = build_tool_label(tool_name, {"query": "x", "path": "x", "url": "x"})
             assert label, f"{tool_name} produced empty label"
+
+
+class TestBuildStatusPhrase:
+    """build_status_phrase — live working-state text for Slack's status line."""
+
+    def test_builtin_tool_with_preview(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("terminal", {"command": "pytest tests/"})
+        assert phrase == "is running pytest tests/…"
+
+    def test_search_tool_uses_for_connector(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("web_search", {"query": "slack api limits"})
+        assert phrase == "is searching the web for slack api limits…"
+
+    def test_verb_only_when_args_none(self):
+        # live_status: "verb" mode passes args=None to suppress previews.
+        from agent.display import build_status_phrase
+        assert build_status_phrase("terminal", None) == "is running…"
+        assert build_status_phrase("read_file", None) == "is reading…"
+
+    def test_unknown_tool_generic_phrase(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("my_mcp_tool", {"x": 1})
+        assert phrase == "is using my_mcp_tool…"
+
+    def test_thinking_pseudo_tool_returns_none(self):
+        from agent.display import build_status_phrase
+        assert build_status_phrase("_thinking", None) is None
+        assert build_status_phrase("", None) is None
+
+    def test_caps_length_for_slack_status_line(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase(
+            "terminal", {"command": "x" * 300}, max_len=49
+        )
+        assert phrase is not None and len(phrase) <= 49
+        assert phrase.endswith("…")
+
+    def test_multiline_command_keeps_first_line(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase(
+            "terminal", {"command": "make build\nmake test"}
+        )
+        assert phrase is not None
+        assert "\n" not in phrase
+
+    def test_respects_friendly_labels_toggle(self):
+        from agent.display import build_status_phrase, set_friendly_tool_labels
+        set_friendly_tool_labels(False)
+        try:
+            assert build_status_phrase("terminal", {"command": "ls"}) is None
+        finally:
+            set_friendly_tool_labels(True)
+
+    def test_no_preview_tools_stay_verb_only(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("skills_list", {"category": "devops"})
+        assert phrase == "is listing skills…"

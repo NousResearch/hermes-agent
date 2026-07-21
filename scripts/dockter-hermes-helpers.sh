@@ -519,7 +519,19 @@ dockter-hermes-update() {
 
   echo ""
   echo "Recreating gateway and dashboard containers..."
-  _dockter_hermes_compose up -d gateway dashboard 2>&1 | _dockter_hermes_filter_warnings
+  local compose_output compose_status
+  if compose_output=$(_dockter_hermes_compose up -d gateway dashboard 2>&1); then
+    compose_status=0
+  else
+    compose_status=$?
+  fi
+  if [[ -n "$compose_output" ]]; then
+    printf '%s\n' "$compose_output" | _dockter_hermes_filter_warnings || true
+  fi
+  if (( compose_status != 0 )); then
+    echo "Container recreation failed"
+    return "$compose_status"
+  fi
 
   echo ""
   echo "Update complete."

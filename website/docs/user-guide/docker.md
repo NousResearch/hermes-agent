@@ -50,6 +50,11 @@ for the bundled `docker-compose.yml` workflow. The helper wraps common Compose
 commands and passes your host UID/GID automatically so files created by the
 container stay owned by your host user.
 
+The helper is supported in Linux and macOS shells, including Bash and zsh. It
+does not support native Windows or select `docker-compose.windows.yml`; on
+Docker Desktop for Windows, invoke Compose directly with
+`docker compose -f docker-compose.windows.yml ...`.
+
 Source it from the checkout:
 
 ```sh

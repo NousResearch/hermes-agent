@@ -13,7 +13,7 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_hermes_home, get_skills_dir, is_container, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -938,6 +938,14 @@ WSL_ENVIRONMENT_HINT = (
     "the Windows username if needed."
 )
 
+CONTAINER_ON_WSL_HINT = (
+    "You are running inside a container on a WSL (Windows Subsystem for "
+    "Linux) host. The /mnt/c/ Windows filesystem is NOT available inside "
+    "this container unless explicitly bind-mounted. Do NOT suggest "
+    "WSL-specific tools like wslpath or assume /mnt/c/ paths exist. "
+    "Treat this as a standard Linux container environment."
+)
+
 
 # Non-local terminal backends that run commands (and therefore every file
 # tool: read_file, write_file, patch, search_files) inside a separate
@@ -1198,7 +1206,9 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
-    if is_wsl():
+    if is_container() and is_wsl():
+        hints.append(CONTAINER_ON_WSL_HINT)
+    elif is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
     # Embedder-supplied environment description. Lets a host that wraps Hermes

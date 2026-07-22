@@ -51,6 +51,7 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
+    image_corrupt = "image_corrupt"       # Provider says the image bytes are undecodable — shrinking won't help, strip and retry instead
 
     # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -229,6 +230,20 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
+]
+
+# Image-corruption patterns — distinct from _IMAGE_TOO_LARGE_PATTERNS above.
+# These fire when the provider can decode the request but not the image
+# bytes themselves (e.g. a re-serialized image part in replayed history that
+# lost data along the way). Re-encoding/shrinking corrupt bytes does not fix
+# corruption, so this list is routed to the strip-and-retry path
+# (FailoverReason.image_corrupt), never to the shrink path.
+#
+# xAI wording: {"code":"invalid-argument","error":"...Invalid PNG image."}
+# See: https://github.com/NousResearch/hermes-agent/issues/69078
+_IMAGE_CORRUPT_PATTERNS = [
+    "invalid png image",
+    "invalid jpeg image",
 ]
 
 # Providers that follow the OpenAI spec strictly require tool message
@@ -1212,6 +1227,16 @@ def _classify_400(
             retryable=True,
         )
 
+    # Image-corruption from 400 (xAI's undecodable-image check fires this way).
+    # Must be checked BEFORE image_too_large: both are image-shaped 400s, but
+    # corrupt bytes need strip-and-retry, not shrink-and-retry — shrinking
+    # can't repair a truncated/malformed PNG.
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -1424,6 +1449,13 @@ def _classify_by_message(
     if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
         return result_fn(
             FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
+        )
+
+    # Image-corruption patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
             retryable=True,
         )
 

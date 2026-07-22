@@ -2892,6 +2892,61 @@ def run_conversation(
                             "messages with image parts found; surfacing original error."
                         )
 
+                # Image-corrupt recovery: the provider decoded the request but
+                # rejected the image bytes themselves (e.g. xAI's "Invalid PNG
+                # image." on a re-serialized image part from replayed
+                # history). Shrinking corrupt bytes doesn't help, so strip the
+                # image parts and retry once instead of routing through the
+                # shrink path above. See issue #69078.
+                if (
+                    classified.reason == FailoverReason.image_corrupt
+                    and not _retry.stripped_images_this_turn
+                ):
+                    _retry.stripped_images_this_turn = True
+                    _imgs_removed = _strip_images_from_messages(messages)
+                    if isinstance(api_messages, list):
+                        _imgs_removed = _strip_images_from_messages(api_messages) or _imgs_removed
+                    if _imgs_removed:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Provider rejected a corrupted image — "
+                            f"stripped images from history and retrying...",
+                            force=True,
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            "image-corrupt recovery: no image parts found to "
+                            "strip; surfacing original error."
+                        )
+
+                # Generic strip-and-retry fallback: any other non-retryable
+                # 400 whose outgoing request still contains image parts.
+                # Providers invent new image-rejection wordings faster than
+                # we can catalogue them (this is exactly what bit us in
+                # issue #69078 — an xAI corruption message that matched
+                # none of the patterns above and permanently bricked the
+                # session). Rather than chase every wording, treat "400 +
+                # non-retryable + image parts present" as reason enough to
+                # try once without the images before giving up. One-shot per
+                # attempt via the same guard as the image-corrupt branch
+                # above so this never loops.
+                if (
+                    status_code == 400
+                    and not classified.retryable
+                    and not _retry.stripped_images_this_turn
+                ):
+                    _retry.stripped_images_this_turn = True
+                    _imgs_removed = _strip_images_from_messages(messages)
+                    if isinstance(api_messages, list):
+                        _imgs_removed = _strip_images_from_messages(api_messages) or _imgs_removed
+                    if _imgs_removed:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Non-retryable 400 with image content in "
+                            f"the request — stripped images from history and retrying...",
+                            force=True,
+                        )
+                        continue
+
                 # Anthropic OAuth subscription rejected the 1M-context beta
                 # header ("long context beta is not yet available for this
                 # subscription"). Disable the beta for the rest of this

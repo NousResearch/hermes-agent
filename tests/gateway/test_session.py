@@ -1524,14 +1524,17 @@ class TestLastPromptTokens:
             created_at=datetime.now(),
             updated_at=datetime.now(),
             last_prompt_tokens=42000,
+            last_context_length=114688,
         )
         d = entry.to_dict()
         assert d["last_prompt_tokens"] == 42000
+        assert d["last_context_length"] == 114688
         restored = SessionEntry.from_dict(d)
         assert restored.last_prompt_tokens == 42000
+        assert restored.last_context_length == 114688
 
     def test_session_entry_from_old_data(self):
-        """Old session data without last_prompt_tokens should default to 0."""
+        """Old session data without context occupancy fields should default to 0."""
         from gateway.session import SessionEntry
         data = {
             "session_key": "test",
@@ -1545,6 +1548,7 @@ class TestLastPromptTokens:
         }
         entry = SessionEntry.from_dict(data)
         assert entry.last_prompt_tokens == 0
+        assert entry.last_context_length == 0
 
     def test_update_session_sets_last_prompt_tokens(self, tmp_path):
         """update_session should store the actual prompt token count."""
@@ -1565,8 +1569,13 @@ class TestLastPromptTokens:
         )
         store._entries = {"k1": entry}
 
-        store.update_session("k1", last_prompt_tokens=85000)
+        store.update_session(
+            "k1",
+            last_prompt_tokens=85000,
+            last_context_length=114688,
+        )
         assert entry.last_prompt_tokens == 85000
+        assert entry.last_context_length == 114688
 
     def test_update_session_none_does_not_change(self, tmp_path):
         """update_session with default (None) should not change last_prompt_tokens."""

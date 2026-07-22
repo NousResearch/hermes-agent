@@ -3932,6 +3932,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=_profile,
         )
 
+    def _skill_runtime_note_for_session(self, session_key: str) -> str:
+        """Return prior-request context telemetry for a gateway skill turn."""
+        from agent.skill_commands import (
+            build_skill_runtime_note,
+            build_skill_runtime_note_from_usage,
+        )
+
+        runtime_agent = getattr(self, "_running_agents", {}).get(session_key)
+        if not runtime_agent or runtime_agent is _AGENT_PENDING_SENTINEL:
+            runtime_agent = None
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            agent_cache = getattr(self, "_agent_cache", None)
+            if cache_lock is not None and agent_cache is not None:
+                try:
+                    with cache_lock:
+                        cached_runtime = agent_cache.get(session_key)
+                    runtime_agent = cached_runtime[0] if cached_runtime else None
+                except Exception:
+                    runtime_agent = None
+
+        runtime_note = build_skill_runtime_note(runtime_agent)
+        if runtime_note:
+            return runtime_note
+
+        session_entry = None
+        session_store = getattr(self, "session_store", None)
+        if session_store is not None:
+            try:
+                peek_session_id = getattr(session_store, "peek_session_id", None)
+                lookup_by_session_id = getattr(
+                    session_store, "lookup_by_session_id", None
+                )
+                if callable(peek_session_id) and callable(lookup_by_session_id):
+                    session_id = peek_session_id(session_key)
+                    if isinstance(session_id, str) and session_id:
+                        session_entry = lookup_by_session_id(session_id)
+            except Exception:
+                session_entry = None
+
+        context_used = getattr(session_entry, "last_prompt_tokens", 0)
+        context_total = getattr(session_entry, "last_context_length", 0)
+        return build_skill_runtime_note_from_usage(context_used, context_total)
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -11496,7 +11539,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # resolve_skill_command_key() handles the Telegram underscore/hyphen
         # round-trip so /claude_code from Telegram autocomplete still resolves
         # to the claude-code skill.
+        _skill_runtime_note = ""
         if command:
+            _skill_runtime_note = self._skill_runtime_note_for_session(_quick_key)
             # Skill bundles take precedence over individual skill commands —
             # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
             _bundle_handled = False
@@ -11517,6 +11562,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     bundle_result = build_bundle_invocation_message(
                         bundle_key, user_instruction, task_id=_quick_key,
                         platform=_bundle_plat,
+                        runtime_note=_skill_runtime_note,
                     )
                     if bundle_result:
                         msg, _loaded, missing = bundle_result
@@ -11595,6 +11641,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             [cmd_key, *extra_keys],
                             stacked_instruction,
                             task_id=_quick_key,
+                            runtime_note=_skill_runtime_note,
                         )
                         if stacked_result:
                             msg, _loaded, _missing = stacked_result
@@ -11604,7 +11651,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Failed to load stacked skills for /{command}."
                     else:
                         msg = build_skill_invocation_message(
-                            cmd_key, user_instruction, task_id=_quick_key
+                            cmd_key,
+                            user_instruction,
+                            task_id=_quick_key,
+                            runtime_note=_skill_runtime_note,
                         )
                         if msg:
                             event.text = msg
@@ -13741,6 +13791,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self.async_session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                last_context_length=agent_result.get("context_length", 0) or 0,
             )
 
             # Re-baseline the cached agent's message_count snapshot now that

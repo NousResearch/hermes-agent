@@ -9400,9 +9400,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Skill bundles take precedence over individual skills — /<bundle>
             # loads multiple skills at once. Rescans cheaply when files change.
             elif base_cmd in skill_bundles:
+                from agent.skill_commands import build_skill_runtime_note
+
                 user_instruction = cmd_original[len(base_cmd):].strip()
                 bundle_result = build_bundle_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
+                    base_cmd,
+                    user_instruction,
+                    task_id=self.session_id,
+                    runtime_note=build_skill_runtime_note(self.agent),
                 )
                 if bundle_result:
                     msg, loaded_names, missing = bundle_result
@@ -9429,14 +9434,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Inspired by Claude Code v2.1.199.
                 from agent.skill_commands import (
                     build_stacked_skill_invocation_message,
+                    build_skill_runtime_note,
                     split_stacked_skill_commands,
                 )
+                runtime_note = build_skill_runtime_note(self.agent)
                 extra_keys, user_instruction = split_stacked_skill_commands(rest)
                 if extra_keys:
                     stacked_result = build_stacked_skill_invocation_message(
                         [base_cmd, *extra_keys],
                         user_instruction,
                         task_id=self.session_id,
+                        runtime_note=runtime_note,
                     )
                     if stacked_result:
                         msg, loaded_names, missing = stacked_result
@@ -9457,7 +9465,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     return True
                 user_instruction = rest
                 msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
+                    base_cmd,
+                    user_instruction,
+                    task_id=self.session_id,
+                    runtime_note=runtime_note,
                 )
                 if msg:
                     skill_name = skill_commands[base_cmd]["name"]

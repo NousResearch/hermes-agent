@@ -1492,6 +1492,13 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
         "session_key": sid,
         "agent": None,
         "slash_worker": worker,
+        "_compute_host_active": True,
+        "_metadata_mirror": {
+            "usage": {
+                "context_used": 57_344,
+                "context_max": 114_688,
+            }
+        },
     }
     fake_bundles = {
         "/analysis-pack": {
@@ -1508,7 +1515,7 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
          patch(
              "agent.skill_bundles.build_bundle_invocation_message",
              return_value=(fake_msg, ["source-check", "claim-audit"], []),
-         ):
+         ) as build_bundle:
         resp = server.handle_request({
             "id": "r-bundle-slash",
             "method": "slash.exec",
@@ -1525,6 +1532,7 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
         "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
     }
     assert worker.calls == []
+    assert "context tokens (50%)." in build_bundle.call_args.kwargs["runtime_note"]
 
 
 def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
@@ -1891,13 +1899,23 @@ def test_command_dispatch_retry_handles_multipart_content(server):
 def test_command_dispatch_returns_skill_payload(server):
     """command.dispatch returns structured skill payload for the TUI to send()."""
     sid = "test-session"
-    server._sessions[sid] = {"session_key": sid}
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "_compute_host_active": True,
+        "_metadata_mirror": {
+            "usage": {
+                "context_used": 57_344,
+                "context_max": 114_688,
+            }
+        },
+    }
 
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
     fake_msg = "Loaded skill content here"
 
     with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
-         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg):
+         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg) as build_message:
         resp = server.handle_request({
             "id": "r2",
             "method": "command.dispatch",
@@ -1909,6 +1927,16 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["type"] == "skill"
     assert result["message"] == fake_msg
     assert result["name"] == "hermes-agent-dev"
+    build_message.assert_called_once_with(
+        "/hermes-agent-dev",
+        "",
+        task_id=sid,
+        runtime_note=(
+            "Previous completed model request used 57,344 of 114,688 context "
+            "tokens (50%). This is measured prior-request occupancy; the pending "
+            "skill request may be larger."
+        ),
+    )
 
 
 def test_command_dispatch_returns_custom_bundle_payload(server):
@@ -1955,6 +1983,7 @@ def test_command_dispatch_returns_custom_bundle_payload(server):
         arg,
         task_id=sid,
         platform="tui",
+        runtime_note="",
     )
     build_skill.assert_not_called()
 

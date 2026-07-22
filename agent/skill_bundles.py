@@ -255,6 +255,7 @@ def build_bundle_invocation_message(
     user_instruction: str = "",
     task_id: str | None = None,
     platform: str | None = None,
+    runtime_note: str = "",
 ) -> Optional[Tuple[str, List[str], List[str]]]:
     """Build the user message content for a bundle slash command invocation.
 
@@ -363,6 +364,8 @@ def build_bundle_invocation_message(
         header_lines.extend(
             ["", f"User instruction: {user_instruction}"]
         )
+    if runtime_note:
+        header_lines.extend(["", f"[Runtime note: {runtime_note}]"])
 
     header = "\n".join(header_lines)
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,7 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    build_skill_runtime_note,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -48,6 +50,33 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"symlinks unavailable in test environment: {exc}")
     return external_category
+
+
+class TestSkillRuntimeNote:
+    def test_reports_previous_measured_context_occupancy(self):
+        agent = SimpleNamespace(
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=57_344,
+                context_length=114_688,
+            )
+        )
+
+        assert build_skill_runtime_note(agent) == (
+            "Previous completed model request used 57,344 of 114,688 context "
+            "tokens (50%). This is measured prior-request occupancy; the pending "
+            "skill request may be larger."
+        )
+
+    @pytest.mark.parametrize("last_prompt_tokens", [None, 0, -1])
+    def test_omits_unavailable_or_transitional_occupancy(self, last_prompt_tokens):
+        agent = SimpleNamespace(
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=last_prompt_tokens,
+                context_length=114_688,
+            )
+        )
+
+        assert build_skill_runtime_note(agent) == ""
 
 
 class TestScanSkillCommands:
@@ -1042,7 +1071,12 @@ class TestStackedSkillCommands:
             self._setup_three_skills(tmp_path)
             scan_skill_commands()
             result = build_stacked_skill_invocation_message(
-                ["/skill-a", "/skill-b"], "summarize the repo"
+                ["/skill-a", "/skill-b"],
+                "summarize the repo",
+                runtime_note=(
+                    "Previous completed model request used 50 of 100 context "
+                    "tokens (50%)."
+                ),
             )
         assert result is not None
         msg, _, _ = result

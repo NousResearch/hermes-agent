@@ -105,6 +105,9 @@ def _extract_bundle_user_instruction(message: str) -> Optional[str]:
         return None
 
     instruction = message[marker_idx + len(_BUNDLE_USER_INSTRUCTION):]
+    runtime_idx = instruction.find(_RUNTIME_NOTE)
+    if runtime_idx >= 0:
+        instruction = instruction[:runtime_idx]
     first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
     if first_skill_idx >= 0:
         instruction = instruction[:first_skill_idx]
@@ -512,6 +515,42 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
+def build_skill_runtime_note_from_usage(used: Any, total: Any) -> str:
+    """Format a truthful prior-request context occupancy note."""
+    try:
+        used = int(used or 0)
+        total = int(total or 0)
+    except (TypeError, ValueError):
+        return ""
+    if used <= 0 or total <= 0:
+        return ""
+
+    percent = max(0, min(100, round(used / total * 100)))
+    return (
+        f"Previous completed model request used {used:,} of {total:,} context "
+        f"tokens ({percent}%). This is measured prior-request occupancy; the "
+        "pending skill request may be larger."
+    )
+
+
+def build_skill_runtime_note(agent: Any) -> str:
+    """Describe measured context occupancy for a model-facing skill request.
+
+    ``last_prompt_tokens`` belongs to the previous completed model request.  It
+    is the newest measured occupancy available before the pending skill request
+    starts, so the note labels that timing explicitly instead of presenting it
+    as an exact current-turn value.  Missing, zero, and negative values are
+    intentionally omitted; ``-1`` is the post-compression transitional sentinel.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return ""
+    return build_skill_runtime_note_from_usage(
+        getattr(compressor, "last_prompt_tokens", 0),
+        getattr(compressor, "context_length", 0),
+    )
+
+
 def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",
@@ -612,6 +651,7 @@ def build_stacked_skill_invocation_message(
     cmd_keys: list[str],
     user_instruction: str = "",
     task_id: str | None = None,
+    runtime_note: str = "",
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation.
 
@@ -685,6 +725,8 @@ def build_stacked_skill_invocation_message(
         header_lines.append(f"Skills missing (skipped): {', '.join(missing)}")
     if user_instruction:
         header_lines.extend(["", f"User instruction: {user_instruction}"])
+    if runtime_note:
+        header_lines.extend(["", f"[Runtime note: {runtime_note}]"])
 
     header = "\n".join(header_lines)
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)

@@ -1,7 +1,10 @@
 """Tests for the gateway max_concurrent_sessions active-session cap."""
 
 import asyncio
+from collections import OrderedDict
+import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -57,6 +60,8 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._agent_cache = OrderedDict()
+    runner._agent_cache_lock = threading.Lock()
     runner._active_session_leases = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
@@ -206,3 +211,103 @@ def test_skill_command_that_would_start_agent_is_blocked_at_limit(monkeypatch):
         "Hermes is at the active session limit (1/1). "
         "Try again when another session finishes."
     )
+
+
+def test_skill_command_receives_cached_context_runtime_note(monkeypatch):
+    _silence_global_gateway_hooks(monkeypatch)
+    runner = _make_runner()
+    event = _make_event("/demo please", chat_id="context")
+    session_key = build_session_key(event.source)
+    agent = SimpleNamespace(
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=57_344,
+            context_length=114_688,
+        )
+    )
+    runner._agent_cache[session_key] = (agent, time.time())
+    captured = {}
+
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {"demo": {"name": "demo-skill"}},
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.resolve_skill_command_key",
+        lambda command: "demo" if command == "demo" else None,
+    )
+
+    def build_message(*args, **kwargs):
+        captured.update(kwargs)
+        return "invoke demo skill"
+
+    monkeypatch.setattr(
+        "agent.skill_commands.build_skill_invocation_message",
+        build_message,
+    )
+    monkeypatch.setattr(
+        "agent.skill_utils.get_disabled_skill_names",
+        lambda *args, **kwargs: [],
+    )
+
+    async def mock_agent_run(self_inner, ev, src, qk, generation):
+        return ev.text
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_agent_run):
+        result = asyncio.run(runner._handle_message(event))
+
+    assert result == "invoke demo skill"
+    assert captured["runtime_note"] == (
+        "Previous completed model request used 57,344 of 114,688 context "
+        "tokens (50%). This is measured prior-request occupancy; the pending "
+        "skill request may be larger."
+    )
+
+
+def test_gateway_skill_runtime_note_falls_back_to_persisted_session(monkeypatch):
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+    runner.session_store.peek_session_id.return_value = "sess-persisted"
+    runner.session_store.lookup_by_session_id.return_value = SimpleNamespace(
+        last_prompt_tokens=57_344,
+        last_context_length=114_688,
+    )
+
+    note = runner._skill_runtime_note_for_session(session_key)
+
+    assert "57,344 of 114,688 context tokens (50%)." in note
+
+
+def test_gateway_bundle_receives_persisted_context_runtime_note(monkeypatch):
+    _silence_global_gateway_hooks(monkeypatch)
+    runner = _make_runner()
+    event = _make_event("/review-pack finish cleanly", chat_id="bundle")
+    runner.session_store.peek_session_id.return_value = "sess-persisted"
+    runner.session_store.lookup_by_session_id.return_value = SimpleNamespace(
+        last_prompt_tokens=57_344,
+        last_context_length=114_688,
+    )
+    monkeypatch.setattr(
+        "agent.skill_bundles.resolve_bundle_command_key",
+        lambda command: "/review-pack" if command == "review-pack" else None,
+    )
+    captured = {}
+
+    def build_bundle(*args, **kwargs):
+        captured.update(kwargs)
+        return "invoke review bundle", ["phase-end"], []
+
+    monkeypatch.setattr(
+        "agent.skill_bundles.build_bundle_invocation_message",
+        build_bundle,
+    )
+
+    async def mock_agent_run(self_inner, ev, src, qk, generation):
+        return ev.text
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_agent_run):
+        result = asyncio.run(runner._handle_message(event))
+
+    assert result == "invoke review bundle"
+    assert "57,344 of 114,688 context tokens (50%)." in captured["runtime_note"]

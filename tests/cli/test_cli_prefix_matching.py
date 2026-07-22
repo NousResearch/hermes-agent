@@ -1,4 +1,5 @@
 """Tests for slash command prefix matching in HermesCLI.process_command."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from cli import HermesCLI
 
@@ -15,6 +16,77 @@ def _make_cli():
 
 
 class TestSlashCommandPrefixMatching:
+    def test_bundle_command_receives_measured_context_runtime_note(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "session-1"
+        cli_obj.agent = SimpleNamespace(
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=57_344,
+                context_length=114_688,
+            )
+        )
+        fake_bundle = {
+            "/review-pack": {
+                "name": "review-pack",
+                "skills": ["phase-end"],
+            }
+        }
+
+        import cli as cli_mod
+        with (
+            patch.object(cli_mod, "_skill_bundles", fake_bundle),
+            patch.object(
+                cli_mod,
+                "build_bundle_invocation_message",
+                return_value=("loaded bundle", ["phase-end"], []),
+            ) as build_bundle,
+        ):
+            cli_obj.process_command("/review-pack finish cleanly")
+
+        build_bundle.assert_called_once_with(
+            "/review-pack",
+            "finish cleanly",
+            task_id="session-1",
+            runtime_note=(
+                "Previous completed model request used 57,344 of 114,688 context "
+                "tokens (50%). This is measured prior-request occupancy; the pending "
+                "skill request may be larger."
+            ),
+        )
+        cli_obj._pending_input.put.assert_called_once_with("loaded bundle")
+
+    def test_skill_command_receives_measured_context_runtime_note(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "session-1"
+        cli_obj.agent = SimpleNamespace(
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=57_344,
+                context_length=114_688,
+            )
+        )
+        fake_skill = {"/phase-end": {"name": "phase-end", "description": "test"}}
+
+        import cli as cli_mod
+        with (
+            patch.object(cli_mod, "_skill_commands", fake_skill),
+            patch(
+                "agent.skill_commands.build_skill_invocation_message",
+                return_value="loaded phase-end",
+            ) as build_message,
+        ):
+            cli_obj.process_command("/phase-end")
+
+        build_message.assert_called_once_with(
+            "/phase-end",
+            "",
+            task_id="session-1",
+            runtime_note=(
+                "Previous completed model request used 57,344 of 114,688 context "
+                "tokens (50%). This is measured prior-request occupancy; the pending "
+                "skill request may be larger."
+            ),
+        )
+
     def test_unique_prefix_dispatches_command(self):
         """/con should dispatch to /config when it uniquely matches."""
         cli_obj = _make_cli()

@@ -13626,11 +13626,18 @@ def _(rid, params: dict) -> dict:
 
     if bundle_key is not None:
         try:
+            from agent.skill_commands import build_skill_runtime_note_from_usage
+
+            usage = _session_usage_snapshot(session)
             bundle_result = build_bundle_invocation_message(
                 bundle_key,
                 arg,
                 task_id=session.get("session_key", "") if session else "",
                 platform=_resolve_session_platform(),
+                runtime_note=build_skill_runtime_note_from_usage(
+                    usage.get("context_used"),
+                    usage.get("context_max"),
+                ),
             )
         except Exception as exc:
             return _err(rid, 4018, f"bundle dispatch failed: {exc}")
@@ -13657,13 +13664,21 @@ def _(rid, params: dict) -> dict:
         from agent.skill_commands import (
             scan_skill_commands,
             build_skill_invocation_message,
+            build_skill_runtime_note_from_usage,
         )
 
         cmds = scan_skill_commands()
         key = f"/{name}"
         if key in cmds:
+            usage = _session_usage_snapshot(session)
             msg = build_skill_invocation_message(
-                key, arg, task_id=session.get("session_key", "") if session else ""
+                key,
+                arg,
+                task_id=session.get("session_key", "") if session else "",
+                runtime_note=build_skill_runtime_note_from_usage(
+                    usage.get("context_used"),
+                    usage.get("context_max"),
+                ),
             )
             if msg:
                 return _ok(

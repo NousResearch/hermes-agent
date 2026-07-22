@@ -184,6 +184,31 @@ class TestResolveBundleCommandKey:
 
 
 class TestBuildBundleInvocationMessage:
+    def test_includes_runtime_note_without_polluting_user_instruction(
+        self, bundles_env
+    ):
+        from agent.skill_commands import extract_user_instruction_from_skill_message
+
+        bundles_dir, skills_dir = bundles_env
+        _make_skill(skills_dir, "skill-a")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a"])
+        scan_bundles()
+
+        result = build_bundle_invocation_message(
+            "/combo",
+            user_instruction="finish cleanly",
+            runtime_note=(
+                "Previous completed model request used 57,344 of 114,688 "
+                "context tokens (50%)."
+            ),
+        )
+
+        assert result is not None
+        msg, _, _ = result
+        assert msg.count("[Runtime note:") == 1
+        assert "context tokens (50%)." in msg
+        assert extract_user_instruction_from_skill_message(msg) == "finish cleanly"
+
     def test_loads_all_skills(self, bundles_env):
         bundles_dir, skills_dir = bundles_env
         _make_skill(skills_dir, "skill-a", body="Skill A content.")

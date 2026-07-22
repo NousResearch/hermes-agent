@@ -207,6 +207,59 @@ class TestForkSession:
     def test_fork_nonexistent_returns_none(self, manager):
         assert manager.fork_session("bogus-id") is None
 
+    def test_fork_session_keep_history_slices_prefix(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "first"})
+        original.history.append({"role": "assistant", "content": "reply"})
+        original.history.append({"role": "user", "content": "second"})
+        original.history.append({"role": "assistant", "content": "reply 2"})
+
+        forked = manager.fork_session(original.session_id, cwd="/new", keep_history=2)
+        assert forked is not None
+
+        assert len(forked.history) == 2
+        assert forked.history[0]["content"] == "first"
+        assert forked.history[1]["content"] == "reply"
+        # Original is untouched.
+        assert len(original.history) == 4
+
+        # Still a deep copy — mutating the fork doesn't affect the original.
+        forked.history[0]["content"] = "mutated"
+        assert original.history[0]["content"] == "first"
+
+    def test_fork_session_keep_history_zero_gives_empty_fork(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+
+        forked = manager.fork_session(original.session_id, cwd="/new", keep_history=0)
+        assert forked is not None
+        assert forked.history == []
+        assert len(original.history) == 1
+
+    def test_fork_session_keep_history_beyond_length_copies_all(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+
+        forked = manager.fork_session(original.session_id, cwd="/new", keep_history=99)
+        assert forked is not None
+        assert len(forked.history) == 1
+
+    def test_fork_session_keep_history_none_copies_all(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+        original.history.append({"role": "assistant", "content": "hi"})
+
+        forked = manager.fork_session(original.session_id, cwd="/new", keep_history=None)
+        assert forked is not None
+        assert len(forked.history) == 2
+
+    def test_fork_session_keep_history_negative_raises(self, manager):
+        original = manager.create_session()
+        original.history.append({"role": "user", "content": "hello"})
+
+        with pytest.raises(ValueError, match="non-negative"):
+            manager.fork_session(original.session_id, cwd="/new", keep_history=-1)
+
 
 # ---------------------------------------------------------------------------
 # list / cleanup / remove

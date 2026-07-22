@@ -888,7 +888,10 @@ class HermesACPAgent(acp.Agent):
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
-                    fork=SessionForkCapabilities(),
+                    # _meta.hermes.keepHistory: this agent honors the
+                    # ``_meta.hermes.keepHistory`` fork-rewind extension on
+                    # ``session/fork`` (fork the first N history entries).
+                    fork=SessionForkCapabilities(_meta={"hermes": {"keepHistory": True}}),
                     list=SessionListCapabilities(),
                     resume=SessionResumeCapabilities(),
                 ),
@@ -1038,9 +1041,20 @@ class HermesACPAgent(acp.Agent):
 
         active_tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
 
-        async def _send(update: Any) -> bool:
+        async def _send(update: Any, meta: dict[str, Any] | None = None) -> bool:
             try:
-                await self._conn.session_update(session_id=state.session_id, update=update)
+                # ``meta`` becomes the notification-level ``_meta`` (the acp lib
+                # forwards session_update **kwargs into SessionNotification's
+                # field_meta). We use it to stamp each replayed user turn with
+                # its absolute ``state.history`` index so the client can pass
+                # that coordinate back as ``_meta.hermes.keepHistory`` on
+                # ``session/fork`` — the same list ``fork_session`` slices.
+                if meta:
+                    await self._conn.session_update(
+                        session_id=state.session_id, update=update, **meta
+                    )
+                else:
+                    await self._conn.session_update(session_id=state.session_id, update=update)
                 return True
             except Exception:
                 logger.warning(
@@ -1050,14 +1064,16 @@ class HermesACPAgent(acp.Agent):
                 )
                 return False
 
-        for message in state.history:
+        for index, message in enumerate(state.history):
             role = str(message.get("role") or "")
 
             if role == "user":
                 text = self._history_message_text(message)
                 if text:
                     update = self._history_message_update(role=role, text=text)
-                    if update is not None and not await _send(update):
+                    if update is not None and not await _send(
+                        update, {"hermes": {"historyIndex": index}}
+                    ):
                         return
                 continue
 
@@ -1226,6 +1242,31 @@ class HermesACPAgent(acp.Agent):
                 logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
             logger.info("Cancelled session %s", session_id)
 
+    @staticmethod
+    def _fork_keep_history(kwargs: dict[str, Any]) -> int | None:
+        """Extract the optional ``_meta.hermes.keepHistory`` fork rewind point.
+
+        ``session/fork`` has no spec-level rewind parameter, so clients pass it
+        through ACP's extensibility escape hatch: ``_meta.hermes.keepHistory``
+        is the number of leading history entries to copy into the fork (in the
+        same OpenAI-message coordinate space that ``session/load`` replays).
+        The JSON-RPC router flattens ``_meta`` keys into handler kwargs, so the
+        payload arrives here as a ``hermes`` dict. Absent → ``None`` → full
+        copy (the pre-existing behavior). Invalid types/values raise
+        ``invalid_params`` rather than silently forking the whole session —
+        a client asking for a rewind must not quietly get a full copy.
+        """
+        hermes_meta = kwargs.get("hermes")
+        if not isinstance(hermes_meta, dict) or "keepHistory" not in hermes_meta:
+            return None
+        keep = hermes_meta["keepHistory"]
+        # bool is an int subclass; reject it explicitly.
+        if isinstance(keep, bool) or not isinstance(keep, int) or keep < 0:
+            raise acp.RequestError.invalid_params(
+                {"reason": "_meta.hermes.keepHistory must be a non-negative integer"}
+            )
+        return keep
+
     async def fork_session(
         self,
         cwd: str,
@@ -1233,7 +1274,10 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> ForkSessionResponse:
-        state = self.session_manager.fork_session(session_id, cwd=cwd)
+        keep_history = self._fork_keep_history(kwargs)
+        state = self.session_manager.fork_session(
+            session_id, cwd=cwd, keep_history=keep_history
+        )
         new_id = state.session_id if state else ""
         if state is not None:
             await self._register_session_mcp_servers(state, mcp_servers)
@@ -1292,6 +1336,43 @@ class HermesACPAgent(acp.Agent):
         return ListSessionsResponse(sessions=sessions, next_cursor=next_cursor)
 
     # ---- Prompt (core) ------------------------------------------------------
+
+    @staticmethod
+    def _final_user_history_index(
+        messages: Any, user_content: Any, agent_idx: Any
+    ) -> int | None:
+        """Absolute index of this turn's user message in the FINALIZED history.
+
+        ``agent_idx`` (the agent's ``_persist_user_message_idx``) is captured
+        when the turn machinery appends the user message — BEFORE preflight or
+        mid-turn context compression, which can replace the message list and
+        shift (or summarize away) that message. Trusting it blindly would let
+        the returned ``userHistoryIndex`` disagree with the ``historyIndex``
+        replay stamps and the prefix ``keepHistory`` slices. So it is used only
+        as proof the turn actually appended a user message; the coordinate
+        itself comes from rescanning the finalized list from the end — the
+        latest content match is the current turn (it was appended last;
+        synthetic user messages appended later in the turn, like
+        empty-response nudges and length continuations, carry fixed system
+        text that cannot equal the submitted content). Returns ``None`` when
+        the message cannot be located (e.g. compression merged it into a
+        summary), in which case the meta stamp is omitted and the client
+        falls back to a full-history fork.
+        """
+        if isinstance(agent_idx, bool) or not isinstance(agent_idx, int) or agent_idx < 0:
+            return None
+        if not isinstance(messages, list):
+            return None
+
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and msg.get("content") == user_content
+            ):
+                return idx
+        return None
 
     async def prompt(
         self,
@@ -1567,6 +1648,23 @@ class HermesACPAgent(acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        # Absolute index of this turn's user message in the post-turn history,
+        # in the same coordinate space ``fork_session`` slices and history
+        # replay stamps as ``_meta.hermes.historyIndex``. Returned to the client
+        # so a "fork from this message" affordance can pass it back verbatim as
+        # ``_meta.hermes.keepHistory`` without re-deriving it from replay.
+        # Recomputed from the FINALIZED ``result["messages"]`` — the agent's
+        # ``_persist_user_message_idx`` is stamped before preflight compression,
+        # which can replace the message list mid-turn and leave that early index
+        # pointing at the wrong entry (or past a summarized-away message). Read
+        # before draining queued prompts, since each drained follow-up rewrites
+        # ``_persist_user_message_idx`` for its own turn.
+        user_history_index = self._final_user_history_index(
+            result.get("messages"),
+            user_content,
+            getattr(state.agent, "_persist_user_message_idx", None),
+        )
+
         if result.get("messages"):
             state.history = result["messages"]
             # Persist updated history so sessions survive process restarts.
@@ -1691,7 +1789,12 @@ class HermesACPAgent(acp.Agent):
         await self._send_usage_update(state)
 
         stop_reason = "cancelled" if cancelled else "end_turn"
-        return PromptResponse(stop_reason=stop_reason, usage=usage)
+        field_meta = (
+            {"hermes": {"userHistoryIndex": user_history_index}}
+            if user_history_index is not None
+            else None
+        )
+        return PromptResponse(stop_reason=stop_reason, usage=usage, field_meta=field_meta)
 
     # ---- Slash commands (headless) -------------------------------------------
 

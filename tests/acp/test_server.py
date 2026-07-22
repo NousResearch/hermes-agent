@@ -423,6 +423,47 @@ class TestSessionOps:
         assert "cli.py:42" in tool_updates[1].content[0].content.text
 
     @pytest.mark.asyncio
+    async def test_load_session_stamps_history_index_on_user_chunks(self, agent):
+        """Replayed user chunks carry _meta.hermes.historyIndex — the absolute
+        state.history coordinate a client passes back as keepHistory on fork."""
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        # Index 0 is a hidden system message replay skips; the user turns sit at
+        # absolute indices 1 and 3, which is exactly what must be stamped.
+        state.history = [
+            {"role": "system", "content": "hidden system"},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+
+        user_calls = [
+            call for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None) == "user_message_chunk"
+        ]
+        assert len(user_calls) == 2
+        assert user_calls[0].kwargs["update"].content.text == "first question"
+        assert user_calls[0].kwargs["hermes"] == {"historyIndex": 1}
+        assert user_calls[1].kwargs["update"].content.text == "second question"
+        assert user_calls[1].kwargs["hermes"] == {"historyIndex": 3}
+
+        # Assistant chunks are not stamped — only user turns are fork points.
+        assistant_calls = [
+            call for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None) == "agent_message_chunk"
+        ]
+        assert assistant_calls and all("hermes" not in c.kwargs for c in assistant_calls)
+
+    @pytest.mark.asyncio
     async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
         """Persisted todo tool results should rebuild Zed's native plan panel."""
         mock_conn = MagicMock(spec=acp.Client)
@@ -808,6 +849,78 @@ class TestListAndFork:
         assert fork_resp.session_id != new_resp.session_id
 
     @pytest.mark.asyncio
+    async def test_fork_session_keep_history_meta_slices_prefix(self, agent):
+        new_resp = await agent.new_session(cwd="/original")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history.extend(
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "reply 2"},
+            ]
+        )
+
+        # The JSON-RPC router flattens _meta into handler kwargs, so
+        # {"_meta": {"hermes": {"keepHistory": 2}}} arrives as hermes={...}.
+        fork_resp = await agent.fork_session(
+            cwd="/forked",
+            session_id=new_resp.session_id,
+            hermes={"keepHistory": 2},
+        )
+
+        forked = agent.session_manager.get_session(fork_resp.session_id)
+        assert len(forked.history) == 2
+        assert forked.history[1]["content"] == "reply"
+        assert len(state.history) == 4
+
+    @pytest.mark.asyncio
+    async def test_fork_session_keep_history_meta_invalid_raises(self, agent):
+        new_resp = await agent.new_session(cwd="/original")
+
+        for bad in ("2", -1, True, 1.5):
+            with pytest.raises(acp.RequestError):
+                await agent.fork_session(
+                    cwd="/forked",
+                    session_id=new_resp.session_id,
+                    hermes={"keepHistory": bad},
+                )
+
+    @pytest.mark.asyncio
+    async def test_fork_session_router_delivers_keep_history_meta(self, agent):
+        """End-to-end through the JSON-RPC router: _meta survives the wire shape."""
+        new_resp = await agent.new_session(cwd="/original")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history.extend(
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {"role": "user", "content": "second"},
+            ]
+        )
+        router = build_agent_router(agent, use_unstable_protocol=True)
+
+        result = await router(
+            "session/fork",
+            {
+                "cwd": "/forked",
+                "sessionId": new_resp.session_id,
+                "_meta": {"hermes": {"keepHistory": 1}},
+            },
+            False,
+        )
+
+        forked = agent.session_manager.get_session(result.session_id)
+        assert len(forked.history) == 1
+        assert forked.history[0]["content"] == "first"
+
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_fork_keep_history_extension(self, agent):
+        resp = await agent.initialize(protocol_version=1)
+        fork_caps = resp.agent_capabilities.session_capabilities.fork
+        assert fork_caps.field_meta == {"hermes": {"keepHistory": True}}
+
+    @pytest.mark.asyncio
     async def test_list_sessions_includes_title_and_updated_at(self, agent):
         with patch.object(
             agent.session_manager,
@@ -1073,6 +1186,149 @@ class TestPrompt:
         await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
         assert state.history == expected_history
+
+    @pytest.mark.asyncio
+    async def test_prompt_returns_user_history_index_meta(self, agent):
+        """PromptResponse carries _meta.hermes.userHistoryIndex — the absolute
+        post-turn index of this turn's user message, for fork-from-here."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        # Simulate a turn appended after a prior user/assistant exchange, so the
+        # new user message lands at absolute index 2 in the post-turn history.
+        def _run(*_args, **_kwargs):
+            state.agent._persist_user_message_idx = 2
+            return {
+                "final_response": "sure",
+                "messages": [
+                    {"role": "user", "content": "earlier"},
+                    {"role": "assistant", "content": "earlier reply"},
+                    {"role": "user", "content": "now"},
+                    {"role": "assistant", "content": "sure"},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="now")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.field_meta == {"hermes": {"userHistoryIndex": 2}}
+
+    @pytest.mark.asyncio
+    async def test_prompt_omits_user_history_index_when_unavailable(self, agent):
+        """No _persist_user_message_idx (e.g. a bare turn) → no _meta stamp."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        # Ensure the attribute is absent so the getattr fallback fires.
+        if hasattr(state.agent, "_persist_user_message_idx"):
+            delattr(state.agent, "_persist_user_message_idx")
+
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "hi",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.field_meta is None
+
+    @pytest.mark.asyncio
+    async def test_prompt_user_history_index_recomputed_after_compression(self, agent):
+        """Mid-turn compression rewrites the message list AFTER the agent stamps
+        ``_persist_user_message_idx`` (agent/turn_context.py sets it pre-preflight).
+        The coordinate must come from the finalized result history — and the
+        prompt metadata, replay metadata, and fork prefix must all agree."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        # Finalized post-compression history: a 41-entry pre-turn transcript
+        # collapsed to a summary, with the current user turn surviving at
+        # absolute index 1 — while the agent's early stamp still says 40.
+        compressed_history = [
+            {"role": "user", "content": "[Context summary]\nPrevious conversation"},
+            {"role": "user", "content": "now"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        def _run(*_args, **_kwargs):
+            state.agent._persist_user_message_idx = 40  # stale pre-compression index
+            return {"final_response": "done", "messages": list(compressed_history)}
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="now")],
+            session_id=new_resp.session_id,
+        )
+
+        # 1. Prompt metadata reflects the finalized coordinate, not the stale stamp.
+        assert resp.field_meta == {"hermes": {"userHistoryIndex": 1}}
+
+        # 2. Replay metadata agrees: session/load stamps the same index on the
+        #    replayed chunk for this user turn.
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        user_calls = [
+            call for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None) == "user_message_chunk"
+        ]
+        stamped = {
+            call.kwargs["update"].content.text: call.kwargs["hermes"]["historyIndex"]
+            for call in user_calls
+        }
+        assert stamped["now"] == 1
+
+        # 3. Fork prefix agrees: keepHistory=<returned index> rewinds to just
+        #    before this turn's user message.
+        fork_resp = await agent.fork_session(
+            cwd="/forked",
+            session_id=new_resp.session_id,
+            hermes={"keepHistory": 1},
+        )
+        forked = agent.session_manager.get_session(fork_resp.session_id)
+        assert forked.history == compressed_history[:1]
+
+    @pytest.mark.asyncio
+    async def test_prompt_omits_user_history_index_when_message_summarized_away(self, agent):
+        """If compression removed the current user message entirely, no index
+        can be honestly returned — omit the stamp (client falls back to a
+        full-history fork) rather than pointing at the wrong entry."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def _run(*_args, **_kwargs):
+            state.agent._persist_user_message_idx = 40
+            return {
+                "final_response": "done",
+                "messages": [
+                    {"role": "user", "content": "[Context summary]\nEverything incl. the last user turn"},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="now")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.field_meta is None
 
     @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):

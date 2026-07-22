@@ -5012,6 +5012,46 @@ class TestNewEndpoints:
         assert profiles["multi-agent"]["has_env"] is True
         assert profiles["multi-agent"]["skill_count"] == 1
 
+    def test_profiles_list_fallback_tolerates_unreadable_env(self, monkeypatch):
+        # Regression: a profile directory the dashboard process cannot read
+        # (e.g. one hardened to run as a dedicated system user, mode 0700)
+        # made the fallback scan's unguarded ``(dir / ".env").exists()`` raise
+        # PermissionError, which 500'd GET /api/profiles and left the web UI's
+        # profile switcher empty. The probe must degrade to has_env=False.
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        hermes_home = get_hermes_home()
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        locked = hermes_home / "profiles" / "locked"
+        locked.mkdir(parents=True)
+
+        # Force the directory-scan fallback (primary listing raises), exactly
+        # like test_profiles_list_falls_back_when_profile_listing_fails.
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        # Simulate the unreadable profile dir at the pathlib level so the test
+        # is deterministic and not silently bypassed by a root CI user.
+        real_exists = Path.exists
+
+        def fake_exists(self):
+            if self.name == ".env" and self.parent.name == "locked":
+                raise PermissionError(13, "Permission denied")
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        resp = self.client.get("/api/profiles")
+
+        assert resp.status_code == 200
+        profiles = {p["name"]: p for p in resp.json()["profiles"]}
+        assert "locked" in profiles
+        assert profiles["locked"]["has_env"] is False
+
     def test_profiles_create_rename_delete_round_trip(self, monkeypatch):
         # Stub gateway service teardown so the test doesn't shell out to
         # launchctl/systemctl on the host.

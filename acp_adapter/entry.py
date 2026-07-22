@@ -31,9 +31,12 @@ else:
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
+from asyncio import transports as asyncio_transports
 from pathlib import Path
+from typing import BinaryIO, cast
 from hermes_constants import get_hermes_home
 
 
@@ -46,6 +49,70 @@ from hermes_constants import get_hermes_home
 # traceback is pure noise. We keep the protocol response intact and only
 # silence the stderr noise for this specific benign case.
 _BENIGN_PROBE_METHODS = frozenset({"ping", "health", "healthcheck"})
+
+
+class _ACPWriteProtocol(asyncio.BaseProtocol):
+    async def _drain_helper(self) -> None:
+        return None
+
+
+class _ACPStdoutTransport(asyncio.WriteTransport):
+    """Write ACP frames without polling the read side of a stdio socket."""
+
+    def __init__(self, stream: BinaryIO) -> None:
+        self._stream = stream
+        self._closing = False
+
+    def write(self, data: bytes) -> None:  # type: ignore[override]
+        if self._closing:
+            return
+        self._stream.write(data)
+        self._stream.flush()
+
+    def is_closing(self) -> bool:  # type: ignore[override]
+        return self._closing
+
+    def can_write_eof(self) -> bool:  # type: ignore[override]
+        return False
+
+    def close(self) -> None:  # type: ignore[override]
+        self._closing = True
+        with contextlib.suppress(Exception):
+            self._stream.flush()
+
+    def abort(self) -> None:  # type: ignore[override]
+        self.close()
+
+    def get_extra_info(self, name: str, default=None):  # type: ignore[override]
+        return default
+
+
+async def _acp_stdio_streams() -> tuple[asyncio.StreamWriter, asyncio.StreamReader]:
+    """Create ACP streams that remain open when Node launches stdout as a socket."""
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader(limit=50 * 1024 * 1024)
+    reader_protocol = asyncio.StreamReaderProtocol(reader)
+    await loop.connect_read_pipe(lambda: reader_protocol, sys.stdin)
+
+    write_protocol = _ACPWriteProtocol()
+    transport = _ACPStdoutTransport(sys.stdout.buffer)
+    writer = asyncio.StreamWriter(
+        cast(asyncio_transports.WriteTransport, transport),
+        write_protocol,
+        None,
+        loop,
+    )
+    return writer, reader
+
+
+async def _run_acp_agent(acp_module, agent) -> None:
+    writer, reader = await _acp_stdio_streams()
+    await acp_module.run_agent(
+        agent,
+        input_stream=writer,
+        output_stream=reader,
+        use_unstable_protocol=True,
+    )
 
 
 class _BenignProbeMethodFilter(logging.Filter):
@@ -154,6 +221,7 @@ def _print_version() -> None:
 
 def _run_check() -> None:
     import acp  # noqa: F401
+    from acp.schema import AuthMethodAgent  # noqa: F401
     from acp_adapter.server import HermesACPAgent  # noqa: F401
 
     print("Hermes ACP check OK")
@@ -259,7 +327,7 @@ def main(argv: list[str] | None = None) -> None:
 
     agent = HermesACPAgent()
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        asyncio.run(_run_acp_agent(acp, agent))
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

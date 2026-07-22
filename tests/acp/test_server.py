@@ -54,10 +54,15 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_model_config_and_edit_approval_modes(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    assert resp.config_options is not None
+    assert len(resp.config_options) == 1
+    model_option = resp.config_options[0]
+    assert model_option.id == "model"
+    assert model_option.category == "model"
+    assert model_option.current_value
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
@@ -68,7 +73,7 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+async def test_set_config_option_persists_edit_approval_policy(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
         "edit_approval_policy",
@@ -78,7 +83,7 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    assert update.config_options[0].id == "model"
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -921,7 +926,7 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        assert config_result["configOptions"][0]["id"] == "model"
 
     @pytest.mark.asyncio
     async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):
@@ -986,12 +991,70 @@ class TestSessionConfiguration:
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             acp_agent = HermesACPAgent(session_manager=manager)
             state = manager.create_session(cwd="/tmp")
+            state.agent.provider = ""
+            state.agent.base_url = "https://openrouter.example/v1"
             result = await acp_agent.set_session_model(
                 model_id="anthropic:claude-sonnet-4-6",
                 session_id=state.session_id,
             )
 
         assert isinstance(result, SetSessionModelResponse)
+        assert state.model == "claude-sonnet-4-6"
+        assert state.agent.provider == "anthropic"
+        assert state.agent.base_url == "https://anthropic.example/v1"
+        assert runtime_calls[-1] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_model_config_option_accepts_provider_prefixed_choice(self, tmp_path, monkeypatch):
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            state.agent.provider = ""
+            state.agent.base_url = "https://openrouter.example/v1"
+            result = await acp_agent.set_config_option(
+                config_id="model",
+                value="anthropic:claude-sonnet-4-6",
+                session_id=state.session_id,
+            )
+
+        assert isinstance(result, SetSessionConfigOptionResponse)
+        assert result.config_options[0].current_value == "anthropic:claude-sonnet-4-6"
         assert state.model == "claude-sonnet-4-6"
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
@@ -1049,6 +1112,28 @@ class TestPrompt:
         assert state.agent.stream_delta_callback is not None
         assert state.agent.reasoning_callback is not None
         assert state.agent.thinking_callback is None
+
+    @pytest.mark.asyncio
+    async def test_prompt_returns_refusal_when_agent_turn_failed(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "HTTP 401: User not found.",
+            "messages": [],
+            "failed": True,
+            "completed": False,
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hello")],
+            session_id=new_resp.session_id,
+        )
+
+        assert resp.stop_reason == "refusal"
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

@@ -2844,8 +2844,34 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
-    return messages
 
+    # 4. Fill empty / None content on user & assistant messages. Some
+    # providers (kimi-k3 via bufan.live, glm via zhipu) reject a user message
+    # whose content is an empty string or None with HTTP 400
+    # "user message must have content". Empty-content user turns can arise
+    # from context compression edge cases, host-injected placeholders, or
+    # session-resume artifacts. Patching here on the per-call API copy keeps
+    # the persisted trajectory byte-stable while giving the provider a
+    # non-empty payload it will accept.
+    _EMPTY_CONTENT_PLACEHOLDER = "[empty]"
+    patched_content = 0
+    final_messages: List[Dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role in ("user", "assistant") and "tool_calls" not in msg:
+            content = msg.get("content")
+            if content is None or (isinstance(content, str) and not content.strip()):
+                msg = {**msg, "content": _EMPTY_CONTENT_PLACEHOLDER}
+                patched_content += 1
+        final_messages.append(msg)
+    if patched_content:
+        messages = final_messages
+        _ra().logger.warning(
+            "Pre-call sanitizer: filled empty content on %d message(s) with placeholder",
+            patched_content,
+        )
+
+    return messages
 
 
 def looks_like_codex_intermediate_ack(

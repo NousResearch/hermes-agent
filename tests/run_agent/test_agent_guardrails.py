@@ -334,3 +334,105 @@ class TestGetToolCallNameStatic:
     def test_object_without_function_attr(self):
         tc = types.SimpleNamespace(id="call_1")
         assert AIAgent._get_tool_call_name_static(tc) == ""
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — empty content guard in _sanitize_api_messages
+#
+# Strict OpenAI-compatible providers (Kimi/Moonshot, GLM/Zhipu) reject user
+# or assistant messages whose content is None or an empty/whitespace-only
+# string with HTTP 400 "user message must have content".  Empty content can
+# arise from context-compression edge cases, session-resume artifacts, or
+# host-injected placeholders.  The sanitizer fills such messages with a
+# non-empty placeholder on the per-call API copy, keeping the persisted
+# trajectory byte-stable.
+# ---------------------------------------------------------------------------
+
+class TestEmptyContentGuard:
+    """Tests for the empty-content placeholder guard."""
+
+    def test_empty_string_user_content_is_patched(self):
+        msgs = [{"role": "user", "content": ""}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "[empty]"
+
+    def test_whitespace_only_user_content_is_patched(self):
+        msgs = [{"role": "user", "content": "   \n\t  "}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "[empty]"
+
+    def test_none_user_content_is_patched(self):
+        msgs = [{"role": "user", "content": None}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "[empty]"
+
+    def test_empty_assistant_content_is_patched(self):
+        msgs = [{"role": "assistant", "content": ""}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "[empty]"
+
+    def test_none_assistant_content_is_patched(self):
+        msgs = [{"role": "assistant", "content": None}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "[empty]"
+
+    def test_assistant_with_tool_calls_is_not_patched(self):
+        """An assistant message carrying tool_calls may legitimately have
+        empty content — the tool_calls ARE the payload.  The guard must
+        skip such messages."""
+        msgs = [{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+        }]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # content should remain None — tool_calls present
+        assert out[0].get("content") is None
+
+    def test_tool_result_empty_content_is_not_patched(self):
+        """Tool results are not user/assistant messages; the guard must
+        not touch them even if their content is empty."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+            },
+            {"role": "tool", "content": "", "tool_call_id": "c1"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[-1]["content"] == ""
+
+    def test_multimodal_list_content_is_not_patched(self):
+        """A multimodal user message (content is a list of content parts)
+        must not be replaced with a string placeholder."""
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert isinstance(out[0]["content"], list)
+
+    def test_normal_content_is_not_patched(self):
+        """Messages with real content must be left untouched."""
+        msgs = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "You are helpful."
+        assert out[1]["content"] == "Hello"
+        assert out[2]["content"] == "Hi there"
+
+    def test_mixed_batch_only_empties_are_patched(self):
+        """In a batch containing both empty and non-empty messages, only
+        the empty ones should be patched."""
+        msgs = [
+            {"role": "user", "content": "real question"},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": None},
+            {"role": "user", "content": "another real question"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert out[0]["content"] == "real question"
+        assert out[1]["content"] == "[empty]"
+        assert out[2]["content"] == "[empty]"
+        assert out[3]["content"] == "another real question"

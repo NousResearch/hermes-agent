@@ -834,6 +834,15 @@ def run_doctor(args):
         try:
             import yaml as _yaml
             cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            migrated_root_model_keys = False
+            normalized_native_model = False
+            if should_fix:
+                from hermes_cli.config import _normalize_root_model_keys
+
+                normalized_cfg = _normalize_root_model_keys(cfg)
+                if normalized_cfg != cfg:
+                    cfg = normalized_cfg
+                    migrated_root_model_keys = True
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()
@@ -966,14 +975,38 @@ def run_doctor(args):
                 and provider_policy_id
                 and not provider_accepts_vendor_slug
             ):
-                check_warn(
-                    f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
-                    "(vendor-prefixed slugs belong to aggregators like openrouter)",
-                )
-                issues.append(
-                    f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
-                    "Either set model.provider to 'openrouter', or drop the vendor prefix."
-                )
+                if should_fix:
+                    from hermes_cli.model_normalize import normalize_model_for_provider
+
+                    normalized_model = normalize_model_for_provider(
+                        default_model, provider_policy_id
+                    )
+                    if normalized_model != default_model:
+                        model_section["default"] = normalized_model
+                        cfg["model"] = model_section
+                        normalized_native_model = True
+                if not normalized_native_model:
+                    check_warn(
+                        f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
+                        "(vendor-prefixed slugs belong to aggregators like openrouter)",
+                    )
+                    issues.append(
+                        f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
+                        "Either set model.provider to 'openrouter', or drop the vendor prefix."
+                    )
+
+            if should_fix and (migrated_root_model_keys or normalized_native_model):
+                from hermes_cli.config import atomic_config_write
+
+                atomic_config_write(config_path, cfg)
+                if migrated_root_model_keys:
+                    check_ok("Migrated stale root-level keys into model section")
+                    fixed_count += 1
+                if normalized_native_model:
+                    check_ok(
+                        f"Normalized model.default for native provider '{provider_raw}'"
+                    )
+                    fixed_count += 1
 
             # Check credentials for the configured provider.
             # Limit to API-key providers in PROVIDER_REGISTRY — other provider

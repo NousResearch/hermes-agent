@@ -182,6 +182,8 @@ interface FreshSessionDraftOptions {
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
+type DesktopCloseReason = 'desktop_archive' | 'desktop_delete' | 'desktop_new_chat'
+
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
   return typeof target === 'string' ? target.trim() || null : target
 }
@@ -208,6 +210,27 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+
+  const closeRuntimeIfIdle = useCallback(
+    async (runtimeSessionId: null | string, reason: DesktopCloseReason, fallbackBusy = busyRef.current) => {
+      if (!runtimeSessionId) {
+        return false
+      }
+
+      const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)
+      const isRunning = runtimeState?.busy ?? fallbackBusy
+
+      if (isRunning) {
+        return false
+      }
+
+      await requestGateway('session.close', { reason, session_id: runtimeSessionId }).catch(() => undefined)
+      clearQueuedPrompts(runtimeSessionId)
+
+      return true
+    },
+    [busyRef, requestGateway, sessionStateByRuntimeIdRef]
+  )
 
   // Follow auto-compression's stored-id rotation only while the exact runtime,
   // selection, and route intent still belong to the rotating conversation.
@@ -337,6 +360,22 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, onFreshDraftRouteIntent, resetViewSync, selectedStoredSessionIdRef]
   )
 
+  const abandonCurrentSessionForNewChat = useCallback(
+    async (options: boolean | FreshSessionDraftOptions = false) => {
+      const currentRuntimeId = activeSessionIdRef.current
+
+      // startFreshSessionDraft clears busyRef before detaching the runtime. Keep
+      // the pre-reset fallback for runtimes whose state-map entry is absent.
+      const wasBusy = currentRuntimeId
+        ? (sessionStateByRuntimeIdRef.current.get(currentRuntimeId)?.busy ?? busyRef.current)
+        : false
+
+      startFreshSessionDraft(options)
+      await closeRuntimeIfIdle(currentRuntimeId, 'desktop_new_chat', wasBusy)
+    },
+    [activeSessionIdRef, busyRef, closeRuntimeIfIdle, sessionStateByRuntimeIdRef, startFreshSessionDraft]
+  )
+
   const createBackendSessionForSend = useCallback(
     async (preview: string | null = null): Promise<string | null> => {
       const startingActiveSessionId = activeSessionIdRef.current
@@ -431,7 +470,7 @@ export function useSessionActions({
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
       if (item.action === 'new-session') {
-        startFreshSessionDraft()
+        void abandonCurrentSessionForNewChat()
 
         return
       }
@@ -440,7 +479,7 @@ export function useSessionActions({
         navigate(item.route)
       }
     },
-    [navigate, startFreshSessionDraft]
+    [abandonCurrentSessionForNewChat, navigate]
   )
 
   /** Create a fresh session and open it as a tile — leaves the primary chat alone.
@@ -1177,6 +1216,16 @@ export function useSessionActions({
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
+      if (closingRuntimeId) {
+        const closed = await closeRuntimeIfIdle(closingRuntimeId, 'desktop_delete')
+
+        if (!closed) {
+          notify({ kind: 'warning', title: copy.sessionBusy, message: copy.deleteStopCurrent })
+
+          return
+        }
+      }
+
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
@@ -1194,16 +1243,8 @@ export function useSessionActions({
       }
 
       try {
-        if (closingRuntimeId) {
-          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
-        }
-
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
-
-        if (closingRuntimeId) {
-          clearQueuedPrompts(closingRuntimeId)
-        }
 
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
@@ -1250,9 +1291,9 @@ export function useSessionActions({
     [
       activeSessionId,
       activeSessionIdRef,
+      closeRuntimeIfIdle,
       copy,
       navigate,
-      requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionId,
       selectedStoredSessionIdRef,
@@ -1267,10 +1308,21 @@ export function useSessionActions({
 
       const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const wasSelected = selectedStoredSessionId === storedSessionId
+      const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
+
+      if (closingRuntimeId) {
+        const closed = await closeRuntimeIfIdle(closingRuntimeId, 'desktop_archive')
+
+        if (!closed) {
+          notify({ kind: 'warning', title: copy.sessionBusy, message: copy.archiveStopCurrent })
+
+          return
+        }
+      }
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
@@ -1315,10 +1367,19 @@ export function useSessionActions({
         notifyError(err, copy.archiveFailed)
       }
     },
-    [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
+    [
+      activeSessionId,
+      closeRuntimeIfIdle,
+      copy,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
   )
 
   return {
+    abandonCurrentSessionForNewChat,
     archiveSession,
     branchCurrentSession,
     branchStoredSession,

@@ -2228,7 +2228,9 @@ export interface Translations {
     branchNoText: string
     branchTitle: (n: number) => string
     branchFailed: string
+    archiveStopCurrent: string
     deleteFailed: string
+    deleteStopCurrent: string
     archived: string
     archiveFailed: string
     cwdChangeFailed: string

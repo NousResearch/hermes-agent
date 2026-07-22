@@ -29,10 +29,20 @@ export const $backendThemes = atom<Record<string, DesktopTheme>>({})
 /** One-shot skin name the ThemeProvider should switch to (it clears this). */
 export const $pendingSkinApply = atom<string | null>(null)
 
-// The last skin name we drove onto the desktop. Guards two things: re-applying
-// the same skin every post-turn poll, and snapping back after a manual switch —
-// only a CHANGE from this value applies. `default` is the "no opinion" sentinel.
-let lastSynced: string | null = null
+// The last skin name we synced from the backend, plus whether we ever actually
+// APPLIED it (vs merely recorded it at connect time). Guards two things:
+// re-applying the same skin on every repeat event, and snapping back after a
+// manual desktop-side switch — once applied, only a name CHANGE applies again.
+//
+// `applied` matters for the recovery path: the connect seed records the
+// baseline without painting (so a fresh connect never stomps the user's
+// persisted desktop theme). If the activation event was missed (backend
+// restart, or the skin was activated while disconnected), the desktop believes
+// it is synced while visibly not themed. A later explicit `skin.changed` for
+// that SAME name — Hermes re-running `hermes config set display.skin X`, or
+// `hermes skin set` recoloring the active skin — is an intentional apply and
+// must repaint, not no-op against the seed.
+let lastSynced: { applied: boolean; name: string } | null = null
 
 /** Test-only: reset the module's apply guard + registry between cases. */
 export function __resetBackendSkinSync(): void {
@@ -75,14 +85,18 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
   }
 
   if (!apply) {
-    // Connect-time seed: record the baseline so a later poll is a no-op.
-    lastSynced = name
+    // Connect-time seed: record the baseline WITHOUT painting. Keep an earlier
+    // real apply's flag if a reconnect re-seeds the same name, so a post-
+    // reconnect repeat event doesn't re-apply over a manual desktop switch.
+    if (lastSynced?.name !== name || !lastSynced.applied) {
+      lastSynced = { applied: false, name }
+    }
 
     return
   }
 
-  if (name !== lastSynced) {
-    lastSynced = name
+  if (name !== lastSynced?.name || !lastSynced.applied) {
+    lastSynced = { applied: true, name }
     $pendingSkinApply.set(name)
   }
 }

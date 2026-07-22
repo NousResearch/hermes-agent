@@ -13,8 +13,10 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -75,6 +77,18 @@ _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+
+
+@dataclass
+class _BlueBubblesApprovalPrompt:
+    session_key: str
+    chat_id: str
+    message_id: str
+    approval_id: str
+    requester_user_id: Optional[str]
+    expires_at: float
+    expiry_handle: Optional[asyncio.TimerHandle] = None
+    resolved: bool = False
 
 
 def _redact(text: str) -> str:
@@ -155,6 +169,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._approval_prompts_by_guid: Dict[str, _BlueBubblesApprovalPrompt] = {}
+        self._approval_prompt_by_approval_id: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -299,6 +315,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         # Unregister webhook before cleaning up
         await self._unregister_webhook()
+
+        for guid, prompt in list(self._approval_prompts_by_guid.items()):
+            self._remove_approval_prompt(guid, prompt)
 
         if self.client:
             await self.client.aclose()
@@ -558,6 +577,194 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             except Exception as exc:
                 return SendResult(success=False, error=str(exc))
         return last
+
+    @staticmethod
+    def _normalize_message_guid(raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        value = raw.strip()
+        return re.sub(r"^p:\d+/", "", value) or None
+
+    def _remove_approval_prompt(
+        self, guid: str, prompt: _BlueBubblesApprovalPrompt
+    ) -> None:
+        self._approval_prompts_by_guid.pop(guid, None)
+        if self._approval_prompt_by_approval_id.get(prompt.approval_id) == guid:
+            self._approval_prompt_by_approval_id.pop(prompt.approval_id, None)
+        if prompt.expiry_handle is not None:
+            prompt.expiry_handle.cancel()
+            prompt.expiry_handle = None
+
+    def _expire_approval_prompt(self, guid: str, approval_id: str) -> None:
+        prompt = self._approval_prompts_by_guid.get(guid)
+        if prompt is None or prompt.approval_id != approval_id:
+            return
+        if time.monotonic() >= prompt.expires_at:
+            self._remove_approval_prompt(guid, prompt)
+
+    def _handle_approval_tapback(
+        self,
+        record: Dict[str, Any],
+        payload: Dict[str, Any],
+        assoc_type: int,
+    ) -> bool:
+        """Resolve a tracked approval Tapback and consume the webhook event."""
+        choice = {2001: "once", 2002: "deny"}.get(assoc_type)
+        target_guid = self._normalize_message_guid(
+            self._value(record.get("associatedMessageGuid"))
+        )
+        if not choice or not target_guid:
+            return False
+        prompt = self._approval_prompts_by_guid.get(target_guid)
+        if prompt is None:
+            return False
+
+        chat_guid = self._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+        )
+        if not chat_guid:
+            chats = record.get("chats") or []
+            if chats and isinstance(chats[0], dict):
+                chat_guid = chats[0].get("guid") or chats[0].get("chatGuid")
+        chat_identifier = self._value(
+            record.get("chatIdentifier"),
+            record.get("identifier"),
+            payload.get("chatIdentifier"),
+            payload.get("identifier"),
+        )
+        sender = (
+            self._value(
+                record.get("handle", {}).get("address")
+                if isinstance(record.get("handle"), dict)
+                else None,
+                record.get("sender"),
+                record.get("from"),
+                record.get("address"),
+            )
+            or chat_identifier
+        )
+        event_chat_id = chat_guid or chat_identifier
+        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        chat_type = "group" if is_group else "dm"
+
+        if prompt.resolved or time.monotonic() > prompt.expires_at:
+            self._remove_approval_prompt(target_guid, prompt)
+            return True
+
+        if (
+            not sender
+            or event_chat_id != prompt.chat_id
+            or self._is_sender_authorized(sender, chat_type, event_chat_id) is not True
+            or not prompt.requester_user_id
+            or sender != prompt.requester_user_id
+        ):
+            return True
+
+        prompt.resolved = True
+        self._remove_approval_prompt(target_guid, prompt)
+
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(
+                prompt.session_key,
+                choice,
+                approval_id=prompt.approval_id,
+            )
+            if count:
+                self.resume_typing_for_chat(prompt.chat_id)
+            logger.info(
+                "[bluebubbles] Tapback resolved %d approval(s) (choice=%s, user=%s)",
+                count,
+                choice,
+                _redact(sender),
+            )
+        except Exception:
+            logger.exception("[bluebubbles] failed to resolve approval Tapback")
+        return True
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Send and track a Tapback-enabled dangerous-command prompt."""
+        del allow_permanent, allow_session, smart_denied
+
+        prompt_metadata = metadata or {}
+        approval_id = str(prompt_metadata.get("approval_id") or "") or None
+        requester_user_id = (
+            str(prompt_metadata.get("requester_user_id") or "") or None
+        )
+        timeout_value = prompt_metadata.get("approval_timeout_seconds")
+        if not approval_id or not requester_user_id or timeout_value is None:
+            return SendResult(
+                success=False,
+                error="BlueBubbles approval prompt requires requester, approval ID, and timeout",
+            )
+        try:
+            timeout_seconds = max(float(timeout_value), 0.0)
+        except (TypeError, ValueError):
+            return SendResult(
+                success=False,
+                error="BlueBubbles approval prompt received an invalid timeout",
+            )
+
+        def _single_bubble_preview(value: str, limit: int) -> str:
+            normalized = re.sub(r"\n\s*\n+", "\n", value.strip())
+            return normalized[:limit] + ("..." if len(normalized) > limit else "")
+
+        command_preview = _single_bubble_preview(command, 2500)
+        description_preview = _single_bubble_preview(description, 800)
+        text = (
+            "⚠️ Dangerous command requires approval\n"
+            f"Command: {command_preview}\n"
+            f"Reason: {description_preview}\n"
+            "React 👍 to approve once or 👎 to deny.\n"
+            "You can also reply /approve or /deny."
+        )
+        result = await self.send(chat_id, text, metadata=metadata)
+        message_id = self._normalize_message_guid(result.message_id)
+        if not result.success:
+            return result
+        if not message_id or message_id == "ok":
+            return SendResult(
+                success=False,
+                error="BlueBubbles approval prompt did not return a message GUID",
+                raw_response=result.raw_response,
+            )
+
+        previous_guid = self._approval_prompt_by_approval_id.get(approval_id)
+        if previous_guid:
+            previous_prompt = self._approval_prompts_by_guid.get(previous_guid)
+            if previous_prompt is not None:
+                self._remove_approval_prompt(previous_guid, previous_prompt)
+        prompt = _BlueBubblesApprovalPrompt(
+            session_key=session_key,
+            chat_id=chat_id,
+            message_id=message_id,
+            approval_id=approval_id,
+            requester_user_id=requester_user_id,
+            expires_at=time.monotonic() + timeout_seconds,
+        )
+        self._approval_prompts_by_guid[message_id] = prompt
+        self._approval_prompt_by_approval_id[approval_id] = message_id
+        prompt.expiry_handle = asyncio.get_running_loop().call_later(
+            timeout_seconds,
+            self._expire_approval_prompt,
+            message_id,
+            approval_id,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Media sending (outbound)
@@ -918,10 +1125,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
+        if isinstance(assoc_type, str) and assoc_type.strip().isdigit():
+            assoc_type = int(assoc_type)
         if isinstance(assoc_type, int) and assoc_type in {
             **_TAPBACK_ADDED,
             **_TAPBACK_REMOVED,
         }:
+            self._handle_approval_tapback(record, payload, assoc_type)
             return web.Response(text="ok")
 
         text = (

@@ -23,6 +23,20 @@ def _make_adapter(monkeypatch, **extra):
     return BlueBubblesAdapter(cfg)
 
 
+def _approval_metadata(
+    requester_user_id: str | None = "user@example.com",
+    approval_id: str = "approval-1",
+    timeout_seconds: int = 300,
+):
+    metadata = {
+        "approval_id": approval_id,
+        "approval_timeout_seconds": timeout_seconds,
+    }
+    if requester_user_id is not None:
+        metadata["requester_user_id"] = requester_user_id
+    return metadata
+
+
 class TestBlueBubblesConfigLoading:
     def test_apply_env_overrides_bluebubbles(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -162,6 +176,530 @@ class TestBlueBubblesHelpers:
         assert adapter._clean_mention_text("Hermes, summarize this") == "summarize this"
         assert adapter._clean_mention_text("Hermes agent: summarize this") == "summarize this"
         assert adapter._clean_mention_text("please ask Hermes about this") == "please ask Hermes about this"
+
+
+class TestBlueBubblesExecApproval:
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_records_prompt_by_returned_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            sent.append((chat_id, text, metadata))
+            return SendResult(success=True, message_id="p:0/APPROVAL-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+
+        result = await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="rm protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            description="destructive command",
+            metadata=_approval_metadata(),
+            allow_permanent=False,
+            allow_session=False,
+            smart_denied=True,
+        )
+
+        assert result.success is True
+        assert result.message_id == "p:0/APPROVAL-GUID"
+        assert len(sent) == 1
+        assert "👍" in sent[0][1]
+        assert "👎" in sent[0][1]
+        assert "/approve" in sent[0][1]
+        assert "/deny" in sent[0][1]
+        prompt = adapter._approval_prompts_by_guid["APPROVAL-GUID"]
+        assert prompt.session_key == "bluebubbles:iMessage;-;user@example.com"
+        assert prompt.chat_id == "iMessage;-;user@example.com"
+        assert prompt.requester_user_id == "user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_always_fits_in_one_bubble(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            sent.append(text)
+            return SendResult(success=True, message_id="ONE-BUBBLE-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command=("x" * 5000) + "\n\nnext command",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            description=("d" * 5000) + "\n\nmore context",
+            metadata=_approval_metadata(),
+        )
+
+        assert len(sent) == 1
+        assert len(sent[0]) <= adapter.MAX_MESSAGE_LENGTH
+        assert "\n\n" not in sent[0]
+
+    @pytest.mark.asyncio
+    async def test_like_tapback_resolves_active_prompt_once(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="APPROVAL-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+        adapter.set_authorization_check(
+            lambda user_id, chat_type, chat_id: user_id == "user@example.com"
+        )
+
+        resolved = []
+        resumed = []
+
+        def fake_resolve(session_key, choice, **kwargs):
+            resolved.append((session_key, choice, kwargs.get("approval_id")))
+            return 1
+
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", fake_resolve)
+        monkeypatch.setattr(adapter, "resume_typing_for_chat", resumed.append)
+
+        payload = {
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "text": "Liked “touch protected-file”",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+                "associatedMessageType": 2001,
+                "associatedMessageGuid": "p:0/APPROVAL-GUID",
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert first.status == 200
+        assert second.status == 200
+        assert resolved == [
+            ("bluebubbles:iMessage;-;user@example.com", "once", "approval-1")
+        ]
+        assert resumed == ["iMessage;-;user@example.com"]
+        assert adapter._approval_prompts_by_guid == {}
+
+    @pytest.mark.asyncio
+    async def test_canonical_tapback_resolves_exact_concurrent_entry(self, monkeypatch):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        message_ids = iter(("PROMPT-A", "PROMPT-B"))
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id=next(message_ids))
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        monkeypatch.setattr(adapter, "resume_typing_for_chat", lambda _chat_id: None)
+        adapter.set_authorization_check(lambda *_args: True)
+
+        session_key = "bluebubbles:iMessage;-;user@example.com"
+        entry_a = _ApprovalEntry({"command": "COMMAND-A"})
+        entry_b = _ApprovalEntry({"command": "COMMAND-B"})
+        _gateway_queues[session_key] = [entry_a, entry_b]
+        try:
+            await adapter.send_exec_approval(
+                chat_id="iMessage;-;user@example.com",
+                command="COMMAND-A",
+                session_key=session_key,
+                metadata=_approval_metadata(approval_id=entry_a.approval_id),
+            )
+            await adapter.send_exec_approval(
+                chat_id="iMessage;-;user@example.com",
+                command="COMMAND-B",
+                session_key=session_key,
+                metadata=_approval_metadata(approval_id=entry_b.approval_id),
+            )
+
+            response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+                "type": "new-message",
+                "data": {
+                    "guid": "TAPBACK-B",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "iMessage;-;user@example.com"}],
+                    "associatedMessageType": "2001",
+                    "associatedMessageGuid": "p:0/PROMPT-B",
+                },
+            }))
+
+            assert response.status == 200
+            assert not entry_a.event.is_set()
+            assert entry_b.event.is_set()
+            assert entry_b.result == "once"
+            assert _gateway_queues[session_key] == [entry_a]
+        finally:
+            _gateway_queues.pop(session_key, None)
+
+    def test_gateway_approval_metadata_carries_requester_without_thread(self):
+        from gateway.run import _approval_prompt_metadata
+
+        metadata = _approval_prompt_metadata(
+            None,
+            {
+                "approval_id": "approval-exact",
+                "approval_timeout_seconds": 42,
+            },
+            requester_user_id="user@example.com",
+        )
+
+        assert metadata == {
+            "requester_user_id": "user@example.com",
+            "approval_id": "approval-exact",
+            "approval_timeout_seconds": 42,
+        }
+
+    def test_gateway_approval_metadata_carries_exact_id_and_timeout(self):
+        from gateway.run import _approval_prompt_metadata
+
+        metadata = _approval_prompt_metadata(
+            {"requester_user_id": "user@example.com"},
+            {
+                "approval_id": "approval-exact",
+                "approval_timeout_seconds": 42,
+            },
+        )
+
+        assert metadata == {
+            "requester_user_id": "user@example.com",
+            "approval_id": "approval-exact",
+            "approval_timeout_seconds": 42,
+        }
+
+    @pytest.mark.asyncio
+    async def test_expired_tapback_cleans_prompt_without_resolving(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="EXPIRED-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+        adapter._approval_prompts_by_guid["EXPIRED-GUID"].expires_at = 0
+        adapter.set_authorization_check(lambda *_args: True)
+        resolved = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *args, **kwargs: resolved.append((args, kwargs)),
+        )
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "associatedMessageType": 2001,
+                "associatedMessageGuid": "p:0/EXPIRED-GUID",
+            },
+        }))
+
+        assert response.status == 200
+        assert resolved == []
+        assert adapter._approval_prompts_by_guid == {}
+        assert adapter._approval_prompt_by_approval_id == {}
+
+    @pytest.mark.asyncio
+    async def test_timeout_automatically_purges_prompt_without_reaction(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="AUTO-EXPIRE-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        result = await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(timeout_seconds=0),
+        )
+
+        assert result.success is True
+        assert "AUTO-EXPIRE-GUID" in adapter._approval_prompts_by_guid
+        await asyncio.sleep(0.01)
+        assert adapter._approval_prompts_by_guid == {}
+        assert adapter._approval_prompt_by_approval_id == {}
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_without_real_guid_forces_text_fallback(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id=None)
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+
+        result = await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+
+        assert result.success is False
+        assert "message GUID" in (result.error or "")
+        assert adapter._approval_prompts_by_guid == {}
+
+    @pytest.mark.asyncio
+    async def test_tapback_without_requester_identity_fails_closed(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        sent = []
+
+        async def fake_send(chat_id, text, metadata=None):
+            sent.append((chat_id, text, metadata))
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="NO-REQUESTER-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        result = await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(requester_user_id=None),
+        )
+        assert result.success is False
+        assert sent == []
+        assert adapter._approval_prompts_by_guid == {}
+        adapter.set_authorization_check(lambda *_args: True)
+        resolved = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *args, **kwargs: resolved.append((args, kwargs)) or 1,
+        )
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "associatedMessageType": 2001,
+                "associatedMessageGuid": "p:0/NO-REQUESTER-GUID",
+            },
+        }))
+
+        assert response.status == 200
+        assert resolved == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("assoc_type", [2002, "2002"])
+    async def test_dislike_tapback_denies(self, monkeypatch, assoc_type):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="DENY-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+        adapter.set_authorization_check(lambda *_args: True)
+        resolved = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice, approval_id=None: resolved.append(
+                (session_key, choice, approval_id)
+            ) or 1,
+        )
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "associatedMessageType": assoc_type,
+                "associatedMessageGuid": "p:0/DENY-GUID",
+            },
+        }))
+
+        assert resolved == [
+            ("bluebubbles:iMessage;-;user@example.com", "deny", "approval-1")
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("auth_result", "sender", "chat_guid"),
+        [
+            (None, "user@example.com", "iMessage;-;user@example.com"),
+            (False, "user@example.com", "iMessage;-;user@example.com"),
+            (True, "other@example.com", "iMessage;-;user@example.com"),
+            (True, "user@example.com", "iMessage;-;other@example.com"),
+        ],
+    )
+    async def test_tapback_security_mismatch_never_resolves(
+        self, monkeypatch, auth_result, sender, chat_guid
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="SECURE-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+        if auth_result is not None:
+            adapter.set_authorization_check(lambda *_args: auth_result)
+        resolved = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *args, **kwargs: resolved.append((args, kwargs)) or 1,
+        )
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "handle": {"address": sender},
+                "isFromMe": False,
+                "chatGuid": chat_guid,
+                "associatedMessageType": 2001,
+                "associatedMessageGuid": "p:0/SECURE-GUID",
+            },
+        }))
+
+        assert resolved == []
+        assert "SECURE-GUID" in adapter._approval_prompts_by_guid
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("assoc_type", "associated_guid"),
+        [
+            (3001, "p:0/IGNORED-GUID"),
+            (3002, "p:0/IGNORED-GUID"),
+            (2001, "p:0/OTHER-GUID"),
+        ],
+    )
+    async def test_removal_or_wrong_guid_never_resolves(
+        self, monkeypatch, assoc_type, associated_guid
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="IGNORED-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+        adapter.set_authorization_check(lambda *_args: True)
+        resolved = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *args, **kwargs: resolved.append((args, kwargs)) or 1,
+        )
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "associatedMessageType": assoc_type,
+                "associatedMessageGuid": associated_guid,
+            },
+        }))
+
+        assert resolved == []
+
+    @pytest.mark.asyncio
+    async def test_group_tapback_bypasses_mention_gate_for_exact_requester(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            return SendResult(success=True, message_id="GROUP-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;+;family-group",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;+;family-group",
+            metadata=_approval_metadata(),
+        )
+        adapter.set_authorization_check(lambda *_args: True)
+        resolved = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice, approval_id=None: resolved.append(
+                (session_key, choice, approval_id)
+            ) or 1,
+        )
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "TAPBACK-GUID",
+                "text": "Liked “protected command”",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;family-group"}],
+                "associatedMessageType": 2001,
+                "associatedMessageGuid": "p:0/GROUP-GUID",
+            },
+        }))
+
+        assert response.status == 200
+        assert resolved == [
+            ("bluebubbles:iMessage;+;family-group", "once", "approval-1")
+        ]
 
 
 class _FakeBlueBubblesRequest:

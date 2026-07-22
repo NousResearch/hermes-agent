@@ -155,6 +155,30 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_resolve_by_approval_id_targets_exact_concurrent_entry(self):
+        """Interactive prompts must never resolve a different FIFO entry."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-targeted"
+        e1 = _ApprovalEntry({"command": "first"})
+        e2 = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(
+            session_key,
+            "once",
+            approval_id=e2.approval_id,
+        )
+
+        assert count == 1
+        assert not e1.event.is_set()
+        assert e2.event.is_set()
+        assert e2.result == "once"
+        assert _gateway_queues[session_key] == [e1]
+        assert e1.data["approval_id"] == e1.approval_id
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

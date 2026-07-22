@@ -229,6 +229,23 @@ def _non_conversational_metadata(
     return merged
 
 
+def _approval_prompt_metadata(
+    metadata: Optional[Dict[str, Any]],
+    approval_data: Dict[str, Any],
+    *,
+    requester_user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Bind an interactive prompt to one exact approval queue entry."""
+    merged = dict(metadata or {})
+    if requester_user_id:
+        merged["requester_user_id"] = requester_user_id
+    for key in ("approval_id", "approval_timeout_seconds"):
+        value = approval_data.get(key)
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -21072,7 +21089,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_approval_prompt_metadata(
+                                    _status_thread_metadata,
+                                    approval_data,
+                                    requester_user_id=(
+                                        str(source.user_id)
+                                        if source.platform == Platform.BLUEBUBBLES
+                                        and source.user_id
+                                        else None
+                                    ),
+                                ),
                                 allow_permanent=approval_data.get("allow_permanent", True),
                                 allow_session=approval_data.get("allow_session", True),
                                 smart_denied=approval_data.get("smart_denied", False),

@@ -103,6 +103,15 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
 
+### Dangerous command approvals
+
+When a command requires operator approval, Hermes sends a dedicated iMessage prompt. The user who requested the command can react directly to that exact prompt:
+
+- 👍 approves the pending operation once.
+- 👎 denies the pending operation.
+
+The reaction is accepted only from the authorized requester, in the same chat, on the exact active prompt, before it expires. Reaction removals, duplicate webhook deliveries, stale prompts, and reactions from other users are ignored. `/approve` and `/deny` remain available as text fallbacks. Session-wide and permanent approval are intentionally not available through Tapbacks.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |

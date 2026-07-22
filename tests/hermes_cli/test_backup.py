@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import time
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -1492,6 +1493,15 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(label="before-upgrade", hermes_home=hermes_home)
         assert "before-upgrade" in snap_id
 
+    def test_snapshot_label_cannot_escape_snapshot_root(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+
+        snap_id = create_quick_snapshot(label="../../outside", hermes_home=hermes_home)
+
+        assert snap_id is not None
+        assert "/" not in snap_id and "\\" not in snap_id and ".." not in snap_id
+        assert (hermes_home / "state-snapshots" / snap_id).is_dir()
+
     def test_state_db_safely_copied(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
@@ -1646,6 +1656,62 @@ class TestQuickSnapshot:
         deleted = prune_quick_snapshots(keep=3, hermes_home=hermes_home)
         assert deleted == 7
         assert len(list_quick_snapshots(hermes_home=hermes_home)) == 3
+
+    def test_prune_removes_stale_owned_in_progress_snapshot(self, hermes_home):
+        import hermes_cli.backup as backup_mod
+
+        root = hermes_home / "state-snapshots"
+        snapshot = root / "20260721-120000-000000-interrupted"
+        snapshot.mkdir(parents=True)
+        marker = snapshot / ".in-progress"
+        marker.write_text(json.dumps({"version": 1, "snapshot_id": snapshot.name}))
+        (snapshot / "partial.db").write_text("partial")
+        old = time.time() - backup_mod._QUICK_IN_PROGRESS_MAX_AGE_SECONDS - 60
+        os.utime(marker, (old, old))
+
+        assert backup_mod.prune_quick_snapshots(
+            keep=20, hermes_home=hermes_home
+        ) == 1
+        assert not snapshot.exists()
+
+    def test_prune_preserves_unowned_in_progress_directory(self, hermes_home):
+        import hermes_cli.backup as backup_mod
+
+        root = hermes_home / "state-snapshots"
+        snapshot = root / "human-directory"
+        snapshot.mkdir(parents=True)
+        marker = snapshot / ".in-progress"
+        marker.write_text("foreign")
+        human = snapshot / "notes.txt"
+        human.write_text("keep")
+        old = time.time() - backup_mod._QUICK_IN_PROGRESS_MAX_AGE_SECONDS - 60
+        os.utime(marker, (old, old))
+
+        backup_mod.prune_quick_snapshots(keep=20, hermes_home=hermes_home)
+
+        assert human.read_text() == "keep"
+
+    def test_prune_preserves_in_progress_directory_when_identity_changes(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        root = hermes_home / "state-snapshots"
+        snapshot = root / "20260721-120000-000000-interrupted"
+        snapshot.mkdir(parents=True)
+        marker = snapshot / ".in-progress"
+        marker.write_text(json.dumps({"version": 1, "snapshot_id": snapshot.name}))
+        human = snapshot / "notes.txt"
+        human.write_text("keep")
+        old = time.time() - backup_mod._QUICK_IN_PROGRESS_MAX_AGE_SECONDS - 60
+        os.utime(marker, (old, old))
+        monkeypatch.setattr(backup_mod.os.path, "samestat", lambda _a, _b: False)
+
+        assert backup_mod.prune_quick_snapshots(
+            keep=20, hermes_home=hermes_home
+        ) == 0
+        assert human.read_text() == "keep"
+        assert not list(root.glob("*.hermes-delete-*"))
 
     def test_snapshot_includes_pairing_directories(self, hermes_home):
         """Pairing JSONs live outside state.db — snapshot must capture them

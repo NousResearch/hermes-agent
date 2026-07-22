@@ -8,6 +8,7 @@ Backup and import commands for hermes CLI.
 HERMES_HOME root.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -876,6 +878,69 @@ _QUICK_STATE_FILES = (
 
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 _QUICK_DEFAULT_KEEP = 20
+_QUICK_IN_PROGRESS_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _quick_snapshot_label_segment(label: Optional[str]) -> Optional[str]:
+    if not label:
+        return None
+    raw = str(label)
+    safe = "".join(char if char.isalnum() or char in "-_" else "_" for char in raw)
+    safe = safe.strip("_-") or "snapshot"
+    if safe != raw or len(safe) > 48:
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+        safe = f"{safe[:32]}-{digest}"
+    return safe
+
+
+def _move_owned_snapshot_path(path: Path, expected: os.stat_result) -> Optional[Path]:
+    """Move the exact expected object to a nonce sibling, or preserve it."""
+    quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
+    try:
+        os.replace(path, quarantine)
+        if os.path.samestat(expected, quarantine.lstat()):
+            return quarantine
+        if not os.path.lexists(path):
+            os.replace(quarantine, path)
+    except OSError:
+        try:
+            if os.path.lexists(quarantine) and not os.path.lexists(path):
+                os.replace(quarantine, path)
+        except OSError:
+            pass
+    return None
+
+
+def _remove_owned_snapshot_file(path: Path, expected: os.stat_result) -> bool:
+    quarantine = _move_owned_snapshot_path(path, expected)
+    if quarantine is None:
+        return False
+    try:
+        quarantine.unlink()
+        return True
+    except OSError:
+        try:
+            if not os.path.lexists(path):
+                os.replace(quarantine, path)
+        except OSError:
+            pass
+        return False
+
+
+def _remove_owned_snapshot_dir(path: Path, expected: os.stat_result) -> bool:
+    quarantine = _move_owned_snapshot_path(path, expected)
+    if quarantine is None:
+        return False
+    try:
+        shutil.rmtree(quarantine)
+        return True
+    except OSError:
+        try:
+            if not os.path.lexists(path):
+                os.replace(quarantine, path)
+        except OSError:
+            pass
+        return False
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
@@ -933,7 +998,8 @@ def create_quick_snapshot(
         return True
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    base_id = f"{ts}-{label}" if label else ts
+    safe_label = _quick_snapshot_label_segment(label)
+    base_id = f"{ts}-{safe_label}" if safe_label else ts
     with _backup_maintenance_lock(root):
         snap_id = base_id
         suffix = 1
@@ -945,7 +1011,12 @@ def create_quick_snapshot(
             except FileExistsError:
                 snap_id = f"{base_id}-{suffix}"
                 suffix += 1
-        (snap_dir / ".in-progress").touch()
+        marker = snap_dir / ".in-progress"
+        marker.write_text(
+            json.dumps({"version": 1, "snapshot_id": snap_id}),
+            encoding="utf-8",
+        )
+        marker_identity = marker.lstat()
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
 
@@ -1005,7 +1076,10 @@ def create_quick_snapshot(
             logger.warning("Could not snapshot %s: %s", rel, exc)
 
     if not manifest:
-        shutil.rmtree(snap_dir, ignore_errors=True)
+        try:
+            _remove_owned_snapshot_dir(snap_dir, snap_dir.lstat())
+        except OSError:
+            pass
         return None
 
     # Write manifest
@@ -1019,7 +1093,9 @@ def create_quick_snapshot(
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    (snap_dir / ".in-progress").unlink(missing_ok=True)
+    if not _remove_owned_snapshot_file(marker, marker_identity):
+        logger.warning("State snapshot ownership changed before publication: %s", snap_id)
+        return None
 
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
@@ -1250,6 +1326,27 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     if not root.exists():
         return 0
 
+    deleted = 0
+    now = time.time()
+    for candidate in root.iterdir():
+        marker = candidate / ".in-progress"
+        try:
+            if (
+                candidate.is_symlink()
+                or not candidate.is_dir()
+                or marker.is_symlink()
+                or not marker.is_file()
+                or now - marker.stat().st_mtime <= _QUICK_IN_PROGRESS_MAX_AGE_SECONDS
+            ):
+                continue
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            if payload != {"version": 1, "snapshot_id": candidate.name}:
+                continue
+            if _remove_owned_snapshot_dir(candidate, candidate.lstat()):
+                deleted += 1
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+
     dirs = sorted(
         (
             d for d in root.iterdir()
@@ -1259,7 +1356,6 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
         reverse=True,
     )
 
-    deleted = 0
     for d in dirs[keep:]:
         try:
             shutil.rmtree(d)

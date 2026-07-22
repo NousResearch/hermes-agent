@@ -10108,34 +10108,32 @@ def _wire_agent_terminal_output() -> None:
         process_registry.on_close = _emit_agent_terminal_close
 
 
-_desktop_preview_wired = False
+_desktop_ui_wired = False
 
 
-def _wire_desktop_preview() -> None:
-    """Bridge the desktop-only ``open_preview`` tool to a ``preview.open`` event.
+def _wire_desktop_ui() -> None:
+    """Bridge desktop-only tools (open_preview, focus_pane) to renderer events.
 
-    Idempotent. The tool reads ``HERMES_UI_SESSION_ID`` from the turn's context
-    and hands it back here as ``sid`` so the event routes to the window that
-    asked (``_emit``/``write_json`` is ``_stdout_lock``-guarded, so calling it
-    from the tool's thread is safe)."""
-    global _desktop_preview_wired
-    if _desktop_preview_wired:
+    Idempotent. The tool hands back the turn's ``HERMES_UI_SESSION_ID`` as
+    ``sid`` so the event routes to the window that asked (``_emit`` /
+    ``write_json`` is ``_stdout_lock``-guarded, so calling it from the tool's
+    thread is safe)."""
+    global _desktop_ui_wired
+    if _desktop_ui_wired:
         return
     try:
-        from tools import open_preview_tool
+        from tools import desktop_ui
     except Exception:
         return
 
-    open_preview_tool.set_preview_emitter(
-        lambda sid, url, label: _emit("preview.open", sid, {"url": url, "label": label})
-    )
-    _desktop_preview_wired = True
+    desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))
+    _desktop_ui_wired = True
 
 
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
     _wire_agent_terminal_output()
-    _wire_desktop_preview()
+    _wire_desktop_ui()
     stop = threading.Event()
     t = threading.Thread(
         target=_notification_poller_loop,

@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
 """Open a URL, dev server, or file in the Hermes desktop GUI's preview pane.
 
-The preview pane lives in the desktop renderer, so this tool bridges through a
-gateway-injected emitter: the desktop ``tui_gateway`` wires ``set_preview_emitter``
-at session start to emit a ``preview.open`` event the renderer handles (opening
-the pane beside the chat, scoped to the window that asked). Like ``read_terminal``
-and ``close_terminal`` it is gated on ``HERMES_DESKTOP`` so it never appears
-outside the GUI. Fire-and-forget: the renderer never steals focus for a
-background session.
+Gated on ``HERMES_DESKTOP`` (like ``read_terminal`` / ``close_terminal``) so it
+never appears outside the GUI. Emits ``preview.open`` through the shared
+``desktop_ui`` bridge; the renderer opens the pane beside the chat for the
+window that asked and never steals focus for a background session.
 """
 
 import json
 import re
-from typing import Callable, Optional
 
-from gateway.session_context import get_session_env
+from tools import desktop_ui
 from tools.registry import registry, tool_error
 from utils import env_var_enabled
-
-# Set by the desktop gateway (tui_gateway) to bridge this tool → a renderer
-# event. ``None`` everywhere else, which is how the tool reports "desktop only".
-_preview_emitter: Optional[Callable[[str, str, str], None]] = None
-
-
-def set_preview_emitter(fn: Optional[Callable[[str, str, str], None]]) -> None:
-    """Install the (sid, url, label) → emit sink. Called by the desktop gateway."""
-    global _preview_emitter
-    _preview_emitter = fn
 
 
 def _normalize_target(raw: str) -> str:
@@ -55,15 +41,13 @@ def open_preview_tool(url: str, label: str = "") -> str:
             "file path to show in the preview pane."
         )
 
-    emit = _preview_emitter
-    if emit is None:
-        return tool_error("The preview pane is only available in the Hermes desktop app.")
-
     label = (label or "").strip()
     try:
-        emit(get_session_env("HERMES_UI_SESSION_ID", ""), target, label)
+        ok = desktop_ui.emit("preview.open", {"url": target, "label": label})
     except Exception as exc:
         return tool_error(f"Failed to open the preview pane: {exc}")
+    if not ok:
+        return tool_error("The preview pane is only available in the Hermes desktop app.")
 
     return json.dumps({"success": True, "url": target, "label": label}, ensure_ascii=False)
 

@@ -1627,10 +1627,30 @@ setup_path() {
     if [ "$USE_VENV" = true ]; then
         HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
     else
-        HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
-        if [ -z "$HERMES_BIN" ]; then
-            log_warn "hermes not found on PATH after install"
-            return 0
+        # ``--no-venv`` does NOT actually skip venv creation on the uv path:
+        # ``install_deps`` runs ``UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv"
+        # uv sync --extra all --locked``, so uv materializes a venv at
+        # ``$INSTALL_DIR/venv/`` and writes the ``hermes`` entry point there
+        # regardless of this flag. Before the fix this branch dropped
+        # straight to ``which hermes`` — which returns nothing because the
+        # uv-created venv is not on PATH — and ``setup_path`` returned
+        # without creating ``~/.local/bin/hermes``. The user ended up with
+        # a successful install but ``which hermes`` empty.  See #31383.
+        #
+        # Prefer the uv-managed entry point when present so the shim is
+        # always created; only fall back to ``which hermes`` when uv was
+        # bypassed entirely (e.g. the Termux pip-install path, which we
+        # already early-returned before reaching here, or a user who ran
+        # ``pip install -e .`` themselves before invoking the installer).
+        if [ -x "$INSTALL_DIR/venv/bin/hermes" ]; then
+            HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+            log_info "Using uv-managed entry point at $HERMES_BIN"
+        else
+            HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
+            if [ -z "$HERMES_BIN" ]; then
+                log_warn "hermes not found on PATH after install"
+                return 0
+            fi
         fi
     fi
 

@@ -24,10 +24,7 @@ describe('seedBootEnvironment', () => {
   })
 
   it('never seeds over explicit user signals', () => {
-    for (const preset of [
-      { HERMES_TUI_THEME: 'dark' },
-      { HERMES_TUI_LIGHT: '1' }
-    ] as NodeJS.ProcessEnv[]) {
+    for (const preset of [{ HERMES_TUI_THEME: 'dark' }, { HERMES_TUI_LIGHT: '1' }] as NodeJS.ProcessEnv[]) {
       const env = { ...preset }
       const seeded = seedBootEnvironment(cache({ background: '#ffffff', mode: 'light' }), env)
 

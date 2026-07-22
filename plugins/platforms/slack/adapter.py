@@ -384,19 +384,19 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
     return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
 
 
-def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
-    """Walk a Block Kit ``blocks`` tree and return URLs found on any element.
+def _extract_urls_from_slack_content(content: Any) -> list[str]:
+    """Walk Slack blocks or legacy attachments and return their URLs.
 
     Returns URLs preserving discovery order with duplicates removed. Used to
     surface the actionable links (``View graph``, ``View incident``, etc.)
-    embedded in bot-posted alerts so an agent reading the thread can fetch
-    or click them. The companion serializer
-    :func:`_serialize_slack_blocks_for_agent` deliberately strips ``url`` to
-    keep the JSON view compact and to avoid exposing arbitrary URLs through
-    the generic payload dump; this helper is the targeted opt-in for
+    embedded in bot-posted alerts, including legacy attachment URL fields, so
+    an agent reading the thread can fetch or click them. The companion
+    serializer :func:`_serialize_slack_blocks_for_agent` deliberately strips
+    ``url`` to keep the JSON view compact and to avoid exposing arbitrary URLs
+    through the generic payload dump; this helper is the targeted opt-in for
     use sites where URLs are the whole point of the message.
     """
-    if not blocks:
+    if not content:
         return []
 
     found: list[str] = []
@@ -410,9 +410,15 @@ def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
-            # The common URL-bearing keys across Block Kit (buttons, link
-            # elements in rich_text, image accessories, etc.).
-            for key in ("url", "image_url", "external_url"):
+            # Common Block Kit URL keys plus legacy attachment link fields.
+            for key in (
+                "url",
+                "image_url",
+                "external_url",
+                "title_link",
+                "author_link",
+                "from_url",
+            ):
                 if key in node:
                     _maybe_add(node[key])
             for value in node.values():
@@ -421,7 +427,7 @@ def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
             for item in node:
                 _walk(item)
 
-    _walk(blocks)
+    _walk(content)
     return found
 
 
@@ -5303,12 +5309,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Return bounded display text for a Slack message, surfacing Block Kit content.
 
         Starts with ``text``, strips bot mentions, then appends rich-text
-        content and actionable URLs from ``blocks`` when present.  Unlike
-        :func:`_serialize_slack_blocks_for_agent` (which can emit up to
+        content and actionable URLs from ``blocks`` and legacy attachments.
+        Unlike :func:`_serialize_slack_blocks_for_agent` (which can emit up to
         6 000 chars of JSON per message), this helper produces only the
-        readable text and URL list needed by thread-context and parent-
-        text rendering — bounded by what the blocks actually contain,
-        not a JSON dump.
+        readable text and URL list needed by thread-context and parent-text
+        rendering — bounded by what the message actually contains, not a JSON
+        dump.
         """
         msg_text = (msg.get("text") or "").strip()
         if bot_uid:
@@ -5331,15 +5337,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Legacy ``attachments`` (Alertmanager, Grafana, PagerDuty, CI bots):
         # apps often post with an empty ``text`` and the real content in
         # attachment fields or attachment-nested blocks.
-        attachments_text = _extract_text_from_slack_attachments(
-            msg.get("attachments") or []
-        ).strip()
+        attachments = msg.get("attachments") or []
+        attachments_text = _extract_text_from_slack_attachments(attachments).strip()
         if attachments_text and attachments_text not in msg_text and all(
             attachments_text not in e for e in extras
         ):
             extras.append(attachments_text)
-        if blocks:
-            urls = _extract_urls_from_slack_blocks(blocks)
+        if blocks or attachments:
+            urls = _extract_urls_from_slack_content(
+                {"blocks": blocks, "attachments": attachments}
+            )
             new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
             if new_urls:
                 extras.append("URLs: " + ", ".join(new_urls))

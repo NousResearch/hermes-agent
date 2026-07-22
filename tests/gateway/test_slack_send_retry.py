@@ -90,7 +90,7 @@ class TestSlackSendRetryable:
         client.chat_postMessage = AsyncMock(
             side_effect=_slack_api_error(429, retry_after="30")
         )
-        adapter._get_client = lambda cid: client
+        adapter._get_client = lambda cid, team_id="": client
 
         result = await adapter.send("C123", "hello")
         assert not result.success
@@ -104,7 +104,7 @@ class TestSlackSendRetryable:
         client.chat_postMessage = AsyncMock(
             side_effect=_slack_api_error(429)
         )
-        adapter._get_client = lambda cid: client
+        adapter._get_client = lambda cid, team_id="": client
 
         result = await adapter.send("C123", "hello")
         assert not result.success
@@ -118,7 +118,7 @@ class TestSlackSendRetryable:
         client.chat_postMessage = AsyncMock(
             side_effect=_slack_api_error(500)
         )
-        adapter._get_client = lambda cid: client
+        adapter._get_client = lambda cid, team_id="": client
 
         result = await adapter.send("C123", "hello")
         assert not result.success
@@ -132,7 +132,7 @@ class TestSlackSendRetryable:
         client.chat_postMessage = AsyncMock(
             side_effect=_slack_api_error(403)
         )
-        adapter._get_client = lambda cid: client
+        adapter._get_client = lambda cid, team_id="": client
 
         result = await adapter.send("C123", "hello")
         assert not result.success
@@ -145,7 +145,7 @@ class TestSlackSendRetryable:
         client.chat_postMessage = AsyncMock(
             side_effect=ConnectionError("Connection reset by peer")
         )
-        adapter._get_client = lambda cid: client
+        adapter._get_client = lambda cid, team_id="": client
 
         result = await adapter.send("C123", "hello")
         assert not result.success

@@ -31,7 +31,7 @@ def _make_payload(event_id="evt_1"):
         "event": {
             "meeting": {
                 "id": "7646677832873577404",
-                "topic": "赵磊的视频会议",
+                "topic": "Weekly sync",
                 "meeting_no": "884264377",
                 "start_time": "1780384522000",
                 "end_time": "1780384522000",
@@ -39,14 +39,14 @@ def _make_payload(event_id="evt_1"):
                     "id": _user_id("ou_390b35dca44816efc9afa812aaff3a69", "on_host", "e65g874e"),
                     "user_type": 1,
                     "user_role": 2,
-                    "user_name": "赵磊",
+                    "user_name": "Alice",
                 },
             },
             "bot": {
                 "id": _user_id("ou_4398906db1bc4a2d7ed91b95ffb308d0", "on_bot", ""),
                 "user_type": 10,
                 "user_role": 0,
-                "user_name": "Hermes龙虾",
+                "user_name": "Hermes Bot",
             },
             "inviter": {
                 "id": _user_id(
@@ -56,9 +56,10 @@ def _make_payload(event_id="evt_1"):
                 ),
                 "user_type": 1,
                 "user_role": 0,
-                "user_name": "赵磊",
+                "user_name": "Alice",
             },
             "invite_time": "1780388292",
+            "call_id": "call_vc_123",
         },
     }
 
@@ -108,6 +109,7 @@ class TestMeetingInviteParsing(unittest.TestCase):
         self.assertEqual(parsed.inviter.user_id, "e65g874e")
         self.assertEqual(parsed.inviter.union_id, "on_e19a19e6ffafbd54fbb3c4d251d6fa19")
         self.assertEqual(parsed.invite_time_s, 1780388292)
+        self.assertEqual(parsed.call_id, "call_vc_123")
 
     def test_parse_body_content_payload(self):
         payload = _make_payload()
@@ -146,10 +148,12 @@ class TestMeetingInviteParsing(unittest.TestCase):
         parsed = parse_meeting_invited_event(_make_payload())
         prompt = build_meeting_invite_prompt(parsed)
 
-        self.assertIn("You have been invited to join a meeting: 赵磊的视频会议", prompt)
+        self.assertIn("You have been invited to join a meeting: Weekly sync", prompt)
         self.assertIn("Meeting Number: 884264377", prompt)
-        self.assertIn("Inviter: 赵磊", prompt)
+        self.assertIn("Call ID: call_vc_123", prompt)
+        self.assertIn("Inviter: Alice", prompt)
         self.assertIn("Join the meeting directly.", prompt)
+        self.assertIn("pass the Call ID when joining", prompt)
         self.assertIn("You may use lark-cli and the relevant Lark/Feishu meeting skills", prompt)
         self.assertIn("Do not ask the user for confirmation", prompt)
         self.assertIn("If you cannot join the meeting", prompt)
@@ -186,7 +190,7 @@ class TestMeetingInviteHandler(unittest.TestCase):
         self.assertEqual(adapter.profile_requests[0].user_id, "e65g874e")
         self.assertEqual(adapter.profile_requests[0].union_id, "on_e19a19e6ffafbd54fbb3c4d251d6fa19")
         self.assertIsNone(event.message_id)
-        self.assertIn("You have been invited to join a meeting: 赵磊的视频会议", event.text)
+        self.assertIn("You have been invited to join a meeting: Weekly sync", event.text)
         self.assertNotIn("{'open_id'", event.text)
 
     def test_duplicate_event_is_dropped(self):

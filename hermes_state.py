@@ -2436,6 +2436,79 @@ class SessionDB:
             ).fetchone()
         return dict(row) if row else None
 
+    def sweep_orphaned_sessions(
+        self,
+        *,
+        sources: List[str],
+        idle_seconds: float,
+        end_reason: str,
+        exclude_ids: List[str] = (),
+    ) -> List[str]:
+        """End open session rows whose owning process is provably gone.
+
+        Startup-sweep companion to the TUI gateway's in-process WS-orphan
+        reaper (#65194): that reaper is a ``threading.Timer``, so a gateway
+        restart kills it before it fires and the row stays ``ended_at IS
+        NULL`` forever — no later code path revisits it. This ends rows in
+        ``sources`` that have been quiet for at least ``idle_seconds``,
+        stamping ``end_reason`` so swept rows stay distinguishable from live
+        reaps.
+
+        Staleness requires BOTH clocks to be past the cutoff: the row's own
+        ``started_at`` AND its newest message timestamp (falling back to
+        ``started_at`` for message-less rows). Message recency alone would
+        sweep a freshly created row that carries older *copied* history
+        (branch/compression children copy a parent transcript), and
+        ``started_at`` alone would sweep a long-lived session that is still
+        actively talking. This mirrors the in-memory idle reaper's
+        ``last_active AND created_at`` contract in ``tui_gateway.server``.
+
+        state.db is shared by sibling processes on the same profile
+        (messaging gateway, CLI, worktree agents), so callers must pass a
+        conservative ``idle_seconds`` (hours-scale): a row a sibling is
+        actively using always has recent messages. ``exclude_ids`` spares
+        rows the calling process itself still references.
+
+        Returns the swept session ids.
+        """
+        srcs = [s for s in sources if s]
+        if not srcs or idle_seconds < 0:
+            return []
+        cutoff = time.time() - idle_seconds
+        marks = ",".join("?" for _ in srcs)
+        staleness = (
+            "started_at < ? AND COALESCE((SELECT MAX(m.timestamp) FROM messages m"
+            " WHERE m.session_id = sessions.id), started_at) < ?"
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id FROM sessions WHERE ended_at IS NULL"
+                f" AND source IN ({marks}) AND {staleness}",
+                (*srcs, cutoff, cutoff),
+            ).fetchall()
+        excluded = {str(x) for x in exclude_ids if x}
+        victims = [str(r["id"]) for r in rows if str(r["id"]) not in excluded]
+        if not victims:
+            return []
+
+        def _do(conn):
+            now = time.time()
+            swept = []
+            for sid in victims:
+                # Re-check liveness inside the write transaction: a sibling
+                # may have ended/resumed the row or appended a message since
+                # the SELECT above.
+                cur = conn.execute(
+                    f"UPDATE sessions SET ended_at = ?, end_reason = ?"
+                    f" WHERE id = ? AND ended_at IS NULL AND {staleness}",
+                    (now, end_reason, sid, cutoff, cutoff),
+                )
+                if cur.rowcount:
+                    swept.append(sid)
+            return swept
+
+        return self._execute_write(_do)
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 

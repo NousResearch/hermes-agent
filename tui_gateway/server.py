@@ -1037,6 +1037,117 @@ def _start_idle_reaper() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+# ── Startup sweep for orphaned session rows (#65194) ─────────────────────
+# The WS-orphan reaper above is an in-process threading.Timer: a gateway
+# restart (every `hermes update` / deploy) kills it before it fires, leaving
+# the session row `ended_at IS NULL` forever — no code path in the next
+# process ever revisits it. This is the "sweep leftovers at next startup"
+# pass every other resource type already has (docker_orphan_reaper,
+# terminal/browser orphan reaps, the MCP stdio watchdog). Scheduled once per
+# process from both gateway entry points; state.db is shared by sibling
+# processes on the same profile (messaging gateway, CLI, worktree agents),
+# so eligibility is deliberately conservative — see _sweep_orphaned_session_rows.
+# Disable via `session_orphan_reaper: false` in config.yaml (top-level or
+# under `gateway:`), mirroring `terminal.docker_orphan_reaper`.
+_ORPHAN_SWEEP_END_REASON = "orphan_startup_sweep"
+# Only sources this backend (or a subagent spawned by a dead sibling) owns.
+# Gateway-platform sources are never touched (#60609 doctrine: the messaging
+# gateway owns their lifecycle) and `cli` rows belong to interactive CLI
+# processes with their own exit-path finalize.
+_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent")
+_startup_orphan_sweep_ran = False
+_startup_orphan_sweep_lock = threading.Lock()
+
+
+def _session_orphan_reaper_enabled() -> bool:
+    try:
+        cfg = _load_cfg() or {}
+        raw = cfg.get("session_orphan_reaper")
+        if raw is None:
+            gateway_cfg = cfg.get("gateway")
+            if isinstance(gateway_cfg, dict):
+                raw = gateway_cfg.get("session_orphan_reaper")
+        return is_truthy_value(raw, default=True)
+    except Exception:
+        return True
+
+
+def _sweep_orphaned_session_rows() -> list[str]:
+    """End orphaned tui/desktop/subagent session rows left by a dead process.
+
+    Every pre-restart session by definition has no live websocket in this
+    process, but state.db is per-profile, not per-process: a sibling process
+    on the same profile could legitimately own an open row. "Provably
+    orphaned" is therefore inferred conservatively from inactivity — the row
+    must have been *created* AND last *messaged* at least the session TTL ago
+    (``HERMES_TUI_SESSION_TTL_S``, hours-scale, the same knob the in-process
+    idle reaper uses) — since any row a live process is using keeps gaining
+    messages, and a freshly created row that copied an old transcript
+    (branch/compression child) is protected by its own ``started_at``. Rows
+    referenced by a live in-memory session here (e.g. a session.resume that
+    landed during the startup grace delay) are excluded, so the sweep never
+    races a mid-reconnect client.
+    """
+    db = _get_db()
+    if db is None:
+        return []
+    exclude: set[str] = set()
+    with _sessions_lock:
+        for session in _sessions.values():
+            agent = session.get("agent")
+            for sid in (getattr(agent, "session_id", None), session.get("session_key")):
+                if sid:
+                    exclude.add(str(sid))
+    swept = db.sweep_orphaned_sessions(
+        sources=list(_ORPHAN_SWEEP_SOURCES),
+        idle_seconds=max(_SESSION_TTL_S, _WS_ORPHAN_REAP_GRACE_S),
+        end_reason=_ORPHAN_SWEEP_END_REASON,
+        exclude_ids=sorted(exclude),
+    )
+    if swept:
+        logger.info(
+            "Startup orphan sweep ended %d session row(s) left open by a "
+            "previous process: %s",
+            len(swept),
+            ", ".join(swept),
+        )
+    return swept
+
+
+def _schedule_startup_orphan_sweep() -> None:
+    """Schedule the once-per-process startup orphan sweep (#65194).
+
+    Called from both gateway entry points (stdio ``entry.main`` and the WS
+    sidecar's connection handler) — the once-guard makes repeat calls no-ops,
+    mirroring the other idempotent startup passes. The sweep is delayed by the
+    WS-orphan grace window so a client reconnecting right after a restart can
+    ``session.resume`` its row before the sweep reads the DB — the same
+    grace semantics as ``_schedule_ws_orphan_reap``, whose 0 value also
+    disables this sweep (park forever, pre-fix behaviour).
+    """
+    global _startup_orphan_sweep_ran
+    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+        return
+    if not _session_orphan_reaper_enabled():
+        return
+    if _startup_orphan_sweep_ran:
+        return
+    with _startup_orphan_sweep_lock:
+        if _startup_orphan_sweep_ran:
+            return
+        _startup_orphan_sweep_ran = True
+
+    def _run() -> None:
+        try:
+            _sweep_orphaned_session_rows()
+        except Exception:
+            logger.warning("startup orphan session sweep failed", exc_info=True)
+
+    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _run)
+    timer.daemon = True
+    timer.start()
+
+
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
 

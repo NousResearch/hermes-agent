@@ -2843,6 +2843,181 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     assert fired["timer"] is False
 
 
+def _orphan_sweep_db(tmp_path):
+    from hermes_state import SessionDB
+
+    return SessionDB(db_path=tmp_path / "state.db")
+
+
+def _seed_session_row(db, session_id, *, source, last_active, started_at=None):
+    """Create an open session row whose last activity is ``last_active``.
+
+    ``started_at`` defaults to ``last_active``; pass it explicitly to model a
+    freshly created row that carries older copied history (branch child).
+    """
+    db.create_session(session_id, source=source)
+    db.append_message(session_id, role="user", content="hello")
+    with db._lock:
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (last_active if started_at is None else started_at, session_id),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (last_active, session_id),
+        )
+
+
+def test_startup_orphan_sweep_ends_stale_rows(monkeypatch, tmp_path):
+    """Rows left ended_at IS NULL by a dead gateway get swept at startup with
+    a distinct end_reason (#65194: the ws_orphan_reap timer dies with the
+    process, so no live reap ever revisits them)."""
+    db = _orphan_sweep_db(tmp_path)
+    try:
+        stale = time.time() - 8 * 3600
+        _seed_session_row(db, "stale-tui", source="tui", last_active=stale)
+        _seed_session_row(db, "stale-sub", source="subagent", last_active=stale)
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", 6 * 3600.0)
+        monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+
+        swept = server._sweep_orphaned_session_rows()
+
+        assert sorted(swept) == ["stale-sub", "stale-tui"]
+        for sid in ("stale-tui", "stale-sub"):
+            row = db.get_session(sid)
+            assert row["ended_at"] is not None
+            assert row["end_reason"] == "orphan_startup_sweep"
+    finally:
+        db.close()
+
+
+def test_startup_orphan_sweep_spares_fresh_row_with_old_copied_history(
+    monkeypatch, tmp_path
+):
+    """A branch-style row created just now but seeded with the parent's older
+    transcript must never look orphaned: session.branch copies the parent's
+    messages onto a brand-new row, so message recency alone is not a safe
+    staleness clock. started_at must be stale too."""
+    db = _orphan_sweep_db(tmp_path)
+    try:
+        old_history = time.time() - 8 * 3600
+        _seed_session_row(
+            db,
+            "fresh-branch",
+            source="tui",
+            last_active=old_history,
+            started_at=time.time(),
+        )
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", 6 * 3600.0)
+        monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+
+        swept = server._sweep_orphaned_session_rows()
+
+        assert swept == []
+        row = db.get_session("fresh-branch")
+        assert row["ended_at"] is None
+        assert row["end_reason"] is None
+    finally:
+        db.close()
+
+
+def test_startup_orphan_sweep_spares_recent_and_live_rows(monkeypatch, tmp_path):
+    """A row inside the grace/TTL window or referenced by a live in-memory
+    session (mid-reconnect right after startup) is never swept."""
+    db = _orphan_sweep_db(tmp_path)
+    sid = "resumed-sid"
+    try:
+        _seed_session_row(db, "recent-tui", source="tui", last_active=time.time() - 30)
+        stale = time.time() - 120
+        _seed_session_row(db, "resumed-tui", source="tui", last_active=stale)
+        _seed_session_row(db, "gateway-row", source="telegram", last_active=stale)
+        # Simulate a session.resume that landed during the startup grace
+        # delay: the old row is stale but a live in-memory session owns it.
+        server._sessions[sid] = _session(
+            agent=types.SimpleNamespace(session_id="resumed-tui")
+        )
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        # TTL 0 + grace 60 exercises the grace floor: eligibility is
+        # max(TTL, grace) = 60s of inactivity.
+        monkeypatch.setattr(server, "_SESSION_TTL_S", 0.0)
+        monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 60.0)
+
+        swept = server._sweep_orphaned_session_rows()
+
+        assert swept == []
+        for row_id in ("recent-tui", "resumed-tui", "gateway-row"):
+            row = db.get_session(row_id)
+            assert row["ended_at"] is None
+            assert row["end_reason"] is None
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_startup_orphan_sweep_leaves_already_ended_rows_untouched(
+    monkeypatch, tmp_path
+):
+    """Already-ended rows keep their original end_reason/ended_at (first
+    reason wins — same contract as SessionDB.end_session)."""
+    db = _orphan_sweep_db(tmp_path)
+    try:
+        stale = time.time() - 8 * 3600
+        _seed_session_row(db, "reaped-tui", source="tui", last_active=stale)
+        db.end_session("reaped-tui", "ws_orphan_reap")
+        before = db.get_session("reaped-tui")
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", 6 * 3600.0)
+        monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+
+        swept = server._sweep_orphaned_session_rows()
+
+        assert swept == []
+        after = db.get_session("reaped-tui")
+        assert after["end_reason"] == "ws_orphan_reap"
+        assert after["ended_at"] == before["ended_at"]
+    finally:
+        db.close()
+
+
+def test_schedule_startup_orphan_sweep_gates(monkeypatch):
+    """Once-per-process guard, `session_orphan_reaper: false` opt-out, and
+    the grace=0 park-forever opt-out all suppress the sweep timer."""
+    started = {"count": 0}
+
+    class _Timer:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            started["count"] += 1
+
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+
+    # Config opt-out: no timer, and the once-guard stays unset so a later
+    # enabled call could still run.
+    monkeypatch.setattr(server, "_startup_orphan_sweep_ran", False)
+    monkeypatch.setattr(server, "_session_orphan_reaper_enabled", lambda: False)
+    server._schedule_startup_orphan_sweep()
+    assert started["count"] == 0
+    assert server._startup_orphan_sweep_ran is False
+
+    # Enabled: schedules exactly once; repeat calls are no-ops.
+    monkeypatch.setattr(server, "_session_orphan_reaper_enabled", lambda: True)
+    server._schedule_startup_orphan_sweep()
+    server._schedule_startup_orphan_sweep()
+    assert started["count"] == 1
+    assert server._startup_orphan_sweep_ran is True
+
+    # Grace 0 disables the sweep like it disables the live reaper.
+    monkeypatch.setattr(server, "_startup_orphan_sweep_ran", False)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.0)
+    server._schedule_startup_orphan_sweep()
+    assert started["count"] == 1
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

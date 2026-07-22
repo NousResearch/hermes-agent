@@ -293,7 +293,7 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
     "gemini":    ModelIdentity("google", "gemini"),
 
     # DeepSeek
-    "deepseek":  ModelIdentity("deepseek", "deepseek-chat"),
+    "deepseek":  ModelIdentity("deepseek", "deepseek-v4-pro"),
 
     # X.AI
     "grok":      ModelIdentity("x-ai", "grok"),

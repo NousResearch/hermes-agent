@@ -22,19 +22,34 @@ suggestions latch by a stable ``dedup_key`` so the same proposal is not
 re-offered after the user says no.
 
 Storage mirrors ``cron/jobs.py``: ``~/.hermes/cron/suggestions.json``, atomic
-writes, an in-process lock, and 0600 perms.
+writes, a cross-process advisory lock, and 0600 perms.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Cross-process advisory file locking for suggestions.json critical sections,
+# mirroring cron/jobs.py's _jobs_lock(). fcntl is Unix-only; on Windows fall
+# back to msvcrt. Either may be absent, in which case the lock degrades to
+# in-process locking only.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -47,10 +62,100 @@ logger = logging.getLogger(__name__)
 # shared default root. See cron/jobs.py for the full rationale.
 CRON_DIR = get_hermes_home().resolve() / "cron"
 SUGGESTIONS_FILE = CRON_DIR / "suggestions.json"
+_SUGGESTIONS_LOCK_FILE = CRON_DIR / ".suggestions.lock"
 
 # In-process lock protecting load->modify->save cycles (the background review
-# fork and the main agent can both write).
-_suggestions_lock = threading.Lock()
+# fork and the main agent can both write within one process).
+_suggestions_file_lock = threading.RLock()
+_suggestions_lock_state = threading.local()
+
+# Upper bound on waiting for the cross-process .suggestions.lock flock,
+# mirroring cron/jobs.py's _JOBS_LOCK_TIMEOUT_SECONDS (#60703): an unbounded
+# wait on a lock held by a wedged sibling process would freeze every caller
+# in this process forever. Critical sections here are field updates only, so
+# contention resolves in milliseconds; 30s is orders of magnitude above that.
+_SUGGESTIONS_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+@contextlib.contextmanager
+def _suggestions_lock():
+    """Serialize a load->modify->save critical section on suggestions.json.
+
+    Combines the in-process RLock (cheap mutual exclusion between threads in
+    this process — e.g. the background review fork and the main agent) with a
+    cross-process advisory file lock on ``.suggestions.lock`` (mutual exclusion
+    between this process and a separate ``hermes`` CLI invocation editing the
+    same suggestions.json — previously unprotected, so a CLI dismiss could be
+    silently clobbered by a concurrent gateway write, or vice versa).
+
+    Nested calls in the same thread reuse the held lock. Mirrors
+    cron/jobs.py's ``_jobs_lock()`` — see there for the full rationale on the
+    bounded-timeout degrade-to-in-process-only fallback.
+    """
+    depth = getattr(_suggestions_lock_state, "depth", 0)
+    if depth:
+        _suggestions_lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _suggestions_lock_state.depth -= 1
+        return
+
+    with _suggestions_file_lock:
+        _suggestions_lock_state.depth = 1
+        lock_fd = None
+        try:
+            try:
+                _ensure_dir()
+                lock_fd = open(_SUGGESTIONS_LOCK_FILE, "a+", encoding="utf-8")
+                lock_fd.seek(0)
+                if fcntl is not None:
+                    _deadline = time.monotonic() + _SUGGESTIONS_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except (OSError, IOError):
+                            if time.monotonic() >= _deadline:
+                                logger.error(
+                                    "Timed out after %.0fs waiting for the "
+                                    "suggestions.json lock (%s) — another "
+                                    "process is holding it. Proceeding with "
+                                    "in-process locking only.",
+                                    _SUGGESTIONS_LOCK_TIMEOUT_SECONDS,
+                                    _SUGGESTIONS_LOCK_FILE,
+                                )
+                                try:
+                                    lock_fd.close()
+                                except OSError:
+                                    pass
+                                lock_fd = None
+                                break
+                            time.sleep(0.1)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+            except (OSError, IOError) as e:
+                # Never let a locking failure block suggestion writes — fall
+                # back to in-process-only protection (still held above).
+                logger.warning(
+                    "suggestions.json cross-process lock unavailable (%s); "
+                    "proceeding with in-process lock only", e,
+                )
+            try:
+                yield
+            finally:
+                if lock_fd is not None:
+                    try:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                    except (OSError, IOError):
+                        pass
+                    finally:
+                        lock_fd.close()
+        finally:
+            _suggestions_lock_state.depth = 0
 
 # Cap pending suggestions so the list never becomes a nag wall. When full,
 # new suggestions are dropped (the user should clear the backlog first).
@@ -145,7 +250,7 @@ def add_suggestion(
     if not title.strip() or not dedup_key.strip():
         raise ValueError("title and dedup_key are required")
 
-    with _suggestions_lock:
+    with _suggestions_lock():
         suggestions = _load_raw().get("suggestions", [])
 
         # Never re-offer something the user already saw and decided on, and
@@ -198,7 +303,7 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _set_status(suggestion_id: str, status: str) -> bool:
-    with _suggestions_lock:
+    with _suggestions_lock():
         suggestions = _load_raw().get("suggestions", [])
         changed = False
         for s in suggestions:
@@ -251,7 +356,7 @@ def clear_resolved() -> int:
     their dedup_key (so they aren't re-offered). This only prunes ACCEPTED
     records, which have served their purpose once the job exists.
     """
-    with _suggestions_lock:
+    with _suggestions_lock():
         suggestions = _load_raw().get("suggestions", [])
         kept = [s for s in suggestions if s.get("status") != _STATUS_ACCEPTED]
         removed = len(suggestions) - len(kept)

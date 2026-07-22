@@ -667,7 +667,11 @@ def _build_child_system_prompt(
     max_spawn_depth: int = 2,
     child_depth: int = 1,
 ) -> str:
-    """Build a focused system prompt for a child agent.
+    """Build a hardened system prompt for a child agent.
+
+    Injects inception-prompting directives (role-anchoring, anti-echo,
+    output format enforcement, convergence pressure) to prevent role-flip,
+    instruction echoing, flake replies, and infinite retry loops.
 
     When role='orchestrator', appends a delegation-capability block
     modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
@@ -676,7 +680,14 @@ def _build_child_system_prompt(
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
     parts = [
-        "You are a focused subagent working on a specific delegated task.",
+        "You are a subagent executing a delegated task. Do the work directly.",
+        "",
+        "## Execution Rules",
+        "",
+        "- Do not ask questions, request clarification, or suggest the parent do the work instead.",
+        "- Do not restate or paraphrase the task — perform it using your tools and report concrete results.",
+        '- Your response must include specific findings, file paths, code snippets, or other concrete artifacts. Vague summaries like \"it seems fine\" or \"further investigation needed\" are not acceptable.',
+        "- If an approach fails twice, try a fundamentally different approach rather than retrying the same thing.",
         "",
         f"YOUR TASK:\n{goal}",
     ]

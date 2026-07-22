@@ -155,6 +155,28 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_inception_prompting_directives_present(self):
+        prompt = _build_child_system_prompt("Refactor the auth module")
+        self.assertIn("Do not ask questions", prompt)
+        self.assertIn("Do not restate or paraphrase", prompt)
+        self.assertIn("it seems fine", prompt)
+        self.assertIn("fails twice", prompt)
+
+    def test_inception_prompting_role_anchor(self):
+        prompt = _build_child_system_prompt("Fix the bug")
+        self.assertIn("executing a delegated task", prompt)
+        self.assertNotIn("focused subagent working on", prompt)
+
+    def test_inception_prompting_with_context(self):
+        prompt = _build_child_system_prompt("Fix the bug", "Error in line 42")
+        self.assertIn("Do not ask questions", prompt)
+        self.assertIn("CONTEXT", prompt)
+
+    def test_inception_prompting_orchestrator_role(self):
+        prompt = _build_child_system_prompt("Coordinate the refactor", role="orchestrator")
+        self.assertIn("Do not ask questions", prompt)
+        self.assertIn("Subagent Spawning", prompt)
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

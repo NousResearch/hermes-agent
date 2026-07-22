@@ -51,6 +51,10 @@
     "message": "自主AI代理",
     "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
   },
+  "sidebar.docs.category.skills-bundled-computer-use": {
+    "message": "计算机操作",
+    "description": "The label for category 'computer-use' in sidebar 'docs'"
+  },
   "sidebar.docs.category.skills-bundled-creative": {
     "message": "创意工具",
     "description": "The label for category 'creative' in sidebar 'docs'"
@@ -74,6 +78,10 @@
   "sidebar.docs.category.skills-bundled-github": {
     "message": "GitHub",
     "description": "The label for category 'github' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-hermes-desktop-plugins": {
+    "message": "Hermes 桌面端插件",
+    "description": "The label for category 'hermes-desktop-plugins' in sidebar 'docs'"
   },
   "sidebar.docs.category.skills-bundled-media": {
     "message": "媒体",
@@ -171,6 +179,10 @@
     "message": "MLOps",
     "description": "The label for category 'mlops' in sidebar 'docs'"
   },
+  "sidebar.docs.category.skills-optional-payments": {
+    "message": "支付",
+    "description": "The label for category 'payments' in sidebar 'docs'"
+  },
   "sidebar.docs.category.skills-optional-productivity": {
     "message": "生产力工具",
     "description": "The label for category 'productivity' in sidebar 'docs'"
@@ -196,7 +208,7 @@
     "description": "The label for category 'Messaging Platforms' in sidebar 'docs'"
   },
   "sidebar.docs.category.Popular": {
-    "message": "热门",
+    "message": "常用平台",
     "description": "The label for category 'Popular' in sidebar 'docs'"
   },
   "sidebar.docs.category.Microsoft 365": {
@@ -230,6 +242,10 @@
   "sidebar.docs.category.Extending": {
     "message": "扩展开发",
     "description": "The label for category 'Extending' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Plugins": {
+    "message": "插件",
+    "description": "The label for category 'Plugins' in sidebar 'docs'"
   },
   "sidebar.docs.category.Internals": {
     "message": "内部机制",

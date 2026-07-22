@@ -268,6 +268,49 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_dashboard_remote_access_returns_resolved_public_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_auth.prefix.resolve_public_url",
+            lambda: "https://hermes.example.com/agent",
+        )
+
+        resp = self.client.get("/api/dashboard/remote-access")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "public_url": "https://hermes.example.com/agent",
+        }
+
+    def test_dashboard_remote_access_reads_public_url_from_config(self, monkeypatch):
+        """Real path — no resolve_public_url monkeypatch: write
+        dashboard.public_url into the isolated HERMES_HOME's config.yaml and
+        assert the endpoint returns it through real config loading."""
+        from hermes_constants import get_hermes_home
+
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"dashboard": {"public_url": "https://hermes.example.com/agent"}}),
+            encoding="utf-8",
+        )
+
+        resp = self.client.get("/api/dashboard/remote-access")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "public_url": "https://hermes.example.com/agent",
+        }
+
+    def test_dashboard_remote_access_is_not_public(self):
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server import app
+
+        with TestClient(app) as unauthenticated:
+            resp = unauthenticated.get("/api/dashboard/remote-access")
+
+        assert resp.status_code == 401
+
     def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
         import hermes_state

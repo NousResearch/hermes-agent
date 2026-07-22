@@ -452,6 +452,27 @@ def test_direct_start_drops_context_when_empty_query_delimiter_changes():
     assert agent.context_compressor.config_context_length is None
 
 
+def test_direct_start_drops_context_when_query_path_slash_changes():
+    """A path slash before a query remains part of the effective SDK route."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1/?tenant=large",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1?tenant=large",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
 def test_direct_start_drops_context_when_active_query_changes():
     """Query parameters remain part of the effective route identity."""
     cfg = {

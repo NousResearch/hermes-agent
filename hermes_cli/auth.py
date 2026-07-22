@@ -7087,7 +7087,6 @@ def _prompt_model_selection(
     cache_col = 0  # only set if any model has cache pricing
     has_cache = False
     any_on_sale = False
-    sale_pcts: set[int] = set()
     _DIM = "\033[2m"
     _RESET = "\033[0m"
     if has_pricing:
@@ -7111,7 +7110,6 @@ def _prompt_model_selection(
                     if sale is not None:
                         any_on_sale = True
                         pct, was_prompt_raw, was_out_raw = sale
-                        sale_pcts.add(pct)
                         was_inp = (
                             _format_price_per_mtok(was_prompt_raw)
                             if was_prompt_raw != ""
@@ -7179,16 +7177,11 @@ def _prompt_model_selection(
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
         if has_cache:
             header += f"  {'Cache':>{cache_col}}"
+        # Legend lives on the column-header line so it reads as a key
+        # (★ = on sale), not a fake menu row.
         menu_title += header + "  $/Mtok"
         if any_on_sale:
-            # Only claim a specific percent when every sale row shares it
-            # (the gateway applies a global discount; don't mislead if not).
-            pct_bit = (
-                f" · -{next(iter(sale_pcts))}% off list"
-                if len(sale_pcts) == 1
-                else ""
-            )
-            menu_title += f"\n★ on sale · In/Out are sale prices{pct_bit}"
+            menu_title += "  ★ = on sale"
 
     # Try arrow-key menu first, fall back to number input.
     # Uses the shared curses radiolist (ESC/arrow-key handling that works
@@ -7248,8 +7241,13 @@ def _prompt_model_selection(
 
     # Fallback: numbered list (ANSI colors for sale chrome)
     from hermes_cli.curses_ui import format_radio_item_ansi
+    from hermes_cli.colors import Colors, color
 
-    print(menu_title)
+    for line in menu_title.splitlines():
+        if "★" in line:
+            print(line.replace("★", color("★", Colors.YELLOW), 1))
+        else:
+            print(line)
     num_width = len(str(len(ordered) + 2))
     for i, mid in enumerate(ordered, 1):
         print(f"  {i:>{num_width}}. {format_radio_item_ansi(_label_segments(mid))}")

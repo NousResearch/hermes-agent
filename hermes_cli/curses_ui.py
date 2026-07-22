@@ -47,6 +47,38 @@ def _curses_style_attr(curses, style: Optional[str], *, is_cursor: bool):
     return curses.A_NORMAL
 
 
+def _draw_description_line(stdscr, y: int, text: str, max_x: int) -> None:
+    """Draw a description line, highlighting ★ in yellow when colors exist."""
+    import curses
+
+    col = 0
+    i = 0
+    star_attr = curses.A_NORMAL
+    if curses.has_colors():
+        star_attr = curses.color_pair(2)
+    while i < len(text) and col < max_x - 1:
+        remaining = max_x - 1 - col
+        if remaining <= 0:
+            break
+        if text[i] == "★":
+            try:
+                stdscr.addnstr(y, col, "★", remaining, star_attr)
+            except curses.error:
+                pass
+            col += 1
+            i += 1
+            continue
+        next_star = text.find("★", i)
+        chunk = text[i:] if next_star < 0 else text[i:next_star]
+        chunk = chunk[:remaining]
+        try:
+            stdscr.addnstr(y, col, chunk, remaining, curses.A_NORMAL)
+        except curses.error:
+            pass
+        col += len(chunk)
+        i += len(chunk)
+
+
 def _draw_radio_item(stdscr, y: int, x: int, item: RadioItem, max_x: int, *, is_cursor: bool) -> None:
     """Draw a plain or segmented radiolist item starting at column ``x``."""
     import curses
@@ -729,11 +761,11 @@ def curses_radiolist(
             stdscr.addnstr(row, 0, title, max_x - 1, hattr)
             row += 1
 
-            # Description lines
+            # Description lines — paint ★ yellow so the sale legend matches rows.
             for dline in desc_lines:
                 if row >= max_y - 1:
                     break
-                stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
+                _draw_description_line(stdscr, row, dline, max_x)
                 row += 1
 
             if searchable and search is not None and search.active:

@@ -2149,7 +2149,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if raw.is_absolute():
         path = raw.resolve()
     else:
-        path = (scripts_dir / raw).resolve()
+        # Strip 'scripts/' prefix if present — the path is already being
+        # resolved against scripts_dir, so a double prefix would produce
+        # .../scripts/scripts/script_name.py (a no-op double-path bug).
+        stripped = raw
+        if raw.parts and raw.parts[0] == "scripts":
+            stripped = Path(*raw.parts[1:]) if len(raw.parts) > 1 else Path(".")
+        path = (scripts_dir / stripped).resolve()
 
     # Guard against path traversal, absolute path injection, and symlink
     # escape — scripts MUST reside within HERMES_HOME/scripts/.

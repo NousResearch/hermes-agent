@@ -473,6 +473,27 @@ def test_direct_start_drops_context_when_query_path_slash_changes():
     assert agent.context_compressor.config_context_length is None
 
 
+def test_direct_start_drops_context_when_empty_query_path_slash_changes():
+    """An empty query still preserves the path slash immediately before it."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://example.com/v1/?",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1?",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
 def test_direct_start_drops_context_when_active_query_changes():
     """Query parameters remain part of the effective route identity."""
     cfg = {
@@ -608,12 +629,17 @@ def test_direct_start_preserves_context_for_registry_provider_alias():
         }
     }
 
-    agent = _make_direct_start_agent(
-        cfg,
-        model="kimi-k3",
-        provider="kimi-coding",
-        base_url="https://api.kimi.com/coding",
-    )
+    routed_client = MagicMock(api_key="fake-test-token", base_url="")
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(routed_client, "kimi-k3"),
+    ):
+        agent = _make_direct_start_agent(
+            cfg,
+            model="kimi-k3",
+            provider="kimi-coding",
+            base_url="",
+        )
 
     assert agent.context_compressor.config_context_length == 1_048_576
 

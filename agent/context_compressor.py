@@ -3410,7 +3410,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             # an ineffective compression the anti-thrashing guard in
             # should_compress() never fires and every subsequent turn
             # re-triggers a no-op compression loop.  (#40803)
-            self._ineffective_compression_count += 1
+            if not force:
+                 self._ineffective_compression_count += 1
             self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(

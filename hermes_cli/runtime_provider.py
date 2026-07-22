@@ -1646,6 +1646,36 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # Custom-provider aliases (ollama, vllm, llamacpp, …) collapse to the
+    # generic ``"custom"`` label via resolve_provider() but carry NO
+    # custom_providers entry and NO explicit key/base_url. Their credential
+    # lives in a provider-named env var (OLLAMA_API_KEY, VLLM_API_KEY, …)
+    # that _host_derived_api_key deliberately skips (it assumes those are
+    # handled by an explicit host-gated path — but the generic ``custom``
+    # route never checks them). Without this, a cron/background run with no
+    # main_runtime context resolves ``custom`` with an empty api_key and
+    # 401s, even though the same config works for an interactive session that
+    # threads the key through its runtime. Derive <PROVIDER>_API_KEY from the
+    # ORIGINAL requested name and retry. (#66868)
+    _orig = (requested_provider or "").strip().lower()
+    if not explicit_api_key and _orig and _orig != "custom":
+        from hermes_cli.auth import resolve_provider as _rp
+        try:
+            _collapsed = _rp(_orig)
+        except Exception:
+            _collapsed = "custom"
+        if _collapsed == "custom":
+            _env_key = _getenv(f"{_orig.replace('-', '_').upper()}_API_KEY", "").strip()
+            if _env_key:
+                custom_runtime = _resolve_named_custom_runtime(
+                    requested_provider=requested_provider,
+                    explicit_api_key=_env_key,
+                    explicit_base_url=explicit_base_url,
+                )
+                if custom_runtime:
+                    custom_runtime["requested_provider"] = requested_provider
+                    return custom_runtime
+
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url
     # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
     # route through the OpenAI-compatible resolver instead of letting

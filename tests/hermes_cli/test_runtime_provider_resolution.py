@@ -3435,3 +3435,61 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+
+def test_ollama_alias_resolves_env_key_without_main_runtime(monkeypatch):
+    """A cron/background run (no main_runtime) with provider: ollama and
+    OLLAMA_API_KEY set must resolve the key from the provider-named env var,
+    not collapse to an empty api_key and 401. Regression for #66868.
+
+    ollama collapses to the generic 'custom' label via resolve_provider(), and
+    _host_derived_api_key deliberately skips OLLAMA_API_KEY — so the named-env
+    fallback in resolve_runtime_provider() must pick it up.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-env-key")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "ollama",
+            "default": "glm-5.2",
+            "base_url": "https://ollama.com/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    resolved = rp.resolve_runtime_provider(requested="ollama")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://ollama.com/v1"
+    assert resolved["api_key"] == "ollama-env-key"
+    assert resolved["requested_provider"] == "ollama"
+
+
+def test_custom_provider_alias_env_key_vllm(monkeypatch):
+    """Same named-env fallback for other custom aliases (vllm)."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("VLLM_API_KEY", raising=False)
+    monkeypatch.setenv("VLLM_API_KEY", "vllm-env-key")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "vllm",
+            "default": "meta/llama-3.1-8b",
+            "base_url": "https://vllm.local/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    resolved = rp.resolve_runtime_provider(requested="vllm")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://vllm.local/v1"
+    assert resolved["api_key"] == "vllm-env-key"
+    assert resolved["requested_provider"] == "vllm"

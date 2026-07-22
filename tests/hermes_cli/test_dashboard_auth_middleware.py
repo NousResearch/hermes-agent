@@ -20,8 +20,18 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+
+_LOCAL_STATUS_KEYS = (
+    "hermes_home",
+    "config_path",
+    "env_path",
+    "gateway_pid",
+    "gateway_health_url",
+    "gateways",
+)
 
 
 @pytest.fixture
@@ -75,6 +85,55 @@ def test_gated_status_is_public(gated_app):
     assert body["auth_required"] is True
     assert "version" in body
     assert "gateway_state" in body
+    assert body["auth_providers"] == ["stub"]
+    assert "gateway_running" in body
+    for key in _LOCAL_STATUS_KEYS:
+        assert key not in body
+
+
+def test_gated_status_cookie_session_gets_full_payload(gated_app):
+    """The logged-in dashboard uses cookies, not the loopback session token."""
+    _complete_stub_login(gated_app)
+
+    r = gated_app.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["auth_required"] is True
+    assert body["auth_providers"] == ["stub"]
+    for key in _LOCAL_STATUS_KEYS:
+        assert key in body
+
+
+def test_gated_status_refresh_only_cookie_gets_full_payload(gated_app):
+    """An evicted access cookie must use the gate's normal refresh path."""
+    import time
+
+    from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+    valid_rt = _sign({
+        "sub": "stub-user-1",
+        "kind": "refresh",
+        "exp": int(time.time()) + 30 * 86400,
+    })
+    gated_app.cookies.clear()
+    gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+
+    r = gated_app.get("/api/status", follow_redirects=False)
+    assert r.status_code == 200
+    body = r.json()
+    for key in _LOCAL_STATUS_KEYS:
+        assert key in body
+
+    set_cookies = r.headers.get_list("set-cookie")
+    assert any(
+        c.startswith(SESSION_AT_COOKIE) or f"-{SESSION_AT_COOKIE}" in c
+        for c in set_cookies
+    )
+    assert any(
+        c.startswith(SESSION_RT_COOKIE) or f"-{SESSION_RT_COOKIE}" in c
+        for c in set_cookies
+    )
 
 
 @pytest.mark.parametrize("path", [

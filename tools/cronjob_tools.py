@@ -293,7 +293,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
                 "Cron origin captured thread_id=%s for %s:%s",
                 thread_id, origin_platform, origin_chat_id,
             )
-        return {
+        origin = {
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
@@ -305,6 +305,14 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
+        if origin_platform.lower() == "feishu":
+            # Feishu's create-message API cannot target thread_id (omt_*); topic
+            # delivery must call message.reply on an om_* message anchor with
+            # reply_in_thread=true. Cron runs after the inbound event is gone, so
+            # persist that anchor now. We scope this extra origin field to Feishu
+            # rather than changing every platform's stored-job schema.
+            origin["message_id"] = get_session_env("HERMES_SESSION_MESSAGE_ID") or None
+        return origin
     return None
 
 

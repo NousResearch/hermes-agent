@@ -777,12 +777,27 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    *,
+    reply_to_message_id=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
     using the same smart-splitting algorithm as the gateway adapters
     (preserves code-block boundaries, adds part indicators).
+
+    ``reply_to_message_id`` is keyword-only to preserve the long-standing
+    positional calling convention. It is currently needed by Feishu standalone
+    cron delivery because Feishu topics are entered by replying to an om_* message;
+    thread_id alone is not a supported create-message recipient.
     """
     from gateway.config import Platform
 
@@ -1072,7 +1087,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.DINGTALK:
             result = await _registry_standalone_send("dingtalk", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.FEISHU:
-            result = await _registry_standalone_send("feishu", pconfig, chat_id, chunk, thread_id)
+            result = await _registry_standalone_send(
+                "feishu",
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id,
+                reply_to_message_id=reply_to_message_id,
+            )
         elif platform == Platform.WECOM:
             result = await _registry_standalone_send("wecom", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.BLUEBUBBLES:
@@ -1438,7 +1460,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 # (plugins/platforms/slack/adapter.py), wired via standalone_sender_fn. #41112.
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
+async def _registry_standalone_send(
+    platform_name,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    *,
+    reply_to_message_id=None,
+):
     """Dispatch a one-shot send through a migrated platform plugin's
     standalone_sender_fn (registry hook).  Used for platforms whose adapter
     moved out of gateway/platforms/ into plugins/platforms/<name>/ (#41112):
@@ -1451,7 +1481,10 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:
         return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
-    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id)
+    kwargs = {"thread_id": thread_id}
+    if reply_to_message_id is not None:
+        kwargs["reply_to_message_id"] = reply_to_message_id
+    return await entry.standalone_sender_fn(pconfig, chat_id, message, **kwargs)
 
 
 # _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,

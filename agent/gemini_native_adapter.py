@@ -275,9 +275,39 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     return part
 
 
+def _extract_image_inline_data(raw_content: Any) -> List[Dict[str, Any]]:
+    """Extract image_url parts from OpenAI-style content into Gemini inlineData dicts."""
+    if not isinstance(raw_content, list):
+        return []
+    parts: List[Dict[str, Any]] = []
+    for item in raw_content:
+        if not isinstance(item, dict) or item.get("type") != "image_url":
+            continue
+        url = ((item.get("image_url") or {}).get("url") or "")
+        if not isinstance(url, str) or not url.startswith("data:"):
+            continue
+        try:
+            header, encoded = url.split(",", 1)
+            mime = header.split(":", 1)[1].split(";", 1)[0]
+            raw = base64.b64decode(encoded)
+        except Exception:
+            continue
+        parts.append(
+            {
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": base64.b64encode(raw).decode("ascii"),
+                }
+            }
+        )
+    return parts
+
+
 def _translate_tool_result_to_gemini(
     message: Dict[str, Any],
     tool_name_by_call_id: Optional[Dict[str, str]] = None,
+    *,
+    is_gemini3: bool = False,
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
     tool_call_id = str(message.get("tool_call_id") or "")
@@ -287,21 +317,36 @@ def _translate_tool_result_to_gemini(
         or tool_call_id
         or "tool"
     )
-    content = _coerce_content_to_text(message.get("content"))
+    raw_content = message.get("content")
+    content = _coerce_content_to_text(raw_content)
     try:
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
         parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
-    return {
-        "functionResponse": {
-            "name": name,
-            "response": response,
-        }
-    }
+    function_response: Dict[str, Any] = {"name": name, "response": response}
+    # Gemini 3.x supports embedding images directly inside functionResponse.parts
+    # (Google's recommended shape for multimodal tool results). Gemini 2.x rejects
+    # the field, so only attach inlineData when the target model supports it —
+    # otherwise the vision tool result is silently downgraded to text-only.
+    if is_gemini3:
+        image_parts = _extract_image_inline_data(raw_content)
+        if image_parts:
+            function_response["parts"] = image_parts
+    return {"functionResponse": function_response}
 
 
-def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+def _build_gemini_contents(
+    messages: List[Dict[str, Any]],
+    model: str = "",
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    model_lower = bare_gemini_model_id(model).lower()
+    # Match all Gemini 3.x IDs, including the unversioned 3.0 previews
+    # (gemini-3-flash-preview, gemini-3-pro-preview) — a "gemini-3." (dotted)
+    # prefix wrongly excludes them, so they would keep dropping returned
+    # images. Aligns with the native-vision capability check in
+    # tools/vision_tools.py.
+    is_gemini3 = model_lower.startswith("gemini-3")
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
     tool_name_by_call_id: Dict[str, str] = {}
@@ -323,6 +368,7 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                         _translate_tool_result_to_gemini(
                             msg,
                             tool_name_by_call_id=tool_name_by_call_id,
+                            is_gemini3=is_gemini3,
                         )
                     ],
                 }
@@ -432,6 +478,7 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
 def build_gemini_request(
     *,
     messages: List[Dict[str, Any]],
+    model: str = "",
     tools: Any = None,
     tool_choice: Any = None,
     temperature: Optional[float] = None,
@@ -440,7 +487,7 @@ def build_gemini_request(
     stop: Any = None,
     thinking_config: Any = None,
 ) -> Dict[str, Any]:
-    contents, system_instruction = _build_gemini_contents(messages)
+    contents, system_instruction = _build_gemini_contents(messages, model)
     request: Dict[str, Any] = {"contents": contents}
     if system_instruction:
         request["systemInstruction"] = system_instruction
@@ -949,6 +996,7 @@ class GeminiNativeClient:
 
         request = build_gemini_request(
             messages=messages or [],
+            model=model,
             tools=tools,
             tool_choice=tool_choice,
             temperature=temperature,

@@ -6701,9 +6701,10 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
 
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
+    # Reinstall Python dependencies. Prefer syncing from uv.lock when uv is
+    # available so the update phase leaves the environment in the exact state
+    # that a later `uv run hermes` expects. Fall back to the older editable
+    # reinstall path when the lockfile sync is unavailable or fails.
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -6718,10 +6719,28 @@ def _update_via_zip(args):
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        if _is_termux_env(uv_env):
+        is_termux = _is_termux_env(uv_env)
+        if is_termux:
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        lockfile = PROJECT_ROOT / "uv.lock"
+        if not is_termux and lockfile.exists():
+            # `--extra all`, NOT `--all-extras`: the curated install set is
+            # the `[all]` extra (scripts/install.sh makes the same choice);
+            # --all-extras would drag in extras like matrix/rl that are
+            # intentionally excluded from the update environment. Termux
+            # keeps its curated legacy path below.
+            sync_env = {**uv_env, "UV_PROJECT_ENVIRONMENT": str(PROJECT_ROOT / "venv")}
+            try:
+                _run_install_with_heartbeat(
+                    [uv_bin, "sync", "--extra", "all", "--locked"],
+                    env=sync_env,
+                )
+            except subprocess.CalledProcessError:
+                print("⚠ uv lockfile sync failed, falling back to editable reinstall...")
+                _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+        else:
+            _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -10507,9 +10526,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-        # breaks on this machine, keep base deps and reinstall the remaining extras
-        # individually so update does not silently strip working capabilities.
+        # Reinstall Python dependencies. Prefer syncing from uv.lock when uv
+        # is available so the update phase leaves the environment in the exact
+        # state a later `uv run hermes` expects. Otherwise prefer .[all], and
+        # if one optional extra breaks on this machine, keep base deps and
+        # reinstall the remaining extras individually so update does not
+        # silently strip working capabilities.
         #
         # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
         # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
@@ -10540,9 +10562,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
+            lockfile = PROJECT_ROOT / "uv.lock"
+            if install_group == "all" and lockfile.exists():
+                # `--extra all`, NOT `--all-extras`: the curated install set
+                # is the `[all]` extra (scripts/install.sh makes the same
+                # choice); --all-extras would drag in extras like matrix/rl
+                # that are intentionally excluded from the update
+                # environment. Termux keeps its curated profile below.
+                sync_env = {**uv_env, "UV_PROJECT_ENVIRONMENT": str(PROJECT_ROOT / "venv")}
+                try:
+                    _run_install_with_heartbeat(
+                        [uv_bin, "sync", "--extra", "all", "--locked"],
+                        env=sync_env,
+                    )
+                except subprocess.CalledProcessError:
+                    print("⚠ uv lockfile sync failed, falling back to editable reinstall...")
+                    _install_python_dependencies_with_optional_fallback(
+                        [uv_bin, "pip"], env=uv_env, group=install_group
+                    )
+            else:
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.

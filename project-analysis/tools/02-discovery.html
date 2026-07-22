@@ -18,18 +18,30 @@
 </div>
 
 <h2 id="problem">要解决的问题:别维护 import 清单</h2>
-<p>朴素做法是在 <code>model_tools.py</code> 里写一长串:</p>
-<pre><code>import tools.terminal_tool
-import tools.file_tools
+<p>先想清楚这套加载路径里的一个 Python 事实:<strong>工具模块必须先被 <code>import</code>(直接导入,或作为别的模块的依赖被导入),它的顶层代码才会执行。</strong>第 1 篇说过,每个<strong>自注册的内置工具文件</strong>在模块顶层写了一句 <code>registry.register(...)</code>;可这句要<strong>真的跑起来</strong>,前提是 Python 加载了这个文件。没人 import,文件就静静躺在磁盘上,那句 <code>register</code> 永远不执行,工具也就从没进过注册表。</p>
+<p>所以问题变成:<strong>几十个 <code>tools/*.py</code>,由谁来负责把它们 import 一遍?</strong>朴素做法是在 <code>model_tools.py</code> 里手写一长串:</p>
+<pre><code># model_tools.py —— 朴素做法(Hermes 没这么干)
+import tools.terminal_tool     # 触发 terminal_tool 顶层的 register()
+import tools.file_tools        # 触发 file_tools 顶层的 register()
 import tools.web_tools
-# ... 再手写几十行 ...
+import tools.browser_tool
+# ... 再手写几十行,每个工具文件一行 ...
 </code></pre>
-<p>问题显而易见:<strong>每加一个工具文件都要回来补一行</strong>,漏补就等于这工具不存在,而且没有任何报错——它只是<strong>静默地没被发现</strong>。Hermes 的做法是让发现<strong>自动化</strong>:扫 <code>tools/</code> 目录,谁在顶层调了 <code>registry.register()</code>,就 import 谁。</p>
+<p>这份「import 清单」能用,但很脆:</p>
+<table>
+  <tr><th>毛病</th><th>后果</th></tr>
+  <tr><td><strong>每加一个工具文件都要回来补一行</strong></td><td>新写了 <code>tools/my_tool.py</code>,却忘了在 <code>model_tools.py</code> 补 <code>import tools.my_tool</code> → 这个文件<strong>没人 import → 顶层的 register 不执行 → 工具压根没进注册表</strong></td></tr>
+  <tr><td><strong>漏补了也<u>不报错</u></strong></td><td>不是抛异常、不是红字警告,而是<strong>静默地什么都没发生</strong>——工具「查无此人」,模型只会说 <code>Tool xxx does not exist</code>,你得反查半天才想到「哦我忘了加那行 import」</td></tr>
+  <tr><td><strong>两处要手动保持同步</strong></td><td>「工具文件本身」和「import 清单」是两个地方,靠人肉记得同时改。清单删漏了(删了工具文件却留着 import)会 <code>ImportError</code>;加漏了(加了文件没加 import)会静默失踪。顺序、重复也都要自己管</td></tr>
+</table>
+<p>Hermes 干脆<strong>取消这份手写清单</strong>,让发现<strong>自动化</strong>:程序第一次导入 <code>model_tools</code> 时<strong>扫一遍 <code>tools/</code> 目录</strong>,看谁在<strong>模块体里以独立语句直接调用</strong> <code>registry.register()</code>,就自动 <code>import</code> 谁。这样「加了新工具文件」和「它被发现」之间<strong>不再有人肉维护清单的一步</strong>——把文件丢进 <code>tools/</code>、按约定写好 register、并确保模块能成功导入,它就会在下一次进程启动时自动就位。这就是下面 <code>discover_builtin_tools()</code> 做的事。</p>
+<div class="box tip"><strong>一句话对比:</strong>手写清单是「<strong>白名单</strong>」——只有列进清单的才会被 import,清单是唯一事实源、必须人肉维护;自动发现是「<strong>按约定扫描</strong>」——文件放在 <code>tools/</code>、模块体里直接写一条独立的 <code>registry.register(...)</code>、且模块能够成功导入,就自动被收。<strong>约定本身就是事实源</strong>,不用再单独维护一份名单。</div>
+
 
 <h2 id="discover">discover_builtin_tools():扫目录、按需 import</h2>
 <pre><code>def discover_builtin_tools(tools_dir=None) -&gt; List[str]:
     """Import 所有自注册的内置工具模块,返回它们的模块名。"""
-    tools_path = Path(tools_dir) if tools_dir else Path(__file__).resolve().parent
+    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
     module_names = [
         f"tools.{path.stem}"
         for path in sorted(tools_path.glob("*.py"))            # 扫 tools/*.py
@@ -46,7 +58,15 @@ import tools.web_tools
     return imported
 </code></pre>
 <div class="filehint">tools/registry.py · discover_builtin_tools()</div>
-<p>三步:<strong>①</strong> <code>glob("*.py")</code> 列出目录里所有 Python 文件;<strong>②</strong> 排除三个特殊文件 + 用 AST 判断这文件<strong>顶层是否真的调了 <code>registry.register</code></strong>;<strong>③</strong> 对筛出来的模块逐个 <code>import_module</code>——import 的动作就<strong>触发</strong>了那个文件顶层的 <code>register()</code>,工具自动上户口。单个模块 import 失败只记 warning、不连累其余(某个工具的可选依赖没装,不该拖垮整个工具系统)。</p>
+<p>三步——注意<strong>只有第 ③ 步才真正「加载」文件</strong>,前两步都只是在<strong>挑名单</strong>:</p>
+<table>
+  <tr><th>步</th><th>做什么</th><th>加载(import/执行)了吗</th></tr>
+  <tr><td><strong>①</strong> <code>glob("*.py")</code></td><td>列出 <code>tools/</code> 目录里所有 Python 文件(只拿到<strong>文件名</strong>)</td><td>❌ 只是列目录</td></tr>
+  <tr><td><strong>②</strong> 排除三文件 + <code>_module_registers_tools</code></td><td>用 AST <strong>静态检查</strong>「顶层有没有 <code>registry.register</code>」,筛出合格文件名</td><td>❌ 只读文本 + 解析(见下一节)</td></tr>
+  <tr><td><strong>③</strong> <code>importlib.import_module(mod_name)</code></td><td><strong>真正 import 每个合格模块</strong>——这一下才把文件<strong>加载进来、执行它的顶层代码</strong>,于是那句 <code>registry.register()</code> 跑起来、工具上户口</td><td>✅ <strong>加载就发生在这里</strong></td></tr>
+</table>
+<p>换句话说:①② 一路都在跟<strong>字符串(文件名/源码文本)</strong>打交道、决定「该 import 谁」;直到 ③ 的 <code>import_module</code> 才把这些文件<strong>真的搬进 Python 运行时</strong>。也是在这一步,<strong>顶层的 <code>register()</code> 才被触发</strong>(第 1 篇的「上户口」发生在此)。单个模块 import 失败只记 warning、不连累其余——某个工具的可选依赖没装,不该拖垮整个工具系统。</p>
+<div class="box tip"><strong>一句话:发现 = 「挑名单(①②,静态)」+「按名单加载(③,<code>import_module</code>)」。</strong>真正让工具代码跑起来、进注册表的,是且仅是第 ③ 步那句 <code>importlib.import_module</code>。</div>
 
 <h2 id="ast">为什么用 AST 检查,而不是「import 了再说」</h2>
 <p>关键在 <code>_module_registers_tools()</code>——它<strong>先读源码、解析成 AST、只看模块<u>顶层</u>语句</strong>里有没有 <code>registry.register(...)</code> 调用,而不是「先 import 进来看看」:</p>
@@ -73,57 +93,113 @@ def _is_registry_register_call(node) -&gt; bool:
   <li><strong>为什么解析失败就跳过:</strong><code>ast.parse</code> 遇到 <code>OSError</code>(读不了)或 <code>SyntaxError</code>(语法错)直接返回 <code>False</code>——一个语法坏掉的文件不会中断整个发现流程,只是被安静略过。</li>
 </ul>
 <div class="box tip"><strong>AST 检查是「静态」的——它<u>不执行</u>代码,只读文本、看结构。</strong>所以它能在「决定要不要 import」<u>之前</u>就判断出「这文件是不是一个工具」,避免了「为了知道该不该导入,只好先导入一遍」的鸡生蛋问题。</div>
+<div class="box warn"><strong>这里的「顶层」是一条严格的语法契约,不只是视觉上没缩进。</strong>检测器只接受模块体中的<strong>独立调用表达式</strong> <code>registry.register(...)</code>。下面只有第一种会被发现:
+<pre><code>registry.register(...)                 # ✅ 模块体中的独立调用表达式
+
+if ENABLED:
+    registry.register(...)             # ❌ 包在顶层 if 里面,tree.body 看到的是 ast.If
+
+entry = registry.register(...)         # ❌ 顶层赋值,tree.body 看到的是 ast.Assign
+tool_registry.register(...)            # ❌ 接收者不是名为 registry 的 ast.Name
+
+def setup():
+    registry.register(...)             # ❌ 在函数体里
+</code></pre>
+这份严格约定来自历史修复 <code>fc6cb5b97</code>:早期用 <code>ast.walk()</code> 扫整棵树,会把函数体里的动态注册也误认成内置工具模块;现在刻意只认这一种直接写法。</div>
+
+<h5>划清楚:<code>_module_registers_tools</code> 是「门卫」,不是「搬运工」</h5>
+<p>容易误会的一点:<code>_module_registers_tools</code> <strong>并不加载(不 import、不执行)工具文件</strong>。它只是个<strong>静态检查器 / 门卫</strong>,回答一个是非题——「这个 <code>.py</code> 顶层有没有写 <code>registry.register(...)</code>?」返回 <code>True</code>/<code>False</code>,仅此而已:</p>
+<pre><code>source = module_path.read_text(...)   # ① 把文件当【纯文本】读进来(像用记事本打开看一眼)
+tree   = ast.parse(source, ...)       # ② 解析成语法树,【一行都不运行】
+return any(... for stmt in tree.body) # ③ 只看顶层有没有一句是 registry.register(...)
+</code></pre>
+<p><strong>真正「加载」工具的是另一步。</strong>放到整个流程里,分工是:</p>
+<table>
+  <tr><th>方法</th><th>干什么</th><th>会执行工具代码吗</th></tr>
+  <tr><td><code>_module_registers_tools</code>(门卫)</td><td>静态检查:这文件顶层有没有 register</td><td>❌ 只读文本 + 解析 AST</td></tr>
+  <tr><td><code>_is_registry_register_call</code>(帮手)</td><td>帮门卫判断「某一句是不是 <code>registry.register(...)</code>」</td><td>❌</td></tr>
+  <tr><td><code>discover_builtin_tools</code>(搬运工)</td><td>先用门卫筛出合格文件,再 <code>importlib.import_module</code> <strong>真正加载</strong></td><td>✅ <strong>这一步才 import、才触发顶层 register</strong></td></tr>
+</table>
+<pre><code>module_names = [ ... for path in ...
+                 if ... and _module_registers_tools(path) ]  # ← 先【检查】,筛掉不合格的
+for mod_name in module_names:
+    importlib.import_module(mod_name)                         # ← 这里才【加载】,工具真正上户口
+</code></pre>
+<p>所以顺序是<strong>「先门卫查资格 → 再搬运工搬进门」</strong>:门卫（AST 检查）不放行的文件（顶层没有 register 的 helper），搬运工根本不会去 import。</p>
 
 <h2 id="exclude">三个被排除的文件</h2>
 <table>
   <tr><th>文件</th><th>为什么排除</th></tr>
   <tr><td><code>__init__.py</code></td><td>包初始化文件,不是工具</td></tr>
   <tr><td><code>registry.py</code></td><td>就是注册表自己。它<strong>定义</strong>了 <code>register</code>,但不<strong>调用</strong> <code>registry.register</code>(而且它处在导入链最底层,不能反过来依赖工具)</td></tr>
-  <tr><td><code>mcp_tool.py</code></td><td>MCP 工具是<strong>运行时动态注册</strong>的,不走「模块顶层 register」这条路。放进自动发现会和它的动态刷新机制打架(见第 5 篇)</td></tr>
+  <tr><td><code>mcp_tool.py</code></td><td>MCP 工具是<strong>运行时动态注册</strong>的,不走「模块顶层 register」这条路。显式按文件名排除是一道生命周期护栏:即使将来文件里出现顶层 register,自动发现也不会误把它当成静态内置工具(见第 5 篇)</td></tr>
 </table>
-<div class="box warn"><strong><code>mcp_tool.py</code> 的排除是理解 MCP 的钥匙。</strong>内置工具是「import 一次、静态登记、整个进程不变」;而 MCP 工具是「运行时连上外部 server、按 server 返回的清单动态 <code>register</code>/<code>deregister</code>、还能中途刷新」。两种生命周期完全不同,所以 MCP 不参与这套「开机自动发现」,由它自己的客户端在运行时往同一个注册表里增删(第 5 篇细讲)。</div>
+<div class="box warn"><strong><code>mcp_tool.py</code> 的排除是理解 MCP 的钥匙。</strong>内置工具采用「import 时完成初始登记、不会由自动发现器周期性刷新」的生命周期;而 MCP 工具是「运行时连上外部 server、按 server 返回的清单动态 <code>register</code>/<code>deregister</code>、还能中途刷新」。注意「初始登记是静态的」<strong>不等于注册表从此不可变化</strong>:获得授权的插件仍可覆盖/注销内置条目,<code>dynamic_schema_overrides</code> 也能在暴露阶段动态改 schema。这里区分的是<strong>发现与登记机制</strong>,不是宣称整个进程内的工具元数据永远不变。</div>
 
 <h2 id="when">何时运行:import model_tools 的副作用</h2>
-<p>发现不是被谁「主动调用」的,而是 <code>model_tools.py</code> 在<strong>模块顶层</strong>就调了一次——只要有人 import 了 <code>model_tools</code>,发现就跑:</p>
-<pre><code># model_tools.py 顶层
+<p>前面讲清了「发现<strong>怎么做</strong>」,这一节回答「发现<strong>什么时候被触发</strong>」。</p>
+<h5>先弄懂「import 的副作用」是什么意思</h5>
+<p>「副作用(side effect)」= <strong>一个模块被 import 时,顺带执行的、import 本身之外的动作</strong>。回顾一个 Python 事实(第 1 篇也提过):<strong>import 一个模块 = 从头到尾执行它的顶层代码一次</strong>。所以模块顶层写的不只是 <code>def</code>/<code>class</code> 定义,还可以写<strong>会「干活」的语句</strong>——那些语句会在 import 的一瞬间跑起来。举个最小例子:</p>
+<pre><code># mymod.py
+print("我被 import 了")       # ← 顶层的"干活"语句
+def foo(): ...
+
+# 别处:
+import mymod                  # 这一行会打印"我被 import 了" —— 这就是 import 的【副作用】
+</code></pre>
+<p>你本意只是「拿到 <code>mymod.foo</code>」,但 import 顺带把顶层那句 <code>print</code> 也执行了。这个「顺带执行的动作」就是副作用。</p>
+<h5>放到这里:发现是「import model_tools 的副作用」</h5>
+<p><code>discover_builtin_tools()</code> 不是被谁在某个函数里「主动调用」的,而是被写在 <code>model_tools.py</code> 的<strong>模块顶层</strong>——所以只要有人 <code>import model_tools</code>,这句就作为副作用自动跑一遍:</p>
+<pre><code># model_tools.py 顶层(不在任何函数里)
 from tools.registry import discover_builtin_tools, registry
 ...
-# ===== Tool Discovery(import 每个模块即触发它的 register 调用)=====
-discover_builtin_tools()
+# ===== Tool Discovery =====
+discover_builtin_tools()      # ← 顶层语句:import model_tools 时,这句自动执行
 </code></pre>
 <div class="filehint">model_tools.py · 模块顶层</div>
-<p>所以「谁 import model_tools,谁就触发了全套工具发现」。而 <code>run_agent.py</code> / <code>cli.py</code> / <code>batch_runner.py</code> 都会 import <code>model_tools</code>——于是不管从哪个前端进来,工具都在第一次用到工具系统时就<strong>全部登记就位</strong>了。</p>
-<div class="box tip"><strong>一个历史教训:MCP 发现<u>没</u>放在这里。</strong>源码注释记着——外部 MCP server 的发现曾经也放在这个模块顶层当副作用,但 <code>discover_mcp_tools()</code> 内部有个阻塞的 <code>future.result(timeout=120)</code>,而网关是<strong>在 asyncio 事件循环里</strong>、收到第一条用户消息时才懒加载 <code>model_tools</code> 的——结果只要有个配置的 MCP server 慢或连不上,就会把 Discord/Telegram 的心跳<strong>冻住最多 120 秒</strong>(#16856)。所以 MCP 发现被挪走了,只留内置工具的同步发现在这。</div>
+<p>于是形成一条连锁:</p>
+<pre><code>有人 import model_tools
+   └─(副作用)─&gt; 执行顶层的 discover_builtin_tools()
+                   └─ 扫 tools/ 目录 → 逐个 import 合格的工具文件
+                        └─(又一层副作用)─&gt; 成功加载的工具文件执行顶层 registry.register()
+                             └─ 成功导入并完成 register 的工具上户口 ✅
+</code></pre>
+<p><strong>谁会 import model_tools?</strong><code>run_agent.py</code> / <code>cli.py</code> / <code>batch_runner.py</code> 等路径最终都会。所以不管用户从 CLI、网关还是批处理哪个前端进来,只要程序<strong>第一次用到工具系统</strong>(第一次 import 到 <code>model_tools</code>),内置工具的<strong>发现扫描</strong>就自动跑一遍——没有哪段生产入口需要显式喊一声「现在开始发现内置工具」。某个模块若导入失败,本轮只记 warning 并继续,因此「扫描完成」不代表每个候选模块都成功登记。</p>
+<div class="box tip"><strong>为什么用「副作用」而不是找个地方显式调一次:</strong>因为「用工具系统」的入口有好几个(CLI/网关/批处理…),要是靠「显式调用」,就得在每个入口都记得调一次 <code>discover_builtin_tools()</code>——又回到了「靠人肉记得」的老问题。把它挂在 <code>model_tools</code> 的顶层当副作用,等于<strong>「谁用到工具系统,谁就自动触发了发现」</strong>,一处搞定、天然不会漏。代价是:import 有了副作用、且发现是同步阻塞的——所以耗时/会阻塞的东西(如连外部 MCP server)<u>不能</u>放这儿,见下。</div>
+<div class="box warn"><strong>一个历史教训:MCP 发现<u>没</u>放在这里。</strong>源码注释记着——外部 MCP server 的发现曾经也放在这个模块顶层当副作用,但 <code>discover_mcp_tools()</code> 内部有个阻塞的 <code>future.result(timeout=120)</code>,而网关是<strong>在 asyncio 事件循环里</strong>、收到第一条用户消息时才懒加载 <code>model_tools</code> 的——结果只要有个配置的 MCP server 慢或连不上,这个「import 副作用」就会把 Discord/Telegram 的心跳<strong>冻住最多 120 秒</strong>(#16856)。所以 MCP 发现被挪走了,只留内置工具的同步发现在这。<strong>这正说明:把慢操作塞进「import 副作用」是危险的</strong>——import 谁都以为是瞬间的,没人料到它会卡两分钟。</div>
 
-<h2 id="chain">回顾:循环导入安全的 import 链</h2>
-<p>把第 1 篇的单例、这一篇的发现串起来,整条依赖链是单向的:</p>
+
+<h2 id="chain">回顾:模块初始化阶段为什么不成环</h2>
+<p>把第 1 篇的单例、这一篇的发现串起来,真正需要守住的是<strong>初始化主链</strong>:<code>registry.py</code> 在模块顶层不反向 import <code>model_tools</code> 或具体工具模块,所以注册表单例会先完整建立;工具模块随后才能安全地回来取这个单例。工具模块之间并非绝对互不依赖——它们可以 import helper,个别工具也会 import 另一个工具模块——因此下面画的是<strong>发现相关的主干</strong>,不是整个 <code>tools/</code> 目录的完整依赖图:</p>
 <div class="diagram">
 <pre class="mermaid">
 flowchart BT
-    R["tools/registry.py<br/>(定义 registry 单例 + discover_builtin_tools)<br/>谁都不依赖"]
-    T["tools/*.py<br/>(顶层 registry.register 上户口)<br/>只从 registry 导入"]
+    R["tools/registry.py<br/>(先定义 registry 单例 + discover_builtin_tools)<br/>顶层不反向导入 model_tools / 工具模块"]
+    H["tools 下的 helper<br/>以及少量其他工具模块"]
+    T["自注册 tools/*.py<br/>(顶层 registry.register 上户口)"]
     M["model_tools.py<br/>(顶层调 discover_builtin_tools + 查注册表)"]
     U["run_agent.py / cli.py / batch_runner.py"]
     T --&gt; R
+    T -- "可能依赖" --&gt; H
     M --&gt; R
     M -.import 触发.-&gt; T
     U --&gt; M
 </pre>
 </div>
-<p>因为 <code>registry.py</code> 不 import 任何工具、也不 import <code>model_tools</code>,它永远在最底层,导入不会成环。<code>model_tools</code> 顶层的 <code>discover_builtin_tools()</code> 反过来<strong>动态</strong> import 那些工具文件(虚线),触发它们的 <code>register()</code>——这条「动态触发」不算静态依赖,不影响导入顺序。</p>
+<p><code>model_tools</code> 先 import 已完成初始化的 <code>registry</code>,再由顶层的 <code>discover_builtin_tools()</code> 动态 import 工具文件(虚线),触发它们回到同一个单例执行 <code>register()</code>。这条动态 import <strong>当然仍是一条运行时依赖、也会影响实际加载顺序</strong>;它之所以安全,不是因为它「不算依赖」,而是因为被工具模块依赖的注册表已经初始化完毕。<code>registry.dispatch()</code> 等方法里虽然还有对 <code>model_tools</code> 的<strong>函数内延迟 import</strong>,但那发生在工具真正执行时,不参与注册表模块的启动初始化,因此不会形成这里讨论的初始化环。</p>
 
 <h2 id="notenough">发现了 ≠ 暴露了(重要伏笔)</h2>
-<p>到这里,所有内置工具都已经<strong>登记进注册表</strong>了。但请记住第 1 篇末尾那句:<strong>登记进 <code>_tools</code> 只是上了户口,模型还看不到它们。</strong>自动发现只保证「工具的 schema/handler 都在注册表里备好了」;至于<strong>哪些工具会被真正下发给模型</strong>,取决于<strong>工具集</strong>——它得先属于一个<strong>被当前平台启用的工具集</strong>,还要通过 <code>check_fn</code>。这正是下一篇的主题。</p>
+<p>到这里,<strong>成功导入并完成顶层 register 的内置工具</strong>已经登记进注册表。但请记住第 1 篇末尾那句:<strong>登记进 <code>_tools</code> 只是上了户口,模型还看不到它们。</strong>自动发现只保证「成功加载的工具模块已把 schema/handler 交给注册表」;至于<strong>哪些工具会被真正下发给模型</strong>,取决于<strong>工具集</strong>——它得先属于一个<strong>被当前平台启用的工具集</strong>,还要通过 <code>check_fn</code>。这正是下一篇的主题。</p>
 <div class="box warn"><strong>这是全模块最容易踩的坑:</strong>你新写了一个工具文件、<code>register()</code> 也调了、<code>get_errors</code> 也没报错,但模型死活不认它。九成是——你<strong>忘了把工具名加进 <code>toolsets.py</code> 的某个工具集</strong>。自动发现只做了一半,「接进工具集」是另一半、且是<strong>手动</strong>的(见第 3、5 篇)。</div>
 
 <h2 id="takeaway">本篇要点</h2>
 <div class="box">
 <ul>
-<li><code>discover_builtin_tools()</code> 扫 <code>tools/*.py</code>,用 <strong>AST</strong> 只挑出「<strong>顶层</strong>调了 <code>registry.register</code>」的文件并 import,触发它们上户口。</li>
+<li><code>discover_builtin_tools()</code> 扫 <code>tools/*.py</code>,用 <strong>AST</strong> 只挑出「模块体里以<strong>独立表达式</strong>直接调用 <code>registry.register</code>」的文件并 import;包在 if/函数里、赋值或别名调用都不算。</li>
 <li>用 AST 静态检查(不执行代码)是为了<strong>放过纯 helper 模块</strong>——只有顶层直接写着 register 的才算工具;函数体内部的 register 不算。</li>
 <li>排除 <code>__init__.py</code> / <code>registry.py</code> / <code>mcp_tool.py</code>;MCP 因为是<strong>运行时动态注册</strong>,不走这条静态发现路。</li>
 <li>发现是 <code>model_tools.py</code> <strong>模块顶层</strong>的一次性副作用——谁 import model_tools,谁就触发全套发现。</li>
-<li>整条 import 链单向朝上,<strong>循环导入安全</strong>。</li>
+<li>发现相关的<strong>初始化主链</strong>循环安全:注册表先完成初始化,<code>model_tools</code> 再动态 import 工具;这不代表所有工具模块之间都只有单向依赖。</li>
 <li><strong>发现 ≠ 暴露</strong>:登记进注册表后,还要「被启用的工具集收录 + 通过 check_fn」才会下发给模型——下一篇。</li>
 </ul>
 </div>

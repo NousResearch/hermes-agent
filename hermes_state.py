@@ -2468,13 +2468,28 @@ class SessionDB:
                 "AND sql LIKE 'CREATE VIRTUAL TABLE%' LIMIT 1"
             ).fetchone())
             if had:
-                conn.execute("PRAGMA writable_schema=ON")
-                conn.execute(
-                    "DELETE FROM sqlite_master WHERE type = 'table' "
-                    "AND name IN ('messages_fts', 'messages_fts_trigram') "
-                    "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
-                )
-                conn.execute("PRAGMA writable_schema=RESET")
+                # SQLite 3.37+ SQLITE_DBCONFIG_DEFENSIVE (enabled by default in
+                # Python 3.12's sqlite3 build with SQLite 3.54.0) ignores
+                # writable_schema for DELETE FROM sqlite_master, even in
+                # BEGIN IMMEDIATE. Use isolation_level=None + separate conn
+                # (sqlite-utils 3.35+ fix pattern, sqlite-utils#577 / github #162).
+                def _drop_master_legacy_fts(db_path_str: str):
+                    c = sqlite3.connect(db_path_str, isolation_level=None)
+                    try:
+                        c.execute("PRAGMA writable_schema=ON")
+                        c.execute(
+                            "DELETE FROM sqlite_master WHERE type = 'table' "
+                            "AND name IN ('messages_fts', 'messages_fts_trigram') "
+                            "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+                        )
+                        c.execute("PRAGMA writable_schema=OFF")
+                    finally:
+                        c.close()
+                # Defensive may still block; fall back gracefully.
+                try:
+                    _drop_master_legacy_fts(str(self.db_path))
+                except sqlite3.OperationalError:
+                    pass
                 shadows = [
                     r[0] for r in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type = 'table' "

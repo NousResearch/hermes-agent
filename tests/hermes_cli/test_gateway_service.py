@@ -3957,3 +3957,26 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             deadline=gateway_cli.time.monotonic() - 1,
         )
         assert ok is False
+
+
+class TestLaunchdPlistProfileWorkingDirectory:
+    def test_named_profile_plist_anchors_working_directory_at_profile_home(self, tmp_path, monkeypatch):
+        """`hermes update` refreshes named-profile plists from a process whose
+        HERMES_HOME is the DEFAULT home. WorkingDirectory must still be the
+        profile's own home: stamping the default home into a named profile's
+        unit makes that gateway's platform plugins dotenv-inherit the default
+        profile's .env, so the profile answers as the default agent's bots
+        (cross-profile bot-token poisoning, 2026-07-21/22).
+        """
+        import plistlib
+
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "bingo"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+        plist = gateway_cli._generate_launchd_plist_for_home(profile_home)
+
+        data = plistlib.loads(plist.encode("utf-8"))
+        assert data["EnvironmentVariables"]["HERMES_HOME"] == str(profile_home.resolve())
+        assert data["WorkingDirectory"] == str(profile_home.resolve())

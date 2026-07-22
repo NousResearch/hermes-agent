@@ -3966,12 +3966,15 @@ def _generate_launchd_plist_for_home(home: Path) -> str:
     mutating its own HERMES_HOME.
     """
     python_path = get_python_path()
-    # Stable cwd anchor — never the volatile source checkout. See
-    # _stable_service_working_dir() for the rationale (same rot risk applies
-    # to launchd's WorkingDirectory as to systemd's).
-    working_dir = _stable_service_working_dir()
     home = Path(home)
     hermes_home = str(home.resolve())
+    # Stable cwd anchor — never the volatile source checkout (see
+    # _stable_service_working_dir() for the rot rationale). Anchor at THIS
+    # home, not the generating process's HERMES_HOME: `hermes update` runs
+    # with the default home, and stamping that into a named profile's unit
+    # makes its platform plugins dotenv-inherit the default profile's .env
+    # (cross-profile bot-token poisoning).
+    working_dir = hermes_home
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = _launchd_label_for_home(home)

@@ -541,7 +541,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 | **Data storage** | Supermemory Cloud or self-hosted |
 | **Cost** | Supermemory pricing (cloud) / free (self-hosted) |
 
-**Tools:** `supermemory_store` (save explicit memories), `supermemory_search` (semantic similarity search), `supermemory_forget` (forget by ID or best-match query), `supermemory_profile` (persistent profile + recent context)
+**Tools:** `supermemory_store` (save explicit memories, returns `document_id`), `supermemory_search` (semantic similarity search, returns `memory_id`), `supermemory_forget` (delete by exact `document_id`/`memory_id`; `query` is preview-only — it never deletes, it returns candidate `memory_id`s to confirm with a follow-up call), `supermemory_profile` (persistent profile + recent context)
 
 **Setup:**
 ```bash

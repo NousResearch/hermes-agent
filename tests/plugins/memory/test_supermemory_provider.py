@@ -29,7 +29,8 @@ class FakeClient:
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
         self.ingest_calls = []
         self.forgotten_ids = []
-        self.forget_by_query_response = {"success": True, "message": "Forgot"}
+        self.forgotten_document_ids = []
+        self.forget_by_query_response = {"success": False, "message": "Found 0 candidate(s), none deleted.", "candidates": []}
 
     def add_memory(self, content, metadata=None, *, entity_context="",
                    container_tag=None, custom_id=None):
@@ -50,6 +51,13 @@ class FakeClient:
 
     def forget_memory(self, memory_id, *, container_tag=None):
         self.forgotten_ids.append(memory_id)
+
+    def forget_document(self, document_id):
+        self.forgotten_document_ids.append(document_id)
+
+    def forget_by_legacy_id(self, legacy_id, *, container_tag=None):
+        self.forgotten_ids.append(legacy_id)
+        return {"forgotten": True, "id": legacy_id, "resource": "memory"}
 
     def forget_by_query(self, query, *, container_tag=None):
         return self.forget_by_query_response
@@ -275,6 +283,7 @@ def test_store_tool_returns_saved_payload(provider):
     result = json.loads(provider.handle_tool_call("supermemory_store", {"content": "Jordan likes concise docs"}))
     assert result["saved"] is True
     assert result["id"] == "mem_123"
+    assert result["document_id"] == "mem_123"
 
 
 def test_search_tool_formats_results(provider):
@@ -287,16 +296,37 @@ def test_search_tool_formats_results(provider):
 
 
 def test_forget_tool_by_id(provider):
+    """Legacy `id` field routes through forget_by_legacy_id (issue #69103)."""
     result = json.loads(provider.handle_tool_call("supermemory_forget", {"id": "m1"}))
-    assert result == {"forgotten": True, "id": "m1"}
+    assert result == {"forgotten": True, "id": "m1", "resource": "memory"}
     assert provider._client.forgotten_ids == ["m1"]
 
 
+def test_forget_tool_by_document_id(provider):
+    result = json.loads(provider.handle_tool_call("supermemory_forget", {"document_id": "doc_1"}))
+    assert result == {"forgotten": True, "document_id": "doc_1"}
+    assert provider._client.forgotten_document_ids == ["doc_1"]
+    assert provider._client.forgotten_ids == []
+
+
+def test_forget_tool_by_memory_id(provider):
+    result = json.loads(provider.handle_tool_call("supermemory_forget", {"memory_id": "mem_1"}))
+    assert result == {"forgotten": True, "memory_id": "mem_1"}
+    assert provider._client.forgotten_ids == ["mem_1"]
+    assert provider._client.forgotten_document_ids == []
+
+
 def test_forget_tool_by_query(provider):
-    provider._client.forget_by_query_response = {"success": True, "message": "Forgot one", "id": "m7"}
+    """query is a preview-only pass-through to forget_by_query; real
+    preview-vs-delete semantics are covered at the client level."""
+    provider._client.forget_by_query_response = {
+        "success": False,
+        "message": "Found 1 candidate(s), none deleted.",
+        "candidates": [{"memory_id": "m7", "memory": "that thing", "similarity": 0.9}],
+    }
     result = json.loads(provider.handle_tool_call("supermemory_forget", {"query": "that thing"}))
-    assert result["success"] is True
-    assert result["id"] == "m7"
+    assert result["success"] is False
+    assert result["candidates"][0]["memory_id"] == "m7"
 
 
 def test_profile_tool_formats_sections(provider):
@@ -723,6 +753,167 @@ def test_post_setup_writes_config_and_prints_summary(monkeypatch, tmp_path, caps
     assert "✓ Connected" in out
     assert "3 profile facts" in out
     assert "Memory provider: supermemory" in out
+
+
+# -- issue #69103: document_id/memory_id contract + legacy id fallback --------
+
+
+def _install_stub_sdk(monkeypatch, *, not_found_ids=None, search_results=None):
+    """Wire a minimal stand-in for the supermemory SDK into _SupermemoryClient.
+
+    Exercises the real client methods (not FakeClient) so the 404-only
+    fallback and document/memory routing are verified against something
+    shaped like the actual SDK surface (documents.add/delete,
+    memories.forget, search.memories), not just a provider-level test double.
+    """
+    import sys
+    import types
+
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    not_found_ids = not_found_ids or set()
+
+    class _StubDocuments:
+        def __init__(self):
+            self.added = []
+            self.deleted = []
+
+        def add(self, **kwargs):
+            self.added.append(kwargs)
+            return types.SimpleNamespace(id="doc_1")
+
+        def delete(self, id):
+            self.deleted.append(id)
+
+    class _StubMemories:
+        def __init__(self):
+            self.forgotten = []
+
+        def forget(self, container_tag, id):
+            if id in not_found_ids:
+                err = type("NotFoundError", (Exception,), {})("not found")
+                err.status_code = 404
+                raise err
+            self.forgotten.append(id)
+
+    class _StubSearchNamespace:
+        def memories(self, **kwargs):
+            return types.SimpleNamespace(results=search_results or [])
+
+    created = {}
+
+    class StubSupermemorySDK:
+        def __init__(self, **kwargs):
+            self.documents = _StubDocuments()
+            self.memories = _StubMemories()
+            self.search = _StubSearchNamespace()
+            created["instance"] = self
+
+    module = types.ModuleType("supermemory")
+    module.Supermemory = StubSupermemorySDK
+    monkeypatch.setitem(sys.modules, "supermemory", module)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    client = _SupermemoryClient(api_key="test-key", timeout=1.0, container_tag="hermes")
+    return client, created["instance"]
+
+
+def test_add_memory_returns_document_id(monkeypatch):
+    client, sdk = _install_stub_sdk(monkeypatch)
+    result = client.add_memory("hello world")
+    assert result == {"document_id": "doc_1", "id": "doc_1"}
+    assert sdk.documents.added[0]["content"] == "hello world"
+
+
+def test_search_memories_returns_memory_id(monkeypatch):
+    import types
+    item = types.SimpleNamespace(id="mem_9", memory="a fact", similarity=0.5, updated_at=None, metadata=None)
+    client, _sdk = _install_stub_sdk(monkeypatch, search_results=[item])
+    results = client.search_memories("q")
+    assert results[0]["memory_id"] == "mem_9"
+    assert results[0]["id"] == "mem_9"
+
+
+def test_forget_by_legacy_id_uses_memory_path_when_found(monkeypatch):
+    client, sdk = _install_stub_sdk(monkeypatch)
+    result = client.forget_by_legacy_id("mem_5")
+    assert result == {"forgotten": True, "id": "mem_5", "resource": "memory"}
+    assert sdk.memories.forgotten == ["mem_5"]
+    assert sdk.documents.deleted == []
+
+
+def test_forget_by_legacy_id_falls_back_to_document_on_404(monkeypatch):
+    """Root cause of #69103: a store()-issued document_id passed to forget(id=...)
+    404s against the memories endpoint; the fallback must land on documents.delete."""
+    client, sdk = _install_stub_sdk(monkeypatch, not_found_ids={"doc_1"})
+    result = client.forget_by_legacy_id("doc_1")
+    assert result == {"forgotten": True, "id": "doc_1", "resource": "document"}
+    assert sdk.documents.deleted == ["doc_1"]
+    assert sdk.memories.forgotten == []
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 500, 503])
+def test_forget_by_legacy_id_does_not_fallback_on_non_404(monkeypatch, status_code):
+    client, sdk = _install_stub_sdk(monkeypatch)
+
+    def raise_error(container_tag, id):
+        err = RuntimeError(f"status {status_code}")
+        err.status_code = status_code
+        raise err
+
+    monkeypatch.setattr(sdk.memories, "forget", raise_error)
+    with pytest.raises(RuntimeError):
+        client.forget_by_legacy_id("mem_5")
+    assert sdk.documents.deleted == []
+
+
+def test_forget_by_legacy_id_does_not_fallback_on_timeout(monkeypatch):
+    client, sdk = _install_stub_sdk(monkeypatch)
+
+    def raise_timeout(container_tag, id):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(sdk.memories, "forget", raise_timeout)
+    with pytest.raises(TimeoutError):
+        client.forget_by_legacy_id("mem_5")
+    assert sdk.documents.deleted == []
+
+
+def test_forget_by_query_never_deletes_even_a_clear_top_match(monkeypatch):
+    """Two-step confirm (issue #69103 additional finding): query is preview-only,
+    regardless of how confident the top match is."""
+    import types
+    item = types.SimpleNamespace(id="mem_1", memory="fact one", similarity=0.98, updated_at=None, metadata=None)
+    client, sdk = _install_stub_sdk(monkeypatch, search_results=[item])
+    result = client.forget_by_query("fact")
+    assert result["success"] is False
+    assert result["candidates"] == [{"memory_id": "mem_1", "memory": "fact one", "similarity": 0.98}]
+    assert sdk.memories.forgotten == []
+
+
+def test_forget_by_query_returns_all_candidates(monkeypatch):
+    import types
+    item1 = types.SimpleNamespace(id="mem_1", memory="fact one", similarity=0.81, updated_at=None, metadata=None)
+    item2 = types.SimpleNamespace(id="mem_2", memory="fact two", similarity=0.80, updated_at=None, metadata=None)
+    client, sdk = _install_stub_sdk(monkeypatch, search_results=[item1, item2])
+    result = client.forget_by_query("fact")
+    assert len(result["candidates"]) == 2
+    assert sdk.memories.forgotten == []
+
+
+def test_forget_by_query_then_confirm_by_memory_id_deletes(monkeypatch):
+    """Full two-step flow: preview via query, then confirm via explicit memory_id."""
+    import types
+    item = types.SimpleNamespace(id="mem_1", memory="fact one", similarity=0.98, updated_at=None, metadata=None)
+    client, sdk = _install_stub_sdk(monkeypatch, search_results=[item])
+
+    preview = client.forget_by_query("fact")
+    assert preview["success"] is False
+    assert sdk.memories.forgotten == []
+
+    chosen_id = preview["candidates"][0]["memory_id"]
+    client.forget_memory(chosen_id)
+    assert sdk.memories.forgotten == [chosen_id]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")

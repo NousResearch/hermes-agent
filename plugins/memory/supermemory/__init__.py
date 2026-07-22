@@ -276,6 +276,22 @@ def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
 
 
+def _is_not_found_error(exc: Exception) -> bool:
+    """True only for a 404/Not-Found response — never for auth, network, or 5xx.
+
+    Duck-typed because the supermemory SDK's exception hierarchy isn't a
+    stable import surface here (lazy-installed). Checked defensively so a
+    legacy-id forget only falls through to the document-delete path when the
+    memory truly doesn't exist, not on any other failure (see issue #69103).
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 404:
+        return True
+    return exc.__class__.__name__ in {"NotFoundError", "NotFound"}
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
@@ -331,7 +347,11 @@ class _SupermemoryClient:
         if custom_id:
             kwargs["custom_id"] = custom_id
         result = self._client.documents.add(**kwargs)
-        return {"id": getattr(result, "id", "")}
+        document_id = getattr(result, "id", "")
+        # `id` is a deprecated alias of `document_id`, kept for back-compat.
+        # documents and memories are different resources with different
+        # delete semantics — see forget_by_legacy_id (issue #69103).
+        return {"document_id": document_id, "id": document_id}
 
     def search_memories(self, query: str, *, limit: int = 5,
                         container_tag: Optional[str] = None,
@@ -344,8 +364,12 @@ class _SupermemoryClient:
         response = self._client.search.memories(**kwargs)
         results = []
         for item in (getattr(response, "results", None) or []):
+            memory_id = getattr(item, "id", "")
             results.append({
-                "id": getattr(item, "id", ""),
+                # `id` is a deprecated alias of `memory_id` — this id belongs
+                # to the memories resource, distinct from a store() document_id.
+                "id": memory_id,
+                "memory_id": memory_id,
                 "memory": getattr(item, "memory", "") or "",
                 "similarity": getattr(item, "similarity", None),
                 "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
@@ -382,17 +406,55 @@ class _SupermemoryClient:
         tag = container_tag or self._container_tag
         self._client.memories.forget(container_tag=tag, id=memory_id)
 
+    def forget_document(self, document_id: str) -> None:
+        self._client.documents.delete(id=document_id)
+
+    def forget_by_legacy_id(self, legacy_id: str, *, container_tag: Optional[str] = None) -> dict:
+        """Back-compat for the old single `id` field (issue #69103).
+
+        store() returns a document_id but the original forget(id=...) contract
+        treated it as a memory_id. Try the memory-forget path first (matches
+        the pre-fix behavior for ids that came from search()); only on a 404
+        Not-Found retry as a document delete. Any other error (auth, network,
+        5xx) propagates — it does not prove the id is the wrong type.
+        """
+        try:
+            self.forget_memory(legacy_id, container_tag=container_tag)
+            return {"forgotten": True, "id": legacy_id, "resource": "memory"}
+        except Exception as exc:
+            if not _is_not_found_error(exc):
+                raise
+            self.forget_document(legacy_id)
+            return {"forgotten": True, "id": legacy_id, "resource": "document"}
+
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
+        """Preview only — never deletes.
+
+        Auto-deleting the top search hit was the additional finding in
+        issue #69103: a single fuzzy match is not sufficient grounds to
+        permanently remove a memory. This always returns candidates for the
+        caller to review; an explicit second call with the chosen
+        `memory_id` (via forget_memory) is what actually deletes.
+        """
         results = self.search_memories(query, limit=5, container_tag=container_tag)
         if not results:
-            return {"success": False, "message": "No matching memory found to forget."}
-        target = results[0]
-        memory_id = target.get("id", "")
-        if not memory_id:
-            return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id, container_tag=container_tag)
-        preview = (target.get("memory") or "")[:100]
-        return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
+            return {"success": False, "message": "No matching memory found."}
+        candidates = [
+            {
+                "memory_id": r.get("memory_id") or r.get("id", ""),
+                "memory": (r.get("memory") or "")[:100],
+                "similarity": r.get("similarity"),
+            }
+            for r in results
+        ]
+        return {
+            "success": False,
+            "message": (
+                f"Found {len(candidates)} candidate(s), none deleted. "
+                "Call supermemory_forget again with memory_id to confirm deletion."
+            ),
+            "candidates": candidates,
+        }
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
         payload: dict = {
@@ -506,12 +568,17 @@ SEARCH_SCHEMA = {
 
 FORGET_SCHEMA = {
     "name": "supermemory_forget",
-    "description": "Forget a memory by exact id or by best-match query.",
+    "description": (
+        "Forget a memory by exact document_id/memory_id/id, or preview candidates by query. "
+        "query never deletes — it returns candidate memory_ids; call again with memory_id to confirm deletion."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "Exact memory id to delete."},
-            "query": {"type": "string", "description": "Query used to find the memory to forget."},
+            "document_id": {"type": "string", "description": "Exact document_id returned by supermemory_store to permanently delete."},
+            "memory_id": {"type": "string", "description": "Exact memory_id returned by supermemory_search, or by a prior query preview, to forget."},
+            "id": {"type": "string", "description": "Deprecated: legacy id field, ambiguous between document_id and memory_id. Prefer document_id or memory_id."},
+            "query": {"type": "string", "description": "Preview only: finds candidate memories matching this query without deleting anything. Returns memory_id candidates — pass one back via memory_id to confirm deletion."},
         },
     },
 }
@@ -941,7 +1008,12 @@ class SupermemoryMemoryProvider(MemoryProvider):
         try:
             result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context, container_tag=tag)
             preview = content[:80] + ("..." if len(content) > 80 else "")
-            resp: dict[str, Any] = {"saved": True, "id": result.get("id", ""), "preview": preview}
+            resp: dict[str, Any] = {
+                "saved": True,
+                "document_id": result.get("document_id", result.get("id", "")),
+                "id": result.get("id", ""),
+                "preview": preview,
+            }
             if tag:
                 resp["container_tag"] = tag
             return json.dumps(resp)
@@ -964,7 +1036,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
             results = self._client.search_memories(query, limit=limit, container_tag=tag)
             formatted = []
             for item in results:
-                entry: dict[str, Any] = {"id": item.get("id", ""), "content": item.get("memory", "")}
+                entry: dict[str, Any] = {
+                    "memory_id": item.get("memory_id", item.get("id", "")),
+                    "id": item.get("id", ""),
+                    "content": item.get("memory", ""),
+                }
                 if item.get("similarity") is not None:
                     try:
                         entry["similarity"] = round(float(item["similarity"]) * 100)
@@ -979,18 +1055,25 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return tool_error(f"Search failed: {exc}")
 
     def _tool_forget(self, args: dict) -> str:
-        memory_id = str(args.get("id") or "").strip()
+        document_id = str(args.get("document_id") or "").strip()
+        memory_id = str(args.get("memory_id") or "").strip()
+        legacy_id = str(args.get("id") or "").strip()
         query = str(args.get("query") or "").strip()
-        if not memory_id and not query:
-            return tool_error("Provide either id or query")
+        if not document_id and not memory_id and not legacy_id and not query:
+            return tool_error("Provide document_id, memory_id, id, or query")
         try:
             tag = self._resolve_tool_container_tag(args)
         except ValueError as exc:
             return tool_error(str(exc))
         try:
+            if document_id:
+                self._client.forget_document(document_id)
+                return json.dumps({"forgotten": True, "document_id": document_id})
             if memory_id:
                 self._client.forget_memory(memory_id, container_tag=tag)
-                return json.dumps({"forgotten": True, "id": memory_id})
+                return json.dumps({"forgotten": True, "memory_id": memory_id})
+            if legacy_id:
+                return json.dumps(self._client.forget_by_legacy_id(legacy_id, container_tag=tag))
             return json.dumps(self._client.forget_by_query(query, container_tag=tag))
         except Exception as exc:
             return tool_error(f"Forget failed: {exc}")

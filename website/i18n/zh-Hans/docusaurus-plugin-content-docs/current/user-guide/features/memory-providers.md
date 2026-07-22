@@ -471,7 +471,7 @@ hermes config set memory.provider byterover
 | **数据存储** | Supermemory 云端或自托管 |
 | **费用** | 云端按 Supermemory 定价 / 自托管免费 |
 
-**工具：** `supermemory_store`（保存显式记忆）、`supermemory_search`（语义相似度搜索）、`supermemory_forget`（按 ID 或最佳匹配查询遗忘）、`supermemory_profile`（持久化 profile + 近期上下文）
+**工具：** `supermemory_store`（保存显式记忆，返回 `document_id`）、`supermemory_search`（语义相似度搜索，返回 `memory_id`）、`supermemory_forget`（按精确的 `document_id`/`memory_id` 删除；`query` 仅作预览——不会直接删除，会返回候选 `memory_id` 供后续确认调用）、`supermemory_profile`（持久化 profile + 近期上下文）
 
 **安装：**
 ```bash

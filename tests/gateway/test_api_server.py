@@ -3314,6 +3314,53 @@ class TestTruncation:
         assert history[-1]["content"] == "msg 148"
 
     @pytest.mark.asyncio
+    async def test_truncation_auto_preserves_non_leading_compaction_summary(self, adapter):
+        """A summary sitting after a retained system head must survive too.
+
+        The gateway /compress path can force a user-leading layout that
+        leaves the compaction summary after a kept system message, so the
+        preservation predicate must not assume the summary is at index 0.
+        """
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        system_head = {"role": "system", "content": "You are a helpful agent."}
+        summary = {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier work.",
+            "_compressed_summary": True,
+        }
+        long_history = [system_head, summary] + [
+            {"role": "user", "content": f"msg {i}"}
+            for i in range(148)
+        ]
+        adapter._response_store.put("resp_summary_mid", {
+            "response": {"id": "resp_summary_mid", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_summary_mid",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert len(history) == 100
+        assert history[0] == summary
+        assert history[1]["content"] == "msg 49"
+        assert history[-1]["content"] == "msg 147"
+
+    @pytest.mark.asyncio
     async def test_no_truncation_keeps_full_history(self, adapter):
         """Without truncation=auto, long history is passed as-is."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}

@@ -187,6 +187,70 @@ class TestGenerateGeminiTts:
             with pytest.raises(RuntimeError, match="HTTP 400.*Invalid voice"):
                 _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
 
+    def test_rate_limit_uses_configured_fallback_model(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.json.return_value = {"error": {"message": "Rate limit exceeded"}}
+        config = {
+            "gemini": {
+                "model": "gemini-3.1-flash-tts-preview",
+                "fallback_model": "gemini-2.5-flash-preview-tts",
+            }
+        }
+
+        with patch(
+            "requests.post", side_effect=[rate_limited, mock_gemini_response]
+        ) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        assert mock_post.call_count == 2
+        assert "gemini-3.1-flash-tts-preview" in mock_post.call_args_list[0].args[0]
+        assert "gemini-2.5-flash-preview-tts" in mock_post.call_args_list[1].args[0]
+
+    def test_bad_request_does_not_use_fallback_model(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        bad_request = MagicMock()
+        bad_request.status_code = 400
+        bad_request.json.return_value = {"error": {"message": "Invalid voice"}}
+        config = {"gemini": {"fallback_model": "gemini-2.5-flash-preview-tts"}}
+
+        with patch("requests.post", return_value=bad_request) as mock_post:
+            with pytest.raises(RuntimeError, match="HTTP 400.*Invalid voice"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        assert mock_post.call_count == 1
+
+    def test_missing_audio_uses_configured_fallback_model(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        no_audio = MagicMock()
+        no_audio.status_code = 200
+        no_audio.json.return_value = {"candidates": [{"content": {"parts": []}}]}
+        config = {
+            "gemini": {
+                "model": "gemini-3.1-flash-tts-preview",
+                "fallback_model": "gemini-2.5-flash-preview-tts",
+            }
+        }
+
+        with patch(
+            "requests.post", side_effect=[no_audio, mock_gemini_response]
+        ) as mock_post:
+            _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), config)
+
+        assert mock_post.call_count == 2
+        assert "gemini-2.5-flash-preview-tts" in mock_post.call_args_list[1].args[0]
+
     def test_empty_audio_raises(self, tmp_path, monkeypatch):
         from tools.tts_tool import _generate_gemini_tts
 

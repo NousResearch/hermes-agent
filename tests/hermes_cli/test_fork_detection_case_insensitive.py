@@ -1,21 +1,14 @@
-"""Regression tests for #60240: case-insensitive fork detection + --yes
-skip for the upstream prompt.
+"""Regression tests for #60240: case-insensitive fork detection.
 
-Two related bugs in the ``hermes update`` flow:
+The ``_is_fork()`` helper compares ``origin_url`` to
+``OFFICIAL_REPO_URLS`` with a plain ``==`` after stripping ``.git`` and
+``/``. GitHub owner/repo slugs are case-insensitive, so a clone URL
+like ``https://github.com/nousresearch/hermes-agent`` (lowercase) is
+incorrectly classified as a fork.
 
-1. ``_is_fork()`` compares ``origin_url`` to ``OFFICIAL_REPO_URLS`` with a
-   plain ``==`` after stripping ``.git`` and ``/``. GitHub owner/repo
-   slugs are case-insensitive, so a clone URL like
-   ``https://github.com/nousresearch/hermes-agent`` (lowercase) is
-   incorrectly classified as a fork.
-
-2. The "Add official repo as 'upstream' remote?" prompt in
-   ``_handle_fork_warning`` is wired to bare ``input()`` and never
-   consults ``assume_yes`` (the ``--yes`` flag). Unattended updates
-   (CI, cron, --yes) hang forever waiting for a response that never
-   comes.
-
-Both fixes are small and self-contained.
+Note: the separate --yes / bare-input() bug in
+``_handle_fork_warning`` (CI/cron hang on the "Add upstream?"
+prompt) is NOT covered by this PR — it has its own follow-up.
 """
 from __future__ import annotations
 

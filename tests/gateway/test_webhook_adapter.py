@@ -1687,3 +1687,80 @@ class TestDualStackBind:
             await adapter.disconnect()
             blocker.close()
             await blocker.wait_closed()
+
+
+class TestAllowInsecureConfig:
+    """Regression tests for allow_insecure: true config key (issue #47329)."""
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_on_loopback_allowed(self):
+        routes = {"r1": {"allow_insecure": True, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_on_public_bind_rejected(self):
+        routes = {"r1": {"allow_insecure": True, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="non-loopback|INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_false_string_fails_closed(self):
+        routes = {"r1": {"allow_insecure": "false", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        with pytest.raises(ValueError, match="no HMAC secret|secret"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_string_acts_as_true(self):
+        routes = {"r1": {"allow_insecure": "true", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_allow_insecure_true_actually_accepts_unsigned_request(self):
+        """Regression (review of #66369): the connect()-time allow_insecure
+        -> secret mapping is a local variable unless persisted back into the
+        route dict. Without that, _handle_webhook re-reads
+        route_config.get('secret', ...) directly from self._routes at
+        request time, sees it's still empty, and rejects every request with
+        403 regardless of allow_insecure: true. This POSTs through the real
+        handler (not just connect()) to prove the mapping actually reaches
+        live request auth, not just the startup validation loop."""
+        routes = {"r1": {"allow_insecure": True, "prompt": "test: {x}"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
+        adapter.handle_message = AsyncMock()
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                connected = await adapter.connect()
+            assert connected is True
+        finally:
+            await adapter.disconnect()
+
+        # Route mutation must be visible on the adapter's live route state.
+        assert adapter._routes["r1"]["secret"] == _INSECURE_NO_AUTH, (
+            "connect() must persist the allow_insecure -> secret mapping "
+            "into the route dict itself, not just a local variable"
+        )
+
+        # Rebuild the handler app fresh (mirrors _create_app / other tests in
+        # this file) and POST with NO signature header -- this must succeed
+        # (not 403), proving the live request path honors allow_insecure.
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/r1", json={"x": "hello"})
+            assert resp.status == 202, (
+                f"Unsigned request to an allow_insecure: true route must be "
+                f"accepted, got {resp.status}: {await resp.text()}"
+            )

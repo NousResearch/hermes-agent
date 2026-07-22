@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 import pytest
@@ -1049,3 +1050,89 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# =========================================================================
+# Orphan pruning must not act on an unreachable volume
+# =========================================================================
+
+class TestOrphanPruneRequiresObservableDeletion:
+    """A missing workdir is ambiguous: deleted, or just not mounted right now.
+
+    Orphan pruning deletes a project's whole checkpoint history and runs
+    unattended at startup (``maybe_auto_prune_checkpoints`` from the CLI and
+    the gateway), so it must only fire when the deletion is something we
+    actually observed — the parent directory present, the project gone. An
+    unplugged drive, a share behind a downed VPN, or a bind-mount absent from
+    this container must not cost the user their restore points.
+    """
+
+    def _project_with_history(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base
+        )
+        m = CheckpointManager(enabled=True, max_snapshots=10)
+        m.ensure_checkpoint(str(work_dir), "initial")
+        return m
+
+    def _history_survives(self, checkpoint_base, work_dir):
+        store = _store_path(checkpoint_base)
+        return _project_meta_path(
+            store, _project_hash(str(work_dir))
+        ).exists()
+
+    def test_unreachable_volume_keeps_its_checkpoints(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """The whole mount is absent (parent missing too) → keep the history."""
+        mount = tmp_path / "mnt" / "nas"
+        work_dir = mount / "work" / "proj"
+        work_dir.mkdir(parents=True)
+        (work_dir / "main.py").write_text("print('x')\n")
+        self._project_with_history(work_dir, checkpoint_base, monkeypatch)
+
+        # The volume goes away — project AND its parents disappear together.
+        shutil.rmtree(tmp_path / "mnt")
+        assert not work_dir.exists()
+
+        prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert self._history_survives(checkpoint_base, work_dir), (
+            "checkpoint history was deleted for a project whose volume was "
+            "merely unmounted"
+        )
+
+    def test_genuinely_deleted_project_is_still_pruned(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Control: parent present, project gone → a real orphan, still pruned."""
+        parent = tmp_path / "projects"
+        work_dir = parent / "proj"
+        work_dir.mkdir(parents=True)
+        (work_dir / "main.py").write_text("print('x')\n")
+        self._project_with_history(work_dir, checkpoint_base, monkeypatch)
+
+        shutil.rmtree(work_dir)
+        assert parent.exists() and not work_dir.exists()
+
+        result = prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert result["deleted_orphan"] >= 1
+        assert not self._history_survives(checkpoint_base, work_dir)
+
+    def test_live_project_is_never_pruned_as_orphan(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Control: a present project keeps its history."""
+        self._project_with_history(work_dir, checkpoint_base, monkeypatch)
+
+        result = prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert result["deleted_orphan"] == 0
+        assert self._history_survives(checkpoint_base, work_dir)

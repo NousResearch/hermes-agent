@@ -391,7 +391,10 @@ class GatewayDiagnosticLogStreamer:
             if ev.get("event") != "gateway_diagnostic":
                 continue
             attrs = _diagnostic_log_attributes(ev)
-            body = ev.get("redacted_message") or ev.get("name") or "gateway diagnostic"
+            # Rendered Python log messages may contain arbitrary user IDs, names,
+            # paths, or configured strings. Keep the OTLP body content-free and
+            # carry only the structured, allowlisted attributes above.
+            body = "gateway diagnostic"
             record = self._LogRecord(
                 timestamp=ev.get("ts_ns"),
                 trace_id=self._sdk["INVALID_TRACE_ID"],

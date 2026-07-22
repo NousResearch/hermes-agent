@@ -556,14 +556,13 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
 
 function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
   if (!billing.card) {
+    // The no-card blocker is already spelled out by the page-level warn banner
+    // (noCardNotice); repeating it here — emoji and all — just clutters the row,
+    // so keep the plain "what buying does" line and let the controls sit disabled.
     return {
       action: { disabled: true, label: 'Buy' },
       chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
-      description: resolveRefusal({
-        kind: 'no_payment_method',
-        message: '',
-        portalUrl: billing.portal_url ?? undefined
-      }).message,
+      description: 'A single charge on your card, added to your balance today.',
       id: 'buy_credits',
       title: 'Buy credits now'
     }

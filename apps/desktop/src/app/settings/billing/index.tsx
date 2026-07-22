@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
@@ -45,16 +46,6 @@ const BILLING_DEV_FIXTURE_NAMES = import.meta.env.DEV
   : []
 
 type BillingFixtureSelection = 'live' | BillingDevFixtureName
-
-// DEV-only: a canned ~60%-full "ok" bar so the active progress-bar treatment can be
-// eyeballed on any account (a live/empty account only ever shows the hatch track).
-const DEV_PREVIEW_USAGE_ROW: BillingUsageRowView = {
-  bar: { label: 'Example usage (dev preview)', state: 'ok', tone: 'subscription', value: 0.62 },
-  caption: 'Preview only — dev build',
-  id: 'subscription_credits',
-  title: 'Example bar (dev preview)',
-  value: '$62 of $100 left'
-}
 
 function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | 'primary'; value: string }) {
   return (
@@ -320,44 +311,20 @@ function UsageBar({ bar, fallbackLabel }: { bar?: BillingUsageRowView['bar']; fa
     value: 0
   }
 
-  const width = Math.round(resolvedBar.value * 100)
-  const isEmpty = resolvedBar.value === 0
-  const showDangerNub = resolvedBar.track === 'danger' && resolvedBar.state === 'danger' && width === 0
+  // Plain shared primitive — no bespoke track chrome. Only the fill tone carries
+  // billing meaning: destructive when over-limit, green for healthy remaining
+  // credits, muted otherwise. Color rides the sanctioned `fillClassName` override.
+  const isOk = resolvedBar.state === 'ok' && (resolvedBar.tone === 'subscription' || resolvedBar.tone === 'topup')
 
   return (
-    <div
+    <Progress
       aria-label={resolvedBar.label}
-      aria-valuemax={100}
-      aria-valuemin={0}
-      aria-valuenow={width}
-      className={cn(
-        // Radius follows the app-wide rounded-full progress-bar idiom.
-        'relative h-2 w-full overflow-hidden rounded-full',
-        resolvedBar.track === 'danger'
-          ? 'dither text-destructive/60 bg-destructive/10'
-          : isEmpty
-            ? // Muted currentColor so the hatch reads as a faint placeholder, not solid ink.
-              'dither text-(--ui-text-quaternary) bg-(--ui-bg-elevated)'
-            : 'bg-(--ui-bg-tertiary) shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ui-stroke-secondary)_50%,transparent)]'
-      )}
-      role="progressbar"
-    >
-      {showDangerNub && <div className="absolute inset-y-0 left-0 z-10 w-2 rounded-full bg-destructive" />}
-      <div
-        className={cn(
-          'relative h-full rounded-full transition-[width] duration-300 ease-out',
-          resolvedBar.state === 'danger'
-            ? 'bg-destructive'
-            : resolvedBar.state === 'ok' && (resolvedBar.tone === 'subscription' || resolvedBar.tone === 'topup')
-              ? 'bg-(--ui-green)'
-              : 'bg-muted-foreground/45'
-        )}
-        style={{
-          minWidth: resolvedBar.value > 0 ? 4 : undefined,
-          width: `${width}%`
-        }}
-      />
-    </div>
+      destructive={resolvedBar.state === 'danger'}
+      fillClassName={resolvedBar.state === 'danger' ? undefined : isOk ? 'bg-(--ui-green)' : 'bg-muted-foreground/45'}
+      fillStyle={{ minWidth: resolvedBar.value > 0 ? 4 : undefined }}
+      size="lg"
+      value={resolvedBar.value}
+    />
   )
 }
 
@@ -523,9 +490,6 @@ function BillingSettingsContent({
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />
             ))}
-            {/* DEV-only: a fully-filled example so the active (non-disabled) bar can be
-                reviewed on any account. Compiled out of production. */}
-            {import.meta.env.DEV && <UsageRow row={DEV_PREVIEW_USAGE_ROW} />}
           </div>
         </SettingsSection>
       )}

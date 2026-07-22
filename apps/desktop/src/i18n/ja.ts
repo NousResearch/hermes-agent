@@ -1057,6 +1057,7 @@ export const ja = defineLocale({
     ageSeconds: seconds => `${seconds}秒前`,
     ageMinutes: minutes => `${minutes}分前`,
     ageHours: hours => `${hours}時間前`,
+    ageDays: days => `${days}日前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
     tokens: value => `${value} トーク`

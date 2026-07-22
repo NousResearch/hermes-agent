@@ -225,6 +225,19 @@ export function useVoiceConversation({
       setStatus('speaking')
 
       try {
+        // Keep a microphone capture alive while TTS is playing so the user can
+        // barge in. The first detected speech stops playback and hands the
+        // same recorder to the normal turn-closing path.
+        await handle.start({
+          silenceLevel: 0.075,
+          silenceMs: 1_250,
+          idleSilenceMs: 12_000,
+          onSpeech: () => {
+            stopVoicePlayback()
+            void handleTurn(true)
+          },
+          onSilence: () => void handleTurn()
+        })
         await playSpeechText(text, { source: 'voice-conversation' })
       } catch (error) {
         notifyError(error, voiceCopy.playbackFailed)
@@ -237,7 +250,7 @@ export function useVoiceConversation({
         }
       }
     },
-    [voiceCopy.playbackFailed]
+    [handle, handleTurn, voiceCopy.playbackFailed]
   )
 
   const start = useCallback(async () => {

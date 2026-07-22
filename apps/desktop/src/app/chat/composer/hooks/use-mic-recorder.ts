@@ -4,6 +4,7 @@ type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
+  onSpeech?: () => void
   onError?: (error: Error) => void
   onSilence?: () => void
   silenceLevel?: number
@@ -138,8 +139,12 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
         if (speechThreshold > 0 && options.onSilence && !silenceTriggeredRef.current) {
           if (normalized >= speechThreshold) {
+            const wasSpeaking = heardSpeechRef.current
             heardSpeechRef.current = true
             silenceStartedAtRef.current = null
+            if (!wasSpeaking) {
+              options.onSpeech?.()
+            }
           } else if (heardSpeechRef.current && silenceMs > 0) {
             silenceStartedAtRef.current ??= now
 

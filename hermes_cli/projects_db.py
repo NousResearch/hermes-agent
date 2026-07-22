@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -149,7 +150,19 @@ def _normalize_path(path: str) -> str:
 # Connection management
 # ---------------------------------------------------------------------------
 
-_INITIALIZED_PATHS: set[str] = set()
+_INITIALIZED_PATHS: dict[str, tuple[int, int]] = {}
+_INIT_LOCK = threading.RLock()
+
+
+def _file_identity(path: Path) -> Optional[tuple[int, int]]:
+    """Return a stable identity for a database file, if the filesystem has one."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    if not stat_result.st_ino:
+        return None
+    return int(stat_result.st_dev), int(stat_result.st_ino)
 
 
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -157,26 +170,32 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
     WAL with DELETE fallback for network filesystems (shared helper from
     ``hermes_state``). Schema init is idempotent (``CREATE TABLE IF NOT
-    EXISTS`` + additive migrations) and cached per-path per-process.
+    EXISTS`` + additive migrations) and cached per file identity per-process.
     """
     path = db_path if db_path is not None else projects_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path))
-    try:
-        conn.row_factory = sqlite3.Row
-        from hermes_state import apply_wal_with_fallback
+    with _INIT_LOCK:
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.row_factory = sqlite3.Row
+            from hermes_state import apply_wal_with_fallback
 
-        apply_wal_with_fallback(conn, db_label="projects.db")
-        conn.execute("PRAGMA foreign_keys=ON")
-        if resolved not in _INITIALIZED_PATHS:
-            conn.executescript(SCHEMA_SQL)
-            _migrate_add_optional_columns(conn)
-            _INITIALIZED_PATHS.add(resolved)
-    except Exception:
-        conn.close()
-        raise
-    return conn
+            apply_wal_with_fallback(conn, db_label="projects.db")
+            conn.execute("PRAGMA foreign_keys=ON")
+            identity = _file_identity(path)
+            if identity is None or _INITIALIZED_PATHS.get(resolved) != identity:
+                conn.executescript(SCHEMA_SQL)
+                _migrate_add_optional_columns(conn)
+                identity = _file_identity(path)
+                if identity is None:
+                    _INITIALIZED_PATHS.pop(resolved, None)
+                else:
+                    _INITIALIZED_PATHS[resolved] = identity
+        except Exception:
+            conn.close()
+            raise
+        return conn
 
 
 @contextlib.contextmanager

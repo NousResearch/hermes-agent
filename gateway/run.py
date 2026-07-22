@@ -11866,6 +11866,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _msg_model != _msg_configured_model:
                     _msg_config_ctx = None
+                if _msg_config_ctx is not None and isinstance(_msg_model_cfg, dict):
+                    try:
+                        from agent.agent_init import _context_route_mismatch
+
+                        if _context_route_mismatch(
+                            _msg_model_cfg.get("base_url"),
+                            _msg_base_url,
+                            _msg_model_cfg.get("provider"),
+                            _msg_runtime.get("provider"),
+                        ):
+                            _msg_config_ctx = None
+                    except Exception:
+                        _msg_config_ctx = None
                 if _msg_custom_providers and _msg_base_url:
                     try:
                         from hermes_cli.config import get_custom_provider_context_length
@@ -12360,6 +12373,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_provider = None
             _hyg_base_url = None
             _hyg_api_key = None
+            _hyg_configured_model = None
+            _hyg_configured_provider = None
+            _hyg_configured_base_url = None
             _hyg_data = {}
             try:
                 _hyg_data = _load_gateway_config()
@@ -12399,6 +12415,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             except (TypeError, ValueError):
                                 pass
 
+                _hyg_configured_model = _hyg_model
+                _hyg_configured_provider = _hyg_provider
+                _hyg_configured_base_url = _hyg_base_url
+
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
                         source=source,
@@ -12411,31 +12431,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+                if _hyg_config_context_length is not None:
+                    try:
+                        from agent.agent_init import _context_route_mismatch
+
+                        if (
+                            _hyg_configured_model
+                            and _hyg_model != _hyg_configured_model
+                        ) or _context_route_mismatch(
+                            _hyg_configured_base_url,
+                            _hyg_base_url,
+                            _hyg_configured_provider,
+                            _hyg_provider,
+                        ):
+                            _hyg_config_context_length = None
+                    except Exception:
+                        _hyg_config_context_length = None
+
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).
                 # Must run after runtime resolution so _hyg_base_url is set.
                 if _hyg_config_context_length is None and _hyg_base_url:
                     try:
                         try:
-                            from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
+                            from hermes_cli.config import (
+                                get_compatible_custom_providers as _gw_gcp,
+                                get_custom_provider_context_length as _gw_gccl,
+                            )
                             _hyg_custom_providers = _gw_gcp(_hyg_data)
                         except Exception:
                             _hyg_custom_providers = _hyg_data.get("custom_providers")
                             if not isinstance(_hyg_custom_providers, list):
                                 _hyg_custom_providers = []
-                        for _cp in _hyg_custom_providers:
-                            if not isinstance(_cp, dict):
-                                continue
-                            _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                            if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                _cp_models = _cp.get("models", {})
-                                if isinstance(_cp_models, dict):
-                                    _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                    if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
-                                        if _cp_ctx is not None:
-                                            _hyg_config_context_length = int(_cp_ctx)
-                                break
+                        _hyg_custom_ctx = _gw_gccl(
+                            model=_hyg_model,
+                            base_url=_hyg_base_url,
+                            custom_providers=_hyg_custom_providers,
+                        )
+                        if _hyg_custom_ctx:
+                            _hyg_config_context_length = int(_hyg_custom_ctx)
                     except (TypeError, ValueError):
                         pass
             except Exception:
@@ -13695,12 +13729,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         api_key = None
         custom_provs = None
         data = None
+        configured_model = None
+        configured_provider = None
+        configured_base_url = None
 
         try:
             data = _load_gateway_config()
             if data:
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
+                    configured_model = model_cfg.get("default") or model_cfg.get("model")
                     raw_ctx = model_cfg.get("context_length")
                     if raw_ctx is not None:
                         try:
@@ -13709,6 +13747,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pass
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
+                    configured_provider = provider
+                    configured_base_url = base_url
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
                     custom_provs = get_compatible_custom_providers(data)
@@ -13717,49 +13757,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-        # Also check custom_providers for context_length when top-level model.context_length is not set
-        if config_context_length is None and data:
-            try:
-                custom_providers = data.get("custom_providers", [])
-                if custom_providers:
-                    for cp in custom_providers:
-                        if not isinstance(cp, dict):
-                            continue
-                        cp_model = cp.get("model") or ""
-                        cp_models = cp.get("models") or {}
-                        # Match provider model to current model
-                        if cp_model and cp_model == model:
-                            raw_cp_ctx = cp.get("context_length")
-                            if raw_cp_ctx is not None:
-                                try:
-                                    config_context_length = int(raw_cp_ctx)
-                                    break
-                                except (TypeError, ValueError):
-                                    pass
-                        # Also check per-model context_length
-                        if isinstance(cp_models, dict):
-                            model_entry = cp_models.get(model)
-                            if isinstance(model_entry, dict):
-                                model_ctx = model_entry.get("context_length")
-                            else:
-                                model_ctx = model_entry
-                            if model_ctx is not None and isinstance(model_ctx, (int, float)):
-                                try:
-                                    config_context_length = int(model_ctx)
-                                    break
-                                except (TypeError, ValueError):
-                                    pass
-            except Exception:
-                pass
-
         # Resolve runtime credentials for probing
         try:
             runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
+            provider = runtime.get("provider") or provider
+            base_url = runtime.get("base_url") or base_url
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is not None:
+            try:
+                from agent.agent_init import _context_route_mismatch
+
+                if (
+                    configured_model and model != configured_model
+                ) or _context_route_mismatch(
+                    configured_base_url,
+                    base_url,
+                    configured_provider,
+                    provider,
+                ):
+                    config_context_length = None
+            except Exception:
+                config_context_length = None
+
+        if config_context_length is None and custom_provs and base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+
+                custom_ctx = get_custom_provider_context_length(
+                    model=model,
+                    base_url=base_url,
+                    custom_providers=custom_provs,
+                )
+                if custom_ctx:
+                    config_context_length = custom_ctx
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,

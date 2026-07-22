@@ -539,6 +539,11 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    embed_model = config.get("embed_model") or os.environ.get("HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL")
+    if embed_model:
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"] = str(embed_model)
+
     return env_values
 
 

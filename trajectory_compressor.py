@@ -1160,9 +1160,12 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                             description=f"[dim]✅ {compressed_count} compressed | ⏭️ {skipped_count} skipped | ⏱️ {timeout_count} timeout | 🔄 {api_calls} API calls | ⚡ {in_flight} in-flight[/dim]"
                         )
                     
-                    # Skip this entry entirely (don't include in output)
-                    results[file_path][entry_idx] = None
-                    
+                    # Preserve the original (uncompressed) entry on timeout — a
+                    # transient timeout (e.g. a stuck summarization API call) must
+                    # never silently delete a valid trajectory from the training
+                    # output. This mirrors the generic-Exception branch below.
+                    results[file_path][entry_idx] = (entry, TrajectoryMetrics())
+
                 except Exception as e:
                     self.logger.error(f"Error processing entry from {file_path}:{entry_idx}: {e}")
                     

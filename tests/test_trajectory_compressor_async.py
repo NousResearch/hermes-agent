@@ -90,7 +90,7 @@ class TestSourceLineVerification:
     def _read_file() -> str:
         import os
         base = os.path.dirname(os.path.dirname(__file__))
-        with open(os.path.join(base, "trajectory_compressor.py")) as f:
+        with open(os.path.join(base, "trajectory_compressor.py"), encoding="utf-8") as f:
             return f.read()
 
     def test_no_eager_async_openai_in_init(self):
@@ -199,3 +199,62 @@ async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_tempera
 
     assert result.startswith("[CONTEXT SUMMARY]:")
     assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_timeout_preserves_original_trajectory(tmp_path):
+    """A per-trajectory timeout must keep the original entry, not drop it.
+
+    Regression test: the timeout handler previously stored ``None`` for the
+    entry, and the output writer filtered ``None`` rows out — so a transient
+    timeout (e.g. a stuck summarization API call) silently deleted a valid
+    training trajectory. The handler now preserves the original entry, matching
+    the generic-Exception branch.
+    """
+    import asyncio
+    import json
+
+    from trajectory_compressor import (
+        AggregateMetrics,
+        CompressionConfig,
+        TrajectoryCompressor,
+    )
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    entry = {
+        "conversations": [
+            {"from": "system", "value": "sys"},
+            {"from": "human", "value": "hello"},
+            {"from": "gpt", "value": "world"},
+        ]
+    }
+    (input_dir / "trajectories.jsonl").write_text(
+        json.dumps(entry, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    config = CompressionConfig(per_trajectory_timeout=0.05, metrics_enabled=False)
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor.aggregate_metrics = AggregateMetrics()
+
+    # Force every trajectory to exceed the (tiny) per-trajectory timeout.
+    async def _hang(_entry):
+        await asyncio.sleep(10)
+
+    compressor.process_entry_async = _hang
+
+    await compressor._process_directory_async(input_dir, output_dir)
+
+    out_file = output_dir / "trajectories.jsonl"
+    assert out_file.exists()
+    lines = [ln for ln in out_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    # The timed-out trajectory must survive in the output (uncompressed),
+    # never be silently dropped.
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == entry
+    assert compressor.aggregate_metrics.trajectories_failed == 1

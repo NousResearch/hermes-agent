@@ -14,6 +14,7 @@ import importlib.util
 import logging
 import subprocess
 import sys
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -54,6 +55,29 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+
+def _get_process_cmdline(pid: str) -> Optional[str]:
+    """Retrieve the command line arguments for a process by PID."""
+    # Try /proc first (Linux)
+    proc_path = Path(f"/proc/{pid}/cmdline")
+    if proc_path.exists():
+        try:
+            content = proc_path.read_bytes()
+            return content.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+    # Fallback to ps (macOS/Unix)
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "args=", "-p", pid],
+            capture_output=True, text=True, timeout=2
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
 
 def _detect_openclaw_processes() -> list[str]:
     """Detect running OpenClaw processes and services.
@@ -103,13 +127,45 @@ def _detect_openclaw_processes() -> list[str]:
             pass
     else:
         try:
+            import re
+            pids = []
+            # Find candidate PIDs by scanning for openclaw or clawd
             result = subprocess.run(
-                ["pgrep", "-f", "openclaw"],
+                ["pgrep", "-f", "openclaw|clawd"],
                 capture_output=True, text=True, timeout=3,
             )
             if result.returncode == 0:
-                pids = result.stdout.strip().split()
-                found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
+                pids.extend(result.stdout.strip().split())
+
+            result_x = subprocess.run(
+                ["pgrep", "-x", "openclaw|clawd"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result_x.returncode == 0:
+                pids.extend(result_x.stdout.strip().split())
+
+            pids = sorted(list(set(pids)))
+            current_pid = str(os.getpid())
+            valid_pids = []
+
+            for pid in pids:
+                if pid == current_pid:
+                    continue
+                cmdline = _get_process_cmdline(pid)
+                if not cmdline:
+                    continue
+                
+                cmd_lower = cmdline.lower()
+                # Exclude wrappers/grep/checking files
+                if any(x in cmd_lower for x in ("pgrep", "grep", "ps ", "test_claw.py", "claw.py")):
+                    continue
+                
+                # Check for strict word boundary on openclaw or clawd
+                if re.search(r"\b(openclaw|clawd)\b", cmd_lower):
+                    valid_pids.append(pid)
+
+            if valid_pids:
+                found.append(f"openclaw process(es) (PIDs: {', '.join(valid_pids)})")
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 

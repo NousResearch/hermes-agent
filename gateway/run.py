@@ -13206,6 +13206,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "model": agent_result.get("model", "") if agent_result else "",
+                "provider": agent_result.get("provider", "") if agent_result else "",
             })
             
             # Check for pending process watchers (check_interval on background processes)

@@ -21,9 +21,11 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _approval_event_choices,
+    _run_session_continuation_revision,
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_state import SessionDB
 from tools import approval as approval_mod
 
 
@@ -104,6 +106,21 @@ def _make_slow_agent(**kwargs):
     return mock_agent, ready, interrupted
 
 
+def _continuation_descriptor(db: SessionDB, session_id: str) -> dict:
+    snapshot = db.get_continuation_snapshot(session_id)
+    assert snapshot is not None
+    resolved_id, history, message_ids = snapshot
+    return {
+        "version": 1,
+        "session_id": resolved_id,
+        "revision": _run_session_continuation_revision(
+            resolved_id,
+            history,
+            message_ids,
+        ),
+    }
+
+
 @pytest.fixture
 def adapter():
     return _make_adapter()
@@ -144,6 +161,386 @@ class TestStartRun:
                 assert status["run_id"] == data["run_id"]
                 assert status["status"] in {"queued", "running", "completed"}
                 assert status["object"] == "hermes.run"
+
+
+class TestExactSessionContinuation:
+    @pytest.fixture(autouse=True)
+    def _configured_key_for_continuation_logic(self, adapter):
+        """Exercise continuation state logic with its required key configured.
+
+        The HTTP bearer gate itself has dedicated coverage below; these tests
+        focus on descriptor binding, races, and lifecycle behavior.
+        """
+        adapter._api_key = "sk-secret"
+        adapter._check_auth = lambda _request: None
+
+    @pytest.mark.asyncio
+    async def test_verified_continuation_loads_history_into_stoppable_run(
+        self,
+        adapter,
+        tmp_path,
+    ):
+        db = SessionDB(tmp_path / "continuation.db")
+        adapter._session_db = db
+        try:
+            session_id = db.create_session("continued-session", "api_server")
+            db.append_message(session_id, "user", "earlier question")
+            db.append_message(session_id, "assistant", "earlier answer")
+            descriptor = _continuation_descriptor(db, session_id)
+
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "continued"}
+            mock_agent.session_prompt_tokens = 3
+            mock_agent.session_completion_tokens = 2
+            mock_agent.session_total_tokens = 5
+
+            app = _create_runs_app(adapter)
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                async with TestClient(TestServer(app)) as cli:
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={"input": "next step", "continuation": descriptor},
+                    )
+                    assert resp.status == 202, await resp.text()
+                    run_id = (await resp.json())["run_id"]
+
+                    for _ in range(40):
+                        status_resp = await cli.get(f"/v1/runs/{run_id}")
+                        status = await status_resp.json()
+                        if status["status"] == "completed":
+                            break
+                        await asyncio.sleep(0.025)
+
+            assert status["status"] == "completed"
+            assert status["session_id"] == session_id
+            assert status["continuation_version"] == 1
+            assert status["output"] == "continued"
+            call = mock_agent.run_conversation.call_args.kwargs
+            assert call["task_id"] == session_id
+            assert call["user_message"] == "next step"
+            assert [
+                (message["role"], message["content"])
+                for message in call["conversation_history"]
+            ] == [
+                ("user", "earlier question"),
+                ("assistant", "earlier answer"),
+            ]
+            assert adapter._active_continuation_sessions == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_continuation_submission_refuses_an_unkeyed_api_server(
+        self, tmp_path
+    ):
+        adapter = _make_adapter()
+        db = SessionDB(tmp_path / "unkeyed-continuation.db")
+        adapter._session_db = db
+        try:
+            session_id = db.create_session("private-session", "api_server")
+            db.append_message(session_id, "user", "private history")
+            descriptor = _continuation_descriptor(db, session_id)
+            app = _create_runs_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "continuation": descriptor},
+                )
+                payload = await response.json()
+
+            assert response.status == 403
+            assert payload["error"]["code"] == "session_continuation_auth_required"
+            assert "private" not in str(payload)
+            assert adapter._run_statuses == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_changed_revision_fails_before_run_allocation(self, adapter, tmp_path):
+        db = SessionDB(tmp_path / "changed.db")
+        adapter._session_db = db
+        try:
+            session_id = db.create_session("changed-session", "api_server")
+            db.append_message(session_id, "user", "original")
+            descriptor = _continuation_descriptor(db, session_id)
+            db.append_message(session_id, "assistant", "new state")
+
+            app = _create_runs_app(adapter)
+            with patch.object(adapter, "_create_agent") as create_agent:
+                async with TestClient(TestServer(app)) as cli:
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={"input": "continue", "continuation": descriptor},
+                    )
+                    payload = await resp.json()
+
+            assert resp.status == 409
+            assert payload["error"]["code"] == "session_continuation_changed"
+            assert "original" not in str(payload)
+            assert "new state" not in str(payload)
+            create_agent.assert_not_called()
+            assert adapter._run_streams == {}
+            assert adapter._run_statuses == {}
+            assert adapter._active_continuation_sessions == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_cross_session_revision_fails_closed(self, adapter, tmp_path):
+        db = SessionDB(tmp_path / "cross-session.db")
+        adapter._session_db = db
+        try:
+            first_id = db.create_session("first-session", "api_server")
+            second_id = db.create_session("second-session", "api_server")
+            db.append_message(first_id, "user", "first history")
+            db.append_message(second_id, "user", "second history")
+            descriptor = _continuation_descriptor(db, first_id)
+            descriptor["session_id"] = second_id
+
+            app = _create_runs_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "continuation": descriptor},
+                )
+                payload = await resp.json()
+
+            assert resp.status == 409
+            assert payload["error"]["code"] == "session_continuation_changed"
+            assert adapter._run_statuses == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_compression_rotation_makes_tip_descriptor_stale(
+        self,
+        adapter,
+        tmp_path,
+    ):
+        db = SessionDB(tmp_path / "compressed.db")
+        adapter._session_db = db
+        try:
+            tip_id = db.create_session("old-tip", "api_server")
+            db.append_message(tip_id, "user", "old tip history")
+            descriptor = _continuation_descriptor(db, tip_id)
+            db.end_session(tip_id, "compression")
+            new_tip = db.create_session(
+                "new-tip",
+                "api_server",
+                parent_session_id=tip_id,
+            )
+            db.append_message(new_tip, "user", "new tip history")
+
+            app = _create_runs_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "continue", "continuation": descriptor},
+                )
+                payload = await resp.json()
+
+            assert resp.status == 409
+            assert payload["error"]["code"] == "session_continuation_changed"
+            assert adapter._run_statuses == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_continuation_rejects_ambiguous_or_malformed_input(
+        self,
+        adapter,
+        tmp_path,
+    ):
+        db = SessionDB(tmp_path / "invalid.db")
+        adapter._session_db = db
+        try:
+            session_id = db.create_session("invalid-session", "api_server")
+            db.append_message(session_id, "user", "history")
+            descriptor = _continuation_descriptor(db, session_id)
+            cases = [
+                ({"input": "continue", "continuation": "invalid"}, 400),
+                (
+                    {
+                        "input": "continue",
+                        "continuation": {**descriptor, "extra": True},
+                    },
+                    400,
+                ),
+                (
+                    {
+                        "input": "continue",
+                        "session_id": session_id,
+                        "continuation": descriptor,
+                    },
+                    400,
+                ),
+                (
+                    {
+                        "input": "continue",
+                        "conversation_history": [],
+                        "continuation": descriptor,
+                    },
+                    400,
+                ),
+                (
+                    {
+                        "input": [
+                            {"role": "user", "content": "old"},
+                            {"role": "user", "content": "new"},
+                        ],
+                        "continuation": descriptor,
+                    },
+                    400,
+                ),
+                (
+                    {
+                        "input": "continue",
+                        "continuation": {**descriptor, "version": True},
+                    },
+                    400,
+                ),
+                (
+                    {
+                        "input": "continue",
+                        "continuation": {**descriptor, "revision": "sessionrev_bad"},
+                    },
+                    400,
+                ),
+            ]
+
+            app = _create_runs_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                for body, expected_status in cases:
+                    resp = await cli.post("/v1/runs", json=body)
+                    assert resp.status == expected_status, await resp.text()
+
+            assert adapter._run_statuses == {}
+            assert adapter._run_streams == {}
+            assert adapter._active_continuation_sessions == {}
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_only_one_continuation_run_can_own_a_session_and_stop_releases_it(
+        self,
+        adapter,
+        tmp_path,
+    ):
+        db = SessionDB(tmp_path / "active.db")
+        adapter._session_db = db
+        try:
+            session_id = db.create_session("active-session", "api_server")
+            db.append_message(session_id, "user", "history")
+            descriptor = _continuation_descriptor(db, session_id)
+            slow_agent, ready, interrupted = _make_slow_agent()
+
+            app = _create_runs_app(adapter)
+            with patch.object(adapter, "_create_agent", return_value=slow_agent):
+                async with TestClient(TestServer(app)) as cli:
+                    first = await cli.post(
+                        "/v1/runs",
+                        json={"input": "first", "continuation": descriptor},
+                    )
+                    assert first.status == 202, await first.text()
+                    first_id = (await first.json())["run_id"]
+                    assert await asyncio.to_thread(ready.wait, 2)
+
+                    second = await cli.post(
+                        "/v1/runs",
+                        json={"input": "second", "continuation": descriptor},
+                    )
+                    second_payload = await second.json()
+                    assert second.status == 409
+                    assert (
+                        second_payload["error"]["code"]
+                        == "session_continuation_active"
+                    )
+
+                    stopped = await cli.post(f"/v1/runs/{first_id}/stop")
+                    assert stopped.status == 200
+                    assert interrupted.wait(timeout=2)
+                    for _ in range(40):
+                        if not adapter._active_continuation_sessions:
+                            break
+                        await asyncio.sleep(0.025)
+
+            assert adapter._active_continuation_sessions == {}
+            assert len(adapter._run_statuses) == 1
+            assert adapter._run_statuses[first_id]["status"] == "cancelled"
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_verification_reservation_closes_concurrent_snapshot_race(
+        self,
+        adapter,
+        tmp_path,
+    ):
+        db = SessionDB(tmp_path / "verification-race.db")
+        try:
+            session_id = db.create_session("verification-race", "api_server")
+            db.append_message(session_id, "user", "history")
+            descriptor = _continuation_descriptor(db, session_id)
+            snapshot_started = threading.Event()
+            release_snapshot = threading.Event()
+
+            class BlockingSnapshotDB:
+                calls = 0
+
+                def get_continuation_snapshot(self, requested_id):
+                    self.calls += 1
+                    snapshot_started.set()
+                    release_snapshot.wait(timeout=5)
+                    return db.get_continuation_snapshot(requested_id)
+
+            blocking_db = BlockingSnapshotDB()
+            adapter._session_db = blocking_db
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "done"}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+
+            app = _create_runs_app(adapter)
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                async with TestClient(TestServer(app)) as cli:
+                    first_task = asyncio.create_task(
+                        cli.post(
+                            "/v1/runs",
+                            json={"input": "first", "continuation": descriptor},
+                        )
+                    )
+                    assert await asyncio.to_thread(snapshot_started.wait, 2)
+
+                    second = await cli.post(
+                        "/v1/runs",
+                        json={"input": "second", "continuation": descriptor},
+                    )
+                    second_payload = await second.json()
+                    assert second.status == 409
+                    assert (
+                        second_payload["error"]["code"]
+                        == "session_continuation_active"
+                    )
+                    assert blocking_db.calls == 1
+
+                    release_snapshot.set()
+                    first = await first_task
+                    assert first.status == 202, await first.text()
+                    for _ in range(40):
+                        if not adapter._active_continuation_sessions:
+                            break
+                        await asyncio.sleep(0.025)
+
+            assert adapter._active_continuation_sessions == {}
+            assert len(adapter._run_statuses) == 1
+        finally:
+            if "release_snapshot" in locals():
+                release_snapshot.set()
+            db.close()
+
+
+class TestStartRunValidation:
 
     @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):

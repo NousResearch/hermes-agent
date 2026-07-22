@@ -12,6 +12,7 @@ Exposes an HTTP server with endpoints:
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
+- GET  /v1/sessions/{session_id}/continuation — issue an exact Runs continuation descriptor
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
@@ -127,6 +128,29 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+RUN_SESSION_CONTINUATION_VERSION = 1
+RUN_SESSION_CONTINUATION_REVISION_RE = re.compile(r"sessionrev_[0-9a-f]{64}")
+
+
+def _run_session_continuation_revision(
+    session_id: str,
+    conversation_history: List[Dict[str, Any]],
+    message_ids: List[int],
+) -> str:
+    """Hash the exact normalized history used for a continued Runs turn."""
+    canonical = json.dumps(
+        {
+            "version": RUN_SESSION_CONTINUATION_VERSION,
+            "session_id": session_id,
+            "message_ids": message_ids,
+            "conversation_history": conversation_history,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"sessionrev_{hashlib.sha256(canonical).hexdigest()}"
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -991,6 +1015,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        # Exact Runs continuations are single-writer per resolved session tip.
+        # Values are the run IDs that own the in-process claim until their
+        # executor-backed work has fully exited.
+        self._active_continuation_sessions: Dict[
+            tuple[Optional[str], str], str
+        ] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_db_lock: Optional[asyncio.Lock] = None  # Single-flight for lazy init
         # Concurrency cap shared across all agent-serving endpoints
@@ -1500,6 +1530,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            (
+                "GET",
+                "/v1/sessions/{session_id}/continuation",
+                self._handle_session_continuation,
+            ),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2048,6 +2083,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "run_session_continuation": bool(self._api_key),
+                "run_session_continuation_version": RUN_SESSION_CONTINUATION_VERSION,
+                "run_session_continuation_exact_revision": True,
+                "run_session_continuation_stoppable": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -2077,6 +2116,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_continuation": {
+                    "method": "GET",
+                    "path": "/v1/sessions/{session_id}/continuation",
+                },
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -2430,6 +2473,101 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
+        })
+
+    async def _handle_session_continuation(
+        self, request: "web.Request"
+    ) -> "web.Response":
+        """Issue a revision-bound descriptor for one stoppable Runs turn."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication",
+                    code="session_continuation_auth_required",
+                ),
+                status=403,
+            )
+
+        session_id = request.match_info["session_id"]
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return web.json_response(
+                _openai_error(
+                    "Session database unavailable",
+                    code="session_db_unavailable",
+                ),
+                status=503,
+            )
+        try:
+            snapshot = await asyncio.to_thread(
+                db.get_continuation_snapshot,
+                session_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to create continuation descriptor for session %s",
+                session_id,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Session continuation is temporarily unavailable",
+                    code="session_continuation_unavailable",
+                ),
+                status=503,
+            )
+        if snapshot is None:
+            return web.json_response(
+                _openai_error(
+                    "Session not found",
+                    code="session_not_found",
+                ),
+                status=404,
+            )
+
+        resolved_id, conversation_history, message_ids = snapshot
+        from gateway.session import _is_path_unsafe
+
+        if (
+            not isinstance(resolved_id, str)
+            or not resolved_id
+            or len(resolved_id) > self._MAX_SESSION_HEADER_LEN
+            or re.search(r"[\r\n\x00]", resolved_id)
+            or _is_path_unsafe(resolved_id)
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Session cannot be represented by a continuation descriptor",
+                    code="session_continuation_unavailable",
+                ),
+                status=409,
+            )
+        try:
+            revision = _run_session_continuation_revision(
+                resolved_id,
+                conversation_history,
+                message_ids,
+            )
+        except (TypeError, ValueError):
+            logger.exception(
+                "Session %s could not be normalized for continuation",
+                resolved_id,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Session continuation is unavailable for this history",
+                    code="session_continuation_unavailable",
+                ),
+                status=409,
+            )
+
+        return web.json_response({
+            "object": "hermes.session.continuation",
+            "version": RUN_SESSION_CONTINUATION_VERSION,
+            "session_id": resolved_id,
+            "revision": revision,
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
@@ -4803,6 +4941,11 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(
+                _openai_error("Request body must be a JSON object"),
+                status=400,
+            )
 
         raw_input = body.get("input")
         if not raw_input:
@@ -4815,11 +4958,178 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
+        continued_session_id: Optional[str] = None
+        continued_history: Optional[List[Dict[str, Any]]] = None
+        continuation_claim_id: Optional[str] = None
+        continuation_claim_key: Optional[tuple[Optional[str], str]] = None
+        raw_continuation = body.get("continuation")
+        if raw_continuation is not None:
+            if not self._api_key:
+                return web.json_response(
+                    _openai_error(
+                        "Session continuation requires API key authentication",
+                        code="session_continuation_auth_required",
+                    ),
+                    status=403,
+                )
+            if not isinstance(raw_continuation, dict):
+                return web.json_response(
+                    _openai_error(
+                        "'continuation' must be an object",
+                        code="invalid_session_continuation",
+                    ),
+                    status=400,
+                )
+            expected_fields = {"version", "session_id", "revision"}
+            if set(raw_continuation) != expected_fields:
+                return web.json_response(
+                    _openai_error(
+                        "'continuation' must contain exactly version, session_id, and revision",
+                        code="invalid_session_continuation",
+                    ),
+                    status=400,
+                )
+            if any(
+                field in body
+                for field in (
+                    "session_id",
+                    "conversation_history",
+                    "previous_response_id",
+                )
+            ) or (isinstance(raw_input, list) and len(raw_input) > 1):
+                return web.json_response(
+                    _openai_error(
+                        "Continuation cannot be combined with session_id or client-supplied history",
+                        code="ambiguous_session_continuation",
+                    ),
+                    status=400,
+                )
+
+            continuation_version = raw_continuation.get("version")
+            continuation_session_id = raw_continuation.get("session_id")
+            continuation_revision = raw_continuation.get("revision")
+            from gateway.session import _is_path_unsafe
+
+            if (
+                not isinstance(continuation_version, int)
+                or isinstance(continuation_version, bool)
+                or continuation_version != RUN_SESSION_CONTINUATION_VERSION
+                or not isinstance(continuation_session_id, str)
+                or not continuation_session_id
+                or len(continuation_session_id) > self._MAX_SESSION_HEADER_LEN
+                or re.search(r"[\r\n\x00]", continuation_session_id)
+                or _is_path_unsafe(continuation_session_id)
+                or not isinstance(continuation_revision, str)
+                or RUN_SESSION_CONTINUATION_REVISION_RE.fullmatch(
+                    continuation_revision
+                )
+                is None
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "Invalid session continuation descriptor",
+                        code="invalid_session_continuation",
+                    ),
+                    status=400,
+                )
+
+            db = await self._ensure_session_db_async()
+            if db is None:
+                return web.json_response(
+                    _openai_error(
+                        "Session database unavailable",
+                        code="session_db_unavailable",
+                    ),
+                    status=503,
+                )
+            continuation_claim_key = (
+                _api_request_profile.get(),
+                continuation_session_id,
+            )
+            if continuation_claim_key in self._active_continuation_sessions:
+                return web.json_response(
+                    _openai_error(
+                        "Session continuation already has an active run",
+                        code="session_continuation_active",
+                    ),
+                    status=409,
+                )
+            continuation_claim_id = f"checking_{uuid.uuid4().hex}"
+            self._active_continuation_sessions[
+                continuation_claim_key
+            ] = continuation_claim_id
+            try:
+                try:
+                    snapshot = await asyncio.to_thread(
+                        db.get_continuation_snapshot,
+                        continuation_session_id,
+                    )
+                except Exception:
+                    logger.exception("Failed to verify a Runs continuation descriptor")
+                    return web.json_response(
+                        _openai_error(
+                            "Session continuation is temporarily unavailable",
+                            code="session_continuation_unavailable",
+                        ),
+                        status=503,
+                    )
+                if snapshot is None:
+                    return web.json_response(
+                        _openai_error(
+                            "Session continuation is no longer current",
+                            code="session_continuation_changed",
+                        ),
+                        status=409,
+                    )
+                resolved_id, snapshot_history, snapshot_message_ids = snapshot
+                try:
+                    current_revision = _run_session_continuation_revision(
+                        resolved_id,
+                        snapshot_history,
+                        snapshot_message_ids,
+                    )
+                except (TypeError, ValueError):
+                    return web.json_response(
+                        _openai_error(
+                            "Session continuation is unavailable for this history",
+                            code="session_continuation_unavailable",
+                        ),
+                        status=409,
+                    )
+                if (
+                    resolved_id != continuation_session_id
+                    or not hmac.compare_digest(
+                        current_revision,
+                        continuation_revision,
+                    )
+                ):
+                    return web.json_response(
+                        _openai_error(
+                            "Session continuation is no longer current",
+                            code="session_continuation_changed",
+                        ),
+                        status=409,
+                    )
+                continued_session_id = resolved_id
+                continued_history = snapshot_history
+            finally:
+                if (
+                    continued_session_id is None
+                    and self._active_continuation_sessions.get(
+                        continuation_claim_key
+                    )
+                    == continuation_claim_id
+                ):
+                    self._active_continuation_sessions.pop(
+                        continuation_claim_key,
+                        None,
+                    )
+
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = list(continued_history or [])
         raw_history = body.get("conversation_history")
-        if raw_history:
+        if continued_history is None and raw_history:
             if not isinstance(raw_history, list):
                 return web.json_response(
                     _openai_error("'conversation_history' must be an array of message objects"),
@@ -4836,7 +5146,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
         stored_session_id = None
-        if not conversation_history and previous_response_id:
+        if continued_history is None and not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))
@@ -4847,7 +5157,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
         # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
+        if (
+            continued_history is None
+            and not conversation_history
+            and isinstance(raw_input, list)
+            and len(raw_input) > 1
+        ):
             for msg in raw_input[:-1]:
                 if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
                     content = msg["content"]
@@ -4860,7 +5175,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
+        session_id = (
+            continued_session_id
+            or body.get("session_id")
+            or stored_session_id
+            or run_id
+        )
+        if continued_session_id is not None:
+            # The verification reservation remains owned, and no await occurs
+            # while it is transferred to the newly allocated run ID.
+            if (
+                self._active_continuation_sessions.get(continuation_claim_key)
+                != continuation_claim_id
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "Session continuation claim was lost",
+                        code="session_continuation_changed",
+                    ),
+                    status=409,
+                )
+            self._active_continuation_sessions[continuation_claim_key] = run_id
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple
@@ -4904,6 +5239,11 @@ class APIServerAdapter(BasePlatformAdapter):
             created_at=created_at,
             session_id=session_id,
             model=body.get("model", self._model_name),
+            **(
+                {"continuation_version": RUN_SESSION_CONTINUATION_VERSION}
+                if continued_session_id is not None
+                else {}
+            ),
         )
 
         # Per-client model routing for /v1/runs (see model_routes).
@@ -5112,6 +5452,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                if (
+                    continued_session_id is not None
+                    and self._active_continuation_sessions.get(
+                        continuation_claim_key
+                    )
+                    == run_id
+                ):
+                    self._active_continuation_sessions.pop(
+                        continuation_claim_key,
+                        None,
+                    )
                 self._stopping_run_ids.discard(run_id)
 
         self._activate_admitted_request()

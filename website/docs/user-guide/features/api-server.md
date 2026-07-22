@@ -214,7 +214,11 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "run_session_continuation": true,
+    "run_session_continuation_version": 1,
+    "run_session_continuation_exact_revision": true,
+    "run_session_continuation_stoppable": true
   }
 }
 ```
@@ -252,7 +256,48 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs. That field alone does not load persisted history; use the exact continuation contract below when continuing a Hermes session.
+
+### Continue an exact session through Runs
+
+First request a descriptor for the selected session:
+
+```text
+GET /v1/sessions/{session_id}/continuation
+```
+
+Hermes resolves a compression root to its current tip and returns a content-free
+descriptor bound to that tip and the exact active message identities/history:
+
+```json
+{
+  "object": "hermes.session.continuation",
+  "version": 1,
+  "session_id": "resolved-session-tip",
+  "revision": "sessionrev_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+Pass that object unchanged in the next Runs request:
+
+```json
+{
+  "input": "Continue with the next step",
+  "continuation": {
+    "version": 1,
+    "session_id": "resolved-session-tip",
+    "revision": "sessionrev_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
+```
+
+Hermes recalculates the binding before allocating the run. A changed message,
+replaced message identity, newer compression tip, malformed descriptor, or
+second active continuation fails closed. Do not combine `continuation` with
+`session_id`, `conversation_history`, `previous_response_id`, or a multi-message
+input. Once accepted, the turn uses the normal Runs status, events, approval,
+and stop endpoints. Descriptors are authenticated binding data, not bearer
+credentials or durable leases.
 
 ### GET /v1/runs/\{run_id\}
 
@@ -341,6 +386,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
+| `GET` | `/v1/sessions/{id}/continuation` | Issue an exact revision descriptor for a stoppable Runs continuation |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |

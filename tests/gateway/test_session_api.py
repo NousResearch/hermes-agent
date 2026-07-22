@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -45,6 +46,10 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
+    app.router.add_get(
+        "/v1/sessions/{session_id}/continuation",
+        adapter._handle_session_continuation,
+    )
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
@@ -64,6 +69,10 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["run_session_continuation"] is False
+    assert features["run_session_continuation_version"] == 1
+    assert features["run_session_continuation_exact_revision"] is True
+    assert features["run_session_continuation_stoppable"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
@@ -73,6 +82,24 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
     }
+    assert data["endpoints"]["session_continuation"] == {
+        "method": "GET",
+        "path": "/v1/sessions/{session_id}/continuation",
+    }
+
+
+@pytest.mark.asyncio
+async def test_continuation_refuses_an_unkeyed_api_server(adapter, session_db):
+    session_id = session_db.create_session("private-session", "api_server")
+    session_db.append_message(session_id, "user", "private history")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/v1/sessions/{session_id}/continuation")
+        payload = await response.json()
+
+    assert response.status == 403
+    assert payload["error"]["code"] == "session_continuation_auth_required"
+    assert "private" not in str(payload)
 
 
 @pytest.mark.asyncio
@@ -187,6 +214,124 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
     assert messages["object"] == "list"
     assert messages["session_id"] == "tip-session"
     assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
+async def test_continuation_descriptor_binds_resolved_tip_and_exact_history(
+    auth_adapter,
+    session_db,
+):
+    source_id = session_db.create_session("source-session", "api_server")
+    session_db.append_message(source_id, "user", "private ancestor")
+    session_db.end_session(source_id, "compression")
+    tip_id = session_db.create_session(
+        "tip-session",
+        "api_server",
+        parent_session_id=source_id,
+    )
+    session_db.append_message(tip_id, "user", "private current question")
+    session_db.append_message(tip_id, "assistant", "private current answer")
+
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        unauthenticated = await cli.get(
+            f"/v1/sessions/{source_id}/continuation"
+        )
+        first = await cli.get(
+            f"/v1/sessions/{source_id}/continuation",
+            headers={"Authorization": "Bearer sk-test"},
+        )
+        second = await cli.get(
+            f"/v1/sessions/{tip_id}/continuation",
+            headers={"Authorization": "Bearer sk-test"},
+        )
+        first_payload = await first.json()
+        second_payload = await second.json()
+
+    assert unauthenticated.status == 401
+    assert first.status == 200
+    assert first_payload == second_payload
+    assert set(first_payload) == {"object", "version", "session_id", "revision"}
+    assert first_payload["object"] == "hermes.session.continuation"
+    assert first_payload["version"] == 1
+    assert first_payload["session_id"] == tip_id
+    assert re.fullmatch(r"sessionrev_[0-9a-f]{64}", first_payload["revision"])
+    assert "private" not in str(first_payload)
+
+
+@pytest.mark.asyncio
+async def test_continuation_descriptor_revision_changes_with_model_history(
+    auth_adapter,
+    session_db,
+):
+    session_id = session_db.create_session("revision-session", "api_server")
+    session_db.append_message(session_id, "user", "first")
+    app = _create_session_app(auth_adapter)
+    headers = {"Authorization": "Bearer sk-test"}
+
+    async with TestClient(TestServer(app)) as cli:
+        first = await cli.get(
+            f"/v1/sessions/{session_id}/continuation",
+            headers=headers,
+        )
+        first_payload = await first.json()
+        session_db.append_message(session_id, "assistant", "changed")
+        second = await cli.get(
+            f"/v1/sessions/{session_id}/continuation",
+            headers=headers,
+        )
+        second_payload = await second.json()
+
+    assert first.status == 200
+    assert second.status == 200
+    assert first_payload["session_id"] == second_payload["session_id"]
+    assert first_payload["revision"] != second_payload["revision"]
+
+
+@pytest.mark.asyncio
+async def test_continuation_revision_binds_message_identity_not_only_text(
+    auth_adapter,
+    session_db,
+):
+    session_id = session_db.create_session("identity-session", "api_server")
+    session_db.append_message(session_id, "user", "same text")
+    app = _create_session_app(auth_adapter)
+    headers = {"Authorization": "Bearer sk-test"}
+
+    async with TestClient(TestServer(app)) as cli:
+        first = await cli.get(
+            f"/v1/sessions/{session_id}/continuation",
+            headers=headers,
+        )
+        first_payload = await first.json()
+        session_db.replace_messages(session_id, [])
+        session_db.append_message(session_id, "user", "same text")
+        second = await cli.get(
+            f"/v1/sessions/{session_id}/continuation",
+            headers=headers,
+        )
+        second_payload = await second.json()
+
+    assert first.status == 200
+    assert second.status == 200
+    assert first_payload["revision"] != second_payload["revision"]
+
+
+@pytest.mark.asyncio
+async def test_continuation_descriptor_unknown_session_is_content_free(
+    auth_adapter,
+):
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(
+            "/v1/sessions/missing-session/continuation",
+            headers={"Authorization": "Bearer sk-test"},
+        )
+        payload = await resp.json()
+
+    assert resp.status == 404
+    assert payload["error"]["code"] == "session_not_found"
+    assert "missing-session" not in str(payload)
 
 
 @pytest.mark.asyncio

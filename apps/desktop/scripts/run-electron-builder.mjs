@@ -3,11 +3,20 @@
 // npm workspace hoisting is non-deterministic — require.resolve finds electron
 // wherever it landed. Dist present → -c.electronDist=<abs>/dist; absent → let
 // electron-builder fetch via @electron/get (electronVersion + ELECTRON_MIRROR).
+//
+// #69179: also refuse a host-local dist whose PE Machine does not match the
+// build target. `npm_config_arch` (or a poisoned cache) can leave an arm64
+// electron.exe on an AMD64 host; packing that into win-unpacked yields the
+// Windows modal 「此应用无法在你的电脑上运行」 / "This app can't run on your PC".
 
-import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
+
+import {
+  resolveBuilderTargetArch,
+  shouldReuseElectronDist,
+} from "./run-electron-builder-lib.mjs"
 
 const require = createRequire(import.meta.url)
 
@@ -38,8 +47,29 @@ function electronBuilderCli() {
 
 const dist = electronDistDir()
 const args = []
-if (dist && fs.existsSync(distBinary(dist))) {
+const targetArch = resolveBuilderTargetArch(process.argv.slice(2), process.arch)
+const binary = dist ? distBinary(dist) : null
+const decision = shouldReuseElectronDist({
+  platform: process.platform,
+  distDir: dist,
+  binaryPath: binary,
+  targetArch,
+  hostArch: process.arch,
+})
+
+if (decision.reuse) {
   args.push(`-c.electronDist=${dist}`)
+} else if (decision.reason === "arch-mismatch") {
+  console.warn(
+    `[run-electron-builder] refusing host electronDist (${decision.got}) for ` +
+      `target ${decision.want}; electron-builder will fetch a matching build ` +
+      `via @electron/get (#69179).`
+  )
+} else if (decision.reason === "unreadable-pe") {
+  console.warn(
+    `[run-electron-builder] host electronDist PE unreadable; electron-builder ` +
+      `will fetch via @electron/get (#69179).`
+  )
 } else {
   console.warn(
     "[run-electron-builder] no local electron dist; electron-builder will fetch " +

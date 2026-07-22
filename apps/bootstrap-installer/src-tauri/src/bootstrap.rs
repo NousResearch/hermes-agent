@@ -210,13 +210,24 @@ pub async fn launch_hermes_desktop(
 /// Walks the well-known electron-builder unpacked-app paths under
 /// `install_root`. Mirrors the resolver in `cmd_gui` (apps/desktop/release/
 /// <os>-unpacked/<exe>).
+///
+/// On Windows, prefer the host-arch tree first (#69179). electron-builder
+/// writes x64 to `win-unpacked` and arm64 to `win-arm64-unpacked`; a stale
+/// wrong-arch sibling must not win just because it exists.
 pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
     let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
-        &[
-            ("win-unpacked", "Hermes.exe"),
-            ("win-arm64-unpacked", "Hermes.exe"),
-        ]
+        if cfg!(target_arch = "aarch64") {
+            &[
+                ("win-arm64-unpacked", "Hermes.exe"),
+                ("win-unpacked", "Hermes.exe"),
+            ]
+        } else {
+            &[
+                ("win-unpacked", "Hermes.exe"),
+                ("win-arm64-unpacked", "Hermes.exe"),
+            ]
+        }
     } else if cfg!(target_os = "macos") {
         &[
             ("mac/Hermes.app/Contents/MacOS", "Hermes"),

@@ -5474,17 +5474,119 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
         logger.debug("Failed to write desktop build stamp: %s", exc)
 
 
+def _windows_host_cpu_arch() -> str:
+    """Return ``x64`` / ``arm64`` / ``ia32`` for this Windows process.
+
+    Uses the process/env view (``PROCESSOR_ARCHITECTURE`` /
+    ``PROCESSOR_ARCHITEW6432``, then ``platform.machine()``), not a CIM probe
+    of the physical CPU. That matches which Electron PE this interpreter can
+    actually exec: under WoA Prism an x64 Python correctly prefers the
+    ``win-unpacked`` (x64) tree even though the silicon is ARM64 (#69179).
+    """
+    import platform as _platform
+
+    machine = (_platform.machine() or "").lower()
+    # PROCESSOR_ARCHITEW6432 is set for WoW64 (32-bit process on 64-bit OS)
+    # and reports the outer OS arch; otherwise PROCESSOR_ARCHITECTURE is the
+    # arch of this process (including Prism x64-on-ARM64).
+    env_arch = (
+        os.environ.get("PROCESSOR_ARCHITEW6432")
+        or os.environ.get("PROCESSOR_ARCHITECTURE")
+        or ""
+    ).lower()
+    for candidate in (env_arch, machine):
+        if candidate in ("amd64", "x86_64", "x64"):
+            return "x64"
+        if candidate in ("arm64", "aarch64"):
+            return "arm64"
+        if candidate in ("x86", "i386", "i686"):
+            return "ia32"
+    return "x64"
+
+
+def _read_pe_machine_arch(exe: Path) -> Optional[str]:
+    """Return ``x64`` / ``arm64`` / ``ia32`` from a PE COFF Machine, else None."""
+    try:
+        with exe.open("rb") as fh:
+            header = fh.read(0x40)
+            if len(header) < 0x40 or header[0:2] != b"MZ":
+                return None
+            pe_offset = int.from_bytes(header[0x3C:0x40], "little")
+            if pe_offset < 0x40 or pe_offset > 1024 * 1024:
+                return None
+            fh.seek(pe_offset)
+            pe = fh.read(6)
+            if len(pe) < 6 or pe[0:4] != b"PE\0\0":
+                return None
+            machine = int.from_bytes(pe[4:6], "little")
+    except OSError:
+        return None
+    if machine == 0x8664:
+        return "x64"
+    if machine == 0xAA64:
+        return "arm64"
+    if machine == 0x014C:
+        return "ia32"
+    return None
+
+
+def _desktop_windows_exe_arch_ok(exe: Path, host_arch: Optional[str] = None) -> bool:
+    """True when *exe* is missing-PE (unknown) or matches the host arch.
+
+    Clear arch mismatches must not count as a launchable desktop app — Windows
+    reports them only as 「此应用无法在你的电脑上运行」 (#69179). Unreadable /
+    non-PE stubs (unit-test placeholders) stay accepted so existence checks
+    keep working.
+    """
+    want = host_arch or _windows_host_cpu_arch()
+    got = _read_pe_machine_arch(exe)
+    if got is None:
+        return True
+    return got == want
+
+
+def _desktop_any_unpacked_exe(desktop_dir: Path) -> bool:
+    """True when any electron-builder unpacked exe exists (any arch).
+
+    Used by ``hermes update`` to decide whether a desktop rebuild is in scope.
+    Unlike :func:`_desktop_packaged_executable`, this does NOT filter by host
+    PE arch — a wrong-arch Hermes.exe still means the user has a desktop
+    install that needs repair (#69179).
+    """
+    release_dir = desktop_dir / "release"
+    if not release_dir.is_dir():
+        return False
+    if sys.platform == "darwin":
+        return any(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
+    if sys.platform == "win32":
+        for name in ("win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked"):
+            if (release_dir / name / "Hermes.exe").exists():
+                return True
+        return False
+    for name in ("linux-unpacked", "linux-arm64-unpacked"):
+        if (release_dir / name / "hermes").exists() or (release_dir / name / "Hermes").exists():
+            return True
+    return False
+
+
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     release_dir = desktop_dir / "release"
     if sys.platform == "darwin":
         candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
     elif sys.platform == "win32":
-        candidates = [
-            release_dir / "win-unpacked" / "Hermes.exe",
-            release_dir / "win-ia32-unpacked" / "Hermes.exe",
-            release_dir / "win-arm64-unpacked" / "Hermes.exe",
-        ]
+        # Prefer the host-arch tree first. electron-builder names x64
+        # ``win-unpacked`` and arm64 ``win-arm64-unpacked``; picking by mtime
+        # alone can relaunch a stale wrong-arch Hermes.exe (#69179).
+        host_arch = _windows_host_cpu_arch()
+        by_arch = {
+            "x64": release_dir / "win-unpacked" / "Hermes.exe",
+            "ia32": release_dir / "win-ia32-unpacked" / "Hermes.exe",
+            "arm64": release_dir / "win-arm64-unpacked" / "Hermes.exe",
+        }
+        ordered = [by_arch[host_arch]]
+        ordered.extend(p for arch, p in by_arch.items() if arch != host_arch)
+        candidates = ordered
     else:
         candidates = [
             release_dir / "linux-unpacked" / "hermes",
@@ -5496,6 +5598,16 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
+    if sys.platform == "win32":
+        host_arch = _windows_host_cpu_arch()
+        compatible = [p for p in existing if _desktop_windows_exe_arch_ok(p, host_arch)]
+        if not compatible:
+            return None
+        # Prefer the host-arch path when present; otherwise newest compatible.
+        preferred = candidates[0]
+        if preferred in compatible:
+            return preferred
+        return max(compatible, key=lambda p: p.stat().st_mtime)
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
@@ -10643,7 +10755,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        has_desktop_app = (
+            _desktop_packaged_executable(desktop_dir) is not None
+            or _desktop_any_unpacked_exe(desktop_dir)
+            or _desktop_dist_exists(desktop_dir)
+        )
         if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]

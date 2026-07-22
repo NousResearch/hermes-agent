@@ -2321,6 +2321,27 @@ class TestWebServerEndpoints:
         assert status_data["pid"] is None
         assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
 
+    def test_update_hermes_returns_nix_guidance_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        def fail_spawn(*_args, **_kwargs):
+            raise AssertionError("Nix update guard should not spawn hermes update")
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "nix")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["pid"] is None
+        assert data["error"] == "nix_update_unsupported"
+        assert "Nix" in data["message"]
+
     def test_update_hermes_returns_managed_runtime_guidance_without_spawning(self, monkeypatch):
         import hermes_cli.web_server as web_server
 

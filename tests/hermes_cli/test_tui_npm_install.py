@@ -364,14 +364,14 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
 def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
-    """pip/pipx install regression (#56665): the wheel ships
+    """Prebuilt-install regression (#56665): a prebuilt install (Docker
+    image, Nix build, or prior `npm run build`) ships
     hermes_cli/tui_dist/entry.js but never ships ui-tui/ (that directory only
-    exists in a git checkout). Before this fix, _make_tui_argv called
-    _ensure_tui_workspace() unconditionally before checking for the bundled
-    entry.js, so every pip/pipx dashboard Chat tab connection hard-exited
-    with `sys.exit(1)` — surfaced to the user as the unhelpful "Chat
-    unavailable: 1" — despite having a perfectly runnable bundled TUI on
-    disk. The bundled-wheel shortcut must be tried first and succeed without
+    exists in a git checkout). _make_tui_argv must try the bundled entry.js
+    BEFORE _ensure_tui_workspace() — requiring the workspace first hard-exits
+    every prebuilt dashboard Chat tab connection with `sys.exit(1)` (surfaced
+    to the user as the unhelpful "Chat unavailable: 1") despite a perfectly
+    runnable bundled TUI on disk. The bundled shortcut must succeed without
     ever touching the (missing) ui-tui workspace or git.
     """
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
@@ -395,7 +395,7 @@ def test_make_tui_argv_uses_bundled_tui_when_workspace_missing(
     monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
 
     # ui-tui/ deliberately does not exist under tmp_path, and there is no
-    # .git either — this mirrors a pip/pipx install exactly.
+    # .git either — this mirrors a prebuilt (Docker/Nix) install exactly.
     tui_dir = tmp_path / "ui-tui"
     assert not tui_dir.exists()
 

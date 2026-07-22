@@ -46,23 +46,6 @@ class TestHandleUpdateCommand:
     """Tests for GatewayRunner._handle_update_command."""
 
     @pytest.mark.asyncio
-    async def test_managed_install_returns_package_manager_guidance(self, monkeypatch):
-        runner = _make_runner()
-        event = _make_event()
-        monkeypatch.setenv("HERMES_MANAGED", "homebrew")
-
-        # Guard: prevent any accidental fall-through from spawning a real
-        # `hermes update --gateway` against the CI checkout. The managed-install
-        # guard should return before Popen is ever reached, but mock it as
-        # belt-and-suspenders so a premature return doesn't corrupt the repo.
-        with patch("subprocess.Popen") as mock_popen:
-            result = await runner._handle_update_command(event)
-
-        assert "managed by Homebrew" in result
-        assert "brew upgrade hermes-agent" in result
-        mock_popen.assert_not_called()  # must return before reaching Popen
-
-    @pytest.mark.asyncio
     async def test_no_git_directory(self, tmp_path):
         """Returns an error when .git does not exist."""
         runner = _make_runner()

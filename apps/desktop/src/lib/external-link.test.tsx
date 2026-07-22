@@ -155,6 +155,36 @@ describe('external link helpers', () => {
     })
   })
 
+  it('ignores mojibake fetched titles with replacement characters', async () => {
+    const bridge = vi.fn().mockResolvedValue('���γ��?�|���?�')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://www.civillaw.com.cn/t/?id=38134'
+
+    render(<PrettyLink href={url} />)
+
+    const link = screen.getByTitle(url)
+    await waitFor(() => {
+      expect(link.textContent).toBe('civillaw.com.cn/t')
+    })
+  })
+
+  it('uses fetched titles over citation fallback labels when available', async () => {
+    const bridge = vi.fn().mockResolvedValue('保证合同（《民法典》第685条） - 中国民商法律网')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://www.civillaw.com.cn/t/?id=38134'
+
+    render(<PrettyLink fallbackLabel="[5]" href={url} />)
+
+    const link = screen.getByTitle(url)
+    expect(link.textContent).toBe('[5]')
+
+    await waitFor(() => {
+      expect(link.textContent).toBe('保证合同（《民法典》第685条） - 中国民商法律网')
+    })
+  })
+
   it('normalizes scheme-less links before opening', () => {
     installDesktopBridge()
 

@@ -120,6 +120,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "tier": "premium",
         "text_endpoint": "bytedance/seedance-2.0/text-to-video",
         "image_endpoint": "bytedance/seedance-2.0/image-to-video",
+        "reference_endpoint": "bytedance/seedance-2.0/reference-to-video",
         # Seedance accepts "auto" too — we omit it from the enum so the
         # agent can't pass it; the endpoint defaults handle the rest.
         "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
@@ -127,6 +128,11 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (4, 15),
         "audio": True,
         "negative": False,
+        "max_reference_images": 9,
+        "max_reference_videos": 3,
+        "max_reference_audios": 3,
+        "supports_first_frame": True,
+        "supports_last_frame": True,
     },
     "kling-v3-4k": {
         "display": "Kling v3 4K",
@@ -249,18 +255,35 @@ def _build_payload(
     negative_prompt: Optional[str],
     audio: Optional[bool],
     seed: Optional[int],
+    reference_image_urls: Optional[List[str]] = None,
+    reference_video_urls: Optional[List[str]] = None,
+    reference_audio_urls: Optional[List[str]] = None,
+    last_frame_url: Optional[str] = None,
+    reference_mode: bool = False,
 ) -> Dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare."""
     payload: Dict[str, Any] = {}
 
     if prompt:
         payload["prompt"] = prompt
-    if image_url:
+    if reference_mode:
+        image_urls = list(reference_image_urls or [])
+        if image_url and image_url not in image_urls:
+            image_urls.insert(0, image_url)
+        if image_urls:
+            payload["image_urls"] = image_urls
+        if reference_video_urls:
+            payload["video_urls"] = list(reference_video_urls)
+        if reference_audio_urls:
+            payload["audio_urls"] = list(reference_audio_urls)
+    elif image_url:
         # Some endpoints (e.g. Kling v3 4K image-to-video) expect
         # `start_image_url` instead of `image_url`. The family entry can
         # declare an override.
         key = family.get("image_param_key") or "image_url"
         payload[key] = image_url
+        if last_frame_url:
+            payload["end_image_url"] = last_frame_url
     if seed is not None:
         payload["seed"] = seed
 
@@ -446,6 +469,11 @@ class FALVideoGenProvider(VideoGenProvider):
                 "price": meta["price"],
                 "tier": meta.get("tier", "premium"),
                 "modalities": modalities,
+                "max_reference_images": meta.get("max_reference_images", 0),
+                "max_reference_videos": meta.get("max_reference_videos", 0),
+                "max_reference_audios": meta.get("max_reference_audios", 0),
+                "supports_first_frame": meta.get("supports_first_frame", False),
+                "supports_last_frame": meta.get("supports_last_frame", False),
             })
         return out
 
@@ -467,6 +495,7 @@ class FALVideoGenProvider(VideoGenProvider):
         }
 
     def capabilities(self) -> Dict[str, Any]:
+        _, family = _resolve_family(None)
         return {
             "modalities": ["text", "image"],
             "aspect_ratios": ["16:9", "9:16", "1:1"],
@@ -475,7 +504,11 @@ class FALVideoGenProvider(VideoGenProvider):
             "min_duration": 1,
             "supports_audio": True,
             "supports_negative_prompt": True,
-            "max_reference_images": 0,
+            "max_reference_images": family.get("max_reference_images", 0),
+            "max_reference_videos": family.get("max_reference_videos", 0),
+            "max_reference_audios": family.get("max_reference_audios", 0),
+            "supports_first_frame": family.get("supports_first_frame", False),
+            "supports_last_frame": family.get("supports_last_frame", False),
         }
 
     def generate(
@@ -485,6 +518,10 @@ class FALVideoGenProvider(VideoGenProvider):
         model: Optional[str] = None,
         image_url: Optional[str] = None,
         reference_image_urls: Optional[List[str]] = None,
+        reference_video_urls: Optional[List[str]] = None,
+        reference_audio_urls: Optional[List[str]] = None,
+        first_frame_url: Optional[str] = None,
+        last_frame_url: Optional[str] = None,
         duration: Optional[int] = None,
         aspect_ratio: str = "16:9",
         resolution: str = "720p",
@@ -518,9 +555,30 @@ class FALVideoGenProvider(VideoGenProvider):
         prompt = (prompt or "").strip()
         family_id, family = _resolve_family(model)
 
-        # Route: image_url → image-to-video endpoint; else → text-to-video.
-        image_url_norm = (image_url or "").strip() or None
-        if image_url_norm:
+        image_url_norm = (first_frame_url or image_url or "").strip() or None
+        reference_mode = bool(
+            reference_image_urls or reference_video_urls or reference_audio_urls
+        )
+        if reference_mode and (first_frame_url or last_frame_url):
+            return error_response(
+                error=(
+                    "Seedance reference media cannot be combined with explicit "
+                    "first/last frame controls in one request."
+                ),
+                error_type="unsupported_combination",
+                provider="fal", model=family_id, prompt=prompt,
+            )
+
+        if reference_mode:
+            endpoint = family.get("reference_endpoint")
+            modality_used = "reference"
+            if not endpoint:
+                return error_response(
+                    error=f"FAL family {family_id} has no reference-to-video endpoint.",
+                    error_type="modality_unsupported",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+        elif image_url_norm:
             endpoint = family.get("image_endpoint")
             modality_used = "image"
             if not endpoint:
@@ -547,6 +605,13 @@ class FALVideoGenProvider(VideoGenProvider):
                     provider="fal", model=family_id, prompt=prompt,
                 )
 
+        if last_frame_url and not image_url_norm:
+            return error_response(
+                error="last_frame_url requires image_url or first_frame_url.",
+                error_type="missing_first_frame",
+                provider="fal", model=family_id, prompt=prompt,
+            )
+
         if not prompt:
             return error_response(
                 error="prompt is required.",
@@ -564,6 +629,11 @@ class FALVideoGenProvider(VideoGenProvider):
             negative_prompt=negative_prompt,
             audio=audio,
             seed=seed,
+            reference_image_urls=reference_image_urls,
+            reference_video_urls=reference_video_urls,
+            reference_audio_urls=reference_audio_urls,
+            last_frame_url=last_frame_url,
+            reference_mode=reference_mode,
         )
 
         try:

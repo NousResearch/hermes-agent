@@ -82,8 +82,17 @@ class TestRunningJobGuard:
         sched._running_job_ids.add("guard-job")
 
         dispatched = []
+        receipt = {"job_id": "guard-job"}
+        restored = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "pop_dispatch_receipt", lambda _job: receipt)
+        monkeypatch.setattr(sched, "prepare_dispatch_receipt", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "refresh_dispatch_receipt", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            sched,
+            "restore_job_dispatch_state",
+            lambda value: restored.append(value) or True,
+        )
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -92,6 +101,7 @@ class TestRunningJobGuard:
         n = sched.tick(verbose=False)
         assert n == 0  # skipped, not dispatched
         assert dispatched == []
+        assert restored == [receipt]
 
         sched._running_job_ids.discard("guard-job")
         sched._shutdown_parallel_pool()
@@ -247,8 +257,17 @@ class TestSequentialPool:
         sched._running_job_ids.add("guard-seq")
 
         dispatched = []
+        receipt = {"job_id": "guard-seq"}
+        restored = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "pop_dispatch_receipt", lambda _job: receipt)
+        monkeypatch.setattr(sched, "prepare_dispatch_receipt", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "refresh_dispatch_receipt", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            sched,
+            "restore_job_dispatch_state",
+            lambda value: restored.append(value) or True,
+        )
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -257,6 +276,7 @@ class TestSequentialPool:
         n = sched.tick(verbose=False)
         assert n == 0  # skipped, not dispatched
         assert dispatched == []
+        assert restored == [receipt]
 
         sched._running_job_ids.discard("guard-seq")
         sched._shutdown_parallel_pool()

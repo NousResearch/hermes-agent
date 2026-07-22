@@ -277,7 +277,18 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+    advance_next_run,
+    claim_dispatch,
+    heartbeat_run_claim,
+    pop_dispatch_receipt,
+    prepare_dispatch_receipt,
+    refresh_dispatch_receipt,
+    restore_job_dispatch_state,
+)
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -1237,6 +1248,16 @@ def _normalize_deliver_value(deliver) -> str:
         parts = [str(p).strip() for p in deliver if str(p).strip()]
         return ",".join(parts) if parts else "local"
     return str(deliver)
+
+
+def _delivery_requested(deliver) -> bool:
+    """Whether a normalized delivery value includes any non-local target."""
+    normalized = _normalize_deliver_value(deliver)
+    return any(
+        part.strip().lower() != "local"
+        for part in normalized.split(",")
+        if part.strip()
+    )
 
 
 # Routing intent tokens — resolved at fire time, not create time, so a
@@ -3742,7 +3763,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             finish_execution(
                 execution_id,
                 success=False,
-                error="Dispatch claim rejected; execution was not started.",
+                error_code="dispatch_rejected",
+                result_kind="dispatch_rejected",
             )
             return True  # not an error — already handled/removed
 
@@ -3850,20 +3872,59 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
         # (issue #8585)
-        if success and not final_response.strip():
+        empty_response = bool(success and not final_response.strip())
+        if empty_response:
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        finish_execution(execution_id, success=success, error=error)
+
+        raw_delivery = job.get("deliver")
+        delivery_requested = _delivery_requested(raw_delivery)
+        delivery_attempted = bool(delivery_requested and should_deliver)
+        is_silent = bool(success and _is_cron_silence_response(final_response))
+        if empty_response:
+            result_kind = "empty_response"
+            error_code = "empty_response"
+        elif not success:
+            result_kind = "execution_failed"
+            error_code = "execution_failed"
+        elif delivery_error:
+            result_kind = "delivery_failed"
+            error_code = "delivery_failed"
+        elif is_silent:
+            result_kind = "silent"
+            error_code = None
+        elif success:
+            result_kind = "output_produced"
+            error_code = None
+        else:
+            result_kind = "execution_failed"
+            error_code = "execution_failed"
+        finish_execution(
+            execution_id,
+            success=success,
+            error_code=error_code,
+            result_kind=result_kind,
+            exit_code=0 if success else 1,
+            delivery_requested=delivery_requested,
+            delivery_attempted=delivery_attempted,
+            delivery_failed=bool(delivery_error),
+        )
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], False, str(e))
-        finish_execution(execution_id, success=False, error=str(e))
+        finish_execution(
+            execution_id,
+            success=False,
+            error_code="scheduler_failed",
+            result_kind="scheduler_failed",
+            exit_code=1,
+        )
         return False
 
 
@@ -3945,8 +4006,43 @@ def tick(
         # For parallel jobs that are already running, advance_next_run keeps
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
+        dispatch_receipts: dict[str, dict] = {}
+
+        def _restore_pending_dispatches(cause: Exception, phase: str) -> None:
+            ambiguous = []
+            for pending_id, pending_receipt in reversed(
+                list(dispatch_receipts.items())
+            ):
+                if restore_job_dispatch_state(pending_receipt):
+                    dispatch_receipts.pop(pending_id, None)
+                else:
+                    ambiguous.append(pending_id)
+            if ambiguous:
+                raise RuntimeError(
+                    f"{phase} failed and rollback was ambiguous for job(s): "
+                    f"{', '.join(ambiguous)}"
+                ) from cause
+
+        try:
+            for job in due_jobs:
+                receipt = pop_dispatch_receipt(job)
+                if receipt is None:
+                    advance_next_run(job["id"])
+                    continue
+                if not prepare_dispatch_receipt(job["id"], receipt):
+                    raise RuntimeError(
+                        f"job {job['id']} changed while preparing dispatch"
+                    )
+                # The receipt stays pending until this job either owns an
+                # existing run, gets a durable ledger row, or is CAS-restored.
+                dispatch_receipts[job["id"]] = receipt
+                if not refresh_dispatch_receipt(job["id"], receipt):
+                    raise RuntimeError(
+                        f"job {job['id']} changed after dispatch preparation"
+                    )
+        except Exception as preparation_err:
+            _restore_pending_dispatches(preparation_err, "dispatch preparation")
+            raise
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -4008,6 +4104,13 @@ def tick(
             # the job stays due and will fire on the next healthy tick
             # (#58720, #55924).
             if _interpreter_shutting_down():
+                receipt = dispatch_receipts.get(job_id)
+                if receipt is None or not restore_job_dispatch_state(receipt):
+                    raise RuntimeError(
+                        f"interpreter shutdown prevented dispatch and state for job "
+                        f"{job_id} could not be authenticated and restored"
+                    )
+                dispatch_receipts.pop(job_id, None)
                 logger.warning(
                     "Job '%s' not dispatched — interpreter is shutting down",
                     job.get("name", job_id),
@@ -4015,12 +4118,41 @@ def tick(
                 return None
             with _running_lock:
                 if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                    # The active run owns an earlier occurrence. This newly due
+                    # occurrence has no ledger owner, so restore it for retry.
+                    receipt = dispatch_receipts.get(job_id)
+                    if receipt is None or not restore_job_dispatch_state(receipt):
+                        raise RuntimeError(
+                            f"job {job_id} is already running and its newly due "
+                            "dispatch state could not be authenticated and restored"
+                        )
+                    dispatch_receipts.pop(job_id, None)
+                    logger.info("Job '%s' already running — later occurrence remains due", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
+            try:
+                execution = create_execution(job_id, source="builtin")
+            except Exception as ledger_err:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                receipt = dispatch_receipts.get(job_id)
+                if receipt is None or not restore_job_dispatch_state(receipt):
+                    raise RuntimeError(
+                        f"ledger creation failed and dispatch state for job {job_id} "
+                        "could not be authenticated and restored"
+                    ) from ledger_err
+                dispatch_receipts.pop(job_id, None)
+                logger.error(
+                    "Job '%s' not dispatched — execution ledger creation failed (%s)",
+                    job.get("name", job_id),
+                    type(ledger_err).__name__,
+                )
+                return None
+            # The durable row now owns this attempt. Later executor failure is
+            # recorded in that row rather than rolling scheduler state back.
+            dispatch_receipts.pop(job_id, None)
             dispatched_job = dict(job, execution_id=execution["id"])
             _ctx = contextvars.copy_context()
 
@@ -4039,7 +4171,8 @@ def tick(
                 finish_execution(
                     execution["id"],
                     success=False,
-                    error=f"Executor dispatch failed: {submit_err}",
+                    error_code="executor_dispatch_failed",
+                    result_kind="executor_dispatch_failed",
                 )
                 # Interpreter began finalizing between the guard above and the
                 # submit — release the in-flight claim we just took and skip.
@@ -4056,36 +4189,38 @@ def tick(
                 )
                 return None
 
-        # Sequential pass for env-mutating (workdir) jobs.
-        # Queued to a persistent single-thread pool so they run one at a time
-        # WITHOUT blocking the ticker thread — a long workdir job no
-        # longer starves the rest of the schedule (same fix as the parallel
-        # pass, just serialized).  The in-flight guard prevents a still-running
-        # job from being re-queued on the next tick.
-        if sequential_jobs:
-            seq_pool = _get_sequential_pool()
-            for job in sequential_jobs:
-                fut = _submit_with_guard(job, seq_pool)
-                if fut is None:
-                    continue
-                _all_futures.append(fut)
-                if not sync:
-                    _results.append(True)  # optimistically counted
+        try:
+            # Sequential pass for env-mutating (workdir) jobs.
+            if sequential_jobs:
+                seq_pool = _get_sequential_pool()
+                for job in sequential_jobs:
+                    fut = _submit_with_guard(job, seq_pool)
+                    if fut is None:
+                        continue
+                    _all_futures.append(fut)
+                    if not sync:
+                        _results.append(True)  # optimistically counted
 
-        # Parallel pass — persistent pool, non-blocking dispatch.
-        # Jobs that are already running (from a previous tick) are skipped.
-        # mark_job_run() updates next_run_at on completion, so the next tick
-        # after completion finds the job due again naturally.  No catch-up
-        # queue needed.
-        if parallel_jobs:
-            pool = _get_parallel_pool(_max_workers)
-            for job in parallel_jobs:
-                fut = _submit_with_guard(job, pool)
-                if fut is None:
-                    continue
-                _all_futures.append(fut)
-                if not sync:
-                    _results.append(True)  # optimistically counted
+            # Parallel pass — persistent pool, non-blocking dispatch.
+            if parallel_jobs:
+                pool = _get_parallel_pool(_max_workers)
+                for job in parallel_jobs:
+                    fut = _submit_with_guard(job, pool)
+                    if fut is None:
+                        continue
+                    _all_futures.append(fut)
+                    if not sync:
+                        _results.append(True)  # optimistically counted
+        except Exception as submission_err:
+            _restore_pending_dispatches(submission_err, "dispatch submission")
+            raise
+
+        if dispatch_receipts:
+            pending_err = RuntimeError(
+                "dispatch submission ended with prepared jobs lacking ownership"
+            )
+            _restore_pending_dispatches(pending_err, "dispatch submission")
+            raise pending_err
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
         # session teardown.  Must run AFTER jobs finish so active sessions

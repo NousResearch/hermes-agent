@@ -210,8 +210,22 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
             f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
             f"{record.get('claimed_at', '?')}"
         )
-        if record.get("error"):
-            print(f"    {record['error']}")
+        if record.get("delivery_failed"):
+            delivery_state = "failed"
+        elif record.get("delivery_attempted"):
+            delivery_state = "attempted"
+        elif record.get("delivery_requested"):
+            delivery_state = "suppressed"
+        else:
+            delivery_state = "not_requested"
+        exit_code = record.get("exit_code")
+        print(
+            f"    result={record.get('result_kind') or '?'}  "
+            f"exit={exit_code if exit_code is not None else '?'}  "
+            f"delivery={delivery_state}"
+        )
+        if record.get("error") and record.get("error") != record.get("result_kind"):
+            print(f"    error={record['error']}")
 
 
 def cron_status():

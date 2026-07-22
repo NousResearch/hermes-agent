@@ -358,13 +358,19 @@ def test_builtin_inherits_hook_defaults():
 def test_fire_due_default_claims_then_runs(monkeypatch):
     """The default fire_due claims via the store CAS, fetches the job, and runs
     it through the shared run_one_job body."""
+    import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire_with_receipt",
+        lambda jid: {"job_id": jid},
+    )
     monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
+    monkeypatch.setattr(executions, "create_execution", lambda *_a, **_kw: {"id": "exec-1"})
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("j1") is True
@@ -379,7 +385,7 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: False, raising=False)
+    monkeypatch.setattr(jobs, "claim_job_for_fire_with_receipt", lambda jid: None)
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("j1") is False
@@ -394,7 +400,11 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire_with_receipt",
+        lambda jid: {"job_id": jid},
+    )
     monkeypatch.setattr(jobs, "get_job", lambda jid: None)
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 

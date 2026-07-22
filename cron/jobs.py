@@ -1748,26 +1748,118 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
+_DISPATCH_RECEIPT_KEY = "_cron_dispatch_rollback"
+_DISPATCH_STATE_FIELDS = ("next_run_at", "run_claim", "fire_claim")
 
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
 
-    Under the file lock: reject if the job is missing/disabled/paused. If a
-    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
-    Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
-    ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
-    re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
-    but the fresh ``fire_claim`` blocks a duplicate retry for the same fire.
-    ``mark_job_run`` clears the claim on completion so a re-armed recurring job
-    is claimable again next fire.
+def _snapshot_dispatch_state(job: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Capture only scheduler-owned fields, preserving absent vs explicit null."""
+    return {
+        field: {
+            "present": field in job,
+            "value": copy.deepcopy(job.get(field)),
+        }
+        for field in _DISPATCH_STATE_FIELDS
+    }
 
-    The stale-claim TTL means a machine that crashed after claiming but before
-    completing doesn't wedge the job forever — after the TTL another fire can
-    reclaim it.
+
+def _dispatch_receipt(
+    job_id: str,
+    before: Dict[str, Dict[str, Any]],
+    expected: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "before": copy.deepcopy(before),
+        "expected": copy.deepcopy(expected),
+    }
+
+
+def pop_dispatch_receipt(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Remove and return get_due_jobs()'s non-persisted rollback receipt."""
+    return job.pop(_DISPATCH_RECEIPT_KEY, None)
+
+
+def prepare_dispatch_receipt(job_id: str, receipt: Dict[str, Any]) -> bool:
+    """Authenticate and advance a due job while updating its receipt atomically.
+
+    The current dispatch state must exactly match the receipt. For recurring
+    jobs, ``next_run_at`` is then advanced under the same jobs lock and the
+    receipt is updated to that exact state. No concurrent value is ever adopted.
+    """
+    expected = receipt.get("expected")
+    if not isinstance(expected, dict):
+        return False
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if _snapshot_dispatch_state(job) != expected:
+                return False
+            kind = job.get("schedule", {}).get("kind")
+            if kind in {"cron", "interval"}:
+                new_next = compute_next_run(job["schedule"], _hermes_now().isoformat())
+                if new_next and new_next != job.get("next_run_at"):
+                    job["next_run_at"] = new_next
+                    save_jobs(jobs)
+            receipt["expected"] = _snapshot_dispatch_state(job)
+            return True
+    return False
+
+
+def refresh_dispatch_receipt(job_id: str, receipt: Dict[str, Any]) -> bool:
+    """Verify that no tracked dispatch field changed after locked preparation."""
+    expected = receipt.get("expected")
+    if not isinstance(expected, dict):
+        return False
+    with _jobs_lock():
+        for job in load_jobs():
+            if job.get("id") == job_id:
+                return _snapshot_dispatch_state(job) == expected
+    return False
+
+
+def restore_job_dispatch_state(receipt: Dict[str, Any]) -> bool:
+    """CAS-restore scheduler-owned fields after pre-dispatch ledger failure.
+
+    False means the job disappeared or another writer changed a tracked field;
+    callers must then fail loudly rather than overwrite unauthenticated state.
+    """
+    job_id = receipt.get("job_id")
+    before = receipt.get("before")
+    expected = receipt.get("expected")
+    if not job_id or not isinstance(before, dict) or not isinstance(expected, dict):
+        return False
+
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if _snapshot_dispatch_state(job) != expected:
+                return False
+            for field in _DISPATCH_STATE_FIELDS:
+                prior = before.get(field, {"present": False, "value": None})
+                if prior.get("present"):
+                    job[field] = copy.deepcopy(prior.get("value"))
+                else:
+                    job.pop(field, None)
+            save_jobs(jobs)
+            return True
+    return False
+
+
+def claim_job_for_fire_with_receipt(
+    job_id: str,
+    *,
+    claim_ttl_seconds: int = 300,
+) -> Optional[Dict[str, Any]]:
+    """Atomically claim an external fire and return its rollback receipt.
+
+    The receipt authenticates both the state before the claim and the exact
+    provisional state written by this caller. It can therefore be safely
+    restored if durable execution-ledger creation fails before dispatch.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1775,23 +1867,19 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if job["id"] != job_id:
                 continue
             if not job.get("enabled", True) or job.get("state") == "paused":
-                return False
+                return None
             now = _hermes_now()
+            before = _snapshot_dispatch_state(job)
             existing = job.get("fire_claim")
             if existing:
                 try:
                     claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    # Bounded on BOTH sides (#60703): a claim stamped in the
-                    # future (clock/TZ skew across a restart, or a corrupted
-                    # timestamp) would otherwise have a negative age and stay
-                    # "fresh" forever — the job becomes permanently unfireable
-                    # and every manual `cron run` reports "already being
-                    # fired". Treat future-dated claims as stale/overwritable.
-                    _age = (now - claimed_at).total_seconds()
-                    if 0 <= _age < claim_ttl_seconds:
-                        return False  # someone holds a fresh claim
+                    # Future-dated and malformed claims are stale/overwritable.
+                    age = (now - claimed_at).total_seconds()
+                    if 0 <= age < claim_ttl_seconds:
+                        return None
                 except Exception:
-                    pass  # malformed claim → overwrite
+                    pass
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
@@ -1799,8 +1887,20 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)
-            return True
-        return False
+            return _dispatch_receipt(
+                job_id,
+                before,
+                _snapshot_dispatch_state(job),
+            )
+        return None
+
+
+def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
+    """Backward-compatible boolean wrapper for external fire claims."""
+    return claim_job_for_fire_with_receipt(
+        job_id,
+        claim_ttl_seconds=claim_ttl_seconds,
+    ) is not None
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
@@ -1930,6 +2030,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         # job this tick" so healthy siblings still run and their recovered
         # state still reaches save_jobs() below.
         try:
+            dispatch_before = _snapshot_dispatch_state(job)
             if not job.get("enabled", True):
                 continue
 
@@ -2143,6 +2244,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
 
+                for raw_job in raw_jobs:
+                    if raw_job["id"] == job["id"]:
+                        job[_DISPATCH_RECEIPT_KEY] = _dispatch_receipt(
+                            job["id"],
+                            dispatch_before,
+                            _snapshot_dispatch_state(raw_job),
+                        )
+                        break
                 due.append(job)
         except Exception:
             logger.exception(

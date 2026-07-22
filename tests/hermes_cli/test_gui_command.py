@@ -1226,3 +1226,113 @@ def test_rebuild_backup_not_mistaken_for_macos_executable(tmp_path):
     assert "mac-arm64" in matched
     # .rebuild-backup 不以 mac 开头，不应被匹配
     assert ".rebuild-backup" not in matched
+
+
+# ── _discard_desktop_backup 单元测试 ────────────────────────────────
+
+
+def test_discard_desktop_backup_removes_backup_root(tmp_path):
+    """构建成功后清理备份目录。"""
+    desktop_dir = tmp_path / "desktop"
+    release = desktop_dir / "release"
+    backup_dir = release / ".rebuild-backup" / "win-unpacked"
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "Hermes.exe").write_text("old")
+
+    cli_main._discard_desktop_backup(desktop_dir)
+
+    assert not (release / ".rebuild-backup").exists()
+
+
+def test_discard_desktop_backup_no_backup_dir(tmp_path):
+    """无备份目录时不抛异常。"""
+    desktop_dir = tmp_path / "desktop"
+    release = desktop_dir / "release"
+    release.mkdir(parents=True)
+
+    cli_main._discard_desktop_backup(desktop_dir)  # no-op, no raise
+
+
+# ── e2e 测试 — 完整 cmd_gui 流程 ────────────────────────────────────
+
+
+def test_gui_pack_failure_restores_backup(tmp_path, monkeypatch, capsys):
+    """e2e: 所有 pack 尝试失败 → 恢复之前的构建。"""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    packaged_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.setenv("ELECTRON_MIRROR", "https://example.test/electron/")
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main.subprocess.run", return_value=pack_fail), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert exc.value.code == 1
+    assert packaged_exe.read_text(encoding="utf-8") == "good build"
+    assert not (root / "apps" / "desktop" / "release" / ".rebuild-backup").exists()
+
+
+def test_gui_pack_success_discards_backup(tmp_path, monkeypatch):
+    """e2e: 打包成功并产出 exe → 丢弃备份。"""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    packaged_exe.write_text("old build", encoding="utf-8")
+    desktop_dir = root / "apps" / "desktop"
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    def _pack(cmd, **kwargs):
+        packaged_exe.parent.mkdir(parents=True, exist_ok=True)
+        packaged_exe.write_text("new build", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack):
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert packaged_exe.read_text(encoding="utf-8") == "new build"
+    assert not (desktop_dir / "release" / ".rebuild-backup").exists()
+
+
+def test_gui_pack_success_without_artifact_restores_backup(tmp_path, monkeypatch, capsys):
+    """e2e: pack 返回 0 但无产出 → 恢复备份。（修复 no-artifact 漏洞）"""
+    import shutil as _shutil
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    packaged_exe.write_text("good build", encoding="utf-8")
+
+    # Simulate: before-pack.mjs already renamed the good build into
+    # .rebuild-backup/ (as it does before every pack). The pack mock
+    # returns 0 but produces NO executable — misconfigured targets.
+    release_dir = root / "apps" / "desktop" / "release"
+    backup_dir = release_dir / ".rebuild-backup" / "win-unpacked"
+    backup_dir.mkdir(parents=True)
+    _shutil.move(str(packaged_exe), str(backup_dir / "Hermes.exe"))
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", return_value=pack_ok):
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert packaged_exe.read_text(encoding="utf-8") == "good build"
+    out = capsys.readouterr().out
+    assert "restored the" in out.lower()

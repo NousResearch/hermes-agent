@@ -71,13 +71,13 @@ export function cleanStaleBackupDir(appOutDir) {
 }
 
 export default async function afterPack(context) {
-  // Clean up the backup from before-pack now that the build succeeded.
-  // This runs for ALL platforms — the backup rename is cross-platform.
-  try {
-    cleanStaleBackupDir(context.appOutDir)
-  } catch (_) {
-    // Never fail the build over cleanup.
-  }
+  // NOTE: backup cleanup is deferred to the CLI layer (hermes_cli/main.py).
+  // after-pack runs inside electron-builder before the CLI regains control,
+  // so cleaning the backup here would destroy the last-good build before
+  // the CLI can verify that a fresh executable was actually produced
+  // (pack may return 0 but leave no launchable app — misconfigured targets).
+  // The CLI checks _desktop_packaged_executable() after the pack returns
+  // and either restores the backup or discards it explicitly.
 
   // Windows-only: stamp the exe icon + identity.
   if (context.electronPlatformName !== 'win32') {

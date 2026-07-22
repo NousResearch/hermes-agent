@@ -5694,6 +5694,23 @@ def _restore_desktop_backup(desktop_dir: Path) -> bool:
     return restored_any
 
 
+def _discard_desktop_backup(desktop_dir: Path) -> None:
+    """Drop the pre-rebuild backup once the new pack has produced a valid app.
+
+    Only call this after verifying ``_desktop_packaged_executable`` is not
+    ``None`` — otherwise the backup is the only working build and should
+    be restored instead of discarded. Best-effort: never raises.
+    """
+    release_dir = desktop_dir / "release"
+    backup_root = release_dir / ".rebuild-backup"
+    if not backup_root.is_dir():
+        return
+    try:
+        shutil.rmtree(backup_root, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -6051,6 +6068,19 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
+            # Pack succeeded but may not have produced a launchable app
+            # (misconfigured targets). Verify the artifact exists before
+            # discarding the backup — losing the last-good build on a
+            # successful-but-empty pack would leave the user with nothing.
+            if not source_mode:
+                if _desktop_packaged_executable(desktop_dir) is None:
+                    _restore_desktop_backup(desktop_dir)
+                    print("  ⚠ Pack reported success but no executable found; restored the")
+                    print("    previous build — the existing install (and its shortcuts)")
+                    print("    keep working until a rebuild succeeds. Check the pack target")
+                    print("    configuration in electron-builder.yml.")
+                else:
+                    _discard_desktop_backup(desktop_dir)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
                 # Locally-built apps are ad-hoc signed; make them relaunchable after

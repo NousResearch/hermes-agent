@@ -263,6 +263,84 @@ def test_record_repos_persists_and_shows_zero_session_repo(tmp_path):
     assert by_label["fresh-repo"]["sessions"] == 0
 
 
+def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
+    repo = tmp_path / "cached-repo"
+    repo.mkdir()
+    session_repo = tmp_path / "session-repo"
+    session_repo.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=session_repo, check=True, capture_output=True
+    )
+    server._get_db().create_session("session-repo", "cli", cwd=str(session_repo))
+    _call("projects.record_repos", {"repos": [{"root": str(repo)}]})
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "desktop": {
+                "repo_scan_enabled": False,
+                "repo_scan_roots": [],
+                "repo_scan_exclude_paths": [],
+            }
+        },
+    )
+    result = _call(
+        "projects.record_repos",
+        {
+            "repos": [{"root": str(repo)}],
+            "discovery_policy": {
+                "enabled": False,
+                "roots": [],
+                "exclude_paths": [],
+            },
+        },
+    )
+
+    assert result["accepted"] is False
+    assert all(item["root"] != str(repo) for item in result["repos"])
+    assert any(item["root"] == str(session_repo) for item in result["repos"])
+
+
+def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    policy = {
+        "enabled": True,
+        "roots": [str(root)],
+        "exclude_paths": [],
+    }
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "desktop": {
+                "repo_scan_enabled": True,
+                "repo_scan_roots": [str(root)],
+                "repo_scan_exclude_paths": [],
+            }
+        },
+    )
+
+    legacy = _call("projects.record_repos", {"repos": [{"root": str(root)}]})
+    stale = _call(
+        "projects.record_repos",
+        {
+            "repos": [{"root": str(root)}],
+            "discovery_policy": {**policy, "roots": [str(tmp_path / "other")]},
+        },
+    )
+    accepted = _call(
+        "projects.record_repos",
+        {"repos": [{"root": str(root)}], "discovery_policy": policy},
+    )
+
+    assert legacy["accepted"] is False
+    assert stale["accepted"] is False
+    assert accepted["accepted"] is True
+    assert any(item["root"] == str(root) for item in accepted["repos"])
+
+
 def test_discover_repos_from_full_history(tmp_path):
     repo = tmp_path / "myrepo"
     (repo / "src").mkdir(parents=True)

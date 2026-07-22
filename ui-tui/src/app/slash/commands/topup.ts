@@ -37,7 +37,7 @@ const renderBillingError = (
   switch (env.error) {
     case 'insufficient_scope':
       // Reached by non-charge mutations (e.g. auto-reload config) that need
-      // terminal billing enabled. The resumable step-up lives on the buy/charge
+      // Remote Spending allowed. The resumable step-up lives on the buy/charge
       // path; point the user there rather than leaking the raw scope name.
       sys(tr('billing.error.insufficientScope'))
 

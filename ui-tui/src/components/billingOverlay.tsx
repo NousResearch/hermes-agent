@@ -102,7 +102,7 @@ interface ScreenProps {
 function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps) {
   // Full charge menu only for an admin with the org kill-switch on; otherwise it
   // collapses to Manage-on-portal / Close + a one-line note. NOTE: this is the
-  // ORG-level gate (cli_billing_enabled), NOT the per-terminal billing scope —
+  // ORG-level gate (cli_billing_enabled), NOT the per-terminal remote spending scope —
   // that's discovered reactively at pay time (a charge 403s insufficient_scope
   // and the confirm screen routes into the resumable step-up). We deliberately
   // do NOT preflight the scope here.
@@ -525,14 +525,14 @@ function ConfirmScreen({
   )
 }
 
-// ── Screen: Step-up (resumable "Enable terminal billing") ────────────
+// ── Screen: Step-up (resumable "Allow Remote Spending") ─────────────
 // Reached ONLY when a charge returns insufficient_scope — there is no preflight
 // or scope check anywhere; the buy path discovers it reactively. The modal stays
 // MOUNTED through the browser device-flow:
 //   prompt (heads-up) → waiting (browser authorize) → granted (press Enter to
 //   resume) → replay the held charge (pendingCharge.amount) → settle → close.
 // Never leaks the raw billing:manage scope — the user-facing concept is
-// "terminal billing".
+// "Remote Spending".
 
 function StepUpScreen({
   amount,
@@ -713,7 +713,7 @@ function StepUpScreen({
 function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
   const ar = s.auto_reload
   const enabled = Boolean(ar?.enabled)
-  const distinctCard = ar?.card.kind === 'distinct' ? ar.card : null
+  const distinctCard = ar?.card?.kind === 'distinct' ? ar.card : null
 
   const distinctCardName = distinctCard
     ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||

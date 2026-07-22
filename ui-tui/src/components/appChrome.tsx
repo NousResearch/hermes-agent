@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -16,6 +16,8 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+
+import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -215,8 +217,36 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
-function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+function statusSessionCountLabel(count: number, i18n: I18nApi) {
+  return i18n.t(count === 1 ? 'sessions.count.liveOne' : 'sessions.count.liveMany', { count })
+}
+
+// Colour the battery read-out by its (Python-computed) category. Inverted vs
+// the context bar — a full battery is "good", an empty one "critical".
+function batteryColor(info: BatteryInfo, t: Theme): string {
+  if (info.category === 'good') {
+    return t.color.statusGood
+  }
+
+  if (info.category === 'warn') {
+    return t.color.statusWarn
+  }
+
+  if (info.category === 'bad') {
+    return t.color.statusBad
+  }
+
+  if (info.category === 'critical') {
+    return t.color.statusCritical
+  }
+
+  return t.color.muted
+}
+
+// Compact battery label: a bolt while charging, else a battery glyph.
+// Renders `--` for an unknown percent so a null can never surface as "null%".
+function batteryLabel(info: BatteryInfo): string {
+  return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -442,6 +472,7 @@ export function StatusRule(props: StatusRuleProps) {
 }
 
 export function StatusRuleView({
+  battery,
   cwdLabel,
   cols,
   busy,
@@ -494,6 +525,12 @@ export function StatusRuleView({
       : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) +
         (voiceTts ? ' [tts]' : '')
 
+  // Battery read-out — the first (pinned) status-bar element when enabled.
+  const showBattery = !!battery && battery.available && battery.percent != null
+  const batteryText = showBattery ? batteryLabel(battery!) : ''
+  const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
+  const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
   // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
@@ -519,6 +556,7 @@ export function StatusRuleView({
 
   const essentialWidth =
     stringWidth('─ ') +
+    batteryWidth +
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
@@ -545,7 +583,7 @@ export function StatusRuleView({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount, i18n) : ''
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
   const resumeHintText =
@@ -607,6 +645,12 @@ export function StatusRuleView({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
+          {showBattery ? (
+            <Text color={batteryColorVal}>
+              {batteryText}
+              <Text color={t.color.muted}>{' │ '}</Text>
+            </Text>
+          ) : null}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
@@ -765,8 +809,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  const thumbColor = grab !== null ? t.color.primary : hover ? t.color.accent : t.color.border
-  const trackColor = hover ? t.color.border : t.color.muted
+  const { thumb: thumbColor, track: trackColor } = scrollbarColors(t, hover, grab !== null)
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
@@ -798,24 +841,21 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
       }}
       width={1}
     >
-      {!scrollable ? (
-        <Text color={trackColor} dim>
-          {' \n'.repeat(Math.max(0, vp - 1))}{' '}
-        </Text>
-      ) : (
+      {/* Nothing to scroll → draw nothing (the width={1} Box still reserves
+          the column). Drawn-blank cells composite to a black bar on
+          transparent terminals — same class as the removed opaque fills. */}
+      {!scrollable ? null : (
         <>
           {thumbTop > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}
-            </Text>
+            <Text color={trackColor}>{`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}</Text>
           ) : null}
           {thumb > 0 ? (
             <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
           ) : null}
           {vp - thumbTop - thumb > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}
-            </Text>
+            <Text
+              color={trackColor}
+            >{`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}</Text>
           ) : null}
         </>
       )}
@@ -824,6 +864,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  battery?: BatteryInfo | null
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number

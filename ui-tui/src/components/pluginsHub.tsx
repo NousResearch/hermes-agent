@@ -7,6 +7,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 44
@@ -40,7 +41,7 @@ const GLYPH: Record<string, string> = {
   enabled: '✓'
 }
 
-export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
+export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
   const { t: ti } = useI18n()
   const [rows, setRows] = useState<PluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
@@ -52,7 +53,9 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the hub its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   const load = () => {
     gw.request<PluginsListResponse>('plugins.manage', { action: 'list' })
@@ -214,9 +217,8 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
 
         return (
           <Text
-            bold={active}
-            color={active ? t.color.accent : t.color.muted}
-            inverse={active}
+            color={t.color.muted}
+            {...chipRowProps(t, active)}
             key={effectiveRows[lineIdx]?.name ?? row}
             wrap="truncate-end"
           >
@@ -240,6 +242,7 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
 
 interface PluginsHubProps {
   gw: GatewayClient
+  maxWidth?: number
   onClose: () => void
   t: Theme
 }

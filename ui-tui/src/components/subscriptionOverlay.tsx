@@ -31,7 +31,7 @@ interface SubscriptionOverlayProps {
 /**
  * The /subscription modal — an in-terminal plan-change flow (V3). A small state
  * machine: overview → picker → confirm → result, with a stepup screen spliced in
- * when a mutation needs terminal billing. Downgrades / cancellations / resume are
+ * when a mutation needs remote spending. Downgrades / cancellations / resume are
  * chargeless; an upgrade charges the card on the subscription, and an SCA/decline
  * is handed off to the portal. Starting a NEW subscription still deep-links (needs
  * a fresh card). All RPCs live in subscription.ts, reached via `overlay.ctx`.
@@ -201,14 +201,17 @@ function upgradeResult(
   return errorResult(tr, r)
 }
 
-/** Map a failed terminal-billing step-up to the right recovery copy (typed). */
+/** Map a failed remote-spending step-up to the right recovery copy (typed). */
 function stepUpDenialResult(tr: Translator, res: { error?: string; message?: string }): SubscriptionResult {
   if (res.error === 'session_revoked') {
     return { message: tr('subscription.stepUp.sessionRevoked'), ok: false }
   }
 
   if (res.error === 'remote_spending_revoked') {
-    return { message: tr('subscription.stepUp.spendingRevoked'), ok: false }
+    return {
+      message: res.message || tr('subscription.stepUp.spendingRevoked'),
+      ok: false
+    }
   }
 
   if (res.error === 'rate_limited') {
@@ -216,7 +219,7 @@ function stepUpDenialResult(tr: Translator, res: { error?: string; message?: str
   }
 
   return {
-    message: tr('subscription.stepUp.notEnabled'),
+    message: res.message || tr('subscription.stepUp.notEnabled'),
     ok: false
   }
 }
@@ -406,6 +409,12 @@ function OverviewScreen({ locale, onClose, onPatch, overlay, t, tr }: ScreenProp
   // portal enforces who can act (members) / starting a new sub needs a card.
   const canChange = s.can_change_plan && !isFree
 
+  // On Free the catalog renders inline; picking a plan hands off to the portal,
+  // where starting a subscription needs card capture + checkout.
+  const freePlans = isFree
+    ? s.tiers.filter(tier => tier.is_enabled && tier.tier_order > 0).sort((a, b) => a.tier_order - b.tier_order)
+    : []
+
   // Guard the async resume so a double-press cannot fire two DELETEs mid-await.
   const busyRef = useRef(false)
 
@@ -465,10 +474,42 @@ function OverviewScreen({ locale, onClose, onPatch, overlay, t, tr }: ScreenProp
     }
   }
 
-  rows.push({
-    label: isFree ? tr('subscription.action.startSubscription') : tr('billing.action.managePortal'),
-    run: doManage
-  })
+  for (const tier of freePlans) {
+    // NAS sends a bare decimal string; tolerate pre-grouped ("1,000") too.
+    const credits = Number((tier.monthly_credits ?? '').replace(/,/g, ''))
+
+    const suffix =
+      Number.isFinite(credits) && credits > 0
+        ? tr('subscription.overview.monthlyCredits', { credits: `$${credits.toLocaleString(locale)}` })
+        : ''
+
+    rows.push({
+      label: tr('subscription.overview.planOffer', {
+        credits: suffix,
+        plan: tier.name,
+        price: tier.dollars_per_month_display
+      }),
+      run: () => {
+        if (busyRef.current) {
+          return
+        }
+
+        busyRef.current = true
+        void ctx.openManageLink(tier.tier_id)
+        onClose()
+      }
+    })
+  }
+
+  // The inline plan rows are the subscribe path; only a catalog-less free state
+  // still needs the generic portal row.
+  if (!isFree || freePlans.length === 0) {
+    rows.push({
+      label: isFree ? tr('subscription.action.startSubscription') : tr('billing.action.managePortal'),
+      run: doManage
+    })
+  }
+
   rows.push({ label: tr('common.close'), run: onClose })
 
   const sel = useMenu(rows, onClose)
@@ -888,7 +929,7 @@ function ResultScreen({ onClose, overlay, t, tr }: Omit<ScreenProps, 'onPatch'>)
   )
 }
 
-// ── Screen: Step-up (grant terminal billing inline, then replay) ──────
+// ── Screen: Step-up (allow remote spending inline, then replay) ───────
 
 function StepUpScreen({ onPatch, overlay, t, tr }: ScreenProps) {
   const { ctx } = overlay

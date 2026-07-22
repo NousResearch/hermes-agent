@@ -3,11 +3,12 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ConfigFullResponse, ConfigMtimeResponse } from '../gatewayTypes.js'
-import { normalizeLocale } from '../i18n/index.js'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { normalizeLocale, translate } from '../i18n/index.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
   type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
@@ -15,7 +16,8 @@ import {
   type IndicatorStyle,
   type StatusBarMode
 } from './interfaces.js'
-import { patchUiState } from './uiStore.js'
+import { turnController } from './turnController.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -128,6 +130,56 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
   }
 }
 
+// ── MCP revision handshake ───────────────────────────────────────────
+//
+// The poll must not ack an MCP config revision until the server confirms it
+// actually LOADED it. Advancing `accepted` before the reload succeeds loses
+// revisions permanently: quietRpc collapses a failed reload to null, the
+// next poll sees the same mcp_rev, and the new config never applies until
+// an unrelated MCP edit. So `accepted` only moves on a confirmed reload —
+// to the server's loaded_rev (what discovery actually read), falling back
+// to the requested rev for older gateways. Retries are decoupled from
+// mtime: every poll re-compares, so a transiently broken server heals on
+// the next tick.
+
+export interface McpRevState {
+  /** Last revision the server CONFIRMED it loaded (or boot baseline). */
+  accepted: string
+  /** A reload RPC is outstanding — don't stack another every poll tick. */
+  inFlight: boolean
+}
+
+export const syncMcpReload = async (
+  gw: GatewayClient,
+  sid: string,
+  nextMcpRev: string,
+  state: McpRevState,
+  onReloaded?: () => void
+): Promise<void> => {
+  if (!nextMcpRev || nextMcpRev === state.accepted || state.inFlight) {
+    return
+  }
+
+  state.inFlight = true
+
+  try {
+    const r = await quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', {
+      confirm: true,
+      rev: nextMcpRev,
+      session_id: sid
+    })
+
+    if (r?.status === 'reloaded') {
+      state.accepted = String(r.loaded_rev || nextMcpRev)
+      onReloaded?.()
+    }
+    // Failure (null) or confirm_required: leave `accepted` unchanged so the
+    // next poll tick retries the same revision.
+  } finally {
+    state.inFlight = false
+  }
+}
+
 const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceRecordKey => {
   const raw = cfg?.config?.voice?.record_key
 
@@ -202,9 +254,9 @@ export async function hydrateFullConfig(
 
 /** Apply a live config-file change without rebuilding the agent tool schema.
  *
- * ``reload.mcp`` invalidates the conversation's prompt cache and therefore
- * remains an explicit, user-confirmed slash command. Display-only changes —
- * most notably ``display.language`` — must never pay that cost merely because
+ * MCP reloads belong to the independent ``mcp_rev`` handshake (or the
+ * explicit slash command). Display-only changes — most notably
+ * ``display.language`` — must never pay that prompt-cache cost merely because
  * they share ``config.yaml`` with MCP settings.
  */
 export const syncChangedConfig = hydrateFullConfig
@@ -216,9 +268,14 @@ export async function syncConfigRevision(
   gw: GatewayClient,
   previousMtime: number,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  observedRevision?: ConfigMtimeResponse | null
 ): Promise<number> {
-  const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+  const revision =
+    observedRevision === undefined
+      ? await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+      : observedRevision
+
   const next = Number(revision?.mtime ?? 0)
 
   if (!next || next === previousMtime) {
@@ -243,11 +300,14 @@ export const applyDisplay = (
 
   setBell(!!d.bell_on_complete)
 
+  applyConfiguredTuiTheme(d.tui_theme)
+
   if (setVoiceRecordKey) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
   }
 
   patchUiState({
+    battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
@@ -274,6 +334,7 @@ export function useConfigSync({
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
   const syncInFlightRef = useRef(false)
+  const mcpRevRef = useRef<McpRevState>({ accepted: '', inFlight: false })
 
   useEffect(() => {
     if (!sid) {
@@ -285,6 +346,7 @@ export function useConfigSync({
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
     mtimeRef.current = 0
+    mcpRevRef.current = { accepted: '', inFlight: false }
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     let active = true
     syncInFlightRef.current = true
@@ -292,8 +354,12 @@ export function useConfigSync({
       const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
       const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
 
-      if (active && cfg) {
-        mtimeRef.current = Number(revision?.mtime ?? 0)
+      if (active) {
+        mcpRevRef.current.accepted = String(revision?.mcp_rev ?? '')
+
+        if (cfg) {
+          mtimeRef.current = Number(revision?.mtime ?? 0)
+        }
       }
     })().finally(() => {
       if (active) {
@@ -313,18 +379,47 @@ export function useConfigSync({
     }
 
     let active = true
+
     const id = setInterval(() => {
       if (syncInFlightRef.current) {
         return
       }
 
       syncInFlightRef.current = true
-      void syncConfigRevision(gw, mtimeRef.current, setBellOnComplete, setVoiceRecordKey)
-        .then(next => {
-          if (active) {
-            mtimeRef.current = next
-          }
-        })
+      void (async () => {
+        const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+
+        if (!active || !revision) {
+          return
+        }
+
+        const nextMcpRev = String(revision.mcp_rev ?? '')
+
+        if (!mtimeRef.current && nextMcpRev && !mcpRevRef.current.accepted) {
+          // Seed the baseline after a transient startup read failure. The
+          // current revision is already loaded by the gateway, so it must not
+          // be mistaken for a new MCP edit.
+          mcpRevRef.current.accepted = nextMcpRev
+        } else if (nextMcpRev) {
+          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
+            turnController.pushActivity(
+              translate(getUiState().locale, 'activity.mcpReloadedAfterConfigChange')
+            )
+          )
+        }
+
+        const next = await syncConfigRevision(
+          gw,
+          mtimeRef.current,
+          setBellOnComplete,
+          setVoiceRecordKey,
+          revision
+        )
+
+        if (active) {
+          mtimeRef.current = next
+        }
+      })()
         .finally(() => {
           if (active) {
             syncInFlightRef.current = false

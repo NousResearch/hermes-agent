@@ -1,12 +1,12 @@
 /**
- * Shared terminal-billing wire contracts.
+ * Shared Remote Spending wire contracts.
  *
  * These shapes round-trip between the Python tui_gateway and TypeScript clients
  * such as the TUI and desktop app. Keep rendering state, client logic, and the
  * gateway event union out of this runtime-free module.
  */
 
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
 /** One serialized usage bar (mirrors server `_serialize_usage_bar`). */
 export interface UsageBarData {
@@ -108,6 +108,9 @@ export interface BillingMonthlyCap {
 }
 
 export interface BillingAutoReload {
+  // The gateway's _parse_auto_reload_card returns None for a missing/unknown-kind
+  // card, and _serialize_billing_state emits `card: null` — so the wire really can
+  // carry null. Consumers must keep a null branch (treat it like the canonical card).
   card:
     | { kind: 'canonical' }
     | {
@@ -117,6 +120,7 @@ export interface BillingAutoReload {
         last4: string | null
       }
     | { kind: 'none' }
+    | null
   enabled: boolean
   reload_to_display: string
   reload_to_usd: string | null

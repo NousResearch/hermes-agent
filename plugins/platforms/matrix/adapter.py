@@ -996,6 +996,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Matrix reaction-based dangerous command approvals.
         self._approval_reaction_map = {
             "✅": "once",
+            "🌀": "session",
             "♾️": "always",
             "♾": "always",
             "\u267e\ufe0f": "always",
@@ -2063,6 +2064,7 @@ class MatrixAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
@@ -2075,17 +2077,24 @@ class MatrixAdapter(BasePlatformAdapter):
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
         else:
-            scope_choices = "Reply `!approve session` to approve this pattern for the session, "
+            scope_choices = ""
+            if allow_session:
+                scope_choices += "Reply `!approve session` to approve this pattern for the session, "
             if allow_permanent:
                 scope_choices += "`!approve always` to approve permanently, "
+        reaction_legend_parts = ["✅ = approve once"]
+        if allow_session:
+            reaction_legend_parts.append("🌀 = approve for this session")
+            if allow_permanent:
+                reaction_legend_parts.append("♾️ = approve always")
+        reaction_legend_parts.append("❎ = deny")
         text = (
             "⚠️ **Dangerous command requires approval**\n"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
             f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
-            "✅ = approve\n"
-            "❎ = deny"
+            + "\n".join(reaction_legend_parts)
         )
 
         result = await self.send(chat_id, text, metadata=metadata)
@@ -2105,7 +2114,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        reactions = ("✅", "❌") if smart_denied or not allow_permanent else ("✅", "♾️", "❌")
+        if not allow_session:
+            reactions = ("✅", "❌")
+        elif not allow_permanent:
+            reactions = ("✅", "🌀", "❌")
+        else:
+            reactions = ("✅", "🌀", "♾️", "❌")
         for emoji in reactions:
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)

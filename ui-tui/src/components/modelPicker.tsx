@@ -11,6 +11,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -35,6 +36,7 @@ export function ModelPicker({
   allowPersistGlobal = true,
   gw,
   initialRefresh = false,
+  maxWidth,
   onCancel,
   onSelect,
   sessionId,
@@ -61,8 +63,10 @@ export function ModelPicker({
   // Pin the picker to a stable width so the FloatBox parent (which shrinks-
   // to-fit with alignSelf="flex-start") doesn't resize as long provider /
   // model names scroll into view, and so `wrap="truncate-end"` on each row
-  // has an actual constraint to truncate against.
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // has an actual constraint to truncate against. Optional maxWidth lets
+  // grid layouts hand the picker its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
     gw.request<ModelOptionsResponse>('model.options', {
@@ -603,9 +607,8 @@ export function ModelPicker({
 
             return row ? (
               <Text
-                bold={providerIdx === idx}
-                color={providerIdx === idx ? t.color.accent : dimmed ? t.color.label : t.color.muted}
-                inverse={providerIdx === idx}
+                color={dimmed ? t.color.label : t.color.muted}
+                {...chipRowProps(t, providerIdx === idx)}
                 key={p?.slug ?? `row-${idx}`}
                 wrap="truncate-end"
               >
@@ -683,9 +686,8 @@ export function ModelPicker({
 
         return (
           <Text
-            bold={modelIdx === idx}
-            color={modelIdx === idx ? t.color.accent : t.color.muted}
-            inverse={modelIdx === idx}
+            color={t.color.muted}
+            {...chipRowProps(t, modelIdx === idx)}
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
             wrap="truncate-end"
           >
@@ -719,6 +721,7 @@ interface ModelPickerProps {
   allowPersistGlobal?: boolean
   gw: GatewayClient
   initialRefresh?: boolean
+  maxWidth?: number
   onCancel: () => void
   onSelect: (value: string) => void
   sessionId: string | null

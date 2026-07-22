@@ -11,7 +11,8 @@ import type {
   SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
-  SessionUndoResponse
+  SessionUndoResponse,
+  SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import {
   translate,
@@ -45,6 +46,7 @@ const formatSessionStatus = (response: SessionStatusResponse, locale: Parameters
   if (details.project) {
     lines.push(translate(locale, 'sessionStatus.project', { value: details.project }))
   }
+
   if (details.title) {
     lines.push(translate(locale, 'sessionStatus.title', { value: details.title }))
   }
@@ -141,7 +143,10 @@ export const coreCommands: SlashCommand[] = [
           rows: [
             ['/details [hidden|collapsed|expanded|cycle]', translate(ctx.ui.locale, 'sys.helpDetailGlobal')],
             ['/details <section> [hidden|collapsed|expanded|reset]', translate(ctx.ui.locale, 'sys.helpDetailSection')],
-            ['/fortune [random|daily]', translate(ctx.ui.locale, 'sys.helpFortune')]
+            ['/fortune [random|daily]', translate(ctx.ui.locale, 'sys.helpFortune')],
+            ['/theme [auto|light|dark]', translate(ctx.ui.locale, 'sys.helpTheme')],
+            ['/grid-test [cols]x[rows]', translate(ctx.ui.locale, 'sys.helpGridTest')],
+            ['/dialog-test [zone]', translate(ctx.ui.locale, 'sys.helpDialogTest')]
           ],
           title: translate(ctx.ui.locale, 'section.tuiCommands')
         },
@@ -645,6 +650,57 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(translate(ctx.ui.locale, 'sys.statusBarMode', { mode: next })))
+    }
+  },
+
+  {
+    help: 'toggle a color-coded battery indicator in the status bar [on|off|status]',
+    name: 'battery',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      // `/battery status` reports the current setting plus a live reading,
+      // matching the CLI surface. Fetch on demand so it works even while the
+      // indicator (and its poller) is off.
+      if (mode === 'status' || mode === 'show') {
+        const state = translate(ctx.ui.locale, ctx.ui.battery ? 'common.enabled' : 'common.disabled')
+
+        ctx.gateway
+          .rpc<SystemBatteryResponse>('system.battery', {})
+          .then(r => {
+            if (r?.available && typeof r.percent === 'number') {
+              ctx.transcript.sys(
+                translate(ctx.ui.locale, 'battery.current', {
+                  icon: r.plugged ? '⚡' : '🔋',
+                  percent: r.percent,
+                  state
+                })
+              )
+            } else {
+              ctx.transcript.sys(translate(ctx.ui.locale, 'battery.unavailable', { state }))
+            }
+          })
+          .catch(() => ctx.transcript.sys(translate(ctx.ui.locale, 'battery.state', { state })))
+
+        return
+      }
+
+      const next = flagFromArg(arg, ctx.ui.battery)
+
+      if (next === null) {
+        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageBattery'))
+      }
+
+      patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() =>
+        ctx.transcript.sys(
+          translate(ctx.ui.locale, 'battery.state', {
+            state: translate(ctx.ui.locale, next ? 'common.enabled' : 'common.disabled')
+          })
+        )
+      )
     }
   },
 

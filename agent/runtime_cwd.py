@@ -6,8 +6,10 @@ gateway/cron startup). The local-CLI backend deliberately leaves it unset and
 relies on the launch dir. Reading it in one place keeps the system prompt, the
 tool surfaces, and context-file discovery agreeing on where the agent lives.
 
-Multi-session gateways can pin a logical cwd via the `_SESSION_CWD`
-contextvar; CLI/cron fall through to `TERMINAL_CWD`/launch cwd.
+Multi-session gateways and per-job cron ``workdir`` pin a logical cwd via
+the `_SESSION_CWD` contextvar so concurrent sessions never observe each
+other's override through process-global ``TERMINAL_CWD``. CLI surfaces with
+no pin fall through to `TERMINAL_CWD`/launch cwd.
 """
 
 import logging
@@ -97,4 +99,27 @@ def resolve_context_cwd() -> Path | None:
             logger.warning("TERMINAL_CWD does not exist: %s", raw)
         else:
             return p
+    return None
+
+
+def resolve_tool_cwd() -> str | None:
+    """ContextVar-first cwd string for tool backends, or ``None`` if unset.
+
+    Unlike :func:`resolve_agent_cwd`, this does **not** require the path to
+    exist on the local filesystem — Docker/SSH/Modal remotes often configure a
+    cwd that only exists inside the sandbox (e.g. ``/workspace``). Cron workdir
+    jobs pin via ``_SESSION_CWD`` so concurrent gateway sessions keep reading
+    the process-global ``TERMINAL_CWD`` without seeing the job's override
+    (#69396).
+
+    Returns the configured string **verbatim** (no ``expanduser``). SSH backends
+    must keep literal ``~`` / ``~/...`` so the *remote* shell expands them;
+    local callers that need host expansion do it themselves.
+    """
+    override = _session_cwd_override()
+    if override:
+        return override
+    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    if raw:
+        return raw
     return None

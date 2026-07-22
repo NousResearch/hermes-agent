@@ -1829,7 +1829,12 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    try:
+        from agent.runtime_cwd import resolve_tool_cwd
+
+        raw = (resolve_tool_cwd() or "").strip()
+    except Exception:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

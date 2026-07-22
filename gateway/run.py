@@ -1919,6 +1919,13 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
     else:
         os.environ["TERMINAL_CWD"] = _resolved_cwd
 
+# Snapshot the gateway's configured cwd AFTER placeholder resolution. Interactive
+# sessions pin this via set_session_vars(cwd=...) so a concurrent cron workdir
+# job can never redirect their project-context discovery through live
+# os.environ["TERMINAL_CWD"] (#69396). Cron itself no longer mutates that env,
+# but the pin remains as defense in depth.
+_GATEWAY_PINNED_CWD = os.environ.get("TERMINAL_CWD", "")
+
 from gateway.config import (
     ChannelOverride,
     Platform,
@@ -16691,6 +16698,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            # Pin the startup-resolved messaging cwd so resolve_context_cwd()
+            # never falls through to a live TERMINAL_CWD that another task
+            # (cron workdir) might have mutated (#69396).
+            cwd=_GATEWAY_PINNED_CWD,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

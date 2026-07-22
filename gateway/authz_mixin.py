@@ -50,6 +50,7 @@ class GatewayAuthorizationMixin:
         self,
         platform: Optional[Platform],
         profile: Optional[str] = None,
+        account: Optional[str] = None,
     ):
         """Resolve the live adapter whose intake policy should gate authorization.
 
@@ -58,11 +59,28 @@ class GatewayAuthorizationMixin:
         ``self.adapters``. ``SessionSource.profile`` selects which map to consult.
         When a stamped profile has its own adapter registry entry, the default
         profile's same-platform adapter must not be consulted as a fallback.
+
+        Multi-account gateways (#8287) add a second dimension the same way:
+        named-account adapters live in ``_account_adapters[platform][account]``
+        while the default account uses ``self.adapters``. A stamped account
+        with no registry entry fails closed for the same reason a profile
+        does — replying out the wrong bot is worse than not replying.
         """
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
+        # Coerce defensively: a MagicMock/SimpleNamespace source auto-creates
+        # a truthy ``account`` attribute (AGENTS.md pitfall #17), which must
+        # read as "default account", not trip the fail-closed account branch.
+        account_name = account.strip() if isinstance(account, str) else None
+        account_name = account_name or None
+        if account_name == "default":
+            account_name = None
         if profile_name and profile_name != "default":
+            if account_name:
+                # Named account inside a secondary profile is not a supported
+                # combination yet — fail closed rather than guessing a bot.
+                return None
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
@@ -70,6 +88,9 @@ class GatewayAuthorizationMixin:
             # (e.g. its adapter failed to connect) must NOT fall back to the
             # default profile's adapter — that sends replies out the wrong bot.
             return None
+        if account_name:
+            account_adapters = getattr(self, "_account_adapters", None) or {}
+            return (account_adapters.get(platform) or {}).get(account_name)
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
 
@@ -82,6 +103,7 @@ class GatewayAuthorizationMixin:
         return self._authorization_adapter(
             getattr(source, "platform", None),
             getattr(source, "profile", None),
+            getattr(source, "account", None),
         )
 
     def _adapter_authorization_is_upstream(

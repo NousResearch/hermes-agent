@@ -902,6 +902,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     thread_id=str(thread_id) if thread_id is not None else None,
+                    account=getattr(self, "account_name", None),
                 )
                 return bool(auth_fn(source))
             except Exception:
@@ -979,6 +980,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_id,
+            account=getattr(self, "account_name", None),
         )
 
     def _telegram_auth_env_configured(self) -> bool:

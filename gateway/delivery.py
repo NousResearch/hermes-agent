@@ -154,6 +154,10 @@ class DeliveryTarget:
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
+    # Named bot account on the platform (#8287): "telegram@support:123"
+    # targets the support bot; origin targets inherit the account the
+    # message arrived on. None = the platform's default account.
+    account: Optional[str] = None
     
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
@@ -176,6 +180,8 @@ class DeliveryTarget:
                     chat_id=origin.chat_id,
                     thread_id=origin.thread_id,
                     is_origin=True,
+                    # Reply out the same bot the message arrived on (#8287).
+                    account=getattr(origin, "account", None),
                 )
             else:
                 # Fallback to local if no origin
@@ -184,24 +190,35 @@ class DeliveryTarget:
         if target_lower == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
-        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs
+        # Check for platform:chat_id or platform:chat_id:thread_id format.
+        # The platform segment may carry a named bot account (#8287):
+        # "telegram@support" / "telegram@support:123456". Use the original
+        # case for chat_id/thread_id to preserve case-sensitive IDs.
         if ":" in target_stripped:
             parts = target_stripped.split(":", 2)
             platform_str = parts[0].lower()  # Platform names are case-insensitive
+            platform_str, _at, account = platform_str.partition("@")
             chat_id = parts[1] if len(parts) > 1 else None
             thread_id = parts[2] if len(parts) > 2 else None
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
+                return cls(
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    is_explicit=True,
+                    account=account or None,
+                )
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
-        
-        # Just a platform name (use home channel)
+
+        # Just a platform name (use home channel), optionally account-scoped
+        # ("telegram@support" → the support bot's home channel).
+        platform_str, _at, account = target_lower.partition("@")
         try:
-            platform = Platform(target_lower)
-            return cls(platform=platform)
+            platform = Platform(platform_str)
+            return cls(platform=platform, account=account or None)
         except ValueError:
             # Unknown platform, treat as local
             return cls(platform=Platform.LOCAL)
@@ -212,11 +229,16 @@ class DeliveryTarget:
             return "origin"
         if self.platform == Platform.LOCAL:
             return "local"
+        platform_ref = (
+            f"{self.platform.value}@{self.account}"
+            if self.account
+            else self.platform.value
+        )
         if self.chat_id and self.thread_id:
-            return f"{self.platform.value}:{self.chat_id}:{self.thread_id}"
+            return f"{platform_ref}:{self.chat_id}:{self.thread_id}"
         if self.chat_id:
-            return f"{self.platform.value}:{self.chat_id}"
-        return self.platform.value
+            return f"{platform_ref}:{self.chat_id}"
+        return platform_ref
 
 
 class DeliveryRouter:
@@ -240,8 +262,25 @@ class DeliveryRouter:
         """
         self.config = config
         self.adapters = adapters or {}
+        # Named-account adapters (#8287): Platform -> {account -> adapter},
+        # synced by the gateway runner alongside ``adapters``. Account
+        # targets resolve here fail-closed — never through the default bot.
+        self.account_adapters: Dict[Platform, Dict[str, Any]] = {}
         self.output_dir = get_hermes_home() / "cron" / "output"
         self.dead_targets = dead_targets or DeadTargetRegistry()
+
+    def _adapter_for_target(self, target: DeliveryTarget):
+        """Resolve the adapter for a target, honoring its account (#8287).
+
+        A named account with no live adapter returns None (fail closed):
+        delivering account-addressed content out the default bot would leak
+        it to the wrong audience.
+        """
+        if target.account:
+            return (self.account_adapters.get(target.platform) or {}).get(
+                target.account
+            )
+        return self.adapters.get(target.platform)
     
     async def deliver(
         self,
@@ -392,10 +431,15 @@ class DeliveryRouter:
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Deliver content to a messaging platform."""
-        adapter = self.adapters.get(target.platform)
-        
+        adapter = self._adapter_for_target(target)
+
         if not adapter:
-            raise ValueError(f"No adapter configured for {target.platform.value}")
+            _ref = (
+                f"{target.platform.value}@{target.account}"
+                if target.account
+                else target.platform.value
+            )
+            raise ValueError(f"No adapter configured for {_ref}")
         
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")

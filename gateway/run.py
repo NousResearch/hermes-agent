@@ -1920,6 +1920,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    split_key_namespace,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.turn_lease import SessionTurnLeaseRegistry
@@ -2752,12 +2753,19 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    # Accept the default namespace with or without a multi-account suffix
+    # (``agent:main`` / ``agent:main@support``, #8287) — the positional
+    # layout after the namespace slot is identical. Named-profile keys stay
+    # excluded, as before.
+    _ns, _account = split_key_namespace(parts[1]) if len(parts) > 1 else ("", None)
+    if len(parts) >= 5 and parts[0] == "agent" and _ns == "main":
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
+        if _account:
+            result["account"] = _account
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -3122,6 +3130,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Multi-account (#8287): adapters for NAMED bot accounts live here,
+        # keyed by Platform then account name. self.adapters stays the
+        # default account's map — same pattern as _profile_adapters, so the
+        # ~93 existing self.adapters[...] sites are untouched when no named
+        # accounts are configured (this dict is empty). Populated by
+        # _start_account_adapters().
+        self._account_adapters: Dict[Platform, Dict[str, BasePlatformAdapter]] = {}
+        # Named-account adapters queued for background reconnection, keyed by
+        # (Platform, account name) — the account-dimension mirror of
+        # _failed_platforms (#8287).
+        self._failed_account_adapters: Dict[tuple, Dict[str, Any]] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -4373,12 +4392,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
+    async def _handle_account_adapter_fatal_error(
+        self, adapter: BasePlatformAdapter, account_name: str
+    ) -> None:
+        """Account-dimension mirror of ``_handle_adapter_fatal_error`` (#8287).
+
+        Same contract, scoped to ``_account_adapters[platform][account]``:
+        stale-owner guard against the account's own registry slot, pop +
+        disconnect, and retryable failures queued for background
+        reconnection under a ``(platform, account)`` key. An account's death
+        never touches the default slot and never triggers the all-platforms-
+        down shutdown logic — the default adapter (or other accounts) may
+        still be healthy.
+        """
+        platform = adapter.platform
+        registry = (getattr(self, "_account_adapters", None) or {}).get(platform) or {}
+        existing = registry.get(account_name)
+        if existing is not None and existing is not adapter:
+            logger.debug(
+                "Ignoring stale fatal error from a superseded %s account %r "
+                "adapter instance: %s",
+                platform.value, account_name,
+                adapter.fatal_error_code or "unknown",
+            )
+            return
+
+        logger.error(
+            "Fatal %s adapter error (account %r, %s): %s",
+            platform.value, account_name,
+            adapter.fatal_error_code or "unknown",
+            adapter.fatal_error_message or "unknown error",
+        )
+        self._update_platform_runtime_status(
+            f"{platform.value}@{account_name}",
+            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+            error_code=adapter.fatal_error_code,
+            error_message=adapter.fatal_error_message,
+        )
+
+        if existing is adapter:
+            registry.pop(account_name, None)
+            if not registry:
+                self._account_adapters.pop(platform, None)
+            await self._safe_adapter_disconnect(adapter, platform)
+
+        if adapter.fatal_error_retryable:
+            key = (platform, account_name)
+            if key not in self._failed_account_adapters:
+                self._failed_account_adapters[key] = {
+                    "config": adapter.config,
+                    "attempts": 0,
+                    "next_retry": time.monotonic(),
+                }
+                logger.info(
+                    "%s account %r queued for background reconnection",
+                    platform.value, account_name,
+                )
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
         If the error is retryable (e.g. network blip, DNS failure), queue the
         platform for background reconnection instead of giving up permanently.
         """
+        # Named-account adapters (#8287) live in _account_adapters, not the
+        # platform slot: without this branch the stale-owner guard below
+        # would see the DEFAULT adapter occupying the slot and silently
+        # ignore a dying account — no reconnect, no status, no log.
+        _account_name = getattr(adapter, "account_name", None)
+        # isinstance-guard: a MagicMock adapter auto-creates a truthy
+        # account_name (pitfall #17); only a real named account is a str.
+        if isinstance(_account_name, str) and _account_name:
+            await self._handle_account_adapter_fatal_error(adapter, _account_name)
+            return
+
         # Snapshot the current owner of this platform slot before doing
         # anything else. If it's neither this adapter nor empty, a different
         # adapter has already taken over (e.g. this is a delayed notification
@@ -4427,6 +4514,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the same object twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
+            self.delivery_router.account_adapters = getattr(self, "_account_adapters", {}) or {}
             # A half-closed transport can wedge an adapter's native close()
             # indefinitely. Reuse the shutdown-path timeout so this runtime
             # fatal handler always reaches the reconnect queue.
@@ -6376,8 +6464,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # elsewhere), which would otherwise trigger
         # ``RuntimeError: dictionary changed size during iteration`` —
         # observed in a user report during gateway shutdown.
-        for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
+        for platform, adapter, home in self._iter_live_adapters_with_home(snapshot=True):
             if not home or not home.chat_id:
                 continue
 
@@ -7684,7 +7771,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            
+
+            # Accounts-only configuration (#8287): named account tokens with
+            # no default credential. Don't attempt a doomed token-less
+            # default connect (it would fail and queue reconnects forever) —
+            # start the named account adapters directly.
+            if (
+                not _platform_has_bot_credential(platform, platform_config)
+                and isinstance((platform_config.extra or {}).get("accounts"), dict)
+                and platform_config.extra["accounts"]
+            ):
+                logger.info(
+                    "%s has no default-account credential; starting named "
+                    "accounts only.",
+                    platform.value,
+                )
+                _acct_connected = await self._start_account_adapters(
+                    platform, platform_config
+                )
+                connected_count += _acct_connected
+                if _acct_connected:
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="connected",
+                        error_code=None,
+                        error_message=None,
+                    )
+                continue
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
@@ -7802,6 +7916,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
                 }
+
+            # Named bot accounts (#8287) start independently of the default
+            # adapter's outcome: a bad/absent default token must never keep a
+            # healthy named bot offline. _start_account_adapters is a no-op
+            # when no accounts are configured, so single-bot platforms are
+            # unaffected. (The accounts-only branch above already handled the
+            # no-default-credential case and `continue`d before reaching here.)
+            connected_count += await self._start_account_adapters(
+                platform, platform_config
+            )
+
             if await self._abort_startup_if_shutdown_requested():
                 return True
 
@@ -7911,6 +8036,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
+        self.delivery_router.account_adapters = getattr(self, "_account_adapters", {}) or {}
         self._wire_teams_pipeline_runtime()
 
         self._running = True
@@ -8640,6 +8766,76 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             now = time.monotonic()
+
+            # Named-account reconnects (#8287): independent of the platform
+            # pass below — an account's retry cadence mirrors a platform's,
+            # but success re-registers into _account_adapters, never the
+            # default slot. getattr-guarded: partially-constructed test
+            # runners (and any pre-#8287 pickle/restore) may lack the dict.
+            _failed_accounts = getattr(self, "_failed_account_adapters", None)
+            for _acct_key in list(_failed_accounts.keys()) if _failed_accounts else []:
+                if not self._running:
+                    return
+                _acct_platform, _acct_name = _acct_key
+                _acct_info = self._failed_account_adapters[_acct_key]
+                if _acct_info.get("paused") or now < _acct_info["next_retry"]:
+                    continue
+                _acct_attempt = _acct_info["attempts"] + 1
+                logger.info(
+                    "Reconnecting %s account %r (attempt %d)...",
+                    _acct_platform.value, _acct_name, _acct_attempt,
+                )
+                _acct_adapter = None
+                try:
+                    _acct_adapter = self._create_adapter(
+                        _acct_platform, _acct_info["config"]
+                    )
+                    if not _acct_adapter:
+                        logger.warning(
+                            "Reconnect %s account %r: adapter creation "
+                            "returned None, removing from retry queue",
+                            _acct_platform.value, _acct_name,
+                        )
+                        del self._failed_account_adapters[_acct_key]
+                        continue
+                    _acct_adapter.account_name = _acct_name
+                    self._wire_account_adapter(_acct_adapter)
+                    _acct_ok = await self._connect_adapter_with_timeout(
+                        _acct_adapter, _acct_platform
+                    )
+                except Exception as _acct_exc:
+                    logger.warning(
+                        "Reconnect %s account %r failed: %s",
+                        _acct_platform.value, _acct_name, _acct_exc,
+                    )
+                    _acct_ok = False
+                if _acct_ok:
+                    self._account_adapters.setdefault(_acct_platform, {})[
+                        _acct_name
+                    ] = _acct_adapter
+                    self._sync_voice_mode_state_to_adapter(_acct_adapter)
+                    del self._failed_account_adapters[_acct_key]
+                    self._update_platform_runtime_status(
+                        f"{_acct_platform.value}@{_acct_name}",
+                        platform_state="connected",
+                        error_code=None,
+                        error_message=None,
+                    )
+                    logger.info(
+                        "✓ %s reconnected (account %r)",
+                        _acct_platform.value, _acct_name,
+                    )
+                else:
+                    if _acct_adapter is not None:
+                        await self._safe_adapter_disconnect(
+                            _acct_adapter, _acct_platform
+                        )
+                    _acct_info["attempts"] = _acct_attempt
+                    # Same capped exponential backoff as the platform pass.
+                    _acct_info["next_retry"] = now + min(
+                        30 * (2 ** min(_acct_attempt, 6)), 1800
+                    )
+
             for platform in list(self._failed_platforms.keys()):
                 if not self._running:
                     return
@@ -8698,6 +8894,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
+                        self.delivery_router.account_adapters = getattr(self, "_account_adapters", {}) or {}
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
                             platform.value,
@@ -9798,9 +9995,174 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import hashlib
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
 
+    @staticmethod
+    def _account_platform_config(
+        platform: Platform,
+        platform_config: "PlatformConfig",
+        account_name: str,
+        account_block: Dict[str, Any],
+    ) -> "PlatformConfig":
+        """Derive a per-account PlatformConfig from the platform's config (#8287).
+
+        The account adapter sees an ordinary PlatformConfig — its own token,
+        its own home_channel, and account-block settings overriding the
+        platform-level extra — so adapter internals stay account-agnostic.
+        The ``accounts`` map itself is stripped from the derived extra.
+        """
+        import dataclasses as _dc
+
+        from gateway.config import HomeChannel as _HomeChannel
+
+        merged_extra = {
+            k: v for k, v in (platform_config.extra or {}).items()
+            if k != "accounts"
+        }
+        home_channel = platform_config.home_channel
+        token = platform_config.token
+        for key, value in (account_block or {}).items():
+            if key == "token":
+                token = value
+            elif key == "home_channel" and isinstance(value, dict):
+                # The platform is implicit inside its own account block.
+                _hc = dict(value)
+                _hc.setdefault("platform", platform.value)
+                home_channel = _HomeChannel.from_dict(_hc)
+            else:
+                merged_extra[key] = value
+        return _dc.replace(
+            platform_config,
+            token=token,
+            home_channel=home_channel,
+            extra=merged_extra,
+        )
+
+    def _iter_live_adapters_with_home(self, snapshot: bool = False):
+        """Yield (platform, adapter, home_channel) for every live adapter.
+
+        Default-account adapters use the platform-level home channel; named
+        account adapters (#8287) use their own derived config's home channel,
+        so each bot broadcasts to its own home. ``snapshot=True`` list()s the
+        maps first so adapter.send() fatal paths popping registry entries
+        can't break iteration (the shutdown-broadcast lesson).
+        """
+        adapters = list(self.adapters.items()) if snapshot else self.adapters.items()
+        for platform, adapter in adapters:
+            yield platform, adapter, self.config.get_home_channel(platform)
+        account_map = getattr(self, "_account_adapters", None) or {}
+        account_items = list(account_map.items()) if snapshot else account_map.items()
+        for platform, accounts in account_items:
+            account_adapters = list(accounts.values()) if snapshot else accounts.values()
+            for adapter in account_adapters:
+                yield platform, adapter, getattr(adapter.config, "home_channel", None)
+
+    def _queue_account_reconnect(
+        self, platform: Platform, account_name: str, config: "PlatformConfig"
+    ) -> None:
+        """Queue a named account for background reconnection (#8287), keyed by
+        (platform, account). Idempotent — an already-queued account keeps its
+        existing backoff state. Shared by initial-startup failures and the
+        fatal-error path so both feed the one account reconnect watcher."""
+        key = (platform, account_name)
+        if key not in self._failed_account_adapters:
+            self._failed_account_adapters[key] = {
+                "config": config,
+                "attempts": 1,
+                "next_retry": time.monotonic() + 30,
+            }
+            logger.info(
+                "%s account %r queued for background reconnection",
+                platform.value, account_name,
+            )
+
+    def _wire_account_adapter(self, adapter: BasePlatformAdapter) -> None:
+        """Wire a named-account adapter's handlers — identical to a default
+        adapter's wiring in the startup loop (#8287). Shared by account
+        startup and account reconnect so the two can never drift."""
+        adapter.set_message_handler(self._handle_message)
+        adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+        adapter._busy_text_mode = self._busy_text_mode
+
+    async def _start_account_adapters(
+        self, platform: Platform, platform_config: "PlatformConfig"
+    ) -> int:
+        """Start one adapter per NAMED bot account on ``platform`` (#8287).
+
+        Called after the platform's default adapter is handled. Each account
+        adapter is wired identically to a default adapter, stamped with its
+        account name (adapters copy it onto every inbound
+        ``SessionSource.account``), and registered in
+        ``_account_adapters[platform][name]`` — the account-dimension mirror
+        of ``_profile_adapters``. Returns the number of accounts connected.
+
+        A failed account connect is logged and skipped: it must not block the
+        default account or other accounts. (Account-aware reconnect queueing
+        lands with the per-account delivery/reconnect consumers.)
+        """
+        accounts = (platform_config.extra or {}).get("accounts")
+        if not isinstance(accounts, dict) or not accounts:
+            return 0
+        connected = 0
+        for account_name, account_block in accounts.items():
+            block = account_block if isinstance(account_block, dict) else {}
+            if not block.get("token"):
+                logger.warning(
+                    "Skipping %s account %r: no token "
+                    "(set %s_BOT_TOKEN_%s in .env)",
+                    platform.value, account_name,
+                    platform.value.upper(), account_name.upper(),
+                )
+                continue
+            account_config = self._account_platform_config(
+                platform, platform_config, account_name, block
+            )
+            adapter = self._create_adapter(platform, account_config)
+            if not adapter:
+                logger.warning(
+                    "No adapter available for %s account %r",
+                    platform.value, account_name,
+                )
+                continue
+            adapter.account_name = account_name
+            self._wire_account_adapter(adapter)
+            logger.info("Connecting to %s (account %r)...", platform.value, account_name)
+            try:
+                success = await self._connect_adapter_with_timeout(adapter, platform)
+            except Exception as exc:
+                logger.error(
+                    "%s account %r failed to connect: %s",
+                    platform.value, account_name, exc,
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                self._queue_account_reconnect(platform, account_name, account_config)
+                continue
+            if not success:
+                logger.warning(
+                    "✗ %s account %r failed to connect", platform.value, account_name
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                # Queue retryable initial failures so a transient startup
+                # blip (network, provider hiccup) is retried by the account
+                # reconnect watcher — mirrors the default adapter's path.
+                # Non-retryable fatal errors are left alone (a bad token
+                # shouldn't spin forever).
+                if getattr(adapter, "fatal_error_retryable", True):
+                    self._queue_account_reconnect(
+                        platform, account_name, account_config
+                    )
+                continue
+            self._account_adapters.setdefault(platform, {})[account_name] = adapter
+            self._sync_voice_mode_state_to_adapter(adapter)
+            connected += 1
+            logger.info("✓ %s connected (account %r)", platform.value, account_name)
+        return connected
+
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
@@ -16347,8 +16709,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
 
-        for platform, adapter in self.adapters.items():
-            home = self.config.get_home_channel(platform)
+        for platform, adapter, home in self._iter_live_adapters_with_home():
             if not home or not home.chat_id:
                 continue
 

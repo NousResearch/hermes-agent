@@ -1816,6 +1816,28 @@ def _setup_telegram():
         if home_channel:
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
 
+    print()
+    if prompt_yes_no("Add another Telegram bot account (multi-bot gateway)?", False):
+        print_info("🤖 Each account is a separate bot with isolated sessions.")
+        print_info("   Names become session/delivery identifiers")
+        print_info("   (lowercase letters, digits, - and _; e.g. support, sales).")
+        print_info("   Per-account settings live under platforms.telegram.accounts")
+        print_info("   in config.yaml; target a bot with telegram@<name>:<chat_id>.")
+        while True:
+            account_name = prompt("Account name (leave empty to finish)").strip().lower()
+            if not account_name:
+                break
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", account_name):
+                print_error("Names must match [a-z0-9][a-z0-9_-]* — try again.")
+                continue
+            account_token = _prompt_telegram_bot_token()
+            if not account_token:
+                continue
+            save_env_value(
+                f"TELEGRAM_BOT_TOKEN_{account_name.upper()}", account_token
+            )
+            print_success(f"Account {account_name!r} token saved")
+
 
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack
 # plugin: plugins/platforms/slack/adapter.py::interactive_setup (registered

@@ -2758,6 +2758,7 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        "redact_level": "basic",
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -7457,12 +7458,14 @@ _SECURITY_COMMENT = """
 # tokens, and passwords are masked in tool output, logs, and chat
 # responses before the model or user ever sees them. Set redact_secrets
 # to false to disable (e.g. when developing the redactor itself).
+# redact_level controls optional PII coverage (basic | standard | strict).
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
 #
 # security:
 #   redact_secrets: true
+#   redact_level: basic
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5

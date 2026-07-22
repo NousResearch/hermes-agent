@@ -363,6 +363,152 @@ class TestStreamingAccumulator:
         assert len(response.choices[0].message.tool_calls) == 1
 
 
+# ── Test: stream_options 422 retry ───────────────────────────────────────
+
+
+class TestStreamOptions422Retry:
+    """Integration coverage for the Azure-MaaS ``stream_options`` 422 retry.
+
+    Existing tests in ``tests/agent/test_stream_options_incompatible.py``
+    cover the cache and predicate in isolation.  This class exercises the
+    real retry path inside ``_interruptible_streaming_api_call``: first
+    request raises an HTTP 422 mentioning ``stream_options`` + ``extra``,
+    second request succeeds, and the second request's kwargs must NOT
+    include ``stream_options``.
+
+    See issue #9705 and PR #53271.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self):
+        """Per-test isolation for the module-level incompatibility cache."""
+        from agent.chat_completion_helpers import _STREAM_OPTIONS_INCOMPATIBLE
+        _STREAM_OPTIONS_INCOMPATIBLE.clear()
+        yield
+        _STREAM_OPTIONS_INCOMPATIBLE.clear()
+
+    @staticmethod
+    def _azure_422_error():
+        """Build an ``openai.APIStatusError`` matching the Azure MaaS shape."""
+        import httpx
+        from openai import APIStatusError
+
+        body = (
+            '{"detail": [{"type": "extra_forbidden", '
+            '"loc": ["body", "stream_options", "include_usage"], '
+            '"msg": "Extra inputs are not permitted"}]}'
+        )
+        response = httpx.Response(
+            422,
+            request=httpx.Request(
+                "POST", "https://hub.services.ai.azure.com/openai/v1/chat/completions"
+            ),
+            content=body.encode(),
+        )
+        return APIStatusError(
+            "Extra inputs are not permitted",
+            response=response,
+            body=body,
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_retry_omits_stream_options_after_422(self, mock_close, mock_create):
+        """First call 422 → second call succeeds without stream_options."""
+        from run_agent import AIAgent
+        from agent.chat_completion_helpers import _STREAM_OPTIONS_INCOMPATIBLE
+        from utils import base_url_hostname
+
+        azure_422 = self._azure_422_error()
+        chunks = [
+            _make_stream_chunk(content="hi", finish_reason="stop", model="test/model"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1)),
+        ]
+        # First call raises 422, second returns the successful stream.
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [azure_422, iter(chunks)]
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://hub.services.ai.azure.com/openai/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        # Retry succeeded.
+        assert response.choices[0].message.content == "hi"
+        # Two attempts: one 422, one success.
+        assert mock_client.chat.completions.create.call_count == 2
+        # First attempt included stream_options (cache was empty pre-population).
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        assert first_kwargs.get("stream_options") == {"include_usage": True}
+        # Second attempt omitted it — the retry dropped the field.
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        assert "stream_options" not in second_kwargs
+        # The host is now cached so subsequent requests skip the field
+        # without the extra round-trip.
+        host = base_url_hostname(agent.base_url)
+        assert host in _STREAM_OPTIONS_INCOMPATIBLE
+        # Cleanup fired for the failed first attempt.
+        assert mock_close.call_count >= 1
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_concurrent_loser_still_retries(self, mock_close, mock_create):
+        """A second request that loses the race to populate the cache
+        still retries — not blocked behind ``host in cache``.
+
+        Regression guard for the race the maintainer flagged on PR #53271:
+        if request A populates the cache between request B's read and write,
+        the OLD code gated retry on ``host not in cache`` and request B
+        would fall through with the 422.  With idempotent insert +
+        unconditional continue, B's matching rejection still retries
+        without stream_options.
+        """
+        from run_agent import AIAgent
+        from agent.chat_completion_helpers import _STREAM_OPTIONS_INCOMPATIBLE
+        from utils import base_url_hostname
+
+        azure_422 = self._azure_422_error()
+        chunks = [
+            _make_stream_chunk(content="ok", finish_reason="stop", model="test/model"),
+        ]
+
+        # Pre-populate the cache (simulating request A having already
+        # cached the host) before request B runs.  B should still retry.
+        host = "hub.services.ai.azure.com"
+        _STREAM_OPTIONS_INCOMPATIBLE.add(host)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [azure_422, iter(chunks)]
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url=f"https://{host}/openai/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        assert mock_client.chat.completions.create.call_count == 2
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        assert "stream_options" not in second_kwargs
+
+
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 

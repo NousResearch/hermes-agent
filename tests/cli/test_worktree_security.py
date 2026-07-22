@@ -128,3 +128,40 @@ class TestWorktreeIncludeSecurity:
             assert (linked_dir / "lib" / "marker.txt").read_text() == "venv marker"
         finally:
             _force_remove_worktree(info)
+
+
+class TestWorktreeNestingCanonicalization:
+    """A session started inside a linked worktree must not create the next
+    worktree nested inside that worktree — it belongs under the main clone."""
+
+    def test_setup_from_inside_worktree_uses_main_clone(self, git_repo):
+        import cli as cli_mod
+
+        # First worktree, created the normal way from the main clone.
+        first = None
+        second = None
+        try:
+            first = cli_mod._setup_worktree(str(git_repo))
+            assert first is not None
+            first_path = Path(first["path"]).resolve()
+            # Sanity: the first worktree lives under the main clone.
+            assert first_path.parent == (git_repo / ".worktrees").resolve()
+
+            # Now emulate a session that STARTS inside that linked worktree:
+            # pass the worktree's own path as repo_root, exactly as
+            # find_git_repo_root()/`git rev-parse --show-toplevel` would report
+            # from inside a linked worktree.
+            second = cli_mod._setup_worktree(str(first_path))
+            assert second is not None
+            second_path = Path(second["path"]).resolve()
+
+            # The new worktree must be created under the MAIN clone, not nested
+            # inside the first worktree (which would be
+            # <first>/.worktrees/... — the recursive-nesting bug).
+            assert second_path.parent == (git_repo / ".worktrees").resolve()
+            assert Path(second["repo_root"]).resolve() == git_repo.resolve()
+            # Explicitly assert it is NOT nested inside the first worktree.
+            assert (first_path / ".worktrees") not in second_path.parents
+        finally:
+            _force_remove_worktree(second)
+            _force_remove_worktree(first)

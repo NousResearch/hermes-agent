@@ -1282,20 +1282,7 @@ def _probe_launchd_service_running() -> bool:
     We additionally require a PID in the output to confirm launchd is actually
     managing a live process, not just holding a static definition.
     """
-    if not get_launchd_plist_path().exists():
-        return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    if result.returncode != 0:
-        return False
-    return _parse_launchd_pid_from_list_output(result.stdout) is not None
+    return _launchd_label_state(get_launchd_label())[1]
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -1722,6 +1709,8 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
 
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_LAUNCHD_CANONICAL_DEFAULT_LABEL = "io.nousresearch.hermes-agent.gateway"
+_LAUNCHD_LEGACY_DEFAULT_LABEL = "ai.hermes.gateway"
 
 
 def _profile_suffix() -> str:
@@ -2478,15 +2467,69 @@ def _launchd_user_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _launchd_plist_path_for_label(label: str) -> Path:
+    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _launchd_label_state(label: str) -> tuple[bool, bool]:
+    """Return ``(registered, running)`` for a launchd job label."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False, False
+    if result.returncode != 0:
+        return False, False
+    return True, _parse_launchd_pid_from_list_output(result.stdout) is not None
+
+
+_resolved_launchd_label: str | None = None
+
+
+def _default_launchd_label() -> str:
+    global _resolved_launchd_label
+    if _resolved_launchd_label is not None:
+        return _resolved_launchd_label
+
+    canonical = _LAUNCHD_CANONICAL_DEFAULT_LABEL
+    legacy = _LAUNCHD_LEGACY_DEFAULT_LABEL
+
+    states = {
+        canonical: _launchd_label_state(canonical),
+        legacy: _launchd_label_state(legacy),
+    }
+    registered = [label for label, state in states.items() if state[0]]
+    if len(registered) == 1:
+        _resolved_launchd_label = registered[0]
+        return _resolved_launchd_label
+    if len(registered) > 1:
+        running = [label for label in registered if states[label][1]]
+        _resolved_launchd_label = running[0] if len(running) == 1 else canonical
+        return _resolved_launchd_label
+
+    canonical_plist = _launchd_plist_path_for_label(canonical)
+    legacy_plist = _launchd_plist_path_for_label(legacy)
+    if legacy_plist.exists() and not canonical_plist.exists():
+        _resolved_launchd_label = legacy
+    else:
+        # Canonical wins when both stale plists exist, when only its plist
+        # exists, and for a fresh installation with no prior service.
+        _resolved_launchd_label = canonical
+    return _resolved_launchd_label
+
+
 def get_launchd_plist_path() -> Path:
     """Return the launchd plist path, scoped per profile.
 
-    Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
+    Default ``~/.hermes`` → canonical ``io.nousresearch.hermes-agent.gateway.plist``
+    unless an installed legacy default-profile plist is the only service present.
     Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
     """
-    suffix = _profile_suffix()
-    name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
-    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
+    return _launchd_plist_path_for_label(get_launchd_label())
 
 
 def _detect_venv_dir() -> Path | None:
@@ -3585,7 +3628,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _profile_suffix()
-    return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+    return f"{_LAUNCHD_LEGACY_DEFAULT_LABEL}-{suffix}" if suffix else _default_launchd_label()
 
 
 # Cached launchd domain result — probing is cheap but should only run once per

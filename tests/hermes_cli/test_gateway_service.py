@@ -623,6 +623,211 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestLaunchdServiceIdentity:
+    @pytest.fixture(autouse=True)
+    def _reset_launchd_label_cache(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_resolved_launchd_label", None)
+
+    def test_default_profile_uses_canonical_launchd_label_for_new_install(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+
+        assert gateway_cli.get_launchd_label() == "io.nousresearch.hermes-agent.gateway"
+        assert (
+            gateway_cli.get_launchd_plist_path()
+            == machine_home
+            / "Library"
+            / "LaunchAgents"
+            / "io.nousresearch.hermes-agent.gateway.plist"
+        )
+
+    def test_default_profile_keeps_legacy_label_when_only_legacy_plist_exists(
+        self, tmp_path, monkeypatch
+    ):
+        machine_home = tmp_path / "machine-home"
+        launch_agents = machine_home / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        (launch_agents / "ai.hermes.gateway.plist").write_text("<plist/>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+
+        assert gateway_cli.get_launchd_label() == "ai.hermes.gateway"
+        assert gateway_cli.get_launchd_plist_path() == launch_agents / "ai.hermes.gateway.plist"
+
+    def test_default_profile_prefers_canonical_when_both_plists_are_unregistered(
+        self, tmp_path, monkeypatch
+    ):
+        machine_home = tmp_path / "machine-home"
+        launch_agents = machine_home / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        (launch_agents / "ai.hermes.gateway.plist").write_text("<plist/>", encoding="utf-8")
+        (launch_agents / "io.nousresearch.hermes-agent.gateway.plist").write_text(
+            "<plist/>", encoding="utf-8"
+        )
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+
+        assert gateway_cli.get_launchd_label() == "io.nousresearch.hermes-agent.gateway"
+        assert (
+            gateway_cli.get_launchd_plist_path()
+            == launch_agents / "io.nousresearch.hermes-agent.gateway.plist"
+        )
+
+    def test_both_plists_choose_registered_running_legacy_job(
+        self, tmp_path, monkeypatch
+    ):
+        machine_home = tmp_path / "machine-home"
+        launch_agents = machine_home / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        for label in (
+            "ai.hermes.gateway",
+            "io.nousresearch.hermes-agent.gateway",
+        ):
+            (launch_agents / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_label_state",
+            lambda label: (True, True) if label == "ai.hermes.gateway" else (False, False),
+        )
+
+        assert gateway_cli.get_launchd_label() == "ai.hermes.gateway"
+        assert gateway_cli.get_launchd_plist_path() == launch_agents / "ai.hermes.gateway.plist"
+
+    def test_both_plists_choose_registered_running_canonical_job(
+        self, tmp_path, monkeypatch
+    ):
+        machine_home = tmp_path / "machine-home"
+        launch_agents = machine_home / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        for label in (
+            "ai.hermes.gateway",
+            "io.nousresearch.hermes-agent.gateway",
+        ):
+            (launch_agents / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_label_state",
+            lambda label: (
+                (True, True)
+                if label == "io.nousresearch.hermes-agent.gateway"
+                else (False, False)
+            ),
+        )
+
+        assert gateway_cli.get_launchd_label() == "io.nousresearch.hermes-agent.gateway"
+        assert (
+            gateway_cli.get_launchd_plist_path()
+            == launch_agents / "io.nousresearch.hermes-agent.gateway.plist"
+        )
+
+    def test_launchd_running_probe_uses_canonical_label_when_canonical_plist_exists(
+        self, tmp_path, monkeypatch
+    ):
+        machine_home = tmp_path / "machine-home"
+        launch_agents = machine_home / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        (launch_agents / "io.nousresearch.hermes-agent.gateway.plist").write_text(
+            "<plist/>", encoding="utf-8"
+        )
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_resolved_launchd_label",
+            "io.nousresearch.hermes-agent.gateway",
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{\n    "PID" = 12345;\n    "Label" = "io.nousresearch.hermes-agent.gateway";\n}',
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._probe_launchd_service_running() is True
+        assert calls == [["launchctl", "list", "io.nousresearch.hermes-agent.gateway"]]
+
+    def test_lifecycle_operations_target_selected_live_legacy_service(
+        self, tmp_path, monkeypatch
+    ):
+        machine_home = tmp_path / "machine-home"
+        launch_agents = machine_home / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        for label in (
+            "ai.hermes.gateway",
+            "io.nousresearch.hermes-agent.gateway",
+        ):
+            (launch_agents / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_label_state",
+            lambda label: (True, True) if label == "ai.hermes.gateway" else (False, False),
+        )
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda **kwargs: True)
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *args, **kwargs: None)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            stdout = (
+                '{\n    "PID" = 12345;\n    "Label" = "ai.hermes.gateway";\n}'
+                if cmd[:2] == ["launchctl", "list"]
+                else ""
+            )
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+        gateway_cli.launchd_stop()
+        gateway_cli.launchd_restart()
+        gateway_cli.launchd_status()
+
+        target = "gui/501/ai.hermes.gateway"
+        assert ["launchctl", "kickstart", target] in calls
+        assert ["launchctl", "bootout", target] in calls
+        assert ["launchctl", "kickstart", "-k", target] in calls
+        assert ["launchctl", "list", "ai.hermes.gateway"] in calls
+
+    def test_named_profiles_keep_legacy_launchd_label_shape(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "coder")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: machine_home)
+
+        assert gateway_cli.get_launchd_label() == "ai.hermes.gateway-coder"
+        assert (
+            gateway_cli.get_launchd_plist_path()
+            == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-coder.plist"
+        )
+
+
 class TestLaunchdServiceRecovery:
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
@@ -978,13 +1183,14 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
-    def test_launchd_domain_uses_user_domain(self, monkeypatch):
+    def test_launchd_domain_uses_user_domain(self, tmp_path, monkeypatch):
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
         # non-Aqua/background sessions on macOS 26+ (issue #23387).
         # When gui/<uid> fails to probe and user/<uid> succeeds,
         # _launchd_domain() must return user/<uid>.
         gateway_cli._resolved_launchd_domain = None
         monkeypatch.setattr(os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
         label = gateway_cli.get_launchd_label()
 
         def fake_run(cmd, check=False, **kwargs):
@@ -1383,6 +1589,10 @@ class TestLaunchdDomainDetection:
     def _reset_domain_cache(self):
         """Clear any cached domain result between tests."""
         gateway_cli._resolved_launchd_domain = None
+
+    @pytest.fixture(autouse=True)
+    def _isolate_launchd_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
 
     def test_prefers_gui_domain_when_service_loaded_there(self, monkeypatch):
         """In an Aqua session where the service is loaded under gui/<uid>,

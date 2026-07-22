@@ -408,7 +408,13 @@ hermes gateway status                # 检查状态
 tail -f ~/.hermes/logs/gateway.log   # 查看日志
 ```
 
-生成的 plist 文件位于 `~/Library/LaunchAgents/ai.hermes.gateway.plist`。它包含三个环境变量：
+全新的默认配置安装使用规范 plist 和标签：
+`~/Library/LaunchAgents/io.nousresearch.hermes-agent.gateway.plist` 和
+`io.nousresearch.hermes-agent.gateway`。仍使用 `ai.hermes.gateway.plist` /
+`ai.hermes.gateway` 的旧安装继续受到支持。如果两种身份同时存在，
+`hermes gateway start`、`stop`、`restart` 和 `status` 会选择已向 launchd
+注册的作业；如果两者都已注册，则优先选择当前正在运行的作业。生成的 plist
+包含三个环境变量：
 
 - **PATH** — 安装时你的完整 shell PATH，并在前面添加了 venv `bin/` 和 `node_modules/.bin`。这确保用户安装的工具（Node.js、ffmpeg 等）可供网关子进程（如 WhatsApp 桥接）使用。
 - **VIRTUAL_ENV** — 指向 Python 虚拟环境，使工具能正确解析包。
@@ -419,7 +425,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 :::
 
 :::info 多个安装
-与 Linux systemd 服务类似，每个 `HERMES_HOME` 目录都有自己的 launchd 标签。默认的 `~/.hermes` 使用 `ai.hermes.gateway`；其他安装使用 `ai.hermes.gateway-<suffix>`。
+与 Linux systemd 服务类似，每个 `HERMES_HOME` 目录都有自己的 launchd 标签。全新的默认 `~/.hermes` 安装使用 `io.nousresearch.hermes-agent.gateway`；旧的默认安装仍可继续使用 `ai.hermes.gateway`。其他安装使用 `ai.hermes.gateway-<suffix>`。
 :::
 
 ## 平台专属工具集

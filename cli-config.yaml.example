@@ -1489,7 +1489,10 @@ updates:
 #     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
 #     project_id: ""                       # UUID of the BSM project to sync
 #     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
-#     cache_ttl_seconds: 300               # 0 disables caching
+#     cache_ttl_seconds: 300               # 0 disables fresh caching
+#     encrypted_cache:                     # optional encrypted stale fallback
+#       enabled: false
+#       max_stale_seconds: 0               # 0 disables stale fallback
 #     override_existing: true              # BSM values win over existing env
 #     auto_install: true                   # lazy-download bws into ~/.hermes/bin
 #
@@ -1506,3 +1509,16 @@ updates:
 #     binary_path: ""                               # "" = resolve op via PATH; else absolute path
 #     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
 #     override_existing: true                       # resolved values win over existing env
+#
+#   # ---- Command helper (any CLI vault) --------------------------------------
+#   # Run a user-configured helper that prints KEY=VALUE lines on stdout —
+#   # works with any secret store that has a CLI: keepassxc-cli, secret-tool,
+#   # pass, gpg, or a script that cats a tmpfs env file.  Composes with the
+#   # sources above (enable any combination).  POSIX-only (needs /bin/sh).
+#   # The helper must be fast and NON-interactive (hard timeout, 1 MiB cap);
+#   # its stderr is discarded so diagnostics can't leak secret material.
+#   command:
+#     enabled: false
+#     command: "cat /run/user/1000/hermes-secrets.env"
+#     helper_timeout_seconds: 3
+#     override_existing: false             # .env/shell win by default

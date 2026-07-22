@@ -390,6 +390,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
   },
+  desktop: {
+    repoScanEnabled: 'Automatic Repository Discovery',
+    repoScanRoots: 'Repository Discovery Roots',
+    repoScanExcludePaths: 'Excluded Repository Paths'
+  },
   agent: {
     maxTurns: 'Max Agent Steps',
     imageInputMode: 'Image Attachments',
@@ -551,6 +556,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
+  desktop: {
+    repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
+    repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
+    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
+  },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
@@ -645,6 +655,9 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Monitor,
     keys: [
       'terminal.cwd',
+      'desktop.repo_scan_enabled',
+      'desktop.repo_scan_roots',
+      'desktop.repo_scan_exclude_paths',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',

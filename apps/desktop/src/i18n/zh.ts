@@ -478,6 +478,11 @@ export const zh: Translations = {
         personality: '人格',
         showReasoning: '推理过程块'
       },
+      desktop: {
+        repoScanEnabled: '自动发现代码仓库',
+        repoScanRoots: '代码仓库扫描根目录',
+        repoScanExcludePaths: '排除的代码仓库路径'
+      },
       agent: {
         maxTurns: '最大智能体步数',
         imageInputMode: '图片附件',
@@ -632,6 +637,11 @@ export const zh: Translations = {
       display: {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。'
+      },
+      desktop: {
+        repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
+        repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
+        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
       },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
@@ -839,7 +849,42 @@ export const zh: Translations = {
       signOutFailed: '退出登录失败',
       testFailed: '远程网关测试失败',
       applyFailed: '无法应用网关设置',
-      saveFailed: '无法保存网关设置'
+      saveFailed: '无法保存网关设置',
+      sshTitle: '通过 SSH 连接',
+      sshDesc:
+        'Hermes 会通过 SSH 在远程启动并以隧道连接到本应用——无需自行启动或暴露任何服务。前提：已具备到该主机的密钥 SSH 访问。',
+      sshTrustHint: '首次提供的主机密钥会被信任并固定；后续变更将被拒绝。',
+      sshHostTitle: '主机',
+      sshHostDesc: 'user@host，或 ~/.ssh/config 中的 Host 别名。',
+      sshHostPick: '选择主机…',
+      sshHostPickTitle: '主机',
+      sshHostPickDesc: '~/.ssh/config 中的 Host 别名，或选择"自定义"手动输入。',
+      sshHostCustom: '自定义（手动输入）…',
+      sshUserTitle: '用户',
+      sshUserDesc: '留空 = ~/.ssh/config 或当前用户。',
+      sshUserPlaceholder: '来自 ~/.ssh/config',
+      sshPortTitle: '端口',
+      sshPortDesc: '留空 = 22 或 ~/.ssh/config 中的端口。',
+      sshKeyTitle: '密钥文件',
+      sshKeyDesc: '私钥路径。留空 = ssh-agent 或 ~/.ssh/config。',
+      sshHermesPathTitle: 'Hermes 路径（可选）',
+      sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
+      sshHermesPathPlaceholder: '自动检测',
+      sshTestConnection: '测试 SSH',
+      sshConnect: '连接',
+      sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',
+      sshReachable: (host, platform) => `可连接：${host}（${platform}）——已找到 Hermes`,
+      sshIncompleteHost: '连接前请输入 SSH 主机。',
+      sshErrUnreachable: '无法通过 SSH 连接到该主机。请检查主机、端口和网络。',
+      sshErrAuth:
+        'SSH 认证失败。请将密钥加载到 ssh-agent（ssh-add），或在 ~/.ssh/config 中设置 IdentityFile——Hermes 以非交互方式运行 ssh。',
+      sshErrHostKey: '自上次连接以来主机密钥已更改。请确认这是预期的，然后运行 ssh-keygen -R <host> 并重新连接。',
+      sshErrNotInstalled:
+        '远程主机上未安装 Hermes。请在远程安装（curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh）或设置 Hermes 路径。',
+      sshErrPlatform: '不支持的远程平台。Hermes Desktop 的 SSH 模式支持 Linux、macOS 和 Windows 远程主机。',
+      sshErrTimeout: 'SSH 连接超时。主机可能无法访问或处于休眠状态。',
+      sshErrUpdateRequired: '使用 Desktop SSH 连接前，请更新远程主机上的 Hermes。',
+      sshErrUnknown: 'SSH 连接失败。'
     },
     keys: {
       loading: '正在加载 API 密钥和凭据...',
@@ -1979,6 +2024,7 @@ export const zh: Translations = {
     urlHintPre: '请包含完整 URL，例如 ',
     attach: '附加',
     queued: count => `${count} 条排队`,
+    queuedPaused: count => `${count} 条排队 — 已暂停`,
     attachmentOnly: '仅附件回合',
     emptyTurn: '空回合',
     attachments: count => `${count} 个附件`,
@@ -1988,6 +2034,8 @@ export const zh: Translations = {
     queueSendNext: '下一个',
     queueSend: '发送',
     queueDelete: '删除',
+    queueResume: '继续',
+    queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     previewUnavailable: '预览不可用',
@@ -2339,6 +2387,12 @@ export const zh: Translations = {
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `远程: ${host}`,
+      connectionCloud: host => `云端: ${host}`,
+      connectionCloudTooltip: host => `已连接到 Hermes Cloud ${host} · 点击管理`,
+      connectionSshTooltip: host => `已通过 SSH 连接到 ${host} · 点击管理`,
+      connectionRemoteTooltip: host => `已连接到远程后端 ${host} · 点击管理`,
       backendLabel: version => `后端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,

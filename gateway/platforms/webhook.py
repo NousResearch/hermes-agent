@@ -754,6 +754,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 ),
                 "payload": payload,
             }
+            if profile and isinstance(profile, str):
+                delivery["profile"] = profile
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
                 event_type,
@@ -811,6 +813,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_config.get("deliver_extra", {}), payload
             ),
         }
+        if profile and isinstance(profile, str):
+            deliver_config["profile"] = profile
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
@@ -1301,18 +1305,26 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error=f"Unknown platform: {platform_name}"
             )
 
-        # Default adapters first; multiplex may park Slack/etc. only on a
-        # secondary profile (self._profile_adapters). Fall back so webhook
-        # deliver:slack still works when default has slack disabled.
-        adapter = self.gateway_runner.adapters.get(target_platform)
-        if not adapter:
-            for _prof, amap in (getattr(self.gateway_runner, "_profile_adapters", None) or {}).items():
-                if not isinstance(amap, dict):
-                    continue
-                cand = amap.get(target_platform)
-                if cand is not None:
-                    adapter = cand
-                    break
+        # A /p/<profile>/ webhook must deliver through that exact profile.
+        # Unprefixed routes retain the legacy default-then-secondary fallback.
+        profile = delivery.get("profile")
+        if isinstance(profile, str) and profile:
+            adapter = self.gateway_runner._authorization_adapter(
+                target_platform, profile
+            )
+        else:
+            adapter = self.gateway_runner.adapters.get(target_platform)
+            if not adapter:
+                profile_adapters = (
+                    getattr(self.gateway_runner, "_profile_adapters", None) or {}
+                )
+                for _prof, amap in profile_adapters.items():
+                    if not isinstance(amap, dict):
+                        continue
+                    cand = amap.get(target_platform)
+                    if cand is not None:
+                        adapter = cand
+                        break
         if not adapter:
             return SendResult(
                 success=False,
@@ -1323,7 +1335,12 @@ class WebhookAdapter(BasePlatformAdapter):
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
         if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
+            if isinstance(profile, str) and profile:
+                home = getattr(
+                    getattr(adapter, "config", None), "home_channel", None
+                )
+            else:
+                home = self.gateway_runner.config.get_home_channel(target_platform)
             if home:
                 chat_id = home.chat_id
             else:

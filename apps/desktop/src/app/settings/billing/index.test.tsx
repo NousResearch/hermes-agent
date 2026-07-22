@@ -618,9 +618,11 @@ describe('BillingSettings', () => {
     expect((await screen.findByText('$0 of $220 left · $0.79 over')).classList.contains('text-destructive')).toBe(true)
     const subscriptionTrack = screen.getByRole('progressbar', { name: 'Subscription credits remaining' })
 
-    expect(subscriptionTrack.classList.contains('dither')).toBe(true)
-    expect(subscriptionTrack.classList.contains('text-destructive/60')).toBe(true)
-    expect(subscriptionTrack.classList.contains('bg-destructive/10')).toBe(true)
+    // Plain shared primitive track (no bespoke dither/tinted chrome); the
+    // over-limit signal rides the destructive fill instead.
+    expect(subscriptionTrack.classList.contains('dither')).toBe(false)
+    expect(subscriptionTrack.classList.contains('bg-muted')).toBe(true)
+    expect(subscriptionTrack.querySelector('.bg-destructive')).toBeTruthy()
   })
 
   it('renders an empty neutral usage track when a row has no bar data', async () => {
@@ -645,13 +647,15 @@ describe('BillingSettings', () => {
 
     expect(subscriptionTrack.getAttribute('aria-valuenow')).toBe('0')
     expect(subscriptionTrack.classList.contains('text-destructive')).toBe(false)
-    expect(subscriptionTrack.classList.contains('dither')).toBe(true)
+    // Empty tracks are the plain shared primitive now — no hatched placeholder.
+    expect(subscriptionTrack.classList.contains('dither')).toBe(false)
+    expect(subscriptionTrack.classList.contains('bg-muted')).toBe(true)
 
     const monthlyCapTrack = screen.getByRole('progressbar', { name: 'Monthly spend cap used' })
 
     expect(monthlyCapTrack.getAttribute('aria-valuenow')).toBe('0')
-    expect(monthlyCapTrack.classList.contains('dither')).toBe(true)
-    expect(monthlyCapTrack.classList.contains('bg-(--ui-bg-elevated)')).toBe(true)
+    expect(monthlyCapTrack.classList.contains('dither')).toBe(false)
+    expect(monthlyCapTrack.classList.contains('bg-muted')).toBe(true)
   })
 
   it('shows a warn notice that names the no-card blocker with a portal link', async () => {

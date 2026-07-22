@@ -3,12 +3,18 @@
 from pathlib import Path
 import tomllib
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
-def _load_optional_dependencies():
+
+def _load_project():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
-        project = tomllib.load(handle)["project"]
-    return project["optional-dependencies"]
+        return tomllib.load(handle)["project"]
+
+
+def _load_optional_dependencies():
+    return _load_project()["optional-dependencies"]
 
 
 def _load_package_data():
@@ -75,6 +81,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "honcho", "hindsight",
         "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
+        "heic",
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:
@@ -99,6 +106,25 @@ def _exact_pins(specs):
         package = package.split("[", 1)[0].lower().replace("_", "-")
         pins[package] = version
     return pins
+
+
+def _requirement_names(specs):
+    return {canonicalize_name(Requirement(spec).name) for spec in specs}
+
+
+def test_pillow_heif_is_lazy_optional_dependency():
+    from tools.lazy_deps import LAZY_DEPS
+
+    project = _load_project()
+    optional_dependencies = project["optional-dependencies"]
+
+    assert "pillow-heif" not in _requirement_names(project["dependencies"])
+    assert optional_dependencies["heic"] == ["pillow-heif==1.4.0"]
+    assert LAZY_DEPS["media.heic"] == ("pillow-heif==1.4.0",)
+    assert not any(
+        spec == "hermes-agent[heic]"
+        for spec in optional_dependencies["all"]
+    )
 
 
 def test_pyproject_aiohttp_pins_match_lazy_slack_pin():

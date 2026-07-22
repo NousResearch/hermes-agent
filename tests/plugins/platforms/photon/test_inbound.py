@@ -87,6 +87,9 @@ _PNG_1X1_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"
     "DwAChwGA60e6kgAAAABJRU5ErkJggg=="
 )
+_HEIC_STUB = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32
+_HEIC_STUB_B64 = base64.b64encode(_HEIC_STUB).decode("ascii")
+_JPEG_STUB = b"\xff\xd8\xff\xe0" + b"converted-jpeg" + b"\xff\xd9"
 
 
 def _attachment_event(
@@ -169,6 +172,46 @@ async def test_dispatch_attachment_downloads_image(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_heic_attachment_transcodes_to_supported_jpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.platforms.base as base
+
+    monkeypatch.setattr(
+        base,
+        "_transcode_heic_to_jpeg",
+        lambda data: _JPEG_STUB if data == _HEIC_STUB else None,
+    )
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _attachment_event(
+        {
+            "name": "IMG_4127.HEIC",
+            "mimeType": "image/heic",
+            "size": len(_HEIC_STUB),
+            "data": _HEIC_STUB_B64,
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/jpeg"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.suffix == ".jpg"
+        assert cached.read_bytes() == _JPEG_STUB
+        assert ev.text == "(attachment)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
 async def test_dispatch_group_preserves_text_and_attachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -214,6 +257,55 @@ async def test_dispatch_group_preserves_text_and_attachment(
     try:
         assert cached.is_file()
         assert cached.read_bytes() == raw
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_group_heic_without_converter_uses_document_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mixed text+unconverted HEIC keeps text and avoids invalid image media."""
+    import gateway.platforms.base as base
+
+    monkeypatch.setattr(base, "_transcode_heic_to_jpeg", lambda data: None)
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _attachment_event({}, msg_id="spc-msg-mixed-heic-doc")
+    event["content"] = {
+        "type": "group",
+        "items": [
+            {
+                "id": "p:0/spc-msg-mixed-heic-doc",
+                "content": {"type": "text", "text": "can you check this one?"},
+            },
+            {
+                "id": "p:1/spc-msg-mixed-heic-doc",
+                "content": {
+                    "type": "attachment",
+                    "name": "IMG_4127.HEIC",
+                    "mimeType": "image/heic",
+                    "size": len(_HEIC_STUB),
+                    "data": _HEIC_STUB_B64,
+                    "encoding": "base64",
+                },
+            },
+        ],
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.text == "can you check this one?"
+    assert ev.message_type == MessageType.DOCUMENT
+    assert ev.media_types == ["application/octet-stream"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == _HEIC_STUB
     finally:
         cached.unlink(missing_ok=True)
 

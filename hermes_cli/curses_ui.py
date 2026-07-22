@@ -6,9 +6,105 @@ text-based numbered fallback for terminals without curses support.
 """
 import sys
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Set
+from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
 
 from hermes_cli.colors import Colors, color
+
+# Rich radiolist rows: (text, style). style is None | "yellow" | "dim".
+# Plain ``str`` items remain fully supported.
+RadioItem = Union[str, Sequence[Tuple[str, Optional[str]]]]
+
+
+def radio_item_plain(item: RadioItem) -> str:
+    """Flatten a radiolist item to searchable/plain display text."""
+    if isinstance(item, str):
+        return item
+    return "".join(text for text, _style in item)
+
+
+def _curses_style_attr(curses, style: Optional[str], *, is_cursor: bool):
+    """Map a segment style to a curses attribute.
+
+    Cursor rows force the whole line green (pair 1) so selection stays
+    one solid highlight; unselected sale chrome uses yellow / dim.
+    """
+    if is_cursor:
+        attr = curses.A_BOLD
+        if curses.has_colors():
+            attr |= curses.color_pair(1)
+        return attr
+    if style == "yellow" and curses.has_colors():
+        return curses.color_pair(2)
+    if style == "dim":
+        attr = curses.A_DIM
+        if curses.has_colors():
+            # Pair 3 is the dim-gray status color (extra_color_pairs).
+            try:
+                attr |= curses.color_pair(3)
+            except curses.error:
+                pass
+        return attr
+    return curses.A_NORMAL
+
+
+def _draw_description_line(stdscr, y: int, text: str, max_x: int) -> None:
+    """Draw a description line, highlighting ★ in yellow when colors exist."""
+    import curses
+
+    col = 0
+    i = 0
+    star_attr = curses.A_NORMAL
+    if curses.has_colors():
+        star_attr = curses.color_pair(2)
+    while i < len(text) and col < max_x - 1:
+        remaining = max_x - 1 - col
+        if remaining <= 0:
+            break
+        if text[i] == "★":
+            try:
+                stdscr.addnstr(y, col, "★", remaining, star_attr)
+            except curses.error:
+                pass
+            col += 1
+            i += 1
+            continue
+        next_star = text.find("★", i)
+        chunk = text[i:] if next_star < 0 else text[i:next_star]
+        chunk = chunk[:remaining]
+        try:
+            stdscr.addnstr(y, col, chunk, remaining, curses.A_NORMAL)
+        except curses.error:
+            pass
+        col += len(chunk)
+        i += len(chunk)
+
+
+def _draw_radio_item(stdscr, y: int, x: int, item: RadioItem, max_x: int, *, is_cursor: bool) -> None:
+    """Draw a plain or segmented radiolist item starting at column ``x``."""
+    import curses
+
+    if isinstance(item, str):
+        attr = _curses_style_attr(curses, None, is_cursor=is_cursor)
+        try:
+            stdscr.addnstr(y, x, item, max(0, max_x - 1 - x), attr)
+        except curses.error:
+            pass
+        return
+
+    col = x
+    for text, style in item:
+        if col >= max_x - 1:
+            break
+        remaining = max_x - 1 - col
+        if remaining <= 0:
+            break
+        chunk = text[:remaining]
+        attr = _curses_style_attr(curses, style, is_cursor=is_cursor)
+        try:
+            stdscr.addnstr(y, col, chunk, remaining, attr)
+        except curses.error:
+            pass
+        col += len(chunk)
 
 
 def _query_matches(label: str, query: str) -> bool:
@@ -621,7 +717,7 @@ def curses_checklist(
 
 def curses_radiolist(
     title: str,
-    items: List[str],
+    items: List[RadioItem],
     selected: int = 0,
     *,
     cancel_returns: int | None = None,
@@ -632,7 +728,11 @@ def curses_radiolist(
 
     Args:
         title: Header line displayed above the list.
-        items: Display labels for each row.
+        items: Display labels for each row. Each entry is either a plain
+            string or a sequence of ``(text, style)`` segments where
+            ``style`` is ``None``, ``"yellow"``, or ``"dim"``. Cursor rows
+            force the whole line green; unselected rows honor segment styles
+            (used for sale chrome in the model picker).
         selected: Index that starts selected (pre-selected).
         cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
         description: Optional multi-line text shown between the title and
@@ -649,6 +749,8 @@ def curses_radiolist(
     if description:
         desc_lines = description.splitlines()
 
+    plain_labels = [radio_item_plain(item) for item in items]
+
     def _draw_header(stdscr, max_y, max_x, search=None):
         import curses
         row = 0
@@ -659,11 +761,11 @@ def curses_radiolist(
             stdscr.addnstr(row, 0, title, max_x - 1, hattr)
             row += 1
 
-            # Description lines
+            # Description lines — paint ★ yellow so the sale legend matches rows.
             for dline in desc_lines:
                 if row >= max_y - 1:
                     break
-                stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
+                _draw_description_line(stdscr, row, dline, max_x)
                 row += 1
 
             if searchable and search is not None and search.active:
@@ -683,16 +785,15 @@ def curses_radiolist(
         import curses
         radio = "\u25cf" if i == selected else "\u25cb"
         arrow = "\u2192" if is_cursor else " "
-        line = f" {arrow} ({radio}) {items[i]}"
-        attr = curses.A_NORMAL
-        if is_cursor:
-            attr = curses.A_BOLD
-            if curses.has_colors():
-                attr |= curses.color_pair(1)
+        prefix = f" {arrow} ({radio}) "
+        prefix_attr = _curses_style_attr(curses, None, is_cursor=is_cursor)
         try:
-            stdscr.addnstr(y, 0, line, max_x - 1, attr)
+            stdscr.addnstr(y, 0, prefix, max_x - 1, prefix_attr)
         except curses.error:
             pass
+        _draw_radio_item(
+            stdscr, y, len(prefix), items[i], max_x, is_cursor=is_cursor
+        )
 
     def _on_action(action, cursor):
         if action in (NAV_SELECT, NAV_TOGGLE):
@@ -706,16 +807,33 @@ def curses_radiolist(
         draw_row=_draw_row,
         on_action=_on_action,
         reserve_bottom=1,
+        # Dim gray (pair 3) for unselected "was …" sale chrome.
+        extra_color_pairs=True,
         fallback=lambda: _radio_numbered_fallback(title, items, selected, cancel_returns),
         cancel_value=cancel_returns,
         searchable=searchable,
-        search_labels=list(items) if searchable else None,
+        search_labels=plain_labels if searchable else None,
     )
+
+
+def format_radio_item_ansi(item: RadioItem) -> str:
+    """Apply ANSI colors to a rich radiolist item (numbered fallback / prints)."""
+    if isinstance(item, str):
+        return item
+    parts: list[str] = []
+    for text, style in item:
+        if style == "yellow":
+            parts.append(color(text, Colors.YELLOW))
+        elif style == "dim":
+            parts.append(color(text, Colors.DIM))
+        else:
+            parts.append(text)
+    return "".join(parts)
 
 
 def _radio_numbered_fallback(
     title: str,
-    items: List[str],
+    items: List[RadioItem],
     selected: int,
     cancel_returns: int,
 ) -> int:
@@ -725,7 +843,7 @@ def _radio_numbered_fallback(
 
     for i, label in enumerate(items):
         marker = color("(\u25cf)", Colors.GREEN) if i == selected else "(\u25cb)"
-        print(f"  {marker} {i + 1:>2}. {label}")
+        print(f"  {marker} {i + 1:>2}. {format_radio_item_ansi(label)}")
     print()
     try:
         val = input(color(f"  Choice [default {selected + 1}]: ", Colors.DIM)).strip()

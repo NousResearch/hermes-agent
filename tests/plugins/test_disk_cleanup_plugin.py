@@ -579,6 +579,38 @@ class TestTrackForgetQuick:
         assert len(quarantines) == 1
         assert quarantines[0].read_text() == "tracked"
 
+    def test_atomic_unlink_restores_replacement_racing_quarantine(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        artifact = _isolate_env / "scratch" / "race.tmp"
+        artifact.parent.mkdir()
+        artifact.write_text("tracked")
+        identity = dg._capture_identity(artifact)
+        assert identity is not None
+        real_replace = dg.os.replace
+        injected = False
+
+        def replace_after_validation(source, destination, *args, **kwargs):
+            nonlocal injected
+            if not injected and Path(source).name == artifact.name:
+                injected = True
+                artifact.unlink()
+                artifact.write_text("human replacement")
+            return real_replace(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(dg.os, "replace", replace_after_validation)
+
+        error = dg._atomic_unlink_regular(artifact, identity)
+
+        assert injected
+        assert error is not None
+        assert artifact.read_text() == "human replacement"
+        assert not any(
+            dg._DELETE_QUARANTINE_TOKEN in child.name
+            for child in artifact.parent.iterdir()
+        )
+
     def test_quick_commit_preserves_concurrent_tracking_addition(
         self, _isolate_env, monkeypatch
     ):
@@ -873,6 +905,41 @@ class TestTrackForgetQuick:
         assert summary["artifacts"] == 0
         assert summary["errors"]
         assert stale.read_text() == "human replacement"
+
+    def test_retention_restores_replacement_racing_quarantine(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-quarantine-race"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        stale = session_dir / "old.txt"
+        stale.write_text("owned")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+        real_replace = dg.os.replace
+        injected = False
+
+        def replace_after_validation(source, destination, *args, **kwargs):
+            nonlocal injected
+            if not injected and Path(source).name == stale.name:
+                injected = True
+                stale.unlink()
+                stale.write_text("human replacement")
+            return real_replace(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(dg.os, "replace", replace_after_validation)
+
+        summary = dg.quick()
+
+        assert injected
+        assert summary["artifacts"] == 0
+        assert summary["errors"]
+        assert stale.read_text() == "human replacement"
+        assert not any(
+            dg._DELETE_QUARANTINE_TOKEN in child.name
+            for child in session_dir.iterdir()
+        )
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX directory-fd regression")
     def test_retention_preserves_session_replaced_after_child_selection(

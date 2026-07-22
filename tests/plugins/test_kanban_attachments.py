@@ -173,6 +173,8 @@ def test_api_delete_legacy_attachment_removes_row_and_preserves_blob(
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
+    assert response.json()["unproven_blob_preserved"] is True
+    assert "preserved" in response.json()["warning"]
     with kb.connect() as conn:
         assert kb.get_attachment(conn, attachment_id) is None
     assert blob.read_text(encoding="utf-8") == "keep"
@@ -193,6 +195,7 @@ def test_api_delete_legacy_attachment_preserves_noncanonical_blob(
     response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
 
     assert response.status_code == 200
+    assert response.json()["unproven_blob_preserved"] is True
     with kb.connect() as conn:
         assert kb.get_attachment(conn, attachment_id) is None
     assert blob.read_text(encoding="utf-8") == "keep"
@@ -217,6 +220,7 @@ def test_api_delete_legacy_attachment_preserves_same_size_replacement(
     response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
 
     assert response.status_code == 200
+    assert response.json()["unproven_blob_preserved"] is True
     with kb.connect() as conn:
         assert kb.get_attachment(conn, attachment_id) is None
     assert blob.read_text(encoding="utf-8") == "BBBB"
@@ -322,6 +326,7 @@ def test_upload_list_download_delete_roundtrip(client):
     # Delete removes the row and the file
     r = client.delete(f"/api/plugins/kanban/attachments/{att_id}")
     assert r.status_code == 200
+    assert r.json()["unproven_blob_preserved"] is False
     assert client.get(f"/api/plugins/kanban/attachments/{att_id}").status_code == 404
     assert client.get(
         f"/api/plugins/kanban/tasks/{task_id}/attachments"
@@ -719,7 +724,8 @@ def test_cli_attach_rm_removes_legacy_row_and_preserves_blob(kanban_home):
 
     output = run_slash(f"attach-rm {attachment_id}")
 
-    assert "Deleted attachment" in output
+    assert "Removed legacy attachment" in output
+    assert "preserved its unproven on-disk blob" in output
     with kb.connect() as conn:
         assert kb.get_attachment(conn, attachment_id) is None
     assert blob.read_text(encoding="utf-8") == "keep"

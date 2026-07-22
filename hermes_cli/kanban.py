@@ -1968,13 +1968,23 @@ def _cmd_attachments(args: argparse.Namespace) -> int:
 
 
 def _cmd_attach_rm(args: argparse.Namespace) -> int:
-    """Delete an attachment by id (removes the row and the on-disk blob)."""
+    """Delete attachment metadata and any provenance-bound on-disk blob."""
     with kb.connect_closing() as conn:
         removed = kb.delete_attachment(conn, args.attachment_id)
     if removed is None:
         print(f"no such attachment: {args.attachment_id}", file=sys.stderr)
         return 1
-    print(f"Deleted attachment {args.attachment_id} ({removed.filename}) from {removed.task_id}")
+    if removed.unproven_blob_preserved:
+        print(
+            f"Removed legacy attachment {args.attachment_id} ({removed.filename}) "
+            f"from {removed.task_id}; preserved its unproven on-disk blob at "
+            f"{removed.stored_path}"
+        )
+    else:
+        print(
+            f"Deleted attachment {args.attachment_id} ({removed.filename}) "
+            f"from {removed.task_id}"
+        )
     return 0
 
 

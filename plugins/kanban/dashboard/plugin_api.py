@@ -774,7 +774,17 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         att = kanban_db.delete_attachment(conn, attachment_id)
         if att is None:
             raise HTTPException(status_code=404, detail="attachment not found")
-        return {"ok": True, "id": attachment_id}
+        result = {
+            "ok": True,
+            "id": attachment_id,
+            "unproven_blob_preserved": att.unproven_blob_preserved,
+        }
+        if att.unproven_blob_preserved:
+            result["warning"] = (
+                "Attachment metadata was removed, but its legacy on-disk blob "
+                "was preserved because Hermes has no deletion provenance for it."
+            )
+        return result
     finally:
         conn.close()
 

@@ -1102,6 +1102,7 @@ class Attachment:
     uploaded_by: Optional[str]
     created_at: int
     filesystem_identity: Optional[tuple[int, int, int, int, int, int]] = None
+    unproven_blob_preserved: bool = False
 
 
 @dataclass
@@ -3856,6 +3857,7 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
             conn, att.task_id, "attachment_removed", event_payload
         )
     if att.filesystem_identity is None:
+        att.unproven_blob_preserved = True
         return att
     try:
         p = Path(att.stored_path)

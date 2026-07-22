@@ -1021,6 +1021,7 @@ def _atomic_unlink_managed_artifact(
             return _restore_quarantined_path(
                 lease.session_path / quarantine_name,
                 lease.session_path / name,
+                moved,
             )
         if not _managed_artifact_lease_matches(lease, root_name):
             return "managed artifact container changed; preserved quarantine"
@@ -1050,11 +1051,47 @@ def _remove_path(path: Path) -> Optional[str]:
     return None
 
 
-def _restore_quarantined_path(quarantine: Path, original: Path) -> str:
-    """Preserve uncertainty without risking an overwrite at *original*."""
+def _restore_quarantined_path(
+    quarantine: Path,
+    original: Path,
+    moved: os.stat_result,
+) -> str:
+    """No-clobber restore a pathname replacement moved during cleanup."""
+    try:
+        quarantined = quarantine.lstat()
+        if (
+            not stat.S_ISREG(quarantined.st_mode)
+            or not os.path.samestat(moved, quarantined)
+            or os.path.lexists(original)
+        ):
+            raise OSError("restore destination is occupied or quarantine changed")
+        if os.name == "nt":
+            # Windows rename is no-replace, so a newer race winner survives.
+            os.rename(quarantine, original)
+        else:
+            # link() atomically publishes only when the original name is free.
+            os.link(quarantine, original, follow_symlinks=False)
+            restored = original.lstat()
+            quarantined = quarantine.lstat()
+            if not (
+                stat.S_ISREG(restored.st_mode)
+                and stat.S_ISREG(quarantined.st_mode)
+                and os.path.samestat(moved, restored)
+                and os.path.samestat(moved, quarantined)
+            ):
+                raise OSError("restored object identity changed")
+            quarantine.unlink()
+        restored = original.lstat()
+        if stat.S_ISREG(restored.st_mode) and os.path.samestat(moved, restored):
+            return (
+                "filesystem identity changed during delete; restored the "
+                f"pathname replacement to {original}"
+            )
+    except OSError:
+        pass
     return (
         f"filesystem identity changed during delete; preserved at {quarantine} "
-        f"instead of restoring over {original}"
+        f"instead of overwriting {original}"
     )
 
 
@@ -1120,7 +1157,7 @@ def _atomic_unlink_regular(
         os.replace(path, quarantine)
         moved = quarantine.lstat()
         if not os.path.samestat(opened, moved):
-            return _restore_quarantined_path(quarantine, path)
+            return _restore_quarantined_path(quarantine, path, moved)
         try:
             quarantine.unlink()
         except OSError as exc:

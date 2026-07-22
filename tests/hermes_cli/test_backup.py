@@ -1816,7 +1816,10 @@ class TestQuickSnapshot:
     def test_missing_files_skipped(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
-        with open(hermes_home / "state-snapshots" / snap_id / "manifest.json") as f:
+        with open(
+            hermes_home / "state-snapshots" / snap_id / "manifest.json",
+            encoding="utf-8",
+        ) as f:
             meta = json.load(f)
         # gateway_state.json etc. don't exist in fixture
         assert "gateway_state.json" not in meta["files"]
@@ -1841,7 +1844,7 @@ class TestQuickSnapshot:
         assert not (snap_dir / "state.db").exists()
         # Small files still captured
         assert (snap_dir / "cron" / "jobs.json").exists()
-        with open(snap_dir / "manifest.json") as f:
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
             meta = json.load(f)
         assert "state.db" not in meta["files"]
         out = capsys.readouterr().out
@@ -2451,7 +2454,7 @@ class TestQuickSnapshot:
         assert (snap_dir / "pairing" / "matrix-approved.json").exists()
         assert (snap_dir / "feishu_comment_pairing.json").exists()
 
-        with open(snap_dir / "manifest.json") as f:
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
             meta = json.load(f)
         files = meta["files"]
         assert "platforms/pairing/telegram-approved.json" in files
@@ -2545,10 +2548,10 @@ class TestQuickSnapshot:
         # file outside the snapshot directory so a vulnerable implementation
         # would actually write something at the escaped destination.
         manifest_path = snap_dir / "manifest.json"
-        with open(manifest_path) as f:
+        with open(manifest_path, encoding="utf-8") as f:
             meta = json.load(f)
         meta["files"]["../../outside.txt"] = 9
-        with open(manifest_path, "w") as f:
+        with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(meta, f)
 
         # Source: ../../outside.txt resolves above the snapshot root.

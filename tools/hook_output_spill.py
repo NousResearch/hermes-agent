@@ -457,6 +457,40 @@ def _resolve_writable_spill_dir(
     return None
 
 
+def _restore_quarantined_spill(
+    quarantine: Path,
+    original: Path,
+    moved: os.stat_result,
+) -> bool:
+    """No-clobber restore a pathname replacement moved during pruning."""
+    try:
+        quarantined = quarantine.lstat()
+        if (
+            not stat.S_ISREG(quarantined.st_mode)
+            or not os.path.samestat(moved, quarantined)
+            or os.path.lexists(original)
+        ):
+            return False
+        if os.name == "nt":
+            os.rename(quarantine, original)
+        else:
+            os.link(quarantine, original, follow_symlinks=False)
+            restored = original.lstat()
+            quarantined = quarantine.lstat()
+            if not (
+                stat.S_ISREG(restored.st_mode)
+                and stat.S_ISREG(quarantined.st_mode)
+                and os.path.samestat(moved, restored)
+                and os.path.samestat(moved, quarantined)
+            ):
+                return False
+            quarantine.unlink()
+        restored = original.lstat()
+        return stat.S_ISREG(restored.st_mode) and os.path.samestat(moved, restored)
+    except OSError:
+        return False
+
+
 def _atomic_unlink_spill(
     path: Path, expected: os.stat_result, *, require_empty: bool = False
 ) -> bool:
@@ -529,9 +563,7 @@ def _atomic_unlink_spill(
             not os.path.samestat(opened, moved)
             or (require_empty and os.fstat(fd).st_size != 0)
         ):
-            # The pathname no longer carries safe restoration authority. A
-            # concurrent writer may recreate it at any instant, so preserve
-            # the quarantined object instead of risking an overwrite.
+            _restore_quarantined_spill(quarantine, path, moved)
             return False
         try:
             quarantine.unlink()

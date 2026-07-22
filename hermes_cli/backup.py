@@ -1490,11 +1490,14 @@ def _same_snapshot_object(
     expected: os.stat_result,
     current: os.stat_result,
 ) -> bool:
-    """Compare stable object evidence, including Windows creation time."""
-    return bool(
-        os.path.samestat(expected, current)
-        and (os.name != "nt" or expected.st_ctime_ns == current.st_ctime_ns)
-    )
+    """Compare stable filesystem object identity across Python/platforms.
+
+    ``st_ctime_ns`` is not identity evidence on Windows: it can settle a few
+    milliseconds after close even when the volume and file index are
+    unchanged. ``samestat`` compares those stable device/file identifiers;
+    pathname-sensitive operations additionally bind an opened handle.
+    """
+    return bool(os.path.samestat(expected, current))
 
 
 def _remove_owned_snapshot_file(path: Path, expected: os.stat_result) -> bool:
@@ -1635,7 +1638,7 @@ def _snapshot_process_is_running(pid: int) -> bool:
         finally:
             close_handle(handle)
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok - guarded by os.name above
         return True
     except ProcessLookupError:
         return False

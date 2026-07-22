@@ -175,7 +175,7 @@ class SpillIfOversizedTests(unittest.TestCase):
         big = "w" * 500
         # Point at a path that cannot be created (a file, not a dir).
         existing_file = os.path.join(self.tmpdir, "not-a-dir")
-        with open(existing_file, "w") as f:
+        with open(existing_file, "w", encoding="utf-8") as f:
             f.write("blocker")
         cfg = self._cfg(max_chars=10, directory=existing_file)
         result = hos.spill_if_oversized(big, session_id="x", config=cfg)
@@ -251,7 +251,7 @@ class SpillIfOversizedTests(unittest.TestCase):
         os.utime(spill, (old_time, old_time))
         selected = spill.lstat()
 
-        checks = iter((True, True, True, False))
+        checks = iter((True, True, True, False, True, True))
         with patch.object(
             hos.os.path,
             "samestat",
@@ -260,14 +260,42 @@ class SpillIfOversizedTests(unittest.TestCase):
             removed = hos._atomic_unlink_spill(spill, selected)
 
         self.assertFalse(removed)
-        self.assertFalse(spill.exists())
+        self.assertEqual(spill.read_text(), "preserve")
         quarantines = [
             path
             for path in spill.parent.iterdir()
             if hos._DELETE_QUARANTINE_TOKEN in path.name
         ]
-        self.assertEqual(len(quarantines), 1)
-        self.assertEqual(quarantines[0].read_text(), "preserve")
+        self.assertEqual(quarantines, [])
+
+    def test_atomic_unlink_restores_replacement_racing_quarantine(self):
+        spill = Path(self.tmpdir) / "sess" / "old.txt"
+        spill.parent.mkdir()
+        spill.write_text("owned")
+        selected = spill.lstat()
+        real_replace = hos.os.replace
+        injected = False
+
+        def replace_after_validation(source, destination, *args, **kwargs):
+            nonlocal injected
+            if not injected and Path(source) == spill:
+                injected = True
+                spill.unlink()
+                spill.write_text("human replacement")
+            return real_replace(source, destination, *args, **kwargs)
+
+        with patch.object(hos.os, "replace", side_effect=replace_after_validation):
+            removed = hos._atomic_unlink_spill(spill, selected)
+
+        self.assertTrue(injected)
+        self.assertFalse(removed)
+        self.assertEqual(spill.read_text(), "human replacement")
+        self.assertFalse(
+            any(
+                hos._DELETE_QUARANTINE_TOKEN in child.name
+                for child in spill.parent.iterdir()
+            )
+        )
 
     def test_prune_preserves_replacement_after_retention_selection(self):
         spill = Path(self.tmpdir) / "sess" / "old.txt"

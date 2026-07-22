@@ -86,6 +86,29 @@ Config file: `~/.hermes/hindsight/config.json`
 >
 > Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
 
+### Mental Model Injection
+
+[Mental models](https://hindsight.vectorize.io) are curated, self-refreshing summaries Hindsight maintains over a bank (e.g. a user profile or project conventions). By default they are **not** injected — recall/reflect operate on the user's query. Set `recall_injection_model_id` to inject one or more mental models **verbatim** into context every turn, independent of the query. Ideal for a stable user/project profile that should always be present; it complements (does not replace) recall/reflect.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `recall_injection_model_id` | — | Mental-model id(s) to inject verbatim every turn. Comma-separated string or JSON list for multiple. Also settable via `HINDSIGHT_API_INJECTION_MODEL_ID`. |
+| `recall_injection_max_chars` | `4000` | Max characters of injected content (trimmed across models in listed order) |
+| `recall_injection_ttl_seconds` | `3600` | How long fetched mental-model content is cached before refetching |
+
+The block is fetched once and cached (warmed on the same background thread as auto-recall, so once warm it adds no per-turn latency). Fail-soft: a missing id or fetch error is logged and skipped, never breaking the turn.
+
+**Create a mental model** to inject (the seed question shapes what it summarizes):
+
+```bash
+hindsight mental-model create <bank> \
+  --name "User Profile" \
+  --source-query "Who is this person? What are their preferences, goals, and working style?"
+hindsight mental-model list <bank>   # copy the id
+```
+
+Then add the id to `~/.hermes/hindsight/config.json` (`"recall_injection_model_id": "<id>"`), or set the `HINDSIGHT_API_INJECTION_MODEL_ID` env var. Pass several ids comma-separated to inject a full profile (e.g. user profile + communication style + current projects).
+
 ### Retain
 
 | Key | Default | Description |
@@ -141,6 +164,7 @@ Available in `hybrid` and `tools` memory modes:
 | `HINDSIGHT_BANK_ID` | Override bank name |
 | `HINDSIGHT_BUDGET` | Override recall budget |
 | `HINDSIGHT_MODE` | Override mode (`cloud`, `local_embedded`, `local_external`) |
+| `HINDSIGHT_API_INJECTION_MODEL_ID` | Mental-model id(s) to inject verbatim into context (comma-separated for multiple) |
 
 ## Client Version
 

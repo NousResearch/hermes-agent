@@ -39,6 +39,7 @@ import os
 import queue
 import sys
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -708,6 +709,15 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
 
+        # Mental-model injection (static curated context, fetched + cached).
+        # See get_config_schema for the `recall_injection_*` keys.
+        self._injection_model_ids: list[str] = []
+        self._injection_max_chars = 4000
+        self._injection_ttl_seconds = 3600
+        self._injection_cache: str = ""
+        self._injection_cache_at: float = 0.0
+        self._injection_lock = threading.Lock()
+
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
@@ -1004,6 +1014,9 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {"key": "recall_injection_model_id", "description": "Mental-model id(s) to inject verbatim into context every turn (comma-separated for multiple). Fetched from the bank and cached; supplements recall/reflect, does not replace them. Powerful for a curated user/project profile.", "default": "", "env_var": "HINDSIGHT_API_INJECTION_MODEL_ID"},
+            {"key": "recall_injection_max_chars", "description": "Max characters of injected mental-model content (trimmed across models in listed order)", "default": 4000},
+            {"key": "recall_injection_ttl_seconds", "description": "Seconds to cache fetched mental-model content before refetching", "default": 3600},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
@@ -1351,6 +1364,20 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        # Mental-model injection config
+        injection_raw = (
+            self._config.get("recall_injection_model_id")
+            or os.environ.get("HINDSIGHT_API_INJECTION_MODEL_ID", "")
+        )
+        if isinstance(injection_raw, (list, tuple)):
+            self._injection_model_ids = [str(x).strip() for x in injection_raw if str(x).strip()]
+        else:
+            self._injection_model_ids = [s.strip() for s in str(injection_raw).split(",") if s.strip()]
+        self._injection_max_chars = int(self._config.get("recall_injection_max_chars", 4000) or 4000)
+        self._injection_ttl_seconds = int(self._config.get("recall_injection_ttl_seconds", 3600) or 3600)
+        # Reset cache so a config change re-fetches.
+        self._injection_cache = ""
+        self._injection_cache_at = 0.0
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1463,6 +1490,51 @@ class HindsightMemoryProvider(MemoryProvider):
             f"hindsight_retain to store facts."
         )
 
+    def _get_injection_block(self) -> str:
+        """Fetch + cache configured mental-model(s) for verbatim injection.
+
+        Returns a labeled, char-capped block, or "" when no models are
+        configured. Fail-soft: on fetch error returns the last good cache
+        if present, else "". Cached for ``recall_injection_ttl_seconds``.
+        """
+        if not self._injection_model_ids:
+            return ""
+        now = time.monotonic()
+        with self._injection_lock:
+            if self._injection_cache and (now - self._injection_cache_at) < self._injection_ttl_seconds:
+                return self._injection_cache
+        try:
+            client = self._get_client()
+        except Exception as e:  # pragma: no cover - client init failure
+            logger.debug("Injection: client unavailable: %s", e)
+            return self._injection_cache
+        blocks: list[str] = []
+        for mid in self._injection_model_ids:
+            try:
+                model = client.get_mental_model(bank_id=self._bank_id, mental_model_id=mid)
+                content = (getattr(model, "content", "") or "").strip()
+                if not content:
+                    continue
+                name = getattr(model, "name", "") or mid
+                blocks.append(f"## {name}\n{content}")
+            except Exception as e:
+                logger.debug("Injection: failed to fetch mental-model %s: %s", mid, e)
+        if not blocks:
+            return self._injection_cache
+        text = "\n\n".join(blocks)
+        if self._injection_max_chars and len(text) > self._injection_max_chars:
+            text = text[: self._injection_max_chars].rstrip() + "\n…[truncated]"
+        header = (
+            "# Hindsight Mental Model (curated persistent context)\n"
+            "Durable, curated knowledge about the user/project. Treat as background; "
+            "the current message and tool output take precedence if they conflict."
+        )
+        block = f"{header}\n\n{text}"
+        with self._injection_lock:
+            self._injection_cache = block
+            self._injection_cache_at = time.monotonic()
+        return block
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
@@ -1470,32 +1542,50 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
+        # Static curated mental-model block (warmed by queue_prefetch; cached).
+        injection = self._get_injection_block()
+        parts: list[str] = []
+        if injection:
+            parts.append(injection)
+        if result:
+            header = self._recall_prompt_preamble or (
+                "# Hindsight Memory (persistent cross-session context)\n"
+                "Use this to answer questions about the user and prior sessions. "
+                "Do not call tools to look up information that is already present here."
+            )
+            parts.append(f"{header}\n\n{result}")
+        if not parts:
             logger.debug("Prefetch: no results available")
             return ""
-        logger.debug("Prefetch: returning %d chars of context", len(result))
-        header = self._recall_prompt_preamble or (
-            "# Hindsight Memory (persistent cross-session context)\n"
-            "Use this to answer questions about the user and prior sessions. "
-            "Do not call tools to look up information that is already present here."
-        )
-        return f"{header}\n\n{result}"
+        logger.debug("Prefetch: returning %d chars (injection=%s, recall=%s)",
+                     sum(len(p) for p in parts), bool(injection), bool(result))
+        return "\n\n".join(parts)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
             logger.debug("Prefetch: skipped (tools-only mode)")
             return
-        if not self._auto_recall:
-            logger.debug("Prefetch: skipped (auto_recall disabled)")
-            return
         if self._shutting_down.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
+        has_injection = bool(self._injection_model_ids)
+        do_recall = self._auto_recall
+        if not has_injection and not do_recall:
+            logger.debug("Prefetch: skipped (auto_recall disabled, no injection)")
+            return
         # Truncate query to max chars
-        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+        if do_recall and self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
         def _run():
+            # Warm the static injection cache first (independent of recall).
+            if has_injection:
+                try:
+                    self._get_injection_block()
+                except Exception as e:
+                    logger.debug("Injection warm failed: %s", e, exc_info=True)
+            if not do_recall:
+                return
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))

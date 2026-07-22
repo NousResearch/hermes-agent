@@ -97,6 +97,52 @@ export const nousTheme: DesktopTheme = {
   }
 }
 
+const AURORA_GOLD = '#e8a000'
+
+/**
+ * Aurora — dark frosted glass with a gold & indigo aurora backdrop, mirroring
+ * the dashboard Aurora preset. Paired with Verdana: a wider, evenly spaced text
+ * face with distinct letterforms that eases reading for people with dyslexia.
+ * Mono stays JetBrains Mono for code, tool output and ids.
+ */
+export const auroraTheme: DesktopTheme = {
+  name: 'aurora',
+  label: 'Aurora',
+  description: 'Dark frosted glass, gold & indigo — readable Verdana type',
+  colors: {
+    background: '#141518',
+    foreground: '#ecedef',
+    card: '#20222a',
+    cardForeground: '#ecedef',
+    muted: '#24262e',
+    mutedForeground: '#a6a8ae',
+    popover: '#26282f',
+    popoverForeground: '#f4f5f7',
+    primary: AURORA_GOLD,
+    primaryForeground: '#141414',
+    secondary: '#2a2b31',
+    secondaryForeground: '#f0d69a',
+    accent: '#2a2620',
+    accentForeground: '#f0d69a',
+    border: '#33343c',
+    input: '#33343c',
+    ring: AURORA_GOLD,
+    midground: AURORA_GOLD,
+    composerRing: AURORA_GOLD,
+    destructive: '#f0616d',
+    destructiveForeground: '#141414',
+    sidebarBackground: '#0f1014',
+    sidebarBorder: '#26282f',
+    userBubble: '#221f18',
+    userBubbleBorder: '#4a3d1f'
+  },
+  typography: {
+    fontSans: `Verdana, "DejaVu Sans", "Bitstream Vera Sans", Geneva, Tahoma, sans-serif, ${EMOJI_FALLBACK}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 /** Deep blue-violet with cool accents. Matches the dashboard midnight theme. */
 export const midnightTheme: DesktopTheme = {
   name: 'midnight',
@@ -279,6 +325,7 @@ export const slateTheme: DesktopTheme = {
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
+  aurora: auroraTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

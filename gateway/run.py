@@ -13307,13 +13307,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result.get("error", "processing incomplete"),
                 )
 
-            # When compression is exhausted, the session is permanently too
-            # large to process.  Auto-reset it so the next message starts
-            # fresh instead of replaying the same oversized context in an
-            # infinite fail loop.  (#9893)
-            if agent_result.get("compression_exhausted") and session_entry and session_key:
+            # When a session is too large to process, auto-reset it so the
+            # next message starts fresh instead of replaying the same oversized
+            # context in an infinite fail loop.  ``compression_exhausted`` is
+            # the explicit signal, but some providers fail earlier with a
+            # context-length 400 before Hermes can mark compression exhausted.
+            # Treat any classified context-overflow failure as terminal for
+            # that session.  (#9893)
+            if is_context_overflow_failure and session_entry and session_key:
                 logger.info(
-                    "Auto-resetting session %s after compression exhaustion.",
+                    "Auto-resetting session %s after context-overflow failure.",
                     session_entry.session_id,
                 )
                 new_entry = await self.async_session_store.reset_session(session_key)
@@ -13344,8 +13347,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
-                    "maximum context size and could not be compressed further. "
-                    "Your next message will start a fresh session."
+                    "maximum context size. Your next message will start a "
+                    "fresh session."
                 )
 
             ts = time.time()  # Unix epoch float — consistent with DB storage

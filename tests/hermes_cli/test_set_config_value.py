@@ -630,3 +630,49 @@ class TestValidateConfigKey:
         from hermes_cli.config import _validate_config_key
         is_known, suggestion = _validate_config_key("agent._max_turns")
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
+
+
+# ---------------------------------------------------------------------------
+# display.skin → touch the skin file (live re-affirm broadcast)
+# ---------------------------------------------------------------------------
+
+class TestDisplaySkinTouch:
+    """Setting display.skin must bump the named skin file's mtime.
+
+    The gateway's skin watcher broadcasts ``skin.changed`` on a signature move
+    of (active name, skin-file mtime). Re-affirming the already-configured skin
+    (`hermes config set display.skin X` while it is already X — the recovery
+    path when a surface missed the original activation) moves NEITHER part, so
+    without the touch the explicit apply is invisible to every live surface.
+    """
+
+    def test_reaffirming_same_skin_moves_the_watcher_signature(self, _isolated_hermes_home):
+        import os as _os
+        skins = _isolated_hermes_home / "skins"
+        skins.mkdir()
+        skin_file = skins / "synthwave.yaml"
+        skin_file.write_text("name: synthwave\ncolors:\n  background: '#1a1030'\n")
+        # Age the file so an mtime bump is unambiguous even on coarse clocks.
+        _os.utime(skin_file, (1_000_000_000, 1_000_000_000))
+
+        set_config_value("display.skin", "synthwave")
+        first = skin_file.stat().st_mtime
+        assert first > 1_000_000_000
+
+        _os.utime(skin_file, (1_000_000_000, 1_000_000_000))
+        set_config_value("display.skin", "synthwave")  # same name, re-affirmed
+        assert skin_file.stat().st_mtime > 1_000_000_000
+
+    def test_builtin_or_missing_skin_file_is_fine(self, _isolated_hermes_home):
+        """Built-ins have no user file — the set must still succeed cleanly."""
+        set_config_value("display.skin", "mono")
+        assert "skin: mono" in _read_config(_isolated_hermes_home)
+
+    def test_touch_preserves_skin_file_contents(self, _isolated_hermes_home):
+        skins = _isolated_hermes_home / "skins"
+        skins.mkdir()
+        body = "name: neon\ncolors:\n  ui_accent: '#ff33aa'\n"
+        (skins / "neon.yaml").write_text(body)
+
+        set_config_value("display.skin", "neon")
+        assert (skins / "neon.yaml").read_text() == body

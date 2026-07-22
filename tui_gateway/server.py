@@ -1212,11 +1212,61 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _emit(event: str, sid: str, payload: dict | None = None):
-    params = {"type": event, "session_id": sid}
+def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
+    params: dict = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
-    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    return {"jsonrpc": "2.0", "method": "event", "params": params}
+
+
+def _emit(event: str, sid: str, payload: dict | None = None):
+    write_json(_event_frame(event, sid, payload))
+
+
+# Live client transports, one per connected WS peer (maintained by tui_gateway.ws).
+# A session-less event from a background thread has neither a session transport
+# nor a contextvar binding, so write_json would drop it on stdio — this registry
+# is how such events reach WS clients at all. See _broadcast_global_event.
+_live_transports: set[Transport] = set()
+_live_transports_lock = threading.Lock()
+
+
+def register_live_transport(transport: Transport | None) -> None:
+    """Track a connected client transport for global broadcasts. Idempotent."""
+    if transport is None:
+        return
+    with _live_transports_lock:
+        _live_transports.add(transport)
+
+
+def unregister_live_transport(transport: Transport | None) -> None:
+    """Stop tracking a transport (call on disconnect). Idempotent."""
+    with _live_transports_lock:
+        _live_transports.discard(transport)
+
+
+def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
+    """Fan a session-less, surface-global event (``skin.changed``) to every
+    connected client. Emitters like the skin watcher run on background threads
+    where ``write_json``'s ladder bottoms out at stdio and WS peers never see
+    the frame. No registered transports (stdio TUI, tests) → plain ``_emit``,
+    which that path already tees where it needs to go.
+    """
+    with _live_transports_lock:
+        targets = list(_live_transports)
+
+    if not targets:
+        _emit(event, "", payload)
+        return
+
+    frame = _event_frame(event, "", payload)
+    for transport in targets:
+        try:
+            transport.write(frame)
+        except Exception:
+            # One wedged peer must not stall the rest; disconnect teardown
+            # unregisters it.
+            logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
 
 
 _compute_host_supervisor = None
@@ -2477,7 +2527,7 @@ def _broadcast_skin_if_changed() -> None:
         return
     _last_skin_sig = sig
     try:
-        _emit("skin.changed", "", resolve_skin())
+        _broadcast_global_event("skin.changed", resolve_skin())
     except Exception:
         pass
 
@@ -12224,9 +12274,10 @@ def _(rid, params: dict) -> dict:
                 _write_config_key(f"display.{key}", value)
                 nv = value
                 if key == "skin":
-                    _emit("skin.changed", "", resolve_skin())
-                    # Keep the reconcile baseline in sync so the per-tool check
-                    # doesn't re-broadcast the skin the /skin RPC just applied.
+                    # Every connected surface repaints, not just the RPC's
+                    # client; then sync the watcher baseline so the poll loop
+                    # doesn't re-broadcast the skin this RPC just applied.
+                    _broadcast_global_event("skin.changed", resolve_skin())
                     _note_skin_broadcast()
             resp = {"key": key, "value": nv}
             if key == "personality":

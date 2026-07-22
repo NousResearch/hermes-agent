@@ -299,8 +299,10 @@ LEGACY_AUTHOR_MAP = {
     "ahmad@madsgency.com": "ahmadashfq",
     "182213728+yinkev@users.noreply.github.com": "yinkev",  # scratch artifact preservation salvage
     "rratmansky@gmail.com": "rratmansky",
+    "dmetcalfe@users.noreply.github.com": "DavidMetcalfe",
     "lkz-de@users.noreply.github.com": "lkz-de",
     "charles@salesondemand.io": "salesondemandio",
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",
     "IamSanchoPanza@users.noreply.github.com": "IamSanchoPanza",
     "victor@rocketfueldev.com": "victor-kyriazakos",
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",

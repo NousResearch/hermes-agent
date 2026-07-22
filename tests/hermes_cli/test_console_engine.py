@@ -371,7 +371,6 @@ def test_console_registry_covers_non_admin_cli_surface():
         "desktop",
         "login",
         "logout",
-        "--tui",
         "logs | cat",
         "config show > out.txt",
     ],

@@ -88,7 +88,16 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # This module opens its own connections to the SAME state.db that
+    # SessionDB owns, so it must go through the shared helper rather than
+    # a bare PRAGMA: apply_wal_with_fallback() also sets synchronous=FULL
+    # on macOS (prevents btree corruption on a WAL-checkpoint/termination
+    # race) and falls back to DELETE mode on WAL-incompatible filesystems
+    # (NFS/SMB) instead of raising. db_label matches SessionDB's own
+    # "state.db" label so the fallback warning is deduped as one file.
+    from hermes_state import apply_wal_with_fallback
+
+    apply_wal_with_fallback(conn, db_label="state.db")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS async_delegations (
             delegation_id TEXT PRIMARY KEY,

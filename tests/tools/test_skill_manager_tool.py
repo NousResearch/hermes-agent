@@ -20,6 +20,7 @@ from tools.skill_manager_tool import (
     _remove_file,
     skill_manage,
     MAX_NAME_LENGTH,
+    MAX_SKILL_MAIN_CHARS,
 )
 
 
@@ -53,6 +54,14 @@ description: Updated description.
 
 Step 1: Do the new thing.
 """
+
+
+def _sized_skill_content(body_chars: int) -> str:
+    return (
+        "---\nname: test-skill\ndescription: Size-limit fixture.\n---\n\n"
+        "# Test Skill\n\n"
+        + ("x" * body_chars)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +243,14 @@ class TestCreateSkill:
             result = _create_skill("my-skill", "no frontmatter here")
         assert result["success"] is False
 
+    def test_create_rejects_oversized_main_skill(self, tmp_path):
+        content = _sized_skill_content(MAX_SKILL_MAIN_CHARS + 1)
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+        assert result["success"] is False
+        assert "compact-main limit" in result["error"]
+        assert "linked references" in result["error"]
+
     def test_create_rejects_category_traversal(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -283,6 +300,29 @@ class TestEditSkill:
         # Original content should be preserved
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
+
+    def test_edit_allows_legacy_oversized_skill_to_shrink(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        original = _sized_skill_content(MAX_SKILL_MAIN_CHARS + 2_000)
+        reduced = _sized_skill_content(MAX_SKILL_MAIN_CHARS + 1_000)
+        (skill_dir / "SKILL.md").write_text(original)
+        with _skill_dir(tmp_path):
+            result = _edit_skill("my-skill", reduced)
+        assert result["success"] is True
+        assert (skill_dir / "SKILL.md").read_text() == reduced
+
+    def test_edit_rejects_growth_above_compact_main_limit(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        original = _sized_skill_content(MAX_SKILL_MAIN_CHARS + 1_000)
+        larger = _sized_skill_content(MAX_SKILL_MAIN_CHARS + 2_000)
+        (skill_dir / "SKILL.md").write_text(original)
+        with _skill_dir(tmp_path):
+            result = _edit_skill("my-skill", larger)
+        assert result["success"] is False
+        assert "compact-main limit" in result["error"]
+        assert (skill_dir / "SKILL.md").read_text() == original
 
 
 class TestPatchSkill:
@@ -339,6 +379,13 @@ word word
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             _write_file("my-skill", "references/api.md", "old text here")
             result = _patch_skill("my-skill", "old text", "new text", file_path="references/api.md")
+        assert result["success"] is True
+
+    def test_large_supporting_reference_remains_allowed(self, tmp_path):
+        reference = "x" * (MAX_SKILL_MAIN_CHARS + 1)
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "references/large.md", reference)
         assert result["success"] is True
 
     def test_patch_skill_not_found(self, tmp_path):

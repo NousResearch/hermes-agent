@@ -4024,8 +4024,6 @@ class TestThreadReplyHandling:
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
-        a._fetch_thread_parent_text = AsyncMock(return_value=None)
-        a._fetch_thread_context = AsyncMock(return_value="")
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)
         return a
@@ -4410,8 +4408,6 @@ class TestAssistantThreadLifecycle:
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
-        a._fetch_thread_parent_text = AsyncMock(return_value=None)
-        a._fetch_thread_context = AsyncMock(return_value="")
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)
         return a

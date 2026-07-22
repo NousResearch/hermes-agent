@@ -17254,7 +17254,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    from tools.ansi_strip import strip_ansi
+
+                    new_output = (
+                        strip_ansi(session.output_buffer[-1000:])
+                        if session.output_buffer
+                        else ""
+                    )
                     if new_output:
                         from agent.redact import redact_terminal_output
                         new_output = redact_terminal_output(
@@ -17284,7 +17290,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output available -- deliver status update (only in "all" mode)
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
-                new_output = session.output_buffer[-500:] if session.output_buffer else ""
+                from tools.ansi_strip import strip_ansi
+
+                new_output = (
+                    strip_ansi(session.output_buffer[-500:])
+                    if session.output_buffer
+                    else ""
+                )
                 if new_output:
                     from agent.redact import redact_terminal_output
                     new_output = redact_terminal_output(

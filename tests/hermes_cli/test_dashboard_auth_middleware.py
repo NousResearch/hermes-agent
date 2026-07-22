@@ -427,6 +427,63 @@ def test_api_auth_me_requires_auth(gated_app):
 
 
 # ---------------------------------------------------------------------------
+# Loopback-mode identity probe (GH #66223)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def loopback_app():
+    """Configure web_server.app for loopback mode (auth_required=False).
+
+    Mirrors ``gated_app`` but flips the gate off and clears ``bound_host``
+    so the host-header check doesn't reject the TestClient's requests.
+    """
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = None
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app, base_url="http://127.0.0.1")
+    yield client
+    clear_providers()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.auth_required = prev_required
+
+
+def test_api_auth_me_returns_loopback_identity_with_valid_token(loopback_app):
+    """Regression for GH #66223.
+
+    In loopback mode there is no OAuth ``Session``, but the legacy
+    ``auth_middleware`` has already validated the ephemeral
+    ``_SESSION_TOKEN``.  The handler must return a minimal identity so
+    the SPA can resolve its boot state instead of spinning on a 401.
+    """
+    token = web_server._SESSION_TOKEN
+    r = loopback_app.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, (
+        f"Expected 200 with a valid token in loopback mode, "
+        f"got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["provider"] == "loopback"
+    assert body["user_id"] == "local"
+    assert "display_name" in body
+    assert "email" in body
+    assert "org_id" in body
+    assert "expires_at" in body
+
+
+def test_api_auth_me_still_rejects_missing_token_in_loopback(loopback_app):
+    """Security boundary (GH #66223): without a valid token the endpoint
+    must still 401 even in loopback mode."""
+    r = loopback_app.get("/api/auth/me")
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # Zero-providers fail-closed
 # ---------------------------------------------------------------------------
 

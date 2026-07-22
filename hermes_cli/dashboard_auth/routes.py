@@ -593,10 +593,35 @@ async def auth_logout(request: Request):
 
 @router.get("/api/auth/me", name="auth_me")
 async def api_auth_me(request: Request):
-    """Return the verified session as JSON. Auth-required (gate enforces)."""
+    """Return the verified session as JSON.
+
+    In gated mode the auth-middleware attaches ``request.state.session``.
+    In loopback mode there is no OAuth session object, but the legacy
+    ``_SESSION_TOKEN`` middleware has already validated the bearer token
+    for non-public ``/api/`` routes, so we return a minimal loopback
+    identity instead of 401-ing (GH #66223).
+    """
     sess = getattr(request.state, "session", None)
     if sess is None:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        if getattr(request.app.state, "auth_required", False):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        # Loopback mode: the legacy auth_middleware has already verified
+        # the ephemeral _SESSION_TOKEN.  There is no OAuth Session to
+        # return, but the SPA needs a minimal identity to resolve its
+        # boot state.  Belt-and-braces: re-verify the token here so the
+        # handler stays safe even if the route were ever allowlisted.
+        from hermes_cli.web_server import _has_valid_session_token
+
+        if not _has_valid_session_token(request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return {
+            "user_id": "local",
+            "email": "",
+            "display_name": "Local",
+            "org_id": "",
+            "provider": "loopback",
+            "expires_at": 0,
+        }
     return {
         "user_id": sess.user_id,
         "email": sess.email,

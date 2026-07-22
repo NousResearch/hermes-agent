@@ -3275,12 +3275,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if caption:
             lines.append(caption)
         lines.extend([
-            f"⚠️ No he podido adjuntar **{filename}**.",
-            "Google Chat sólo permite adjuntar archivos cuando el bot tiene "
-            "permiso explícito tuyo (OAuth de usuario). Es un consentimiento "
-            "único que se hace desde este chat.",
-            "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
-            f"Mientras tanto el archivo está en el host: `{path}`",
+            f"⚠️ Could not attach **{filename}**.",
+            "Google Chat requires explicit user permission (OAuth) to send "
+            "files. This is a one-time consent from this chat.",
+            "**To enable:** send `/setup-files` and follow the instructions.",
+            f"The file is available on the host at: `{path}`",
         ])
         body: Dict[str, Any] = {"text": "\n".join(lines)}
         if thread_id:

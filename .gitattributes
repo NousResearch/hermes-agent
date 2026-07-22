@@ -8,3 +8,9 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# s6-overlay consumes these extensionless files inside the Linux image.
+# CRLF changes service types such as `longrun` into the invalid `longrun\r`
+# token and also breaks the shebangs on the run/finish/init scripts.
+docker/cont-init.d/** text eol=lf
+docker/s6-rc.d/**    text eol=lf

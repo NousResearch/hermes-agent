@@ -111,6 +111,10 @@ export DOCKTER_HERMES_DOCKER_BIN="$TMP_DIR/bin/docker"
 # shellcheck source=/dev/null
 source "$ROOT_DIR/dockter-hermes-helpers.sh"
 
+# Keep the default cases platform-neutral even when this test itself runs in
+# Git Bash. Windows-specific cases override this function explicitly below.
+_dockter_hermes_is_native_windows() { return 1; }
+
 command_line() {
   local command="$1"
   shift
@@ -226,11 +230,67 @@ run_dashboard_failure_case() {
     printf 'Unready dashboard claimed it was opening:\n%s\n' "$output" >&2
     return 1
   fi
-  if [[ "$output" != *"dockter-hermes-cli dashboard register"* ]]; then
+  if [[ "$output" != *"dockter-hermes-dashboard-auth"* ]]; then
     printf 'Windows dashboard failure omitted auth guidance:\n%s\n' "$output" >&2
     return 1
   fi
   assert_log dashboard-not-ready "$expected"
+}
+
+run_dashboard_basic_auth_case() {
+  local output status actual
+  printf 'TEST dashboard-basic-auth\n'
+  : > "$LOG_FILE"
+  set +e
+  output=$(printf 'derek\ntest-password\ntest-password\n' |
+    dockter-hermes-dashboard-auth basic 2>&1)
+  status=$?
+  set -e
+
+  if [[ $status -ne 0 ]]; then
+    printf 'Basic auth helper failed:\n%s\n' "$output" >&2
+    return 1
+  fi
+  actual=$(< "$LOG_FILE")
+  if [[ "$actual" != *"run --rm -T gateway python -c"* ]]; then
+    printf 'Basic auth helper did not use a non-interactive container:\n%s\n' "$actual" >&2
+    return 1
+  fi
+  if [[ "$actual" == *"test-password"* ]]; then
+    printf 'Basic auth helper leaked the plaintext password into argv:\n%s\n' "$actual" >&2
+    return 1
+  fi
+}
+
+run_dashboard_basic_auth_mismatch_case() {
+  local output status
+  printf 'TEST dashboard-basic-auth-mismatch\n'
+  : > "$LOG_FILE"
+  set +e
+  output=$(printf 'admin\none\ntwo\n' |
+    dockter-hermes-dashboard-auth basic 2>&1)
+  status=$?
+  set -e
+  [[ $status -ne 0 && "$output" == *"passwords do not match"* ]] || {
+    printf 'Password mismatch was not rejected:\n%s\n' "$output" >&2
+    return 1
+  }
+  assert_log dashboard-basic-auth-mismatch ""
+}
+
+run_dashboard_auth_invalid_case() {
+  local output status
+  printf 'TEST dashboard-auth-invalid\n'
+  : > "$LOG_FILE"
+  set +e
+  output=$(dockter-hermes-dashboard-auth unsupported 2>&1)
+  status=$?
+  set -e
+  [[ $status -ne 0 && "$output" == *"Usage:"* ]] || {
+    printf 'Invalid auth method was not rejected:\n%s\n' "$output" >&2
+    return 1
+  }
+  assert_log dashboard-auth-invalid ""
 }
 
 run_clean() {
@@ -259,7 +319,7 @@ run_windows_config() {
 
 run_windows_help() {
   _dockter_hermes_is_native_windows() { return 0; }
-  dockter-hermes-help | grep -F 'dockter-hermes-cli dashboard register' >/dev/null
+  dockter-hermes-help | grep -F 'dockter-hermes-dashboard-auth' >/dev/null
 }
 
 run_windows_data_dir() {
@@ -303,6 +363,10 @@ run_windows_compose_model_case() {
     printf 'Windows Compose model retained host networking\n' >&2
     return 1
   }
+  [[ "$config" == *'windows-crlf-fix'* && "$config" == *'main-wrapper.sh'* ]] || {
+    printf 'Windows Compose model did not preserve the image entrypoint through the CRLF repair shim\n' >&2
+    return 1
+  }
   [[ "$config" == *'"published": "19119"'* ]] || {
     printf 'Windows Compose model did not publish the configured dashboard port\n' >&2
     return 1
@@ -343,15 +407,18 @@ run_logged_case shell "$(compose_line exec gateway bash)" dockter-hermes-shell g
 run_logged_case exec "$(compose_line exec gateway hermes --version)" dockter-hermes-exec gateway hermes --version
 run_logged_case exec-default-service "$(compose_line exec gateway hermes --help)" dockter-hermes-exec hermes --help
 run_failure_case exec-missing-command dockter-hermes-exec
-run_logged_case cli "$(compose_line run --rm gateway hermes --help)" dockter-hermes-cli hermes --help
+run_logged_case oneoff "$(compose_line run --rm gateway hermes --help)" dockter-hermes-oneoff hermes --help
 run_logged_case chat "$(compose_line run --rm gateway chat)" dockter-hermes-chat
 run_logged_case setup "$(compose_line run --rm gateway setup)" dockter-hermes-setup
+run_dashboard_basic_auth_case
+run_dashboard_basic_auth_mismatch_case
+run_logged_case dashboard-auth-oauth "$(compose_line run --rm gateway dashboard register)" dockter-hermes-dashboard-auth oauth
+run_dashboard_auth_invalid_case
 
 run_logged_case dashboard "$(compose_line up -d dashboard)
 $(command_line curl -fsS --max-time 2 http://127.0.0.1:19119/api/status)
 $(command_line open http://127.0.0.1:19119/)" run_dashboard
-run_dashboard_failure_case "$(windows_compose_line up -d dashboard)
-$(windows_compose_line logs --tail 50 dashboard)"
+run_dashboard_failure_case "$(windows_compose_line up -d dashboard)"
 run_logged_case health "$(command_line docker exec hermes hermes gateway status --deep)" dockter-hermes-health
 
 run_logged_case rebuild "$(compose_line build gateway)

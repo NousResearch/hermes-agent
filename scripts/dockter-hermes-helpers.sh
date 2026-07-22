@@ -492,7 +492,7 @@ dockter-hermes-exec() {
   _dockter_hermes_compose exec "$service" "$@"
 }
 
-dockter-hermes-cli() {
+dockter-hermes-oneoff() {
   _dockter_hermes_compose run --rm gateway "$@"
 }
 
@@ -507,6 +507,103 @@ dockter-hermes-setup() {
 # =============================================================================
 # Dashboard and health
 # =============================================================================
+dockter-hermes-dashboard-auth() {
+  local method="${1:-}"
+  if [[ -z "$method" ]]; then
+    echo "Dashboard authentication method:"
+    echo "  1) Username/password"
+    echo "  2) OAuth via Nous Portal"
+    printf "Choose [1]: "
+    read -r method
+    method="${method:-1}"
+  fi
+
+  case "$method" in
+    1|basic|password)
+      local username="${2:-}"
+      local password confirm setup_script
+
+      if [[ -z "$username" ]]; then
+        printf "Dashboard username [admin]: "
+        read -r username
+        username="${username:-admin}"
+      fi
+
+      printf "Dashboard password: "
+      read -r -s password
+      echo ""
+      if [[ -z "$password" ]]; then
+        echo "Error: dashboard password cannot be empty." >&2
+        return 1
+      fi
+
+      printf "Confirm dashboard password: "
+      read -r -s confirm
+      echo ""
+      if [[ "$password" != "$confirm" ]]; then
+        echo "Error: passwords do not match." >&2
+        return 1
+      fi
+
+      setup_script='import secrets
+import sys
+
+from hermes_cli.config import load_config, save_config
+from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
+from plugins.dashboard_auth.basic import hash_password
+
+raw = sys.stdin.buffer.read()
+try:
+    username_raw, password_raw = raw.split(b"\0", 1)
+except ValueError:
+    raise SystemExit("invalid dashboard auth payload")
+
+username = username_raw.decode("utf-8").strip() or "admin"
+password = password_raw.decode("utf-8")
+if not password:
+    raise SystemExit("dashboard password cannot be empty")
+
+cfg = load_config()
+dashboard = cfg.get("dashboard")
+if not isinstance(dashboard, dict):
+    dashboard = {}
+    cfg["dashboard"] = dashboard
+basic = dashboard.get("basic_auth")
+if not isinstance(basic, dict):
+    basic = {}
+    dashboard["basic_auth"] = basic
+
+basic["username"] = username
+basic["password_hash"] = hash_password(password)
+basic["password"] = ""
+if not str(basic.get("secret", "") or "").strip():
+    basic["secret"] = secrets.token_urlsafe(32)
+ensure_basic_auth_plugin_enabled_in_config(cfg)
+save_config(cfg)
+print("Dashboard username/password authentication configured for " + username + ".")'
+
+      if ! printf '%s\0%s' "$username" "$password" |
+          _dockter_hermes_compose run --rm -T gateway python -c "$setup_script"; then
+        echo "Error: failed to save dashboard authentication." >&2
+        return 1
+      fi
+
+      unset password confirm
+      echo "Restart the dashboard to load the new credentials:"
+      echo "  dockter-hermes-restart dashboard"
+      ;;
+    2|oauth)
+      echo "OAuth registration requires a Nous Portal login in the mounted Hermes home."
+      echo "If needed, run dockter-hermes-setup and log into Nous Portal first."
+      _dockter_hermes_compose run --rm gateway dashboard register
+      ;;
+    *)
+      echo "Usage: dockter-hermes-dashboard-auth [basic [username]|oauth]" >&2
+      return 1
+      ;;
+  esac
+}
+
 _dockter_hermes_dashboard_url() {
   printf 'http://127.0.0.1:%s/' "${DOCKTER_HERMES_DASHBOARD_PORT:-9119}"
 }
@@ -538,13 +635,11 @@ dockter-hermes-dashboard() {
   fi
   if (( wait_status == 1 )); then
     echo "Dashboard did not become ready at ${url}" >&2
-    _dockter_hermes_compose logs --tail 50 dashboard >&2 || true
     if _dockter_hermes_is_native_windows; then
       echo "" >&2
       echo "Docker Desktop bridge networking requires a non-loopback bind inside the container," >&2
       echo "so Hermes requires a dashboard auth provider. Configure one, then restart dashboard:" >&2
-      echo "  OAuth:             dockter-hermes-cli dashboard register" >&2
-      echo "  Username/password: configure HERMES_DASHBOARD_BASIC_AUTH_* in ~/.hermes/.env" >&2
+      echo "  Setup helper: dockter-hermes-dashboard-auth" >&2
       echo "  Restart:           dockter-hermes-restart dashboard" >&2
     fi
     return 1
@@ -655,12 +750,13 @@ dockter-hermes-help() {
   echo -e "${_HD_CLR_BOLD}${_HD_CLR_MAGENTA}Container Access${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-shell) ${_HD_CLR_CYAN}[gateway|dashboard]${_HD_CLR_RESET}         ${_HD_CLR_DIM}Open a shell in a container${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-exec) ${_HD_CLR_CYAN}[service] <cmd>${_HD_CLR_RESET}              ${_HD_CLR_DIM}Run a command in a container${_HD_CLR_RESET}"
-  echo -e "  $(_hd_cmd dockter-hermes-cli) ${_HD_CLR_CYAN}<args>${_HD_CLR_RESET}                        ${_HD_CLR_DIM}Run hermes inside a one-off container${_HD_CLR_RESET}"
+  echo -e "  $(_hd_cmd dockter-hermes-oneoff) ${_HD_CLR_CYAN}<args>${_HD_CLR_RESET}                     ${_HD_CLR_DIM}Run a command in a temporary container${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-chat)                         ${_HD_CLR_DIM}Open interactive Hermes chat${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-setup)                        ${_HD_CLR_DIM}Run the setup wizard${_HD_CLR_RESET}"
   echo ""
 
   echo -e "${_HD_CLR_BOLD}${_HD_CLR_MAGENTA}Dashboard & Health${_HD_CLR_RESET}"
+  echo -e "  $(_hd_cmd dockter-hermes-dashboard-auth) ${_HD_CLR_CYAN}[basic [username]|oauth]${_HD_CLR_RESET} ${_HD_CLR_DIM}Configure dashboard login${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-dashboard)                    ${_HD_CLR_DIM}Start/open the dashboard${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-health)                       ${_HD_CLR_DIM}Run gateway status/health checks${_HD_CLR_RESET}"
   echo ""
@@ -682,7 +778,7 @@ dockter-hermes-help() {
   echo -e "${_HD_CLR_BOLD}${_HD_CLR_CYAN}First Time Setup${_HD_CLR_RESET}"
   echo -e "  ${_HD_CLR_CYAN}1.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-setup)       ${_HD_CLR_DIM}# Configure ~/.hermes inside Docker${_HD_CLR_RESET}"
   if _dockter_hermes_is_native_windows; then
-    echo -e "  ${_HD_CLR_CYAN}2.${_HD_CLR_RESET} $(_hd_cmd 'dockter-hermes-cli dashboard register') ${_HD_CLR_DIM}# Configure OAuth (or basic auth in ~/.hermes/.env)${_HD_CLR_RESET}"
+    echo -e "  ${_HD_CLR_CYAN}2.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard-auth) ${_HD_CLR_DIM}# Configure username/password or OAuth${_HD_CLR_RESET}"
     echo -e "  ${_HD_CLR_CYAN}3.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-start)     ${_HD_CLR_DIM}# Start gateway and dashboard${_HD_CLR_RESET}"
     echo -e "  ${_HD_CLR_CYAN}4.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard)   ${_HD_CLR_DIM}# Open http://127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}${_HD_CLR_RESET}"
   else

@@ -60,15 +60,17 @@ project and user override files are applied afterward. Run
 Docker Desktop publishes the dashboard port to host loopback, but the dashboard
 must bind to a non-loopback interface inside its bridge-network container.
 Hermes therefore requires a dashboard auth provider before the Windows
-dashboard can become ready. Configure either OAuth:
+dashboard can become ready. The helper offers username/password and OAuth on
+Linux, macOS, and Git Bash for Windows:
 
 ```sh
-dockter-hermes-cli dashboard register
+dockter-hermes-dashboard-auth
 ```
 
-or the bundled username/password provider by setting
-`HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, `_PASSWORD` (or `_PASSWORD_HASH`), and
-the recommended `_SECRET` in `~/.hermes/.env`. See
+The username/password flow reads the password without echoing it, hashes it
+inside a one-off container, and writes only the hash to `config.yaml`. The
+OAuth flow requires an existing Nous Portal login; run `dockter-hermes-setup`
+first if needed. See
 [Web Dashboard authentication](features/web-dashboard.md#authentication-gated-mode).
 After configuration, run `dockter-hermes-restart dashboard`.
 
@@ -124,8 +126,9 @@ Common commands:
 | `dockter-hermes-logs [gateway|dashboard|all]` | Follow service logs. |
 | `dockter-hermes-shell [gateway|dashboard]` | Open a shell in a running service container. |
 | `dockter-hermes-exec [gateway|dashboard] <command>` | Run a command in a running service container. |
-| `dockter-hermes-cli <args>` | Run `hermes` in a one-off gateway container. |
+| `dockter-hermes-oneoff <command> [args]` | Run a command in a temporary gateway container that is removed afterward. |
 | `dockter-hermes-chat` | Open an interactive Hermes chat in a one-off gateway container. |
+| `dockter-hermes-dashboard-auth [basic [username]\|oauth]` | Configure dashboard username/password or OAuth authentication. |
 | `dockter-hermes-dashboard` | Start and open the dashboard. |
 | `dockter-hermes-health` | Run gateway health checks. |
 | `dockter-hermes-config` | Print helper configuration and Compose file paths. |

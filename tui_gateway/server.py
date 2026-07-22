@@ -13307,6 +13307,26 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
 
+def _prune_catalog_alias_collisions(
+    pairs: list[list[str]], canon: dict[str, str]
+) -> dict[str, str]:
+    """Drop alias canon entries that collide with standalone catalog commands.
+
+    ``pairs`` lists concrete slash commands (including TUI extras like
+    ``/compact`` for display-mode toggle). ``canon`` maps aliases onto their
+    canonical command (e.g. ``/compact`` -> ``/compress``). When the same
+    slash text appears in both, clients that register pairs then aliases throw
+    "Duplicate slash command alias" (#57532).
+    """
+    standalone = {name.lower(): name for name, _desc in pairs}
+    pruned = dict(canon)
+    for alias_key, target in list(canon.items()):
+        existing = standalone.get(alias_key)
+        if existing is not None and existing != target:
+            del pruned[alias_key]
+    return pruned
+
+
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
@@ -13390,6 +13410,7 @@ def _(rid, params: dict) -> dict:
         for cat in cat_order:
             categories.append({"name": cat, "pairs": cat_map[cat]})
 
+        canon = _prune_catalog_alias_collisions(all_pairs, canon)
         sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
         return _ok(
             rid,

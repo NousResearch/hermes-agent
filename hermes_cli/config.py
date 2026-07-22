@@ -1469,8 +1469,17 @@ DEFAULT_CONFIG = {
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
+        "threshold_tokens": None,     # absolute token cap — when set, compression
+                                      # triggers at the lower of the ratio-based
+                                      # threshold and this token count. Clamped to
+                                      # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "max_attempts": 3,            # compression retry rounds before a turn gives up
+                                      # with "max compression attempts reached". Raise
+                                      # (e.g. 6) for tool-schema-heavy sessions where 3
+                                      # rounds cannot clear the request estimate.
+                                      # Validated >= 1, hard-capped at 10.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
@@ -1529,6 +1538,17 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "model_thresholds": {},       # Per-model threshold overrides. Keys are
+                                      # substring-matched against the model name
+                                      # (longest match wins); values replace the
+                                      # global `threshold` for that model, e.g.
+                                      #   model_thresholds:
+                                      #     "glm-5.2": 0.40
+                                      #     "claude-sonnet": 0.35
+                                      # The small-context floor (0.75 for <512K
+                                      # models) still applies on top of overrides
+                                      # (raise-only: an override above the floor
+                                      # wins; one below it is raised to the floor).
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -3216,6 +3236,37 @@ DEFAULT_CONFIG = {
         # GBs of disk on heavy users.  Opt in only if you have an external
         # tool that consumes the JSON files directly.
         "write_json_snapshots": False,
+        # Search-index (FTS) storage optimization — the compact v23 layout
+        # that drops duplicate content copies and stops trigram-indexing tool
+        # output (typically reclaims ~60%+ of state.db on heavy users). It is
+        # OPT-IN: existing databases keep their working legacy index until the
+        # user runs `hermes sessions optimize-storage`, because the rebuild is
+        # disk-heavy and long on large DBs (see that command's disk preflight).
+        #
+        #   "advise" (default): `hermes update` prints a one-line notice with
+        #     the reclaimable size and the command, when a legacy index is
+        #     detected. Nothing is changed automatically.
+        #   "require": the notice is shown as a REQUIRED upgrade (firmer copy),
+        #     and future tooling may gate on it. Flip this default in a future
+        #     release when we're ready to make the v23 layout mandatory — the
+        #     command, progress bar, and resumability are already in place, so
+        #     enforcement is a copy/gating change, not new migration code.
+        #   "off": suppress the notice entirely.
+        "fts_optimize_notice": "advise",
+        # CJK-bigram search index (messages_fts_cjk, cjk_unicode61 loadable
+        # tokenizer). When the extension is built (native/fts5_cjk/build.sh →
+        # ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms (일본, 项目, ...)
+        # get index-speed exact matching instead of LIKE full-table scans.
+        # True (default): use the index when the extension is present; the
+        # setting is inert when it isn't. False: never load the extension or
+        # serve the cjk index. Bridged to HERMES_CJK_FTS (internal carrier).
+        "cjk_fts": True,
+        # Slow session-search log threshold in milliseconds: searches at or
+        # above it log one INFO line with the routing path taken (fts_cjk /
+        # fts5 / trigram / like_scan) so latency regressions stay
+        # attributable per query shape. 0 logs every search. Bridged to
+        # HERMES_SEARCH_SLOW_MS (internal carrier).
+        "search_slow_ms": 1000,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
@@ -3374,8 +3425,18 @@ DEFAULT_CONFIG = {
             "access_token_env": "BWS_ACCESS_TOKEN",
             # UUID of the BSM project to sync from.
             "project_id": "",
-            # Seconds to cache fetched secrets in-process.  0 disables.
+            # Seconds to reuse a fresh disk/memory cache entry before contacting
+            # Bitwarden again. 0 disables normal fresh-cache reuse.
             "cache_ttl_seconds": 300,
+            # Optional encrypted last-good fallback for network/timeout outages.
+            # When enabled, successful BWS fetches write AES-GCM encrypted cache
+            # material under ~/.hermes/cache/. If a later startup cannot reach
+            # Bitwarden due to NETWORK/TIMEOUT, Hermes may use this encrypted
+            # cache for up to max_stale_seconds. Auth failures do not fall back.
+            "encrypted_cache": {
+                "enabled": False,
+                "max_stale_seconds": 0,
+            },
             # When True, BSM values overwrite existing env vars.  Default
             # True because the point of using BSM is centralized rotation —
             # if .env had the final say, rotating in Bitwarden wouldn't
@@ -6672,19 +6733,76 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
+def _env_expand_match(m: re.Match) -> str:
+    """Expand one ``${...}`` config reference.
+
+    Two accepted shapes, matching what MCP server config already resolves
+    (``tools/mcp_tool.py::_env_ref_name``):
+
+    * ``${VAR}`` — legacy bare name, resolved via ``os.environ``.
+    * ``${env:VAR}`` — Cursor-style SecretRef, same resolution after the
+      ``env:`` prefix is stripped.  Before this, the prefixed form worked in
+      MCP config but stayed a literal string in config.yaml — a confusing
+      half-support.
+
+    Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``, ...)
+    are NOT resolved here — external secret backends inject their values
+    into the environment at startup (the ``secrets:`` block), so a config
+    ref only ever needs the env shape.  Unknown prefixes warn once and stay
+    verbatim so callers can detect them.
+    """
+    raw = m.group(0)
+    inner = m.group(1).strip()
+    if inner.startswith("env:"):
+        name = inner[len("env:"):].strip()
+        if not name:
+            return raw
+        val = os.environ.get(name)
+        if val is not None:
+            return val
+        logger.warning(
+            "Config ref %r: %s is not set (check ~/.hermes/.env); "
+            "keeping the literal placeholder", raw, name,
+        )
+        return raw
+    if ":" in inner and re.match(r"^[a-z][a-z0-9_-]*:", inner):
+        # Looks like a SecretRef with a non-env source.  Values from vault
+        # backends arrive via the secrets: block as env vars — point there
+        # instead of silently treating "bitwarden:FOO" as a var named
+        # "bitwarden:FOO".
+        logger.warning(
+            "Config ref %r uses source %r which is not resolvable in "
+            "config.yaml — external secret sources inject env vars at "
+            "startup, so reference the variable as ${env:NAME} instead",
+            raw, inner.split(":", 1)[0],
+        )
+        return raw
+    # Legacy ``${VAR}`` — bare name.
+    return os.environ.get(inner, raw)
+
+
+def _env_ref_var_name(ref: str) -> Optional[str]:
+    """Normalize a ``${...}`` body to the env-var name it reads, or None
+    when the ref uses a non-env source and never touches the environment."""
+    ref = ref.strip()
+    if ref.startswith("env:"):
+        name = ref[len("env:"):].strip()
+        return name or None
+    if ":" in ref and re.match(r"^[a-z][a-z0-9_-]*:", ref):
+        return None
+    return ref
+
+
 def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+    """Recursively expand ``${VAR}`` / ``${env:VAR}`` references in config
+    values.
 
     Only string values are processed; dict keys, numbers, booleans, and
     None are left untouched.  Unresolved references (variable not in
     ``os.environ``) are kept verbatim so callers can detect them.
     """
     if isinstance(obj, str):
-        return re.sub(
-            r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
-            obj,
-        )
+        return re.sub(r"\${([^}]+)}", _env_expand_match, obj)
     if isinstance(obj, dict):
         return {k: _expand_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -6693,8 +6811,8 @@ def _expand_env_vars(obj):
 
 
 def _env_ref_snapshot(obj, snapshot=None):
-    """Map every ``${VAR}`` name referenced in config values to its current
-    ``os.environ`` value (``None`` when unset).
+    """Map every ``${VAR}`` / ``${env:VAR}`` name referenced in config values
+    to its current ``os.environ`` value (``None`` when unset).
 
     Stored alongside cached ``load_config()`` results so a cache hit can
     detect that the cached expansion was made against a *different*
@@ -6702,12 +6820,18 @@ def _env_ref_snapshot(obj, snapshot=None):
     ``load_hermes_dotenv()`` populated the process env, or an env var
     rotated in-process after the first load. File mtime/size alone cannot
     see either case (#58514).
+
+    ``${env:VAR}`` refs are tracked under the real variable name; refs
+    with a non-env source prefix never read the environment, so they are
+    excluded from the snapshot.
     """
     if snapshot is None:
         snapshot = {}
     if isinstance(obj, str):
-        for name in re.findall(r"\${([^}]+)}", obj):
-            snapshot[name] = os.environ.get(name)
+        for raw in re.findall(r"\${([^}]+)}", obj):
+            name = _env_ref_var_name(raw)
+            if name is not None:
+                snapshot[name] = os.environ.get(name)
     elif isinstance(obj, dict):
         for value in obj.values():
             _env_ref_snapshot(value, snapshot)
@@ -8219,9 +8343,17 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     if val:
         return val
     try:
-        from agent.secret_scope import get_secret as _get_secret
+        from agent.secret_scope import (
+            UnscopedSecretError,
+            get_secret as _get_secret,
+        )
+    except Exception:
+        return os.environ.get(key)
 
+    try:
         return _get_secret(key)
+    except UnscopedSecretError:
+        raise
     except Exception:
         return os.environ.get(key)
 
@@ -8434,6 +8566,14 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        _tt = compression.get('threshold_tokens')
+        if _tt is not None:
+            try:
+                _tt = int(_tt)
+                if _tt > 0:
+                    print(f"  Token cap:    {_tt:,} tokens (takes lower of ratio vs absolute)")
+            except (TypeError, ValueError):
+                pass
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

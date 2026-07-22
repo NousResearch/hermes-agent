@@ -638,3 +638,137 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+# =========================================================================
+# Compaction summary filtering (#43175)
+# =========================================================================
+
+class TestCompactionSummaryFiltering:
+    """session_search discovery must exclude compaction handoffs from bookends."""
+
+    def test_is_compaction_summary_detects_prefix(self):
+        from tools.session_search_tool import _is_compaction_summary
+        assert _is_compaction_summary("[CONTEXT COMPACTION — REFERENCE ONLY] foo")
+        assert _is_compaction_summary("[CONTEXT SUMMARY]: old summary")
+        assert not _is_compaction_summary("Hello, how can I help?")
+        assert not _is_compaction_summary("")
+        assert not _is_compaction_summary(None)
+
+    def test_compaction_summary_excluded_from_bookend_start(self, db):
+        """Compaction handoff in bookend_start position must be filtered out."""
+        db.create_session("s_compact", source="cli")
+        # First message: a compaction handoff (should be filtered)
+        db.append_message("s_compact", role="user",
+                          content="[CONTEXT COMPACTION — REFERENCE ONLY] "
+                                  "Earlier turns were compacted into the summary below. " + "x" * 50000)
+        # Second message: normal user message
+        db.append_message("s_compact", role="user", content="Fix the zorgblat rendering bug")
+        # Padding messages to push window away from session start (so bookend has room)
+        for i in range(10):
+            db.append_message("s_compact", role="user", content=f"setup step {i}")
+            db.append_message("s_compact", role="assistant", content=f"setup done {i}")
+        # Match target: uses a unique term so FTS5 anchors here, not at the start
+        db.append_message("s_compact", role="user", content="investigate the frobnitz mob spawning in KubeJS")
+        db.append_message("s_compact", role="assistant", content="I'll look into the frobnitz mob spawning issue.")
+        # Tail messages
+        for i in range(5):
+            db.append_message("s_compact", role="user", content=f"tail {i}")
+            db.append_message("s_compact", role="assistant", content=f"done tail {i}")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="frobnitz mob spawning", db=db, limit=1))
+        assert result["success"] is True
+        assert len(result["results"]) >= 1
+        entry = result["results"][0]
+        # bookend_start must NOT contain the compaction handoff
+        for msg in entry.get("bookend_start", []):
+            assert "[CONTEXT COMPACTION" not in (msg.get("content") or "")
+        # The normal message should still be present in bookend_start
+        bookend_contents = [m.get("content", "") for m in entry.get("bookend_start", [])]
+        assert any("zorgblat" in c for c in bookend_contents)
+
+    def test_compaction_summary_excluded_from_bookend_end(self, db):
+        """Compaction handoff in bookend_end position must be filtered out."""
+        db.create_session("s_compact_end", source="cli")
+        # Normal opening
+        db.append_message("s_compact_end", role="user", content="Build a website")
+        db.append_message("s_compact_end", role="assistant", content="Sure, let me scaffold it.")
+        # Match target (early in session so bookend_end has room)
+        db.append_message("s_compact_end", role="user", content="fix the zorgblat rendering bug")
+        db.append_message("s_compact_end", role="assistant", content="Investigating the zorgblat rendering issue.")
+        # Many messages to create distance from the end
+        for i in range(10):
+            db.append_message("s_compact_end", role="user", content=f"feature {i}")
+            db.append_message("s_compact_end", role="assistant", content=f"implemented {i}")
+        # Last message: compaction handoff (should be filtered from bookend_end)
+        db.append_message("s_compact_end", role="assistant",
+                          content="[CONTEXT COMPACTION — REFERENCE ONLY] "
+                                  "Summary of all work done. " + "y" * 50000)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="zorgblat rendering", db=db, limit=1))
+        assert result["success"] is True
+        assert len(result["results"]) >= 1
+        entry = result["results"][0]
+        # bookend_end must NOT contain the compaction handoff
+        for msg in entry.get("bookend_end", []):
+            assert "[CONTEXT COMPACTION" not in (msg.get("content") or "")
+
+    def test_bookend_content_is_capped(self, db):
+        """Bookend messages must have content capped at 1200 chars."""
+        db.create_session("s_long_bookend", source="cli")
+        # First message: very long normal content
+        db.append_message("s_long_bookend", role="user",
+                          content="Start the project. " + "z" * 5000)
+        # Match target
+        db.append_message("s_long_bookend", role="user", content="deploy to production")
+        db.append_message("s_long_bookend", role="assistant", content="Deploying now.")
+        for i in range(10):
+            db.append_message("s_long_bookend", role="user", content=f"step {i}")
+            db.append_message("s_long_bookend", role="assistant", content=f"done {i}")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="deploy production", db=db, limit=1))
+        assert result["success"] is True
+        entry = result["results"][0]
+        for msg in entry.get("bookend_start", []):
+            content = msg.get("content", "")
+            # Content should be capped (1200 chars + "…" ellipsis)
+            assert len(content) <= 1210  # 1200 + ellipsis + margin
+            if msg.get("content_truncated"):
+                assert msg["original_content_chars"] > 1200
+
+    def test_window_content_is_capped(self, db):
+        """Window messages must have content capped at 4000 chars."""
+        db.create_session("s_long_window", source="cli")
+        db.append_message("s_long_window", role="user", content="search keyword here")
+        # Very long assistant reply containing the keyword
+        db.append_message("s_long_window", role="assistant",
+                          content="Found it! keyword " + "a" * 10000)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="keyword", db=db, limit=1))
+        assert result["success"] is True
+        entry = result["results"][0]
+        for msg in entry.get("messages", []):
+            content = msg.get("content", "")
+            assert len(content) <= 4010  # 4000 + ellipsis + margin
+
+    def test_legacy_context_summary_filtered(self, db):
+        """Legacy [CONTEXT SUMMARY]: prefix must also be filtered."""
+        db.create_session("s_legacy", source="cli")
+        db.append_message("s_legacy", role="user",
+                          content="[CONTEXT SUMMARY]: old compacted summary here")
+        db.append_message("s_legacy", role="user", content="new task: build API")
+        db.append_message("s_legacy", role="assistant", content="Building REST API now.")
+        for i in range(10):
+            db.append_message("s_legacy", role="user", content=f"step {i}")
+            db.append_message("s_legacy", role="assistant", content=f"done {i}")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="build API", db=db, limit=1))
+        assert result["success"] is True
+        entry = result["results"][0]
+        for msg in entry.get("bookend_start", []):
+            assert "[CONTEXT SUMMARY]" not in (msg.get("content") or "")

@@ -1693,6 +1693,7 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_oauth.json",
     "webhook_subscriptions.json",
     "bws_cache.json",
+    "bws_cache.enc.json",
     # git's credential-store helper cache (agent.file_safety blocks this too).
     ".git-credentials",
 })
@@ -3090,9 +3091,29 @@ async def get_status(profile: Optional[str] = None):
         # "loopback only — no auth gate" with no extra round trips.
         auth_required = bool(getattr(app.state, "auth_required", False))
         auth_providers: list[str] = []
+        # RFC 8252 native-app capability advertisement. The desktop reads this
+        # to decide whether it can use the system-browser + loopback + PKCE
+        # flow (no embedded webview, no session cookies) or must fall back to
+        # the legacy embedded-webview cookie flow. "cookie" is always available
+        # in gated mode; "native_pkce" is present only when at least one
+        # registered session provider is a brokerable OAuth provider (not a
+        # password or token-only credential). Absent field / missing
+        # "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically.
+        auth_flows: list[str] = []
         try:
-            from hermes_cli.dashboard_auth import list_providers as _list_providers
+            from hermes_cli.dashboard_auth import (
+                list_providers as _list_providers,
+                list_session_providers as _list_session_providers,
+            )
             auth_providers = [p.name for p in _list_providers()]
+            if auth_required:
+                auth_flows.append("cookie")
+                brokerable = [
+                    p for p in _list_session_providers()
+                    if not getattr(p, "supports_password", False)
+                ]
+                if brokerable:
+                    auth_flows.append("native_pkce")
         except Exception:
             # Module not importable yet (early startup) — leave as [].
             pass
@@ -3134,6 +3155,7 @@ async def get_status(profile: Optional[str] = None):
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
+            "auth_flows": auth_flows,
             "nous_session_valid": nous_session_valid,
         }
 
@@ -3179,6 +3201,27 @@ async def get_status(profile: Optional[str] = None):
             if all(item.get("status") == "ok" for item in components.values())
             else "degraded"
         )
+
+        # Deferred FTS rebuild progress (schema v23): lets the desktop /
+        # dashboard render a "search index rebuilding: N%" indicator instead
+        # of users wondering why old-message search is slower after an
+        # update. None/absent when no rebuild is pending (the common case).
+        # Read-only probe, never blocks startup, never raises.
+        try:
+            from hermes_state import SessionDB as _SDB
+            from hermes_constants import get_hermes_home as _ghh
+
+            _db_path = _ghh() / "state.db"
+            if _db_path.exists():
+                _sdb = _SDB(db_path=_db_path, read_only=True)
+                try:
+                    _rebuild = _sdb.fts_rebuild_status()
+                finally:
+                    _sdb.close()
+                if _rebuild is not None:
+                    status["fts_rebuild"] = _rebuild
+        except Exception:
+            pass
 
         # Profile + gateway topology: which profiles exist, whether one
         # multiplexed gateway or several per-profile gateways serve them, and

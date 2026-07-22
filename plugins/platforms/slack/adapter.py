@@ -3817,8 +3817,16 @@ class SlackAdapter(BasePlatformAdapter):
         # array as ``rich_text_quote`` elements, which are NOT reflected in
         # the plain ``text`` field.  Merge block text so the agent sees the
         # full message content.
+        #
+        # Skip blocks extraction for command messages (slash/bang commands).
+        # Slack's rich_text blocks mirror the plain text of the message; after
+        # a ``!cmd`` → ``/cmd`` rewrite the mirrored ``!cmd`` form is no longer
+        # a substring of the rewritten text, so a naive dedupe check would
+        # re-append the same visible message as bogus command arguments
+        # (e.g. ``/model qwen --provider X`` grows a duplicate line and the
+        # model name appears to contain spaces).
         blocks = event.get("blocks")
-        if blocks:
+        if blocks and not is_command_text:
             blocks_text = _extract_text_from_slack_blocks(blocks)
             if blocks_text:
                 # Only append if the blocks contain text not already present
@@ -5754,11 +5762,37 @@ class SlackAdapter(BasePlatformAdapter):
         # Preserve DM semantics only for DM channel IDs; shared channels must
         # keep group semantics so different users do not collide into one
         # session key.
+        #
+        # If Slack includes thread context in the slash payload, preserve it so
+        # session-scoped commands like `/model <name>` affect exactly the same
+        # Slack thread/session that normal messages in that thread use. Without
+        # this, `/model` from a thread is keyed only by channel+user, so the
+        # next threaded message misses the override and appears to require
+        # --global.  Slack's native slash-command payloads vary by surface, so
+        # accept a few known shapes (top-level and nested, preferring a real
+        # parent-thread anchor over a fallback message timestamp) and otherwise
+        # leave thread_id unset; users can always use the message-based
+        # ``!model ...`` thread command path, which carries event.thread_ts.
+        thread_id = None
+        _thread_candidates = [command]
+        for _nested_key in ("message", "container"):
+            _nested = command.get(_nested_key)
+            if isinstance(_nested, dict):
+                _thread_candidates.append(_nested)
+        for _ts_key in ("thread_ts", "message_ts"):
+            for _payload in _thread_candidates:
+                _value = _payload.get(_ts_key)
+                if _value:
+                    thread_id = str(_value)
+                    break
+            if thread_id:
+                break
         is_dm = str(channel_id).startswith("D")
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            thread_id=thread_id,
             scope_id=team_id or None,
         )
 

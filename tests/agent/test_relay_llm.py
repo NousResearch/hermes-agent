@@ -170,6 +170,41 @@ def test_deferred_stream_preserves_provider_error_and_logical_scope_for_retry(
     assert "request-2" in turn.logical_llm_calls
 
 
+def test_non_deferred_partial_stream_close_cancels_logical_call(
+    relay_turn,
+    monkeypatch,
+):
+    relay, turn = relay_turn
+    original_pop = relay.scope.pop
+    terminal_outputs = []
+
+    def record_pop(handle, *args, **kwargs):
+        terminal_outputs.append(kwargs.get("output"))
+        return original_pop(handle, *args, **kwargs)
+
+    monkeypatch.setattr(relay.scope, "pop", record_pop)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "partial"}, {"delta": "unused"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "partial"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-partial-close",
+        },
+    )
+
+    assert next(stream) == {"delta": "partial"}
+    assert "request-partial-close" in turn.logical_llm_calls
+
+    stream.close()
+
+    assert "request-partial-close" not in turn.logical_llm_calls
+    assert {"outcome": "cancelled"} in terminal_outputs
+
+
 def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
     raw_response = SimpleNamespace(model="test-model", content="raw")

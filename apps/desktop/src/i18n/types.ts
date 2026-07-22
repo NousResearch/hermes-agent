@@ -2034,6 +2034,7 @@ export interface Translations {
     hideHeader: string
     minimize: string
     restore: string
+    toggleLayoutEditMode: string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string

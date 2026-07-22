@@ -2590,6 +2590,7 @@ export const zh: Translations = {
     hideHeader: '隐藏标题栏',
     minimize: '最小化',
     restore: '还原',
+    toggleLayoutEditMode: '切换布局编辑模式',
     closeRunningTitle: '关闭正在运行的标签？',
     closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
     closeRunningConfirm: '关闭标签',

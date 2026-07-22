@@ -2962,6 +2962,7 @@ export const fr = defineLocale({
     hideHeader: 'Masquer l\'en-tête',
     minimize: 'Réduire',
     restore: 'Restaurer',
+    toggleLayoutEditMode: 'Activer le mode édition de la disposition',
     closeRunningTitle: 'Fermer l\'onglet actif ?',
     closeRunningBody: 'Ce chat est encore en cours (ou attend votre saisie). Fermer l\'onglet le masque — la session conserve sa progression et peut être rouverte depuis la barre latérale.',
     closeRunningConfirm: 'Fermer l\'onglet',

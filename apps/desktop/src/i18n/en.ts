@@ -2414,6 +2414,7 @@ export const en: Translations = {
     hideHeader: 'Hide header',
     minimize: 'Minimize',
     restore: 'Restore',
+    toggleLayoutEditMode: 'Toggle layout edit mode',
     closeRunningTitle: 'Close running tab?',
     closeRunningBody:
       'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',

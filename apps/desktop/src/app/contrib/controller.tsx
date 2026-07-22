@@ -257,7 +257,7 @@ registry.registerMany([
     area: KEYBINDS_AREA,
     data: {
       id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
+      label: 'Activer le mode édition de la disposition',
       defaults: ['mod+shift+\\'],
       run: toggleLayoutEditMode
     } satisfies KeybindContribution
@@ -267,7 +267,7 @@ registry.registerMany([
     area: PALETTE_AREA,
     data: {
       id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
+      label: 'Activer le mode édition de la disposition',
       action: 'layout.editMode',
       icon: LayoutDashboard,
       keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],

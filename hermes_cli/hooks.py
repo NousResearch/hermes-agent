@@ -327,7 +327,10 @@ def _doctor_one(spec, shell_hooks) -> int:
     problems = 0
 
     # 1. Script exists and is executable
-    if shell_hooks.script_is_executable(spec.command):
+    script = shell_hooks._command_script_path(spec.command)
+    if not script:
+        print("      ℹ inline command — no script file to check")
+    elif shell_hooks.script_is_executable(spec.command):
         print("      ✓ script exists and is executable")
     else:
         problems += 1

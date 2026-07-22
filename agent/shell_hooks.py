@@ -818,6 +818,11 @@ def _command_script_path(command: str) -> str:
         return command
     if not parts:
         return command
+
+    # Inline shell (`sh -c '...'`, `bash -c '...'`) has no script file —
+    # the program IS the -c body.  Don't mine it for a path.
+    if os.path.basename(parts[0]) in {"sh", "bash", "zsh", "dash"} and "-c" in parts[:3]:
+        return ""
     for part in parts:
         if part.lower().endswith(_SCRIPT_EXTENSIONS):
             return part
@@ -895,7 +900,9 @@ def script_is_executable(command: str) -> bool:
     bit.  Mirrors what ``_spawn`` would actually do at runtime."""
     path = _command_script_path(command)
     if not path:
-        return False
+        # Inline shell command (e.g. sh -c '...') — no script file to check,
+        # but the command itself is always executable.
+        return True
     expanded = os.path.expanduser(path)
     if not os.path.isfile(expanded):
         return False

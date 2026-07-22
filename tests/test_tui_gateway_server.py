@@ -6864,6 +6864,49 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
     assert before is None or session["last_active"] >= before
 
 
+def test_session_redirect_queues_during_agent_build_window(monkeypatch):
+    # A fresh turn flips running=True and builds the agent asynchronously, so
+    # session["agent"] is briefly None. A correction landing here must queue
+    # (lossless, reaches the model next turn), not hard-reject as unsupported.
+    session = _session(running=True)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "wait, use SQLite"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {"status": "queued", "text": "wait, use SQLite"}
+    assert session["queued_prompt"]["text"] == "wait, use SQLite"
+
+
+def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
+    # No live turn and no agent: nothing to redirect, and we must not queue a
+    # phantom turn — keep the explicit unsupported rejection.
+    session = _session(running=False)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4010
+    assert session.get("queued_prompt") is None
+
+
 def test_session_info_includes_mcp_servers(monkeypatch):
     fake_status = [
         {"name": "github", "transport": "http", "tools": 12, "connected": True},

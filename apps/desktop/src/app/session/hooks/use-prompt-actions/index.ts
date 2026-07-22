@@ -612,28 +612,54 @@ export function usePromptActions({
         return false
       }
 
-      try {
-        const result = await requestGateway<SessionRedirectResponse>('session.redirect', {
-          session_id: sessionId,
-          text
-        })
+      // Accepted whether the live turn was redirected in place or queued for
+      // the next turn (the build window, before the agent is wired) — either
+      // way the correction reaches the model, so record it once as a real user
+      // message after the interrupted checkpoint, matching the durable core
+      // transcript rather than a system note that changes role after reload.
+      const send = async (id: string): Promise<boolean> => {
+        const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
 
-        if (result?.status === 'redirected') {
+        if (result?.status === 'redirected' || result?.status === 'queued') {
           triggerHaptic('submit')
-          // Match the durable core transcript: the correction is a real user
-          // message after the interrupted assistant checkpoint, not a system
-          // note that changes role after reload.
-          appendSessionTextMessage(sessionId, 'user', text)
+          appendSessionTextMessage(id, 'user', text)
 
           return true
         }
-      } catch {
+
+        return false
+      }
+
+      try {
+        return await send(sessionId)
+      } catch (err) {
+        // A stale runtime id after reconnect 404s ("session not found"): resume
+        // the stored session and retry once, mirroring stopPrompt so a
+        // correction right after a reconnect isn't lost to the race.
+        if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+          try {
+            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+              session_id: selectedStoredSessionIdRef.current,
+              source: 'desktop'
+            })
+
+            const recoveredId = resumed?.session_id
+
+            if (recoveredId) {
+              activeSessionIdRef.current = recoveredId
+
+              return await send(recoveredId)
+            }
+          } catch {
+            // fall through — caller queues so nothing is lost
+          }
+        }
         // Swallow — caller queues the text so nothing is lost.
       }
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef]
   )
 
   const reloadFromMessage = useCallback(

@@ -6,7 +6,7 @@ flag that the CLI shutdown path uses to remove the current session from
 SQLite + on-disk transcripts before exit.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _make_cli():
@@ -16,12 +16,14 @@ def _make_cli():
     the /exit branch touches.
     """
     from cli import HermesCLI
+    from hermes_cli.queue_management import ManagedPromptQueue
     cli = HermesCLI.__new__(HermesCLI)
     cli.config = {}
     cli.console = MagicMock()
     cli.agent = None
     cli.conversation_history = []
     cli.session_id = "test-session"
+    cli._pending_input = ManagedPromptQueue()
     cli._delete_session_on_exit = False
     return cli
 
@@ -58,16 +60,21 @@ class TestExitDeleteFlag:
         assert result is False
         assert cli._delete_session_on_exit is True
 
-    def test_quit_alias_q_is_not_quit(self):
+    def test_quit_alias_q_opens_queue_view_instead_of_exiting(self):
         """`/q` is the alias for `/queue`, not `/quit`. This test documents
-        that /q --delete does NOT arm session deletion — it would dispatch
-        to /queue instead."""
+        that a bare `/q` opens the queue view and cannot arm session deletion.
+        The lightweight CLI fixture uses the same managed queue as production.
+        """
         cli = _make_cli()
-        cli._pending_input = __import__("queue").Queue()
-        # /q with no args shows a usage error and keeps the CLI running.
-        result = cli.process_command("/q")
+        with patch("cli._cprint") as mock_print:
+            result = cli.process_command("/q")
+
         assert result is not False  # queue command doesn't exit
         assert cli._delete_session_on_exit is False
+        assert cli._pending_input.snapshot_items() == []
+        assert "No queued turns." in "\n".join(
+            str(call.args[0]) for call in mock_print.call_args_list if call.args
+        )
 
     def test_delete_flag_is_case_insensitive(self):
         cli = _make_cli()

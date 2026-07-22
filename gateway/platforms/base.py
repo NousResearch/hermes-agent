@@ -2124,6 +2124,18 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
         if hasattr(event, attr):
             delattr(event, attr)
 
+class PrivateInteractionResult(dict):
+    """Structured native-interaction result that generic delivery must suppress.
+
+    Native platform interactions may call the registered gateway handler
+    directly and need a structured response back (for example, a Discord
+    component view). A distinct ``dict`` subtype keeps the direct caller API
+    ergonomic while preventing raw routing tokens and opaque IDs from being
+    stringified. Generic adapter delivery paths suppress this result in
+    :meth:`BasePlatformAdapter._unwrap_ephemeral`, so an accidental dispatch
+    through ``handle_message()`` cannot stringify or publish the payload.
+    """
+
 
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
@@ -2209,10 +2221,14 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
-# Type for message handlers.  Handlers may return a plain string (normal
-# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
-# ``None`` when the response was already delivered (e.g. via streaming).
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+# Type for message handlers. Handlers may return a plain string (normal
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, a
+# ``PrivateInteractionResult`` for a direct native interaction, or ``None``
+# when the response was already delivered (e.g. via streaming).
+MessageHandlerResult = Optional[
+    Union[str, "EphemeralReply", "PrivateInteractionResult"]
+]
+MessageHandler = Callable[[MessageEvent], Awaitable[MessageHandlerResult]]
 
 
 def resolve_channel_prompt(
@@ -4261,6 +4277,12 @@ class BasePlatformAdapter(ABC):
         doesn't override :meth:`delete_message` so non-supporting
         platforms silently degrade to normal sends.
         """
+        if isinstance(response, PrivateInteractionResult):
+            # Structured native-interaction payloads are consumed only by the
+            # adapter method that directly awaited the gateway handler. If a
+            # caller accidentally routes one through generic delivery, fail
+            # closed instead of publishing the payload's repr.
+            return None, 0
         if isinstance(response, EphemeralReply):
             ttl = response.ttl_seconds
             if ttl is None:

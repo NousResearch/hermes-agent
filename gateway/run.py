@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import copy
 import concurrent.futures
 import dataclasses
 import inspect
@@ -32,6 +33,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import site
 import sys
@@ -43,8 +45,8 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
+from datetime import datetime, timezone
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Set, Union, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -719,6 +721,7 @@ def build_resume_recovery_note(
     message: str = "",
     *,
     interactive: bool = True,
+    durable_resume: bool = False,
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
@@ -728,7 +731,11 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
+    ``durable_resume`` means the triggering user request is already present in
+    the transcript and the empty event is only a crash-recovery control turn.
+    It must continue that recorded task instead of asking the user what to do.
+
+    ``interactive`` selects the remaining empty-message guidance: on interactive
     platforms a human is present, so "report the restore and ask what next"
     is right.  On non-interactive event platforms (webhook, API server —
     adapters with ``interactive_resume = False``) nobody can answer; the
@@ -743,7 +750,19 @@ def build_resume_recovery_note(
         if reason == "shutdown_timeout"
         else "a gateway interruption"
     )
-    if message:
+    if durable_resume:
+        resume_guidance = (
+            "The triggering user request is already recorded in the conversation "
+            "history. This empty event is an internal recovery signal, NOT an "
+            "empty user message. Review the history and CONTINUE the interrupted "
+            "task to completion; do NOT ask the user to resend, restate, or clarify "
+            "the request merely because this recovery event has no text."
+        )
+        tail_guidance = (
+            "Do NOT re-run tool calls whose results already appear in the history "
+            "— resume from the first step that has no recorded result."
+        )
+    elif message:
         resume_guidance = (
             "Address the user's NEW message below FIRST and focus "
             "on what the user is asking now."
@@ -779,7 +798,7 @@ def build_resume_recovery_note(
         f"Any restart/shutdown command in the history has already "
         f"run — do NOT re-execute or verify it. {resume_guidance} "
         f"{tail_guidance}]"
-        + (f"\n\n{message}" if message else "")
+        + (f"\n\n{message}" if message and not durable_resume else "")
     )
 
 
@@ -1951,6 +1970,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    PrivateInteractionResult,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
@@ -2064,6 +2084,12 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
 _UNSET = object()
+
+# Private MessageEvent metadata contracts for explicit queue submissions and
+# native Discord queue management.  They stay out of the command registry so
+# /queue and /q retain their single public argument: the complete prompt.
+_EXPLICIT_QUEUE_METADATA_KEY = "_hermes_explicit_queue"
+_NATIVE_DISCORD_QUEUE_MANAGEMENT_KEY = "_hermes_native_discord_queue_management"
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -2980,6 +3006,40 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+@dataclasses.dataclass(frozen=True)
+class _AgentTurnOutcome:
+    """Keep execution completion separate from adapter delivery payload.
+
+    A successful streamed reply intentionally has ``delivery_response=None``
+    because the platform already received the final body.  Intentional silence
+    similarly uses an empty delivery response.  Neither value says whether the
+    agent turn completed, so durable inbox state must consume ``completed``
+    instead of inferring success from response truthiness.
+    """
+
+    delivery_response: Any
+    completed: bool
+    terminally_handled: bool = False
+
+
+def _coerce_agent_turn_outcome(result: Any) -> _AgentTurnOutcome:
+    """Normalize legacy private-handler overrides to the explicit outcome.
+
+    Production ``_handle_message_with_agent`` always returns
+    ``_AgentTurnOutcome``.  The compatibility branch preserves the outbound
+    payload for existing private-method overrides, but deliberately cannot
+    prove durable completion; such overrides must adopt the explicit outcome
+    contract before durable rows can be consumed as successful.
+    """
+    if isinstance(result, _AgentTurnOutcome):
+        return result
+    # A raw response cannot communicate whether ``None`` means streamed
+    # success, a terminal drop, or an interrupted turn.  Preserve the delivery
+    # payload for private test/override compatibility, but fail closed for
+    # durable completion instead of reviving the old truthiness inference.
+    return _AgentTurnOutcome(delivery_response=result, completed=False)
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -3269,6 +3329,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
+        # Standalone crash-safe inbound ledger. It intentionally does not share
+        # state.db, so a hot/locked transcript database cannot also erase the
+        # request needed to recover that turn after a process exit.
+        self._inbox_store = self._build_inbox_store()
+        self._inbox_wakeup: Optional[asyncio.Event] = None
+        self._inbox_recovered_resume_rows: Dict[str, List[Any]] = {}
+        self._inbox_uncertain_claims: Dict[
+            str, tuple[MessageEvent, bool]
+        ] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -4861,6 +4930,508 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # process to pick up.  "interrupt" mode drops them (current behaviour).
         return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
 
+    # -------- Durable inbound queue -----------------------------------
+
+    @staticmethod
+    def _inbox_marker(event: "MessageEvent") -> Optional[Dict[str, Any]]:
+        """Return the ephemeral durable-inbox claim marker on an event."""
+        try:
+            from gateway.inbound_queue import INBOX_METADATA_KEY
+        except Exception:
+            return None
+        metadata = getattr(event, "metadata", None)
+        marker = metadata.get(INBOX_METADATA_KEY) if isinstance(metadata, dict) else None
+        if not isinstance(marker, dict):
+            return None
+        queue_id = str(marker.get("queue_id") or "").strip()
+        if not queue_id:
+            return None
+        return marker
+
+    @staticmethod
+    def _inbox_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _build_inbox_store(self):
+        """Build the standalone crash-safe inbox from config.yaml."""
+        raw = cfg_get(_load_gateway_config(), "gateway", "durable_inbox", default={})
+        if not isinstance(raw, dict):
+            raw = {}
+        if not self._inbox_bool(raw.get("enabled"), True):
+            return None
+
+        def _integer(name: str, default: int, minimum: int) -> int:
+            try:
+                return max(minimum, int(raw.get(name, default)))
+            except (TypeError, ValueError):
+                return default
+
+        def _number(name: str, default: float, minimum: float) -> float:
+            try:
+                return max(minimum, float(raw.get(name, default)))
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            from gateway.inbound_queue import GatewayInboxStore
+
+            return GatewayInboxStore(
+                hermes_home=_gateway_config_home(),
+                max_pending_per_session=_integer(
+                    "max_pending_per_session", 64, 0
+                ),
+                max_pending_total=_integer("max_pending_total", 8192, 0),
+                max_attempts=_integer("max_attempts", 5, 1),
+                busy_timeout_ms=_integer("busy_timeout_ms", 5000, 1),
+                terminal_retention_seconds=_number(
+                    "terminal_retention_seconds", 604800.0, 0.0
+                ),
+                max_rows=_integer("max_rows", 50000, 1),
+                prune_interval_seconds=_number(
+                    "prune_interval_seconds", 60.0, 0.0
+                ),
+            )
+        except Exception:
+            # The inbox is an availability boundary. If initialization fails,
+            # leave the gateway usable but make the downgrade loud and explicit.
+            logger.exception(
+                "Durable Gateway inbox initialization failed; crash-safe inbound "
+                "recovery is disabled for this process"
+            )
+            return None
+
+    def _signal_inbox_dispatcher(self) -> None:
+        wakeup = getattr(self, "_inbox_wakeup", None)
+        if isinstance(wakeup, asyncio.Event):
+            wakeup.set()
+
+    @staticmethod
+    def _attach_inbox_row(event: "MessageEvent", row: Any) -> Dict[str, Any]:
+        from gateway.inbound_queue import INBOX_METADATA_KEY
+
+        existing_metadata = getattr(event, "metadata", None)
+        metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+        marker_values = {
+            "queue_id": row.queue_id,
+            "claim_token": row.claim_token,
+            "trigger_identity": row.trigger_identity,
+            "session_key": row.session_key,
+            "session_id": row.session_id,
+            "resume_only": bool(row.resume_only),
+        }
+        marker = metadata.get(INBOX_METADATA_KEY)
+        if isinstance(marker, dict):
+            marker.clear()
+            marker.update(marker_values)
+        else:
+            marker = marker_values
+        metadata[INBOX_METADATA_KEY] = marker
+        event.metadata = metadata
+        return marker
+
+    async def _inbox_enqueue_event(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        *,
+        origin: str = "direct",
+    ):
+        """Durably record a human turn without blocking the event loop."""
+        store = getattr(self, "_inbox_store", None)
+        marker = self._inbox_marker(event)
+        if store is None:
+            return None
+        if getattr(event, "internal", False) and marker is None:
+            return None
+
+        from gateway.inbound_queue import EnqueueResult
+
+        if marker is not None:
+            row = await asyncio.to_thread(store.get, marker["queue_id"])
+            if row is None:
+                return EnqueueResult(False, False, "missing")
+            self._attach_inbox_row(event, row)
+            return EnqueueResult(True, False, "existing", row)
+
+        result = await asyncio.to_thread(
+            store.enqueue,
+            event,
+            session_key=session_key,
+            origin=origin,
+        )
+        if result.row is not None:
+            self._attach_inbox_row(event, result.row)
+        if result.accepted:
+            self._signal_inbox_dispatcher()
+        return result
+
+    async def _inbox_claim_event(self, event: "MessageEvent"):
+        store = getattr(self, "_inbox_store", None)
+        marker = self._inbox_marker(event)
+        if store is None or marker is None:
+            return None
+        row = await asyncio.to_thread(
+            store.claim,
+            marker["queue_id"],
+            claim_token=marker.get("claim_token"),
+        )
+        if row is not None:
+            self._attach_inbox_row(event, row)
+        return row
+
+    async def _inbox_bind_event(
+        self,
+        event: "MessageEvent",
+        session_id: str,
+        trigger_identity: Optional[str] = None,
+    ) -> bool:
+        store = getattr(self, "_inbox_store", None)
+        marker = self._inbox_marker(event)
+        if store is None or marker is None:
+            return False
+        bound = await asyncio.to_thread(
+            store.bind,
+            marker["queue_id"],
+            session_id,
+            trigger_identity,
+            claim_token=marker.get("claim_token"),
+        )
+        if bound:
+            marker["session_id"] = session_id
+            if trigger_identity:
+                marker["trigger_identity"] = trigger_identity
+        return bool(bound)
+
+    async def _inbox_complete_event(self, event: "MessageEvent") -> bool:
+        store = getattr(self, "_inbox_store", None)
+        marker = self._inbox_marker(event)
+        if store is None or marker is None or not marker.get("claim_token"):
+            return False
+        completed = await asyncio.to_thread(
+            store.complete,
+            marker["queue_id"],
+            marker["claim_token"],
+        )
+        if completed:
+            self._signal_inbox_dispatcher()
+        return bool(completed)
+
+    async def _inbox_retry_event(
+        self,
+        event: "MessageEvent",
+        error: Any,
+        *,
+        delay: float = 0.0,
+        resume_only: Optional[bool] = None,
+    ) -> bool:
+        store = getattr(self, "_inbox_store", None)
+        marker = self._inbox_marker(event)
+        if store is None or marker is None or not marker.get("claim_token"):
+            return False
+        retried = await asyncio.to_thread(
+            store.retry,
+            marker["queue_id"],
+            marker["claim_token"],
+            error=str(error or "Gateway turn did not complete")[:500],
+            not_before=time.time() + max(0.0, float(delay)),
+            resume_only=resume_only,
+        )
+        if retried:
+            marker["claim_token"] = None
+            self._signal_inbox_dispatcher()
+        return bool(retried)
+
+    async def _inbox_trigger_is_durable(
+        self, event: "MessageEvent"
+    ) -> Optional[bool]:
+        """Return True/False for the bound trigger, or None on lookup failure."""
+        marker = self._inbox_marker(event)
+        if marker is None:
+            return None
+        session_id = str(marker.get("session_id") or "").strip()
+        trigger_identity = str(marker.get("trigger_identity") or "").strip()
+        session_db = getattr(getattr(self, "session_store", None), "_db", None)
+        if not session_id or not trigger_identity or session_db is None:
+            return None
+        try:
+            return bool(
+                await asyncio.to_thread(
+                    session_db.has_platform_message_id,
+                    session_id,
+                    trigger_identity,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Durable inbox trigger verification failed for %s",
+                marker.get("queue_id"),
+                exc_info=True,
+            )
+            return None
+
+    async def _inbox_finish_event(
+        self,
+        event: "MessageEvent",
+        *,
+        completed: bool,
+        terminally_handled: bool = False,
+        session_key: Optional[str] = None,
+        run_generation: Optional[int] = None,
+    ) -> bool:
+        """Commit or safely requeue a claimed row after an agent turn.
+
+        ``terminally_handled`` consumes deliberate drops/rejections whose user
+        notification happened before transcript persistence.  All ordinary
+        successful turns still require a durably recorded trigger.
+        """
+        marker = self._inbox_marker(event)
+        if marker is None or not marker.get("claim_token"):
+            return False
+        if (
+            session_key
+            and run_generation is not None
+            and not self._is_session_run_current(session_key, run_generation)
+        ):
+            return await self._inbox_cancel_or_complete_stale_event(
+                event, "session generation changed"
+            )
+
+        if terminally_handled:
+            return await self._inbox_complete_event(event)
+
+        if marker.get("resume_only"):
+            if completed:
+                return await self._inbox_complete_event(event)
+            return await self._inbox_retry_event(
+                event,
+                "recovered continuation did not complete",
+                delay=1.0,
+                resume_only=True,
+            )
+
+        durable = await self._inbox_trigger_is_durable(event)
+        if durable is None:
+            uncertain = getattr(self, "_inbox_uncertain_claims", None)
+            if uncertain is None:
+                uncertain = {}
+                self._inbox_uncertain_claims = uncertain
+            uncertain[marker["queue_id"]] = (event, bool(completed))
+            self._signal_inbox_dispatcher()
+            return False
+        if completed:
+            if durable:
+                return await self._inbox_complete_event(event)
+            return await self._inbox_retry_event(
+                event,
+                "turn returned before trigger persistence",
+                delay=1.0,
+                resume_only=False,
+            )
+        return await self._inbox_retry_event(
+            event,
+            "agent turn did not complete",
+            delay=1.0,
+            resume_only=durable,
+        )
+
+    async def _reconcile_uncertain_inbox_claims(self) -> int:
+        uncertain = getattr(self, "_inbox_uncertain_claims", None)
+        if not isinstance(uncertain, dict) or not uncertain:
+            return 0
+        reconciled = 0
+        for queue_id, pending in list(uncertain.items()):
+            # Compatibility with process-local state created before the
+            # completion-aware representation was introduced.
+            if isinstance(pending, tuple) and len(pending) == 2:
+                event, completed = pending
+            else:
+                event, completed = pending, False
+            durable = await self._inbox_trigger_is_durable(event)
+            if durable is None:
+                continue
+            if completed and durable:
+                resolved = await self._inbox_complete_event(event)
+            else:
+                resolved = await self._inbox_retry_event(
+                    event,
+                    "trigger durability verified after transient lookup failure",
+                    resume_only=durable,
+                )
+            if resolved:
+                uncertain.pop(queue_id, None)
+                reconciled += 1
+        return reconciled
+
+    async def _inbox_cancel_or_complete_stale_event(
+        self, event: "MessageEvent", reason: str
+    ) -> bool:
+        """Consume an invalidated claimed turn so reset/stop cannot resurrect it."""
+        completed = await self._inbox_complete_event(event)
+        if completed:
+            logger.info("Discarded stale durable inbox turn: %s", reason)
+        return completed
+
+    def _inbox_active_session_keys(self) -> set[str]:
+        active = set(getattr(self, "_running_agents", {}) or {})
+        adapters = list((getattr(self, "adapters", {}) or {}).values())
+        for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
+            adapters.extend(profile_adapters.values())
+        for adapter in adapters:
+            sessions = getattr(adapter, "_active_sessions", None)
+            if isinstance(sessions, dict):
+                active.update(str(key) for key in sessions)
+        return active
+
+    def _inbox_deliverable_platforms(self) -> set[str]:
+        deliverable = {
+            str(getattr(platform, "value", platform))
+            for platform in (getattr(self, "adapters", {}) or {})
+        }
+        for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
+            deliverable.update(
+                str(getattr(platform, "value", platform))
+                for platform in profile_adapters
+            )
+        return deliverable
+
+    async def _dispatch_one_inbox_event(self) -> bool:
+        """Fairly dispatch one durable session head, if capacity is available."""
+        store = getattr(self, "_inbox_store", None)
+        if store is None or not getattr(self, "_running", False):
+            return False
+        if getattr(self, "_draining", False) or getattr(
+            self, "_external_drain_active", False
+        ):
+            return False
+        if self._active_session_limit_message("__durable_inbox_dispatch__") is not None:
+            return False
+
+        row = await asyncio.to_thread(
+            store.claim_next,
+            exclude_session_keys=self._inbox_active_session_keys(),
+            deliverable_platforms=self._inbox_deliverable_platforms(),
+        )
+        if row is None:
+            return False
+        event = row.to_event()
+        self._attach_inbox_row(event, row)
+        try:
+            setattr(event, "_hermes_startup_restore_replay", True)
+        except Exception:
+            pass
+
+        if row.resume_only:
+            event.text = ""
+            event.internal = True
+            metadata = copy.deepcopy(getattr(event, "metadata", None) or {})
+            if row.session_id:
+                metadata["gateway_session_id"] = row.session_id
+            event.metadata = metadata
+            try:
+                await self.async_session_store.mark_resume_pending(
+                    row.session_key, "restart_interrupted"
+                )
+            except Exception:
+                logger.debug(
+                    "Could not mark recovered inbox session resume_pending",
+                    exc_info=True,
+                )
+
+        adapter = self._adapter_for_source(event.source)
+        starter = getattr(adapter, "_start_session_processing", None)
+        if adapter is None or not callable(starter):
+            await self._inbox_retry_event(event, "platform adapter unavailable", delay=5.0)
+            return False
+        try:
+            started = bool(starter(event, row.session_key))
+        except Exception as exc:
+            await self._inbox_retry_event(event, exc, delay=1.0)
+            return False
+        if not started:
+            await self._inbox_retry_event(event, "adapter rejected dispatch", delay=1.0)
+            return False
+        return True
+
+    async def _inbox_dispatcher(self, interval: float = 0.5) -> None:
+        """Continuously drain the durable queue without starving sessions."""
+        if getattr(self, "_inbox_store", None) is None:
+            return
+        self._inbox_wakeup = asyncio.Event()
+        while self._running:
+            progressed = False
+            try:
+                await self._reconcile_uncertain_inbox_claims()
+                for _ in range(64):
+                    if not await self._dispatch_one_inbox_event():
+                        break
+                    progressed = True
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Durable inbox dispatcher iteration failed")
+            if progressed:
+                continue
+            wakeup = self._inbox_wakeup
+            wakeup.clear()
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _reclaim_inbox_on_startup(self) -> int:
+        """Recover dead-process claims after platform adapters are connected."""
+        store = getattr(self, "_inbox_store", None)
+        if store is None:
+            return 0
+
+        def _trigger_is_durable(session_id: str, trigger_identity: str):
+            try:
+                from gateway.inbound_queue import lookup_session_trigger_durability
+
+                return lookup_session_trigger_durability(
+                    self.session_store,
+                    session_id,
+                    trigger_identity,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not verify recovered inbox trigger durability",
+                    exc_info=True,
+                )
+                return None
+
+        recovered = await asyncio.to_thread(
+            store.reclaim_dead_claims,
+            _trigger_is_durable,
+            deliverable_platforms=self._inbox_deliverable_platforms(),
+        )
+        resume_rows: Dict[str, List[Any]] = getattr(
+            self, "_inbox_recovered_resume_rows", {}
+        )
+        for row in recovered:
+            if row.state == "resume_ready":
+                existing_ids = {
+                    existing.queue_id
+                    for existing in resume_rows.get(row.session_key, [])
+                }
+                if row.queue_id not in existing_ids:
+                    resume_rows.setdefault(row.session_key, []).append(row)
+        self._inbox_recovered_resume_rows = resume_rows
+        if recovered:
+            logger.warning(
+                "Recovered %d durable Gateway inbox turn(s) after process exit",
+                len(recovered),
+            )
+            self._signal_inbox_dispatcher()
+        return len(recovered)
+
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
     # order, with no merging.  The adapter's _pending_messages dict is a
@@ -4872,13 +5443,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # it up.  Clearing happens on /new and /reset via
     # _handle_reset_command.
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    async def _enqueue_fifo(
+        self, session_key: str, queued_event: "MessageEvent", adapter: Any
+    ) -> bool:
+        """Durably append a /queue event to the in-process FIFO mirror."""
         if adapter is None:
-            return
+            return False
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
-            return
+            return False
+        marker = self._explicit_queue_metadata(queued_event)
+        origin = str((marker or {}).get("origin") or "busy")
+        inbox_result = await self._inbox_enqueue_event(
+            queued_event,
+            session_key,
+            origin=origin,
+        )
+        if inbox_result is not None and not inbox_result.accepted:
+            logger.warning(
+                "Durable inbox rejected queued turn for %s: %s",
+                session_key,
+                inbox_result.status,
+            )
+            return False
         queued_events = getattr(self, "_queued_events", None)
         if queued_events is None:
             queued_events = {}
@@ -4887,6 +5474,678 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        return True
+
+    @staticmethod
+    def _queue_storage_available(adapter: Any) -> bool:
+        return isinstance(getattr(adapter, "_pending_messages", None), dict)
+
+    def _queue_snapshot_store_instance(self):
+        """Return the process-local store for short-lived queue views."""
+        store = getattr(self, "_queue_snapshot_store", None)
+        if store is None:
+            from hermes_cli.queue_management import QueueSnapshotStore
+
+            store = QueueSnapshotStore()
+            self._queue_snapshot_store = store
+        return store
+
+    @staticmethod
+    def _queue_source_label(source: Any) -> str:
+        name = " ".join(str(getattr(source, "chat_name", None) or "").split())
+        if name:
+            return name
+        chat_type = str(getattr(source, "chat_type", None) or "").lower()
+        return "Direct message" if chat_type in {"dm", "private"} else "Current conversation"
+
+    def _queue_control_key(self, source: Any) -> Optional[str]:
+        """Use the routed runtime session as the queue-management boundary."""
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            return None
+        normalized = str(session_key or "").strip()
+        return normalized or None
+
+    async def _deliver_queue_control_text(
+        self,
+        event: "MessageEvent",
+        content: str,
+        adapter: Any,
+    ) -> Optional[str]:
+        """Return queue state in the source session's normal conversation."""
+        del event, adapter
+        return content
+
+    def _open_text_queue_snapshot(
+        self,
+        source: Any,
+        session_key: str,
+        adapter: Any,
+    ) -> str:
+        """Freeze the current session's user-turn positions and render them."""
+        from hermes_cli.queue_management import format_queue_snapshot
+
+        operator = self._queue_owner_for_source(source) or session_key
+        if not self._queue_storage_available(adapter):
+            return "Queue management is unavailable for this conversation."
+        items = self._list_manageable_queue_items(session_key, adapter=adapter)
+        snapshot = self._queue_snapshot_store_instance().open(
+            session_key,
+            operator,
+            session_key,
+            items,
+            source_label=self._queue_source_label(source),
+        )
+        return format_queue_snapshot(snapshot)
+
+    async def _handle_text_dequeue(
+        self,
+        event: "MessageEvent",
+        control_key: str,
+        selector: str,
+        adapter: Any,
+    ) -> str:
+        """Remove frozen IDs from the current session, then refresh the view."""
+        from hermes_cli.queue_management import format_queue_snapshot
+
+        current_session_key = self._queue_control_key(event.source)
+        if not current_session_key:
+            return "Queue management is unavailable for this conversation."
+        operator = self._queue_owner_for_source(event.source) or current_session_key
+        if control_key != current_session_key:
+            return "No active queue view. Run `/queue` first, then use `/dequeue N`."
+        selection = self._queue_snapshot_store_instance().resolve(
+            current_session_key,
+            operator,
+            selector,
+        )
+        if selection.status in {"missing", "expired", "superseded"}:
+            return "No active queue view. Run `/queue` first, then use `/dequeue N`."
+        if selection.status == "invalid_selector":
+            return "Usage: `/dequeue <N|all>` (short form: `/dq <N|all>`)."
+        if selection.status == "out_of_range":
+            return "That number is not in the latest queue view. Run `/queue` to refresh."
+
+        target_key = str(selection.target_key or "")
+        if target_key != current_session_key or not self._queue_storage_available(adapter):
+            return "The queue source is no longer available. Run `/queue` again."
+
+        removed = 0
+        if selection.status == "ok":
+            removed = await self._clear_manageable_queue_items(
+                target_key,
+                adapter=adapter,
+                queue_ids=list(selection.queue_ids),
+            )
+        items = self._list_manageable_queue_items(target_key, adapter=adapter)
+        snapshot = self._queue_snapshot_store_instance().open(
+            current_session_key,
+            operator,
+            target_key,
+            items,
+            source_label=self._queue_source_label(event.source),
+        )
+        refreshed = format_queue_snapshot(snapshot)
+        if selection.status == "empty":
+            return refreshed
+        if removed <= 0:
+            return (
+                "That queued turn already started or is no longer queued. "
+                "No other turn was removed.\n\n"
+                f"{refreshed}"
+            )
+        noun = "turn" if removed == 1 else "turns"
+        return f"Removed {removed} queued {noun}.\n\n{refreshed}"
+
+    def _snapshot_fifo_events(
+        self, session_key: str, adapter: Any
+    ) -> List["MessageEvent"]:
+        """Return one session's FIFO as slot head followed by overflow tail."""
+        events: List[MessageEvent] = []
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if isinstance(pending_slot, dict):
+            head = pending_slot.get(session_key)
+            if head is not None:
+                events.append(head)
+        queued_events = getattr(self, "_queued_events", None)
+        if isinstance(queued_events, dict):
+            events.extend(queued_events.get(session_key) or [])
+        return events
+
+    def _replace_fifo_events(
+        self,
+        session_key: str,
+        adapter: Any,
+        events: List["MessageEvent"],
+    ) -> bool:
+        """Atomically rebuild one session's slot + overflow FIFO."""
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if not isinstance(pending_slot, dict):
+            return False
+        queued_events = getattr(self, "_queued_events", None)
+        if not isinstance(queued_events, dict):
+            queued_events = {}
+            self._queued_events = queued_events
+
+        if events:
+            pending_slot[session_key] = events[0]
+        else:
+            pending_slot.pop(session_key, None)
+        if len(events) > 1:
+            queued_events[session_key] = list(events[1:])
+        else:
+            queued_events.pop(session_key, None)
+        return True
+
+    @staticmethod
+    def _explicit_queue_metadata(event: "MessageEvent") -> Optional[Dict[str, Any]]:
+        metadata = getattr(event, "metadata", None)
+        marker = metadata.get(_EXPLICIT_QUEUE_METADATA_KEY) if isinstance(metadata, dict) else None
+        if not isinstance(marker, dict) or marker.get("origin") not in {"explicit", "busy"}:
+            return None
+        queue_id = marker.get("id")
+        if not isinstance(queue_id, str) or not queue_id:
+            return None
+        return marker
+
+    @staticmethod
+    def _normalize_queue_owner(owner_user_id: Any) -> Optional[str]:
+        if owner_user_id is None:
+            return None
+        owner = str(owner_user_id).strip()
+        return owner or None
+
+    @classmethod
+    def _queue_owner_for_source(cls, source: Any) -> Optional[str]:
+        """Resolve stable sender identity for audit metadata and operator snapshots."""
+        return cls._normalize_queue_owner(
+            getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+        )
+
+    @staticmethod
+    def _queue_item_preview(event: "MessageEvent") -> str:
+        """Return a bounded mention-safe preview without media paths."""
+        text = neutralize_untrusted_inline_text(
+            getattr(event, "text", "") or "", max_chars=160
+        ).replace("@", "＠")
+        if not text:
+            text = "[media]" if getattr(event, "media_urls", None) else "[empty]"
+        return text
+
+    @classmethod
+    def _manageable_queue_metadata(
+        cls, event: "MessageEvent"
+    ) -> Optional[Dict[str, Any]]:
+        """Return a user-turn marker while rejecting internal work defensively."""
+        if getattr(event, "internal", False):
+            return None
+        return cls._explicit_queue_metadata(event)
+
+    def _list_manageable_queue_items(
+        self,
+        session_key: str,
+        *,
+        adapter: Any,
+    ) -> List[Dict[str, Any]]:
+        """Project every marked human turn in one runtime session."""
+        items: List[Dict[str, Any]] = []
+        for event in self._snapshot_fifo_events(session_key, adapter):
+            marker = self._manageable_queue_metadata(event)
+            if marker is None:
+                continue
+            items.append(
+                {
+                    "id": marker["id"],
+                    "position": len(items) + 1,
+                    "created_at": marker.get("created_at"),
+                    "origin": marker.get("origin", "explicit"),
+                    "preview": self._queue_item_preview(event),
+                    "has_media": bool(getattr(event, "media_urls", None)),
+                }
+            )
+        return items
+
+    async def _cancel_durable_queue_item(
+        self,
+        session_key: str,
+        queue_id: str,
+    ) -> bool:
+        """Cancel a queued durable row before changing its local FIFO mirror."""
+        store = getattr(self, "_inbox_store", None)
+        if store is None:
+            return True
+        try:
+            cancelled = await asyncio.to_thread(
+                store.cancel,
+                queue_id,
+                session_key=session_key,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to cancel durable inbox row %s for %s",
+                queue_id,
+                session_key,
+                exc_info=True,
+            )
+            return False
+        if cancelled:
+            self._signal_inbox_dispatcher()
+        return bool(cancelled)
+
+    async def _remove_manageable_queue_item(
+        self,
+        session_key: str,
+        queue_id: Any,
+        *,
+        adapter: Any,
+    ) -> bool:
+        """Remove one marked user turn by stable ID within a session."""
+        wanted_id = str(queue_id).strip() if queue_id is not None else ""
+        if not wanted_id:
+            return False
+        events = self._snapshot_fifo_events(session_key, adapter)
+        if not any(
+            marker is not None and marker["id"] == wanted_id
+            for marker in (self._manageable_queue_metadata(event) for event in events)
+        ):
+            return False
+        if not await self._cancel_durable_queue_item(session_key, wanted_id):
+            return False
+
+        # The durable write yields to the event loop. Re-snapshot afterwards
+        # so an event enqueued while SQLite was busy is never overwritten by
+        # a stale local FIFO projection.
+        current_events = self._snapshot_fifo_events(session_key, adapter)
+        kept: List[MessageEvent] = []
+        local_removed = False
+        for event in current_events:
+            marker = self._manageable_queue_metadata(event)
+            if (
+                not local_removed
+                and marker is not None
+                and marker["id"] == wanted_id
+            ):
+                local_removed = True
+                continue
+            kept.append(event)
+        if not local_removed:
+            return True
+        return self._replace_fifo_events(session_key, adapter, kept)
+
+    async def _steer_manageable_queue_item(
+        self,
+        session_key: str,
+        queue_id: Any,
+        *,
+        adapter: Any,
+    ) -> tuple[bool, bool]:
+        """Inject one frozen queued turn into the active agent and consume it.
+
+        Returns ``(steered, removed)``. A failed steer leaves the FIFO and its
+        durable row untouched so a snapshot action can never silently discard a
+        user turn. Durable inbox-backed items remain owned by the inbox
+        dispatcher, so this UI action fails closed rather than risking replay.
+        """
+        wanted_id = str(queue_id).strip() if queue_id is not None else ""
+        if not wanted_id:
+            return False, False
+        events = self._snapshot_fifo_events(session_key, adapter)
+        target_event = None
+        for event in events:
+            marker = self._manageable_queue_metadata(event)
+            if marker is not None and marker["id"] == wanted_id:
+                target_event = event
+                break
+        if target_event is None:
+            return False, False
+        if getattr(target_event, "media_urls", None):
+            # /steer is text-only: injecting attachment paths as a tool-result
+            # marker would skip the normal media preprocessing pipeline.
+            return False, False
+        steer_text = str(getattr(target_event, "text", "") or "").strip()
+        running_agent = getattr(self, "_running_agents", {}).get(session_key)
+        if (
+            not steer_text
+            or running_agent is None
+            or running_agent is _AGENT_PENDING_SENTINEL
+            or not hasattr(running_agent, "steer")
+        ):
+            return False, False
+        try:
+            if not running_agent.steer(steer_text):
+                return False, False
+        except Exception:
+            logger.warning(
+                "Queue-manager steer failed for session %s", session_key, exc_info=True
+            )
+            return False, False
+        durable = getattr(self, "_inbox_store", None)
+        if durable is not None:
+            # A successful steer is outside the normal turn-completion path, so
+            # retire its durable row now. The helper passes only the stable ID
+            # and session scope to the inbox store; a concurrently claimed row
+            # fails closed rather than allowing a replay after restart.
+            try:
+                cancel = getattr(durable, "cancel")
+                removed = bool(
+                    await asyncio.to_thread(
+                        cancel,
+                        wanted_id,
+                        session_key=session_key,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Queue-manager durable steer cancellation failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
+                removed = False
+            if removed:
+                self._signal_inbox_dispatcher()
+            else:
+                # The steer has already been accepted. Keep the local item
+                # visible rather than falsely claiming it was consumed; the
+                # durable retry path remains authoritative.
+                return True, False
+        elif not await self._cancel_durable_queue_item(session_key, wanted_id):
+            return True, False
+
+        current_events = self._snapshot_fifo_events(session_key, adapter)
+        kept: List[MessageEvent] = []
+        local_removed = False
+        for event in current_events:
+            marker = self._manageable_queue_metadata(event)
+            if (
+                not local_removed
+                and marker is not None
+                and marker["id"] == wanted_id
+            ):
+                local_removed = True
+                continue
+            kept.append(event)
+        if not local_removed:
+            return True, True
+        return True, self._replace_fifo_events(session_key, adapter, kept)
+
+    async def _clear_manageable_queue_items(
+        self,
+        session_key: str,
+        *,
+        adapter: Any,
+        queue_ids: List[str],
+    ) -> int:
+        """Remove only marked user-turn IDs frozen in an active snapshot."""
+        selected_ids = {
+            queue_id
+            for value in queue_ids
+            if (queue_id := str(value).strip())
+        }
+        if not selected_ids:
+            return 0
+        events = self._snapshot_fifo_events(session_key, adapter)
+        cancellable_ids: List[str] = []
+        seen_ids: Set[str] = set()
+        for event in events:
+            marker = self._manageable_queue_metadata(event)
+            if marker is None:
+                continue
+            marker_id = marker["id"]
+            if marker_id in selected_ids and marker_id not in seen_ids:
+                cancellable_ids.append(marker_id)
+                seen_ids.add(marker_id)
+
+        cancelled_ids: Set[str] = set()
+        for queue_id in cancellable_ids:
+            if await self._cancel_durable_queue_item(session_key, queue_id):
+                cancelled_ids.add(queue_id)
+        if not cancelled_ids:
+            return 0
+
+        # Re-snapshot after every durable cancellation so concurrent arrivals
+        # are preserved when rebuilding the process-local compatibility FIFO.
+        current_events = self._snapshot_fifo_events(session_key, adapter)
+        kept: List[MessageEvent] = []
+        for event in current_events:
+            marker = self._manageable_queue_metadata(event)
+            if marker is None or marker["id"] not in cancelled_ids:
+                kept.append(event)
+        removed = len(current_events) - len(kept)
+        if removed and not self._replace_fifo_events(session_key, adapter, kept):
+            return 0
+        return removed
+
+    def _new_explicit_queue_metadata(
+        self,
+        session_key: str,
+        owner_user_id: Any,
+        *,
+        adapter: Any,
+        origin: str = "explicit",
+    ) -> Dict[str, Any]:
+        """Create a process-local opaque ID unique among live session items."""
+        live_ids = set()
+        for event in self._snapshot_fifo_events(session_key, adapter):
+            marker = self._explicit_queue_metadata(event)
+            if marker is not None:
+                live_ids.add(marker["id"])
+        while True:
+            queue_id = f"q-{secrets.token_hex(8)}"
+            if queue_id not in live_ids:
+                break
+        return {
+            "id": queue_id,
+            "owner_user_id": self._normalize_queue_owner(owner_user_id),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "origin": origin if origin in {"explicit", "busy"} else "busy",
+        }
+
+    def _ensure_user_queue_metadata(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        *,
+        adapter: Any,
+        origin: str = "busy",
+    ) -> "MessageEvent":
+        """Attach one stable ID to a queued human turn."""
+        if getattr(event, "internal", False):
+            return event
+        if self._explicit_queue_metadata(event) is not None:
+            return event
+        owner = self._queue_owner_for_source(getattr(event, "source", None))
+        metadata = copy.deepcopy(getattr(event, "metadata", None) or {})
+        metadata[_EXPLICIT_QUEUE_METADATA_KEY] = self._new_explicit_queue_metadata(
+            session_key,
+            owner,
+            adapter=adapter,
+            origin=origin,
+        )
+        event.metadata = metadata
+        return event
+
+    @staticmethod
+    def _native_discord_queue_management(event: "MessageEvent") -> Optional[Dict[str, Any]]:
+        """Recognize native Discord bare /queue or /q interaction events."""
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != Platform.DISCORD:
+            return None
+        if event.get_command() not in {"queue", "q"}:
+            return None
+        if event.get_command_args().strip() or bool(getattr(event, "media_urls", None)):
+            return None
+        metadata = getattr(event, "metadata", None)
+        marker = (
+            metadata.get(_NATIVE_DISCORD_QUEUE_MANAGEMENT_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        if marker is True:
+            return {"action": "list"}
+        return marker if isinstance(marker, dict) else None
+
+    async def _handle_native_queue_management(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        adapter: Any,
+        request: Dict[str, Any],
+    ) -> PrivateInteractionResult:
+        """Return a snapshot-bound result for a Discord interaction View."""
+        action = str(request.get("action") or "list").strip().lower()
+        operator = self._queue_owner_for_source(event.source) or session_key
+        base = {"type": "queue_management", "action": action}
+        # Enabling a native card action requires a frozen ID from the current
+        # snapshot, the same route/session proof as deletion, and re-entry
+        # through the authorized Gateway handler. This keeps steering from
+        # becoming an unscoped shortcut into an active agent.
+        if action not in {"list", "remove", "clear", "steer"}:
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "invalid_action"}
+            )
+        expected_session_key = request.get("session_key")
+        if expected_session_key is not None and expected_session_key != session_key:
+            # The View was opened in another channel/profile/session. Do not
+            # resolve or mutate a queue after routing changed underneath it.
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "session_changed"}
+            )
+        if not self._queue_storage_available(adapter):
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "unavailable"}
+            )
+        if action in {"remove", "clear", "steer"} and not isinstance(
+            expected_session_key, str
+        ):
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "invalid_action"}
+            )
+        if action == "clear" and not isinstance(request.get("queue_ids"), list):
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "invalid_action"}
+            )
+
+        control_key = self._queue_control_key(event.source) or session_key
+        snapshot_store = self._queue_snapshot_store_instance()
+        snapshot_id = request.get("snapshot_id")
+
+        def _refreshed_snapshot_result(extra: Optional[Dict[str, Any]] = None) -> PrivateInteractionResult:
+            """Replace the active view after every successful native operation."""
+            items = self._list_manageable_queue_items(session_key, adapter=adapter)
+            snapshot = snapshot_store.open(
+                control_key,
+                operator,
+                session_key,
+                items,
+                source_label=self._queue_source_label(event.source),
+            )
+            return PrivateInteractionResult(
+                {
+                    **base,
+                    "ok": True,
+                    # Adapter-only routing tokens. They are never
+                    # rendered or returned through normal chat delivery.
+                    "session_key": session_key,
+                    "snapshot_id": snapshot.snapshot_id,
+                    "items": items,
+                    **(extra or {}),
+                }
+            )
+
+        if action == "list":
+            # An initial slash open carries neither session nor snapshot. Every
+            # later View action carries both, and must prove its card is still
+            # the active view rather than silently reactivating a stale card.
+            if expected_session_key is not None:
+                active_snapshot = snapshot_store.get(control_key, operator)
+                if (
+                    not isinstance(snapshot_id, str)
+                    or not snapshot_id
+                    or active_snapshot is None
+                    or active_snapshot.snapshot_id != snapshot_id
+                    or active_snapshot.target_key != session_key
+                ):
+                    return PrivateInteractionResult(
+                        {**base, "ok": False, "error": "snapshot_stale"}
+                    )
+            return _refreshed_snapshot_result()
+
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            return PrivateInteractionResult(
+                {**base, "ok": False, "error": "snapshot_stale"}
+            )
+        if action in {"remove", "steer"}:
+            requested_ids: List[Any] = [
+                request.get("queue_id") or request.get("id")
+            ]
+        else:
+            requested_ids = list(request.get("queue_ids") or [])
+        selection = snapshot_store.resolve_ids(
+            control_key,
+            operator,
+            requested_ids,
+            snapshot_id=snapshot_id,
+        )
+        if selection.status != "ok" or selection.target_key != session_key:
+            error = (
+                "snapshot_stale"
+                if selection.status in {"missing", "expired", "superseded"}
+                or selection.target_key != session_key
+                else "not_found"
+            )
+            return PrivateInteractionResult({**base, "ok": False, "error": error})
+
+        if action == "remove":
+            queue_id = selection.queue_ids[0]
+            removed = await self._remove_manageable_queue_item(
+                session_key, queue_id, adapter=adapter
+            )
+            if not removed:
+                return _refreshed_snapshot_result(
+                    {
+                        "removed": False,
+                        "queue_id": queue_id,
+                        "error": "not_found",
+                    }
+                )
+            return _refreshed_snapshot_result(
+                {"removed": True, "queue_id": queue_id}
+            )
+        if action == "steer":
+            queue_id = selection.queue_ids[0]
+            steered, removed = await self._steer_manageable_queue_item(
+                session_key, queue_id, adapter=adapter
+            )
+            if not steered:
+                return _refreshed_snapshot_result(
+                    {
+                        "steered": False,
+                        "queue_id": queue_id,
+                        "error": "unavailable",
+                    }
+                )
+            if not removed:
+                # The active run accepted the steer but the durable cancellation
+                # did not commit. Keep a fresh snapshot visible so the user can
+                # see that the item remains queued rather than assuming removal.
+                return _refreshed_snapshot_result(
+                    {
+                        "steered": True,
+                        "removed": False,
+                        "queue_id": queue_id,
+                        "error": "not_consumed",
+                    }
+                )
+            return _refreshed_snapshot_result(
+                {"steered": True, "removed": True, "queue_id": queue_id}
+            )
+        removed_count = await self._clear_manageable_queue_items(
+            session_key,
+            adapter=adapter,
+            queue_ids=list(selection.queue_ids),
+        )
+        return _refreshed_snapshot_result({"removed_count": removed_count})
 
     def _promote_queued_event(
         self,
@@ -5804,12 +7063,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # could grow the overflow list unboundedly.  32 turns of queued
     # follow-ups is far beyond any realistic conversational backlog while
     # still small enough to never threaten memory.
-    _BUSY_QUEUE_MAX_PENDING = 32
+    _BUSY_QUEUE_MAX_PENDING = 64
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    async def _queue_or_replace_pending_event(
+        self, session_key: str, event: MessageEvent
+    ) -> bool:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
-            return
+            return False
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
@@ -5820,20 +7081,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # semantics); everything else appends to the overflow tail.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        if existing is not None and (
+        if existing is not None:
+            existing = self._ensure_user_queue_metadata(
+                existing,
+                session_key,
+                adapter=adapter,
+                origin="busy",
+            )
+        event = self._ensure_user_queue_metadata(
+            event,
+            session_key,
+            adapter=adapter,
+            origin="busy",
+        )
+
+        existing_marker = self._explicit_queue_metadata(existing) if existing is not None else None
+        event_marker = self._explicit_queue_metadata(event)
+        same_owner = bool(
+            existing_marker
+            and event_marker
+            and existing_marker.get("owner_user_id") == event_marker.get("owner_user_id")
+        )
+        if (
+            getattr(self, "_inbox_store", None) is None
+            and existing is not None
+            and same_owner
+            and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
             or bool(getattr(event, "media_urls", None))
+            )
         ):
             # Preserve photo-burst / media-merge semantics for the head slot.
+            # The merge mutates ``existing`` and therefore keeps its stable ID.
             merge_pending_message_event(
                 adapter._pending_messages,
                 session_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
@@ -5841,9 +7129,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            # The durable row remains authoritative even when the in-memory
+            # mirror is full; the fair dispatcher will pick it up later.
+            inbox_result = await self._inbox_enqueue_event(
+                event, session_key, origin="busy"
+            )
+            return bool(inbox_result is not None and inbox_result.accepted)
 
-        self._enqueue_fifo(session_key, event, adapter)
+        return await self._enqueue_fifo(session_key, event, adapter)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -5871,7 +7164,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
-                self._queue_or_replace_pending_event(session_key, event)
+                await self._queue_or_replace_pending_event(session_key, event)
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
@@ -5993,7 +7286,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            # BasePlatformAdapter owns debounce/merge timing for this path, but
+            # its flush writes directly into ``_pending_messages``. Stamp the
+            # original human turn before delegating so the merged next-turn
+            # event keeps one stable owner/ID for snapshot-bound management.
+            self._ensure_user_queue_metadata(
+                event,
+                session_key,
+                adapter=adapter,
+                origin="busy",
+            )
+            if getattr(self, "_inbox_store", None) is None:
+                return False
+            # The durable FIFO preserves each user turn independently; bypass
+            # the adapter's debounce/merge buffer so a crash cannot erase the
+            # second message in a merged in-memory payload.
+            effective_mode = "queue"
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -6064,7 +7372,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
         if not steered:
-            self._queue_or_replace_pending_event(session_key, event)
+            await self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -7364,6 +8672,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
+            recovered_rows = getattr(self, "_inbox_recovered_resume_rows", {})
+            session_rows = recovered_rows.get(entry.session_key, [])
+            if session_rows:
+                recovered_row = session_rows.pop(0)
+                self._attach_inbox_row(event, recovered_row)
+                if not session_rows:
+                    recovered_rows.pop(entry.session_key, None)
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
             )
@@ -8092,8 +9407,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that session) is strictly cheaper and more correct than re-running
         # the whole turn.
         await self._redeliver_pending_obligations()
+        await self._reclaim_inbox_on_startup()
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
+
+        # Start only after startup auto-resume is serialized. Missing-trigger
+        # rows replay from their original payload; durable-trigger rows that
+        # were not consumed by the existing resume path are continued fairly.
+        if getattr(self, "_inbox_store", None) is not None:
+            self._spawn_supervised(self._inbox_dispatcher, "durable_inbox_dispatcher")
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -8589,7 +9911,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # its agent from these overrides. Only true session
                         # finalization, /new, and /reset clear them.) See
                         # _CONVERSATION_SCOPED_STATE.
-                        self._clear_conversation_scope(
+                        await self._clear_conversation_scope(
                             key, reason="expiry_finalized"
                         )
                         # Persist the finalized flag to sessions.json AND
@@ -8803,7 +10125,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
+                            await self._reclaim_inbox_on_startup()
                             self._schedule_resume_pending_sessions(platform=platform)
+                            self._signal_inbox_dispatcher()
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",
@@ -10235,7 +11559,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return switched
 
-    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+    async def _handle_message(self, event: MessageEvent) -> Any:
         """
         Handle an incoming message from any platform.
         
@@ -10639,6 +11963,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
 
+            _queue_management_request = self._native_discord_queue_management(event)
+            if _queue_management_request is not None:
+                adapter = self._adapter_for_source(source)
+                return await self._handle_native_queue_management(
+                    event,
+                    _quick_key,
+                    adapter,
+                    _queue_management_request,
+                )
+
+            # Text queue management is a control-plane action and remains
+            # available while the agent is running.  Positions resolve only
+            # against the latest five-minute snapshot; they never address the
+            # live queue directly.
+            if _cmd_def_inner and _cmd_def_inner.name == "dequeue":
+                adapter = self._adapter_for_source(source)
+                content = await self._handle_text_dequeue(
+                    event,
+                    self._queue_control_key(source) or _quick_key,
+                    event.get_command_args().strip(),
+                    adapter,
+                )
+                return await self._deliver_queue_control_text(event, content, adapter)
+
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
             # interrupt, no queued text.
@@ -10695,28 +12043,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # fields silently lost the attachment when the queued turn ran.
                 has_media = bool(getattr(event, "media_urls", None))
                 if not queued_text and not has_media:
-                    return "Usage: /queue <prompt>"
+                    adapter = self._adapter_for_source(source)
+                    content = self._open_text_queue_snapshot(
+                        source,
+                        _quick_key,
+                        adapter,
+                    )
+                    return await self._deliver_queue_control_text(event, content, adapter)
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    queued_event = MessageEvent(
+                    queued_metadata = copy.deepcopy(
+                        getattr(event, "metadata", None) or {}
+                    )
+                    queued_metadata[_EXPLICIT_QUEUE_METADATA_KEY] = (
+                        self._new_explicit_queue_metadata(
+                            _quick_key,
+                            self._queue_owner_for_source(source),
+                            adapter=adapter,
+                        )
+                    )
+                    queued_event = dataclasses.replace(
+                        event,
                         text=queued_text,
-                        message_type=event.message_type if has_media else MessageType.TEXT,
-                        source=event.source,
-                        raw_message=event.raw_message,
-                        message_id=event.message_id,
+                        message_type=(
+                            event.message_type if has_media else MessageType.TEXT
+                        ),
                         media_urls=list(getattr(event, "media_urls", []) or []),
                         media_types=list(getattr(event, "media_types", []) or []),
-                        reply_to_message_id=event.reply_to_message_id,
-                        reply_to_text=event.reply_to_text,
-                        reply_to_author_id=event.reply_to_author_id,
-                        reply_to_author_name=event.reply_to_author_name,
-                        reply_to_is_own_message=event.reply_to_is_own_message,
-                        auto_skill=event.auto_skill,
-                        channel_prompt=event.channel_prompt,
-                        internal=event.internal,
-                        timestamp=event.timestamp,
+                        auto_skill=(
+                            list(event.auto_skill)
+                            if isinstance(event.auto_skill, list)
+                            else event.auto_skill
+                        ),
+                        metadata=queued_metadata,
                     )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    await self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self._adapter_for_source(source))
                 if depth <= 1:
                     return "Queued for the next turn."
@@ -10905,7 +12266,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     if self._busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
+                        await self._enqueue_fifo(_quick_key, event, adapter)
                     else:
                         merge_pending_message_event(
                             adapter._pending_messages,
@@ -10936,7 +12297,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
+                    await self._queue_or_replace_pending_event(_quick_key, event)
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
@@ -10944,7 +12305,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                await self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
@@ -10962,7 +12323,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                await self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -10978,7 +12339,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because the running agent has active subagents (#30170)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                await self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             # #56391 — Compression protection (PRIORITY path). Same
             # rationale as ``_handle_active_session_busy_message``: context
@@ -10994,7 +12355,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because context compression is in flight (#56391)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                await self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             _interrupt_text = event.text
@@ -11061,6 +12422,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _denied = self._check_slash_access(source, canonical)
             if _denied is not None:
                 return _denied
+
+        _queue_management_request = self._native_discord_queue_management(event)
+        if _queue_management_request is not None:
+            adapter = self._adapter_for_source(source)
+            return await self._handle_native_queue_management(
+                event,
+                _quick_key,
+                adapter,
+                _queue_management_request,
+            )
+
+        if canonical == "dequeue":
+            adapter = self._adapter_for_source(source)
+            content = await self._handle_text_dequeue(
+                event,
+                self._queue_control_key(source) or _quick_key,
+                event.get_command_args().strip(),
+                adapter,
+            )
+            return await self._deliver_queue_control_text(event, content, adapter)
 
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
@@ -11344,8 +12725,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "queue":
             queue_payload = event.get_command_args().strip()
-            if not queue_payload:
-                return "Usage: /queue <prompt>"
+            has_media = bool(getattr(event, "media_urls", None))
+            if not queue_payload and not has_media:
+                adapter = self._adapter_for_source(source)
+                content = self._open_text_queue_snapshot(
+                    source,
+                    _quick_key,
+                    adapter,
+                )
+                return await self._deliver_queue_control_text(event, content, adapter)
             try:
                 event.text = queue_payload
             except Exception:
@@ -11650,6 +13038,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        # Commit the triggering turn before it can reserve a worker or touch
+        # state.db. This standalone FULL-sync database is the recovery source
+        # of truth if the process is killed anywhere in the agent path.
+        _inbox_result = await self._inbox_enqueue_event(
+            event,
+            _quick_key,
+            origin="startup" if is_internal else "direct",
+        )
+        if _inbox_result is not None and not _inbox_result.accepted:
+            logger.error(
+                "Durable inbox rejected inbound turn for %s: %s",
+                _quick_key,
+                _inbox_result.status,
+            )
+            return (
+                "Hermes could not durably queue this request because the inbound "
+                "queue is full. Please retry after pending work drains."
+            )
+        if (
+            _inbox_result is not None
+            and _inbox_result.row is not None
+            and _inbox_result.row.state in {"completed", "cancelled", "dead_letter"}
+        ):
+            logger.info(
+                "Ignoring terminal duplicate durable inbox turn %s",
+                _inbox_result.row.queue_id,
+            )
+            return None
+
         # ── External-drain new-turn gate (Phase 2) ────────────────────
         # When NAS has engaged an external drain (.drain_request.json present,
         # observed by _drain_control_watcher), refuse to START a new turn so
@@ -11662,9 +13079,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Reversible: once the marker is removed the gate opens again.
         if self._external_drain_active and not is_internal:
             logger.info(
-                "Refusing new turn for session %s — external drain active.",
+                "Deferring new turn for session %s — external drain active.",
                 _quick_key,
             )
+            if _inbox_result is not None:
+                self._signal_inbox_dispatcher()
+                return (
+                    "⏳ This agent is draining for maintenance. Your request was "
+                    "saved and will resume automatically when the drain ends."
+                )
             return (
                 "⏳ This agent is draining for a maintenance action and isn't "
                 "accepting new turns right now. It'll be back in a moment — "
@@ -11683,11 +13106,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source,
         )
         if _limit_message is not None:
-            logger.info(
-                "Rejecting new active session %s: max_concurrent_sessions reached",
-                _quick_key,
-            )
+            if _inbox_result is not None:
+                logger.info(
+                    "Durably queueing session %s at max_concurrent_sessions",
+                    _quick_key,
+                )
+                self._signal_inbox_dispatcher()
+                return (
+                    "⏳ Hermes is at the active session limit. Your request was "
+                    "saved and will start automatically when capacity is available."
+                )
+            logger.info("Rejecting new active session %s at capacity", _quick_key)
             return _limit_message
+
+        _inbox_claimed = None
+        if _inbox_result is not None:
+            _inbox_claimed = await self._inbox_claim_event(event)
+            if _inbox_claimed is None:
+                if _active_session_lease is not None:
+                    try:
+                        _active_session_lease.release()
+                    except Exception:
+                        logger.debug("Failed to release unused session slot", exc_info=True)
+                self._signal_inbox_dispatcher()
+                return (
+                    "⏳ Your request was saved behind an earlier turn in this "
+                    "conversation and will run automatically."
+                )
         if _active_session_lease is not None:
             if not hasattr(self, "_active_session_leases"):
                 self._active_session_leases = {}
@@ -11697,8 +13142,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        _inbox_finished = False
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_outcome = _coerce_agent_turn_outcome(
+                await self._handle_message_with_agent(
+                    event, source, _quick_key, _run_generation
+                )
+            )
+            _delivery_response = _agent_outcome.delivery_response
+            if _inbox_claimed is not None:
+                _inbox_finished = await self._inbox_finish_event(
+                    event,
+                    completed=_agent_outcome.completed,
+                    terminally_handled=_agent_outcome.terminally_handled,
+                    session_key=_quick_key,
+                    run_generation=_run_generation,
+                )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -11707,10 +13166,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # broken judge never breaks normal message handling.
             try:
                 _final_text = ""
-                if isinstance(_agent_result, dict):
-                    _final_text = str(_agent_result.get("final_response") or "")
-                elif isinstance(_agent_result, str):
-                    _final_text = _agent_result
+                if isinstance(_delivery_response, dict):
+                    _final_text = str(
+                        _delivery_response.get("final_response") or ""
+                    )
+                elif isinstance(_delivery_response, str):
+                    _final_text = _delivery_response
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
@@ -11727,7 +13188,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
-            return _agent_result
+            return _delivery_response
+        except asyncio.CancelledError:
+            if _inbox_claimed is not None and not _inbox_finished:
+                await self._inbox_finish_event(
+                    event,
+                    completed=False,
+                    session_key=_quick_key,
+                    run_generation=_run_generation,
+                )
+            raise
+        except Exception:
+            if _inbox_claimed is not None and not _inbox_finished:
+                await self._inbox_finish_event(
+                    event,
+                    completed=False,
+                    session_key=_quick_key,
+                    run_generation=_run_generation,
+                )
+            raise
         finally:
             # MoA one-shot restore must run on EVERY exit path, not just
             # success. The restore data lives on the per-turn event object
@@ -12309,7 +13788,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pinned_session_id,
             )
             if resolved_entry is None:
-                return
+                return _AgentTurnOutcome(
+                    delivery_response=None,
+                    completed=False,
+                    terminally_handled=True,
+                )
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
@@ -12369,6 +13852,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
+
+        # The routed/possibly-pinned session is now final. Bind the durable
+        # inbox claim here (not at raw adapter ingress), and use its synthetic
+        # trigger identity only for transcript dedupe when the platform did not
+        # provide a message ID. Reply/reaction routing continues to use the real
+        # platform ID and is therefore unaffected.
+        _inbox_marker = self._inbox_marker(event)
+        _resume_only_inbox_turn = bool(
+            (_inbox_marker or {}).get("resume_only")
+        )
+        _inbox_trigger_identity = (
+            str((_inbox_marker or {}).get("trigger_identity") or "") or None
+        )
+        _persistence_message_id = None if _resume_only_inbox_turn else (
+            str(event.message_id)
+            if getattr(event, "message_id", None) is not None
+            else _inbox_trigger_identity
+        )
+        if _inbox_marker is not None:
+            await self._inbox_bind_event(
+                event,
+                session_entry.session_id,
+                _inbox_trigger_identity or _persistence_message_id,
+            )
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).
@@ -12380,7 +13887,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # model/reasoning overrides, a queued "/model switched" note, or
             # a stale resolved-model cache (#48031, #58403). See
             # _CONVERSATION_SCOPED_STATE.
-            self._clear_conversation_scope(session_key, reason="auto_reset")
+            await self._clear_conversation_scope(session_key, reason="auto_reset")
             # Evict the cached agent so the fresh session does not inherit the
             # previous conversation's context_compressor._previous_summary —
             # the cache is keyed on the stable session_key, so an auto-reset
@@ -13146,7 +14653,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=session_key,
         )
         if message_text is None:
-            return
+            return _AgentTurnOutcome(
+                delivery_response=None,
+                completed=False,
+                terminally_handled=True,
+            )
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
@@ -13200,6 +14711,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        _turn_committed = False
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -13226,12 +14738,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=_run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
-                event_message_id=self._reply_anchor_for_event(event),
+                event_message_id=_persistence_message_id,
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                durable_inbox_resume=_resume_only_inbox_turn,
             )
+            _turn_completed = _should_clear_resume_pending_after_turn(agent_result)
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -13268,7 +14782,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
                     _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
-                return None
+                return _AgentTurnOutcome(delivery_response=None, completed=False)
 
             response = agent_result.get("final_response") or ""
             # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
@@ -13569,7 +15083,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Conversation boundary: one funnel call clears every
                 # conversation-scoped per-session dict (#58403 and siblings).
                 # See _CONVERSATION_SCOPED_STATE.
-                self._clear_conversation_scope(
+                await self._clear_conversation_scope(
                     session_key, reason="compression_exhausted_reset"
                 )
                 if new_entry is not None:
@@ -13655,22 +15169,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         else ts
                     ),
                 }
-                if event.message_id:
-                    _user_entry["message_id"] = str(event.message_id)
+                if _persistence_message_id:
+                    _user_entry["message_id"] = _persistence_message_id
                 # Dedupe: skip if this platform message_id is already in the
                 # transcript (prevents duplicate user turns on Telegram retries
                 # after transient failures). #47237
                 _skip_persist = (
-                    event.message_id
+                    _persistence_message_id
                     and await self.async_session_store.has_platform_message_id(
-                        session_entry.session_id, str(event.message_id)
+                        session_entry.session_id, _persistence_message_id
                     )
                 )
                 if _skip_persist:
                     logger.info(
                         "Skipping duplicate user turn "
                         "(message_id=%s) in session %s",
-                        event.message_id, session_entry.session_id,
+                        _persistence_message_id, session_entry.session_id,
                     )
                 else:
                     await self.async_session_store.append_to_transcript(
@@ -13697,8 +15211,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             else ts
                         ),
                     }
-                    if event.message_id:
-                        _user_entry["message_id"] = str(event.message_id)
+                    if _persistence_message_id:
+                        _user_entry["message_id"] = _persistence_message_id
                     await self.async_session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
@@ -13725,10 +15239,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if (
                             not _user_msg_id_attached
                             and msg.get("role") == "user"
-                            and event.message_id
+                            and _persistence_message_id
                             and "message_id" not in entry
                         ):
-                            entry["message_id"] = str(event.message_id)
+                            entry["message_id"] = _persistence_message_id
                             _user_msg_id_attached = True
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id, entry,
@@ -13764,6 +15278,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._refresh_agent_cache_message_count(
                 session_key, session_entry.session_id
             )
+            _turn_committed = _turn_completed
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
@@ -13815,9 +15330,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
-                return None
+                return _AgentTurnOutcome(
+                    delivery_response=None,
+                    completed=_turn_completed,
+                )
 
-            return response
+            return _AgentTurnOutcome(
+                delivery_response=response,
+                completed=_turn_completed,
+            )
             
         except Exception as e:
             # Stop typing indicator on error too, retaining Slack thread/workspace
@@ -13876,8 +15397,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 else time.time()
                             ),
                         }
-                        if getattr(event, "message_id", None):
-                            _user_entry["message_id"] = str(event.message_id)
+                        if _persistence_message_id:
+                            _user_entry["message_id"] = _persistence_message_id
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
                             _user_entry,
@@ -13921,16 +15442,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                    return _AgentTurnOutcome(
+                        delivery_response=(
+                            "⚠️ Session too large for the model's context window.\n"
+                            "Use /compact to compress the conversation, or "
+                            "/reset to start fresh."
+                        ),
+                        completed=_turn_committed,
+                        terminally_handled=True,
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
-            return (
-                f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
+            return _AgentTurnOutcome(
+                delivery_response=(
+                    f"Sorry, I encountered an unexpected error.{status_hint}\n"
+                    "Try again or use /reset to start a fresh session."
+                ),
+                completed=_turn_committed,
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -14508,7 +16036,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_id=None,
                     channel_prompt=None,
                 )
-                self._enqueue_fifo(_quick_key, cont_event, adapter)
+                await self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
@@ -18059,7 +19587,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
 
-    def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
+    async def _clear_conversation_scope(
+        self, session_key: str, *, reason: str
+    ) -> None:
         """Clear ALL conversation-scoped per-session state for ``session_key``.
 
         THE single conversation-boundary funnel. Call this — and nothing
@@ -18093,6 +19623,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
+        inbox_store = getattr(self, "_inbox_store", None)
+        if inbox_store is not None:
+            cancelled = await asyncio.to_thread(
+                inbox_store.cancel_session,
+                session_key,
+                reason=reason,
+            )
+            if cancelled:
+                self._signal_inbox_dispatcher()
         for attr in _CONVERSATION_SCOPED_STATE:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
@@ -18120,6 +19659,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         update_prompt_pending = getattr(self, "_update_prompt_pending", None)
         if isinstance(update_prompt_pending, dict):
             update_prompt_pending.pop(session_key, None)
+
+        queue_snapshot_store = getattr(self, "_queue_snapshot_store", None)
+        if queue_snapshot_store is not None:
+            try:
+                queue_snapshot_store.invalidate_target(session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to invalidate queue views for session boundary %s",
+                    session_key,
+                    exc_info=True,
+                )
 
         try:
             from tools import slash_confirm as _slash_confirm_mod
@@ -19160,6 +20710,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        durable_inbox_resume: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -19178,6 +20729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                durable_inbox_resume=durable_inbox_resume,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -19189,6 +20741,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                durable_inbox_resume=durable_inbox_resume,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -19310,6 +20863,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        durable_inbox_resume: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -21221,9 +22775,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and _interruption_is_fresh
             )
 
-            if _is_resume_pending:
+            if _is_resume_pending or durable_inbox_resume:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _persist_user_message_override = message
+                # A resume-only inbox turn is an internal continuation, not a
+                # second copy of the triggering platform message.  Persist the
+                # generated recovery note itself (with no platform message ID)
+                # instead of the decorated empty transport envelope.
+                _persist_user_message_override = (
+                    None if durable_inbox_resume else message
+                )
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
                 # no NEW user message to address.  Guidance is adapter-aware:
@@ -21237,7 +22797,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     getattr(_resume_adapter, "interactive_resume", True)
                 )
                 message = build_resume_recovery_note(
-                    _reason, message, interactive=_interactive_resume,
+                    _reason,
+                    message,
+                    interactive=_interactive_resume,
+                    durable_resume=durable_inbox_resume,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -21272,8 +22835,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 isinstance(message, str)
                 and not message.strip()
-                and _resume_entry is not None
-                and getattr(_resume_entry, "resume_pending", False)
+                and (
+                    durable_inbox_resume
+                    or (
+                        _resume_entry is not None
+                        and getattr(_resume_entry, "resume_pending", False)
+                    )
+                )
             ):
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
@@ -21285,6 +22853,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     interactive=bool(
                         getattr(_sn_adapter, "interactive_resume", True)
                     ),
+                    durable_resume=durable_inbox_resume,
                 )
 
             _approval_session_key = session_key or ""
@@ -22329,6 +23898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message_id = None
                 next_channel_prompt = None
                 next_session_key = session_key
+                _pending_inbox_claim = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -22350,6 +23920,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                             exc_info=True,
                         )
+                    _pending_inbox_result = await self._inbox_enqueue_event(
+                        pending_event,
+                        next_session_key,
+                        origin="busy",
+                    )
+                    if (
+                        _pending_inbox_result is not None
+                        and not _pending_inbox_result.accepted
+                    ):
+                        logger.error(
+                            "Queued follow-up could not enter durable inbox: %s",
+                            _pending_inbox_result.status,
+                        )
+                        return result
+                    if _pending_inbox_result is not None:
+                        _pending_inbox_claim = await self._inbox_claim_event(
+                            pending_event
+                        )
+                        if _pending_inbox_claim is None:
+                            # Another session head owns the lane. Leave this row
+                            # to the fair dispatcher instead of processing it
+                            # out of order in the recursive fast path.
+                            self._signal_inbox_dispatcher()
+                            return result
+                        await self._inbox_bind_event(
+                            pending_event,
+                            session_id,
+                            _pending_inbox_claim.trigger_identity,
+                        )
                     next_message = await self._prepare_profile_scoped_inbound_message_text(
                         event=pending_event,
                         source=next_source,
@@ -22357,8 +23956,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=next_session_key,
                     )
                     if next_message is None:
+                        if _pending_inbox_claim is not None:
+                            await self._inbox_retry_event(
+                                pending_event,
+                                "queued message preparation returned no content",
+                                resume_only=False,
+                            )
                         return result
-                    next_message_id = self._reply_anchor_for_event(pending_event)
+                    _pending_marker = self._inbox_marker(pending_event)
+                    next_message_id = (
+                        str((_pending_marker or {}).get("trigger_identity") or "")
+                        or self._reply_anchor_for_event(pending_event)
+                    )
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
                 # Restart typing indicator so the user sees activity while
@@ -22390,18 +23999,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
-                followup_result = await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
-                    session_key=next_session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    channel_prompt=next_channel_prompt,
-                )
+                try:
+                    followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        channel_prompt=next_channel_prompt,
+                    )
+                except asyncio.CancelledError:
+                    if _pending_inbox_claim is not None:
+                        await self._inbox_finish_event(
+                            pending_event,
+                            completed=False,
+                            session_key=next_session_key,
+                            run_generation=run_generation,
+                        )
+                    raise
+                except Exception:
+                    if _pending_inbox_claim is not None:
+                        await self._inbox_finish_event(
+                            pending_event,
+                            completed=False,
+                            session_key=next_session_key,
+                            run_generation=run_generation,
+                        )
+                    raise
+                if _pending_inbox_claim is not None:
+                    await self._inbox_finish_event(
+                        pending_event,
+                        completed=_should_clear_resume_pending_after_turn(
+                            followup_result
+                        ),
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                    )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task

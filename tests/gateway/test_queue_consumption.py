@@ -8,6 +8,8 @@ after the agent finishes its current task — not silently dropped.
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
@@ -167,7 +169,8 @@ class TestQueueConsumptionAfterCompletion:
         assert retrieved is not None
         assert retrieved.text == "process this after"
 
-    def test_multiple_queues_overflow_fifo(self):
+    @pytest.mark.asyncio
+    async def test_multiple_queues_overflow_fifo(self):
         """Multiple /queue commands must stack in FIFO order, no merging.
 
         The adapter's _pending_messages dict has a single slot per session,
@@ -192,14 +195,15 @@ class TestQueueConsumptionAfterCompletion:
         ]
 
         for ev in events:
-            runner._enqueue_fifo(session_key, ev, adapter)
+            await runner._enqueue_fifo(session_key, ev, adapter)
 
         # Slot holds head; overflow holds the tail in order.
         assert adapter._pending_messages[session_key].text == "first"
         assert [e.text for e in runner._queued_events[session_key]] == ["second", "third"]
         assert runner._queue_depth(session_key, adapter=adapter) == 3
 
-    def test_promote_advances_queue_fifo(self):
+    @pytest.mark.asyncio
+    async def test_promote_advances_queue_fifo(self):
         """After the slot drains, the next overflow item is promoted."""
         from gateway.run import GatewayRunner
 
@@ -209,7 +213,7 @@ class TestQueueConsumptionAfterCompletion:
         session_key = "telegram:user:123"
 
         for text in ("A", "B", "C"):
-            runner._enqueue_fifo(
+            await runner._enqueue_fifo(
                 session_key,
                 MessageEvent(
                     text=text,
@@ -246,7 +250,8 @@ class TestQueueConsumptionAfterCompletion:
         pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
         assert pending_event is None
 
-    def test_promote_stages_overflow_when_slot_already_populated(self):
+    @pytest.mark.asyncio
+    async def test_promote_stages_overflow_when_slot_already_populated(self):
         """If the slot was re-populated (e.g. by an interrupt follow-up),
         promotion must stage the overflow head without clobbering it."""
         from gateway.run import GatewayRunner
@@ -258,7 +263,7 @@ class TestQueueConsumptionAfterCompletion:
 
         # /queue once — lands in slot. Second /queue — overflow.
         for text in ("Q1", "Q2"):
-            runner._enqueue_fifo(
+            await runner._enqueue_fifo(
                 session_key,
                 MessageEvent(
                     text=text,
@@ -298,7 +303,8 @@ class TestQueueConsumptionAfterCompletion:
         # gets the next-in-line item.
         assert adapter._pending_messages[session_key].text == "Q2"
 
-    def test_queue_depth_counts_slot_plus_overflow(self):
+    @pytest.mark.asyncio
+    async def test_queue_depth_counts_slot_plus_overflow(self):
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -308,7 +314,7 @@ class TestQueueConsumptionAfterCompletion:
 
         assert runner._queue_depth(session_key, adapter=adapter) == 0
 
-        runner._enqueue_fifo(
+        await runner._enqueue_fifo(
             session_key,
             MessageEvent(
                 text="one",
@@ -321,7 +327,7 @@ class TestQueueConsumptionAfterCompletion:
         assert runner._queue_depth(session_key, adapter=adapter) == 1
 
         for text in ("two", "three"):
-            runner._enqueue_fifo(
+            await runner._enqueue_fifo(
                 session_key,
                 MessageEvent(
                     text=text,
@@ -333,7 +339,8 @@ class TestQueueConsumptionAfterCompletion:
             )
         assert runner._queue_depth(session_key, adapter=adapter) == 3
 
-    def test_enqueue_preserves_text_no_merging(self):
+    @pytest.mark.asyncio
+    async def test_enqueue_preserves_text_no_merging(self):
         """Each /queue item keeps its own text — never merged with neighbors."""
         from gateway.run import GatewayRunner
 
@@ -344,7 +351,7 @@ class TestQueueConsumptionAfterCompletion:
 
         texts = ["deploy the branch", "then run tests", "finally push"]
         for text in texts:
-            runner._enqueue_fifo(
+            await runner._enqueue_fifo(
                 session_key,
                 MessageEvent(
                     text=text,
@@ -360,6 +367,296 @@ class TestQueueConsumptionAfterCompletion:
             e.text for e in runner._queued_events[session_key]
         ]
         assert collected == texts
+
+
+class TestExplicitQueueManagement:
+    """Owner-scoped management over the existing slot + overflow FIFO."""
+
+    @staticmethod
+    def _event(
+        text: str,
+        *,
+        queue_id: str | None = None,
+        owner: str | None = None,
+        media_urls: list[str] | None = None,
+    ) -> MessageEvent:
+        metadata = {}
+        if queue_id is not None:
+            metadata["_hermes_explicit_queue"] = {
+                "id": queue_id,
+                "owner_user_id": owner,
+                "created_at": "2026-07-17T00:00:00+00:00",
+                "origin": "explicit",
+            }
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.DOCUMENT if media_urls else MessageType.TEXT,
+            source=MagicMock(),
+            message_id=f"m-{text}",
+            media_urls=list(media_urls or []),
+            media_types=["application/octet-stream"] if media_urls else [],
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _runner():
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        runner._running_agents = {}
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_snapshot_and_replace_rebuild_slot_plus_overflow_without_reordering(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:managed"
+        other_key = "telegram:user:other"
+        events = [
+            self._event("head", queue_id="q-head", owner="alice"),
+            self._event("ordinary"),
+            self._event("tail", queue_id="q-tail", owner="alice"),
+        ]
+        other = self._event("other-session")
+        for event in events:
+            await runner._enqueue_fifo(session_key, event, adapter)
+        await runner._enqueue_fifo(other_key, other, adapter)
+
+        snapshot = runner._snapshot_fifo_events(session_key, adapter)
+        assert snapshot == events
+
+        runner._replace_fifo_events(session_key, adapter, snapshot[1:])
+
+        assert adapter._pending_messages[session_key] is events[1]
+        assert runner._queued_events[session_key] == [events[2]]
+        assert adapter._pending_messages[other_key] is other
+
+    @pytest.mark.asyncio
+    async def test_list_returns_all_manageable_user_items_in_session_order(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:list"
+        events = [
+            self._event("alice first", queue_id="q-a1", owner="alice"),
+            self._event("ordinary"),
+            self._event("bob secret", queue_id="q-b1", owner="bob"),
+            self._event("ping @everyone", queue_id="q-a2", owner="alice"),
+        ]
+        for event in events:
+            await runner._enqueue_fifo(session_key, event, adapter)
+
+        items = runner._list_manageable_queue_items(session_key, adapter=adapter)
+
+        assert [item["id"] for item in items] == ["q-a1", "q-b1", "q-a2"]
+        assert [item["position"] for item in items] == [1, 2, 3]
+        assert all("owner_user_id" not in item for item in items)
+        assert all("media_urls" not in item for item in items)
+        assert items[1]["preview"] == "bob secret"
+        assert "@everyone" not in items[2]["preview"]
+
+    @pytest.mark.asyncio
+    async def test_internal_turn_with_copied_queue_marker_is_never_manageable(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:internal"
+        user_turn = self._event("user turn", queue_id="q-user", owner="alice")
+        internal_turn = self._event(
+            "continue autonomously", queue_id="q-internal", owner="alice"
+        )
+        internal_turn.internal = True
+        for event in (user_turn, internal_turn):
+            await runner._enqueue_fifo(session_key, event, adapter)
+
+        items = runner._list_manageable_queue_items(session_key, adapter=adapter)
+
+        assert [item["id"] for item in items] == ["q-user"]
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-internal", adapter=adapter
+        ) is False
+        assert await runner._clear_manageable_queue_items(
+            session_key, adapter=adapter, queue_ids=["q-user", "q-internal"]
+        ) == 1
+        assert runner._snapshot_fifo_events(session_key, adapter) == [internal_turn]
+
+    @pytest.mark.asyncio
+    async def test_remove_head_promotes_next_event_and_preserves_other_items(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:remove"
+        head = self._event("alice", queue_id="q-a", owner="alice")
+        ordinary = self._event("ordinary")
+        other_owner = self._event("bob", queue_id="q-b", owner="bob")
+        tail = self._event("alice tail", queue_id="q-a2", owner="alice")
+        for event in (head, ordinary, other_owner, tail):
+            await runner._enqueue_fifo(session_key, event, adapter)
+
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-a", adapter=adapter
+        ) is True
+
+        assert runner._snapshot_fifo_events(session_key, adapter) == [
+            ordinary,
+            other_owner,
+            tail,
+        ]
+        assert adapter._pending_messages[session_key] is ordinary
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-a", adapter=adapter
+        ) is False
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-b", adapter=adapter
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_clear_removes_frozen_manageable_ids_and_keeps_exact_order(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:shared:clear"
+        alice_head = self._event("a1", queue_id="q-a1", owner="alice")
+        ordinary = self._event("ordinary")
+        bob = self._event("b1", queue_id="q-b1", owner="bob")
+        identity_less = self._event("anon", queue_id="q-anon", owner=None)
+        alice_tail = self._event("a2", queue_id="q-a2", owner="alice")
+        for event in (alice_head, ordinary, bob, identity_less, alice_tail):
+            await runner._enqueue_fifo(session_key, event, adapter)
+
+        removed = await runner._clear_manageable_queue_items(
+            session_key,
+            adapter=adapter,
+            queue_ids=["q-a1", "q-b1", "q-a2"],
+        )
+
+        assert removed == 3
+        assert runner._snapshot_fifo_events(session_key, adapter) == [
+            ordinary,
+            identity_less,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_identity_less_marked_user_turn_remains_manageable_in_session(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:anonymous"
+        event = self._event("anonymous", queue_id="q-anon", owner=None)
+        await runner._enqueue_fifo(session_key, event, adapter)
+
+        assert [
+            item["id"]
+            for item in runner._list_manageable_queue_items(session_key, adapter=adapter)
+        ] == ["q-anon"]
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-anon", adapter=adapter
+        ) is True
+        assert runner._snapshot_fifo_events(session_key, adapter) == []
+
+    @pytest.mark.asyncio
+    async def test_clear_does_not_interrupt_or_delete_queued_media(self, tmp_path):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:media"
+        media_path = tmp_path / "queued.bin"
+        media_path.write_bytes(b"queued-media")
+        event = self._event(
+            "media",
+            queue_id="q-media",
+            owner="alice",
+            media_urls=[str(media_path)],
+        )
+        await runner._enqueue_fifo(session_key, event, adapter)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        running_agent = MagicMock()
+        runner._running_agents[session_key] = running_agent
+
+        assert await runner._clear_manageable_queue_items(
+            session_key, adapter=adapter, queue_ids=["q-media"]
+        ) == 1
+
+        running_agent.interrupt.assert_not_called()
+        assert not adapter._active_sessions[session_key].is_set()
+        assert media_path.read_bytes() == b"queued-media"
+
+    @pytest.mark.asyncio
+    async def test_remove_cancels_durable_row_before_local_mirror(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:durable-remove"
+        event = self._event("queued", queue_id="q-durable", owner="alice")
+        await runner._enqueue_fifo(session_key, event, adapter)
+        runner._inbox_store = MagicMock()
+
+        def cancel(queue_id, *, session_key):
+            assert queue_id == "q-durable"
+            assert session_key == "telegram:user:durable-remove"
+            assert runner._snapshot_fifo_events(session_key, adapter) == [event]
+            return True
+
+        runner._inbox_store.cancel.side_effect = cancel
+
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-durable", adapter=adapter
+        )
+        assert runner._snapshot_fifo_events(session_key, adapter) == []
+
+    @pytest.mark.asyncio
+    async def test_remove_preserves_local_mirror_when_durable_cancel_fails(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:claimed-remove"
+        event = self._event("claimed", queue_id="q-claimed", owner="alice")
+        await runner._enqueue_fifo(session_key, event, adapter)
+        runner._inbox_store = MagicMock()
+        runner._inbox_store.cancel.return_value = False
+
+        assert not await runner._remove_manageable_queue_item(
+            session_key, "q-claimed", adapter=adapter
+        )
+        assert runner._snapshot_fifo_events(session_key, adapter) == [event]
+
+    @pytest.mark.asyncio
+    async def test_remove_preserves_turn_queued_during_durable_cancel(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:concurrent-remove"
+        target = self._event("target", queue_id="q-target", owner="alice")
+        concurrent = self._event("concurrent")
+        await runner._enqueue_fifo(session_key, target, adapter)
+        runner._inbox_store = MagicMock()
+
+        def cancel(*_args, **_kwargs):
+            runner._queued_events.setdefault(session_key, []).append(concurrent)
+            return True
+
+        runner._inbox_store.cancel.side_effect = cancel
+
+        assert await runner._remove_manageable_queue_item(
+            session_key, "q-target", adapter=adapter
+        )
+        assert runner._snapshot_fifo_events(session_key, adapter) == [concurrent]
+
+    @pytest.mark.asyncio
+    async def test_clear_only_removes_rows_cancelled_in_durable_store(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:durable-clear"
+        first = self._event("first", queue_id="q-first", owner="alice")
+        claimed = self._event("claimed", queue_id="q-claimed", owner="alice")
+        last = self._event("last", queue_id="q-last", owner="alice")
+        for event in (first, claimed, last):
+            await runner._enqueue_fifo(session_key, event, adapter)
+        runner._inbox_store = MagicMock()
+        runner._inbox_store.cancel.side_effect = lambda queue_id, **_: (
+            queue_id != "q-claimed"
+        )
+
+        removed = await runner._clear_manageable_queue_items(
+            session_key,
+            adapter=adapter,
+            queue_ids=["q-first", "q-claimed", "q-last"],
+        )
+
+        assert removed == 2
+        assert runner._snapshot_fifo_events(session_key, adapter) == [claimed]
 
 
 class TestBusyInputModeQueueFifo:
@@ -392,14 +689,17 @@ class TestBusyInputModeQueueFifo:
             message_id=f"m-{text}",
         )
 
-    def test_rapid_text_followups_are_queued_in_fifo_order(self):
+    @pytest.mark.asyncio
+    async def test_rapid_text_followups_are_queued_in_fifo_order(self):
         """Five rapid texts in queue mode must all survive (none silently dropped)."""
         runner, adapter = self._make_runner_and_adapter()
         session_key = "telegram:user:fifo"
 
         texts = ["one", "two", "three", "four", "five"]
         for text in texts:
-            runner._queue_or_replace_pending_event(session_key, self._text_event(text))
+            await runner._queue_or_replace_pending_event(
+                session_key, self._text_event(text)
+            )
 
         # Head slot keeps the first; overflow keeps the rest in order.
         assert adapter._pending_messages[session_key].text == "one"
@@ -411,7 +711,8 @@ class TestBusyInputModeQueueFifo:
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
-    def test_queue_respects_bounded_cap(self):
+    @pytest.mark.asyncio
+    async def test_queue_respects_bounded_cap(self):
         """Beyond the per-session cap, follow-ups are dropped (with a warning)."""
         from gateway.run import GatewayRunner
 
@@ -420,7 +721,7 @@ class TestBusyInputModeQueueFifo:
 
         cap = GatewayRunner._BUSY_QUEUE_MAX_PENDING
         for i in range(cap + 5):
-            runner._queue_or_replace_pending_event(
+            await runner._queue_or_replace_pending_event(
                 session_key, self._text_event(f"msg-{i:03d}")
             )
 
@@ -430,14 +731,15 @@ class TestBusyInputModeQueueFifo:
         # The last accepted overflow item is msg-{cap-1}.
         assert runner._queued_events[session_key][-1].text == f"msg-{cap - 1:03d}"
 
-    def test_photo_burst_still_merges_in_head_slot(self):
+    @pytest.mark.asyncio
+    async def test_photo_burst_still_merges_in_head_slot(self):
         """Photo bursts must keep album-merge semantics, not split into N turns."""
         runner, adapter = self._make_runner_and_adapter()
         session_key = "telegram:user:burst"
 
         source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
         for i in range(3):
-            runner._queue_or_replace_pending_event(
+            await runner._queue_or_replace_pending_event(
                 session_key,
                 MessageEvent(
                     text="",

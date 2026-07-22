@@ -5708,7 +5708,14 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     typed is dropped. ``transport`` is pinned so the drained turn streams back to
     the client that sent it even if the session transport is rebound meanwhile.
     """
+    from hermes_cli.queue_management import new_queue_id
+
     existing = session.get("queued_prompt")
+    queue_id = (
+        str(existing.get("queue_id") or "")
+        if isinstance(existing, dict)
+        else ""
+    ) or new_queue_id()
     if (
         existing
         and isinstance(existing.get("text"), str)
@@ -5716,7 +5723,11 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     ):
         prev = existing["text"]
         text = f"{prev}\n\n{text}" if prev and text else (prev or text)
-    session["queued_prompt"] = {"text": text, "transport": transport}
+    session["queued_prompt"] = {
+        "text": text,
+        "transport": transport,
+        "queue_id": queue_id,
+    }
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -13329,6 +13340,8 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "retry",
         "queue",
         "q",
+        "dequeue",
+        "dq",
         "steer",
         "plan",
         "goal",
@@ -13658,10 +13671,93 @@ def _(rid, params: dict) -> dict:
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
 
-    if name in {"queue", "q"}:
-        if not arg:
-            return _err(rid, 4004, "usage: /queue <prompt>")
-        return _ok(rid, {"type": "send", "message": arg})
+    if name == "queue":
+        if arg:
+            return _ok(rid, {"type": "send", "message": arg})
+        if not session:
+            return _err(rid, 4001, "no active session")
+        from hermes_cli.queue_management import (
+            QueueDisplayItem,
+            QueueSnapshotStore,
+            format_queue_snapshot,
+            new_queue_id,
+        )
+
+        queued = session.get("queued_prompt")
+        items = []
+        if isinstance(queued, dict):
+            queue_id = str(queued.get("queue_id") or "") or new_queue_id()
+            queued["queue_id"] = queue_id
+            preview = " ".join(str(queued.get("text") or "").split()) or "[empty]"
+            items.append(QueueDisplayItem(queue_id=queue_id, preview=preview))
+        store = session.get("_queue_snapshot_store")
+        if not isinstance(store, QueueSnapshotStore):
+            store = QueueSnapshotStore()
+            session["_queue_snapshot_store"] = store
+        sid = str(params.get("session_id") or session.get("session_key") or "tui-session")
+        snapshot = store.open("tui", "local-user", sid, items, source_label="TUI")
+        return _ok(
+            rid,
+            {"type": "exec", "output": format_queue_snapshot(snapshot)},
+        )
+
+    if name == "dequeue":
+        if not session:
+            return _err(rid, 4001, "no active session")
+        from hermes_cli.queue_management import (
+            QueueDisplayItem,
+            QueueSnapshotStore,
+            format_queue_snapshot,
+            new_queue_id,
+        )
+
+        store = session.get("_queue_snapshot_store")
+        if not isinstance(store, QueueSnapshotStore):
+            store = QueueSnapshotStore()
+            session["_queue_snapshot_store"] = store
+        selection = store.resolve("tui", "local-user", arg)
+        if selection.status in {"missing", "expired", "superseded"}:
+            output = "No active queue view. Run `/queue` first, then use `/dequeue N`."
+            return _ok(rid, {"type": "exec", "output": output})
+        if selection.status == "invalid_selector":
+            return _ok(
+                rid,
+                {"type": "exec", "output": "Usage: /dequeue <N|all> (short form: /dq <N|all>)"},
+            )
+        if selection.status == "out_of_range":
+            return _ok(
+                rid,
+                {"type": "exec", "output": "That number is not in the latest queue view. Run `/queue` to refresh."},
+            )
+
+        queued = session.get("queued_prompt")
+        removed = 0
+        if selection.status == "ok" and isinstance(queued, dict):
+            queue_id = str(queued.get("queue_id") or "")
+            if queue_id and queue_id in selection.queue_ids:
+                session["queued_prompt"] = None
+                queued = None
+                removed = 1
+
+        items = []
+        if isinstance(queued, dict):
+            queue_id = str(queued.get("queue_id") or "") or new_queue_id()
+            queued["queue_id"] = queue_id
+            preview = " ".join(str(queued.get("text") or "").split()) or "[empty]"
+            items.append(QueueDisplayItem(queue_id=queue_id, preview=preview))
+        sid = str(params.get("session_id") or session.get("session_key") or "tui-session")
+        snapshot = store.open("tui", "local-user", sid, items, source_label="TUI")
+        refreshed = format_queue_snapshot(snapshot)
+        if selection.status == "empty":
+            output = refreshed
+        elif removed:
+            output = f"Removed {removed} queued turn.\n\n{refreshed}"
+        else:
+            output = (
+                "That queued turn already started or is no longer queued. "
+                f"No other turn was removed.\n\n{refreshed}"
+            )
+        return _ok(rid, {"type": "exec", "output": output})
 
     if name == "learn":
         # Open-ended: build the standards-guided prompt and submit it as a

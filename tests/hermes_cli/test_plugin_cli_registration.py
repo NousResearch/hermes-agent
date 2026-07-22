@@ -8,7 +8,9 @@ Covers:
   - Honcho register_cli() builds correct argparse tree
 """
 
+import queue
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -17,6 +19,7 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
 )
+from hermes_cli.queue_management import ManagedPromptQueue
 
 
 # ── PluginContext.register_cli_command ─────────────────────────────────────
@@ -57,6 +60,52 @@ class TestRegisterCliCommand:
         ctx, mgr = self._make_ctx()
         ctx.register_cli_command("nocb", "test", MagicMock())
         assert mgr._cli_commands["nocb"]["handler_fn"] is None
+
+
+class TestInjectMessage:
+    @staticmethod
+    def _make_ctx():
+        manager = PluginManager()
+        manager._cli_ref = SimpleNamespace(
+            _agent_running=False,
+            _pending_input=ManagedPromptQueue(),
+            _interrupt_queue=queue.Queue(),
+        )
+        return PluginContext(PluginManifest(name="test-plugin"), manager), manager
+
+    def test_user_message_remains_manageable(self):
+        ctx, manager = self._make_ctx()
+
+        assert ctx.inject_message("remote user turn", role="user") is True
+
+        visible = manager._cli_ref._pending_input.snapshot_items()
+        assert [item.preview for item in visible] == ["remote user turn"]
+
+    def test_non_user_message_is_hidden_from_queue_management(self):
+        ctx, manager = self._make_ctx()
+        manager._cli_ref._pending_input.put("remote user turn")
+
+        assert ctx.inject_message("refresh internal state", role="system") is True
+
+        pending = manager._cli_ref._pending_input
+        visible = pending.snapshot_items()
+        assert [item.preview for item in visible] == ["remote user turn"]
+        assert pending.remove_ids([visible[0].queue_id]) == 1
+        assert pending.get_nowait() == "[system] refresh internal state"
+
+    def test_non_user_message_stays_hidden_after_interrupt_queue_drains(self):
+        from cli import HermesCLI
+
+        ctx, manager = self._make_ctx()
+        cli = manager._cli_ref
+        cli._agent_running = True
+
+        assert ctx.inject_message("refresh internal state", role="system") is True
+
+        HermesCLI._drain_interrupt_queue_to_pending_input(cli)
+
+        assert cli._pending_input.snapshot_items() == []
+        assert cli._pending_input.get_nowait() == "[system] refresh internal state"
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────

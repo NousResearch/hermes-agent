@@ -43,6 +43,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
+from gateway.inbound_queue import INBOX_METADATA_KEY
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 
@@ -262,3 +263,44 @@ async def test_next_turn_guard_reuses_cached_agent_after_first_turn(
         "the first-turn session_meta write was not re-baselined into the "
         "snapshot — this is the prompt-cache regression under test."
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_only_inbox_marker_reaches_agent_recovery(monkeypatch, tmp_path):
+    """A crash-recovered durable row reaches the agent as a typed
+    continuation, not merely as an empty internal message."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "sessions.db")
+    db.create_session(SESSION_ID, source="telegram")
+    runner = _bootstrap(monkeypatch, tmp_path, db)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "continued",
+            "messages": [
+                {"role": "user", "content": ""},
+                {"role": "assistant", "content": "continued"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    event = _event()
+    event.text = ""
+    event.internal = True
+    event.metadata = {
+        INBOX_METADATA_KEY: {
+            "queue_id": "recovered-row",
+            "claim_token": "claim-token",
+            "trigger_identity": "msg-1",
+            "session_key": SESSION_KEY,
+            "session_id": SESSION_ID,
+            "resume_only": True,
+        }
+    }
+
+    await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
+
+    assert runner._run_agent.await_args.kwargs["durable_inbox_resume"] is True
+    assert runner._run_agent.await_args.kwargs["event_message_id"] is None

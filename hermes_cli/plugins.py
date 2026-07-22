@@ -482,6 +482,9 @@ class PluginContext:
         This enables plugins (e.g. remote control viewers, messaging bridges)
         to send messages into the conversation from external sources.
 
+        Non-user roles retain an internal marker while crossing staging queues,
+        so queue-management views cannot expose or remove them.
+
         Returns True if the message was queued successfully.
         """
         cli = self._manager._cli_ref
@@ -489,14 +492,25 @@ class PluginContext:
             logger.warning("inject_message: no CLI reference (not available in gateway mode)")
             return False
 
-        msg = content if role == "user" else f"[{role}] {content}"
+        if role == "user":
+            msg = content
+        else:
+            from hermes_cli.queue_management import UnmanagedPrompt
+
+            msg = UnmanagedPrompt(f"[{role}] {content}")
 
         if getattr(cli, "_agent_running", False):
             # Agent is mid-turn — interrupt with the message
             cli._interrupt_queue.put(msg)
         else:
             # Agent is idle — queue as next input
-            cli._pending_input.put(msg)
+            if role == "user":
+                cli._pending_input.put(msg)
+            else:
+                put_system = getattr(
+                    cli._pending_input, "put_system", cli._pending_input.put
+                )
+                put_system(msg)
         return True
 
     # -- CLI command registration --------------------------------------------
@@ -1258,7 +1272,7 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
-        self._cli_ref = None  # Set by CLI after plugin discovery
+        self._cli_ref: Any = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         # Plugin-registered auxiliary tasks: key → {key, display_name,

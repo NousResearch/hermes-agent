@@ -7,6 +7,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
+from gateway.inbound_queue import GatewayInboxStore, INBOX_METADATA_KEY
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
@@ -92,6 +93,14 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
     assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
 
 
+def test_legacy_delivery_payload_never_infers_durable_completion():
+    for payload in (None, "visible error", {"final_response": "done"}):
+        outcome = gateway_run._coerce_agent_turn_outcome(payload)
+        assert outcome.delivery_response == payload
+        assert outcome.completed is False
+        assert outcome.terminally_handled is False
+
+
 @pytest.mark.asyncio
 async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
@@ -112,7 +121,8 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    assert response == ""
+    assert response.delivery_response == ""
+    assert response.completed is True
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
@@ -138,7 +148,8 @@ async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    assert "no response was generated" in response
+    assert "no response was generated" in response.delivery_response
+    assert response.completed is True
 
 
 @pytest.mark.asyncio
@@ -162,4 +173,219 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    assert response == text
+    assert response.delivery_response == text
+    assert response.completed is True
+
+
+@pytest.mark.asyncio
+async def test_confirmed_streaming_delivery_preserves_completed_turn(
+    monkeypatch, tmp_path
+):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "already delivered",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "already delivered"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "already_sent": True,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response.delivery_response is None
+    assert response.completed is True
+
+
+@pytest.mark.asyncio
+async def test_post_commit_delivery_error_does_not_reopen_agent_turn(
+    monkeypatch, tmp_path
+):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._should_send_voice_reply = lambda *_a, **_kw: True
+    runner._send_voice_reply = AsyncMock(side_effect=RuntimeError("delivery failed"))
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "durably recorded answer",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "durably recorded answer"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert "unexpected error" in response.delivery_response
+    assert response.completed is True
+    assert response.terminally_handled is False
+
+
+@pytest.mark.asyncio
+async def test_visible_failed_turn_remains_retryable(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "Provider failed after all fallbacks.",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "Provider failed after all fallbacks."},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": True,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response.delivery_response == "Provider failed after all fallbacks."
+    assert response.completed is False
+    assert response.terminally_handled is False
+
+
+@pytest.mark.asyncio
+async def test_partial_visible_turn_remains_retryable(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "partial answer before interruption",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "partial answer before interruption"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "partial": True,
+        "error": "stream interrupted",
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response.delivery_response == "partial answer before interruption"
+    assert response.completed is False
+    assert response.terminally_handled is False
+
+
+@pytest.mark.asyncio
+async def test_safely_rejected_input_is_terminally_handled(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value=None)
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response.delivery_response is None
+    assert response.completed is False
+    assert response.terminally_handled is True
+    runner._prepare_profile_scoped_inbound_message_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_only_streamed_turn_runs_once_through_real_handler(
+    monkeypatch, tmp_path
+):
+    """Incident regression: a resume-only event that streams its final answer
+    must finish the durable row instead of generating another empty recovery.
+    """
+    runner = _runner(monkeypatch, tmp_path)
+    runner._inbox_store = GatewayInboxStore(hermes_home=tmp_path)
+    runner._inbox_wakeup = None
+    runner.session_store._db.has_platform_message_id.return_value = True
+    event = _event()
+    session_key = "agent:main:telegram:group:-1001:12345"
+
+    await runner._inbox_enqueue_event(event, session_key, origin="direct")
+    claimed = await runner._inbox_claim_event(event)
+    assert claimed is not None
+    assert await runner._inbox_retry_event(
+        event,
+        "gateway stopped after trigger persistence",
+        resume_only=True,
+    )
+    event.text = ""
+    event.internal = True
+
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "recovered answer",
+        "messages": [
+            {"role": "user", "content": "internal recovery"},
+            {"role": "assistant", "content": "recovered answer"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "already_sent": True,
+    })
+
+    delivery_response = await runner._handle_message(event)
+
+    assert delivery_response is None
+    row = runner._inbox_store.get(event.metadata[INBOX_METADATA_KEY]["queue_id"])
+    assert row is not None
+    assert row.state == "completed"
+    assert row.attempts == 2
+    assert row.last_error is None
+    assert runner._run_agent.await_args.kwargs["durable_inbox_resume"] is True
+
+
+@pytest.mark.asyncio
+async def test_pre_commit_persistence_error_keeps_durable_turn_retryable(
+    monkeypatch, tmp_path
+):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._inbox_store = GatewayInboxStore(hermes_home=tmp_path)
+    runner._inbox_wakeup = None
+    runner.session_store._db.has_platform_message_id.return_value = True
+    runner.session_store.append_to_transcript = MagicMock(
+        side_effect=RuntimeError("database is locked")
+    )
+    event = _event()
+    session_key = "agent:main:telegram:group:-1001:12345"
+
+    await runner._inbox_enqueue_event(event, session_key, origin="direct")
+    claimed = await runner._inbox_claim_event(event)
+    assert claimed is not None
+
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "answer not yet committed",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer not yet committed"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    delivery_response = await runner._handle_message(event)
+
+    assert "unexpected error" in delivery_response
+    row = runner._inbox_store.get(event.metadata[INBOX_METADATA_KEY]["queue_id"])
+    assert row is not None
+    assert row.state == "resume_ready"
+    assert row.attempts == 1
+    assert row.resume_only is True

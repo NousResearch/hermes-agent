@@ -31,6 +31,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    PrivateInteractionResult,
     SendResult,
 )
 from gateway.session import SessionSource
@@ -116,6 +117,15 @@ def test_unwrap_plain_string_is_passthrough():
 def test_unwrap_none_is_passthrough():
     adapter = _delete_adapter()
     text, ttl = adapter._unwrap_ephemeral(None)
+    assert text is None
+    assert ttl == 0
+
+
+def test_unwrap_private_interaction_result_suppresses_public_delivery():
+    adapter = _delete_adapter()
+    text, ttl = adapter._unwrap_ephemeral(
+        PrivateInteractionResult({"type": "queue_management", "items": []})
+    )
     assert text is None
     assert ttl == 0
 

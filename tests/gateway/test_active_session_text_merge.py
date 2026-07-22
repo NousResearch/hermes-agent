@@ -156,6 +156,39 @@ async def test_debounce_buffers_rapid_text_then_flushes_to_pending():
 
 
 @pytest.mark.asyncio
+async def test_gateway_debounced_busy_turn_remains_queue_manageable():
+    """The adapter debounce path must retain the gateway's stable owner/ID."""
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    adapter._busy_text_debounce_seconds = 0.05
+    event = _make_event("manageable follow-up")
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._draining = False
+    runner._busy_input_mode = "interrupt"
+    runner._busy_text_mode = "queue"
+    runner._running_agents = {session_key: MagicMock()}
+    runner._queued_events = {}
+    runner._is_user_authorized = lambda _source: True
+    runner._adapter_for_source = lambda _source: adapter
+    adapter._busy_session_handler = runner._handle_active_session_busy_message
+
+    await adapter.handle_message(event)
+    await asyncio.sleep(0.15)
+
+    items = runner._list_manageable_queue_items(session_key, adapter=adapter)
+    assert [item["preview"] for item in items] == ["manageable follow-up"]
+    marker = adapter._pending_messages[session_key].metadata[
+        "_hermes_explicit_queue"
+    ]
+    assert marker["owner_user_id"] == "u1"
+    assert marker["origin"] == "busy"
+
+
+@pytest.mark.asyncio
 async def test_debounce_resets_timer_on_new_arrival():
     adapter = _make_adapter()
     adapter._busy_text_debounce_seconds = 0.1

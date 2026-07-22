@@ -11,12 +11,13 @@ minimal ``HermesCLI`` stub (pattern used elsewhere in tests/cli).
 
 from __future__ import annotations
 
-import queue
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from hermes_cli.queue_management import ManagedPromptQueue
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ def _make_cli_with_goal(session_id: str, goal_text: str = "build a thing"):
 
     cli = HermesCLI.__new__(HermesCLI)
     # State the hook + helpers touch directly.
-    cli._pending_input = queue.Queue()
+    cli._pending_input = ManagedPromptQueue()
     cli._last_turn_interrupted = False
     cli.conversation_history = []
     # `_get_goal_manager()` reads `self.session_id` directly, not
@@ -175,6 +176,10 @@ class TestHealthyTurnStillRuns:
 
         # Continuation prompt must be queued.
         assert not cli._pending_input.empty()
+        cli._pending_input.put("later user turn")
+        visible = cli._pending_input.snapshot_items()
+        assert [item.preview for item in visible] == ["later user turn"]
+        assert cli._pending_input.remove_ids([visible[0].queue_id]) == 1
         queued = cli._pending_input.get_nowait()
         assert "Continuing toward your standing goal" in queued
         assert mgr.state.status == "active"

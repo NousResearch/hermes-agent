@@ -1620,7 +1620,7 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "learn create a skill from https://example.com/docs"])
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "dequeue 1", "dq all", "steer fix the test", "plan", "learn create a skill from https://example.com/docs"])
 def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
     """slash.exec must route _pending_input commands to command.dispatch
     internally instead of returning the old 4018 "use command.dispatch"
@@ -1710,10 +1710,16 @@ def test_command_dispatch_builtin_queue_wins_over_colliding_bundle(server):
     build_bundle.assert_not_called()
 
 
-def test_command_dispatch_queue_requires_arg(server):
-    """command.dispatch /queue without an argument returns an error."""
+def test_command_dispatch_empty_queue_opens_snapshot(server):
     sid = "test-session"
-    server._sessions[sid] = {"session_key": sid}
+    server._sessions[sid] = {
+        "session_key": sid,
+        "queued_prompt": {
+            "text": "queued next turn",
+            "transport": None,
+            "queue_id": "q-stable",
+        },
+    }
 
     resp = server.handle_request({
         "id": "r2",
@@ -1721,8 +1727,39 @@ def test_command_dispatch_queue_requires_arg(server):
         "params": {"name": "queue", "arg": "", "session_id": sid},
     })
 
-    assert "error" in resp
-    assert resp["error"]["code"] == 4004
+    assert "error" not in resp
+    assert resp["result"]["type"] == "exec"
+    assert "1. queued next turn" in resp["result"]["output"]
+    assert "q-stable" not in resp["result"]["output"]
+
+
+def test_command_dispatch_dequeue_removes_snapshot_item_and_refreshes(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "queued_prompt": {
+            "text": "queued next turn",
+            "transport": None,
+            "queue_id": "q-stable",
+        },
+    }
+    server.handle_request({
+        "id": "list",
+        "method": "command.dispatch",
+        "params": {"name": "queue", "arg": "", "session_id": sid},
+    })
+
+    resp = server.handle_request({
+        "id": "remove",
+        "method": "command.dispatch",
+        "params": {"name": "dq", "arg": "1", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["type"] == "exec"
+    assert "removed" in resp["result"]["output"].lower()
+    assert "no queued turns" in resp["result"]["output"].lower()
+    assert server._sessions[sid]["queued_prompt"] is None
 
 
 def test_command_dispatch_learn_sends_built_prompt(server):

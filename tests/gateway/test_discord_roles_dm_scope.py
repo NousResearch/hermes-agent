@@ -147,6 +147,25 @@ def test_dm_role_auth_optin_rejects_when_not_member(monkeypatch):
     )
 
 
+def test_non_dm_missing_guild_never_uses_dm_role_optin(monkeypatch):
+    """A partial guild event must fail closed instead of borrowing DM role policy."""
+    trusted_guild, _ = _guild_with_member(
+        guild_id=222222,
+        member_id=42,
+        role_ids=[5555],
+    )
+    adapter = _make_adapter(
+        allowed_roles=[5555],
+        guilds=[trusted_guild],
+    )
+    _set_dm_role_auth_guild(monkeypatch, 222222)
+
+    assert (
+        adapter._is_allowed_user("42", author=None, guild=None, is_dm=False)
+        is False
+    )
+
+
 # ---------------------------------------------------------------------------
 # Guild messages — role check must be scoped to THIS guild only
 # ---------------------------------------------------------------------------
@@ -369,6 +388,32 @@ def test_slash_authorization_rejects_cross_guild_role_in_guild(monkeypatch):
         channel=SimpleNamespace(id=9999),  # not a DMChannel instance
         channel_id=9999,
         guild=trusted_guild,
+    )
+
+    allowed, reason = adapter._evaluate_slash_authorization(interaction)
+    assert allowed is False
+    assert "ALLOWED" in (reason or "")
+
+
+def test_slash_authorization_rejects_non_dm_missing_guild_even_with_dm_role_optin(monkeypatch):
+    """A partial server slash payload must not borrow the DM role opt-in."""
+    trusted_guild, _ = _guild_with_member(
+        guild_id=222222,
+        member_id=42,
+        role_ids=[5555],
+    )
+    adapter = _make_adapter(
+        allowed_roles=[5555],
+        guilds=[trusted_guild],
+    )
+    _set_dm_role_auth_guild(monkeypatch, 222222)
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        channel=SimpleNamespace(id=9999),
+        channel_id=9999,
+        guild=None,
+        guild_id=222222,
     )
 
     allowed, reason = adapter._evaluate_slash_authorization(interaction)

@@ -35,14 +35,18 @@ def _session(agent=None, **extra):
 def test_enqueue_pins_text_and_transport():
     session = _session()
     server._enqueue_prompt(session, "hello", "ws-1")
-    assert session["queued_prompt"] == {"text": "hello", "transport": "ws-1"}
+    assert session["queued_prompt"]["text"] == "hello"
+    assert session["queued_prompt"]["transport"] == "ws-1"
+    assert session["queued_prompt"]["queue_id"].startswith("q-")
 
 
 def test_enqueue_merges_second_arrival_losslessly():
     session = _session()
     server._enqueue_prompt(session, "first", "ws-1")
+    original_id = session["queued_prompt"]["queue_id"]
     server._enqueue_prompt(session, "second", "ws-2")
     assert session["queued_prompt"]["text"] == "first\n\nsecond"
+    assert session["queued_prompt"]["queue_id"] == original_id
     # Latest transport wins so the drain streams to the most recent client.
     assert session["queued_prompt"]["transport"] == "ws-2"
 

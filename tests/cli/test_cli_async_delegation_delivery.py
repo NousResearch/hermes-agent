@@ -1,15 +1,15 @@
 """Regression coverage for CLI async-delegation completion ownership."""
 
-import queue
-
 from cli import HermesCLI
+from hermes_cli.queue_management import ManagedPromptQueue
 
 
 def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     """A CLI window must not claim another window's restored completion."""
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"
-    cli._pending_input = queue.Queue()
+    cli._pending_input = ManagedPromptQueue()
+    cli._pending_input.put("user turn")
 
     event = {
         "type": "async_delegation",
@@ -42,6 +42,9 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
+    visible = cli._pending_input.snapshot_items()
+    assert [item.preview for item in visible] == ["user turn"]
+    assert cli._pending_input.remove_ids([visible[0].queue_id]) == 1
     assert cli._pending_input.get_nowait() == "completion payload"
     assert claimed == [(event, "cli-idle")]
     assert completed == [(event, "claim-token")]

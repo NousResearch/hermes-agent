@@ -168,7 +168,7 @@ class GatewaySlashCommandsMixin:
         # state (model/reasoning overrides, one-turn restores, model notes,
         # last-resolved cache, /queue overflow) + security state in one
         # funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
-        self._clear_conversation_scope(session_key, reason="session_reset")
+        await self._clear_conversation_scope(session_key, reason="session_reset")
 
         # The old conversation's in-flight async delegations end WITH it
         # (#55578): after the reset rotates the session id, their completions
@@ -3992,7 +3992,7 @@ class GatewaySlashCommandsMixin:
         # notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in
         # gateway/run.py.
-        self._clear_conversation_scope(session_key, reason="resume")
+        await self._clear_conversation_scope(session_key, reason="resume")
 
         # Evict any cached agent for this session so the next message
         # rebuilds with the correct session_id end-to-end — mirrors

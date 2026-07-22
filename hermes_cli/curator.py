@@ -696,3 +696,362 @@ def cli_main(argv=None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(cli_main())
+
+
+def _cmd_pin_batch(args) -> int:
+    """Batch pin skills by name, usage threshold, or category."""
+    from tools import skill_usage
+    
+    batch_names = getattr(args, "batch", None)
+    by_usage = getattr(args, "by_usage", None)
+    by_category = getattr(args, "by_category", None)
+    dry_run = getattr(args, "dry_run", False)
+    
+    # Resolve target skills
+    targets = []
+    
+    if batch_names:
+        targets.extend([n.strip() for n in batch_names.split(",") if n.strip()])
+    
+    if by_usage is not None:
+        for r in skill_usage.agent_created_report():
+            if (r.get("use_count") or 0) >= by_usage:
+                targets.append(r["name"])
+    
+    if by_category:
+        # For now, we don't have category in the usage report
+        # This is a placeholder for future implementation
+        print(f"curator: --by-category not yet implemented", file=sys.stderr)
+        return 1
+    
+    # Deduplicate
+    targets = list(dict.fromkeys(targets))
+    
+    if not targets:
+        print("curator: no skills to pin (use --batch, --by-usage, or --by-category)")
+        return 0
+    
+    # Filter to only agent-created skills
+    valid_targets = []
+    for name in targets:
+        if not skill_usage.is_agent_created(name):
+            print(f"curator: '{name}' is bundled or hub-installed — skipping")
+        else:
+            valid_targets.append(name)
+    
+    if dry_run:
+        print(f"curator: would pin {len(valid_targets)} skill(s):")
+        for name in valid_targets:
+            print(f"  - {name}")
+        return 0
+    
+    # Pin each skill
+    pinned = 0
+    for name in valid_targets:
+        skill_usage.set_pinned(name, True)
+        pinned += 1
+    
+    print(f"curator: pinned {pinned} skill(s)")
+    return 0
+
+
+def _cmd_unpin_batch(args) -> int:
+    """Batch unpin skills by name, usage threshold, or category."""
+    from tools import skill_usage
+    
+    batch_names = getattr(args, "batch", None)
+    by_usage = getattr(args, "by_usage", None)
+    by_category = getattr(args, "by_category", None)
+    dry_run = getattr(args, "dry_run", False)
+    
+    # Resolve target skills
+    targets = []
+    
+    if batch_names:
+        targets.extend([n.strip() for n in batch_names.split(",") if n.strip()])
+    
+    if by_usage is not None:
+        for r in skill_usage.agent_created_report():
+            if (r.get("use_count") or 0) <= by_usage:
+                targets.append(r["name"])
+    
+    if by_category:
+        print(f"curator: --by-category not yet implemented", file=sys.stderr)
+        return 1
+    
+    # Deduplicate
+    targets = list(dict.fromkeys(targets))
+    
+    if not targets:
+        print("curator: no skills to unpin (use --batch, --by-usage, or --by-category)")
+        return 0
+    
+    # Filter to only agent-created skills that are pinned
+    valid_targets = []
+    for name in targets:
+        if not skill_usage.is_agent_created(name):
+            print(f"curator: '{name}' is bundled or hub-installed — skipping")
+        elif not skill_usage.get_record(name).get("pinned"):
+            print(f"curator: '{name}' is not pinned — skipping")
+        else:
+            valid_targets.append(name)
+    
+    if dry_run:
+        print(f"curator: would unpin {len(valid_targets)} skill(s):")
+        for name in valid_targets:
+            print(f"  - {name}")
+        return 0
+    
+    # Unpin each skill
+    unpinned = 0
+    for name in valid_targets:
+        skill_usage.set_pinned(name, False)
+        unpinned += 1
+    
+    print(f"curator: unpinned {unpinned} skill(s)")
+    return 0
+
+
+def _cmd_archive_batch(args) -> int:
+    """Batch archive skills by name, usage threshold, or idle days."""
+    from tools import skill_usage
+    
+    batch_names = getattr(args, "batch", None)
+    by_usage = getattr(args, "by_usage", None)
+    stale_days = getattr(args, "stale", None)
+    dry_run = getattr(args, "dry_run", False)
+    skip_confirm = getattr(args, "yes", False)
+    
+    # Resolve target skills
+    targets = []
+    
+    if batch_names:
+        targets.extend([n.strip() for n in batch_names.split(",") if n.strip()])
+    
+    if by_usage is not None:
+        for r in skill_usage.agent_created_report():
+            if (r.get("use_count") or 0) <= by_usage:
+                targets.append(r["name"])
+    
+    if stale_days is not None:
+        for r in skill_usage.agent_created_report():
+            idle = _idle_days(r)
+            if idle is not None and idle >= stale_days:
+                targets.append(r["name"])
+    
+    # Deduplicate
+    targets = list(dict.fromkeys(targets))
+    
+    if not targets:
+        print("curator: no skills to archive (use --batch, --by-usage, or --stale)")
+        return 0
+    
+    # Filter to only agent-created skills that are not pinned
+    valid_targets = []
+    for name in targets:
+        if not skill_usage.is_agent_created(name):
+            print(f"curator: '{name}' is bundled or hub-installed — skipping")
+        elif skill_usage.get_record(name).get("pinned"):
+            print(f"curator: '{name}' is pinned — unpin first")
+        elif skill_usage.get_record(name).get("state") == skill_usage.STATE_ARCHIVED:
+            print(f"curator: '{name}' is already archived — skipping")
+        else:
+            valid_targets.append(name)
+    
+    if dry_run:
+        print(f"curator: would archive {len(valid_targets)} skill(s):")
+        for name in valid_targets:
+            print(f"  - {name}")
+        return 0
+    
+    if not skip_confirm:
+        try:
+            reply = input(f"\nArchive {len(valid_targets)} skill(s)? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\ncurator: aborted")
+            return 1
+        if reply not in {"y", "yes"}:
+            print("curator: aborted")
+            return 1
+    
+    # Archive each skill
+    archived = 0
+    failures = []
+    for name in valid_targets:
+        ok, msg = skill_usage.archive_skill(name)
+        if ok:
+            archived += 1
+        else:
+            failures.append((name, msg))
+    
+    print(f"\ncurator: archived {archived}/{len(valid_targets)}")
+    if failures:
+        print("failures:")
+        for name, msg in failures:
+            print(f"  {name}: {msg}")
+        return 1
+    return 0
+
+
+def _cmd_usage_batch(args) -> int:
+    """Show usage telemetry with optional batch operations."""
+    import json as _json
+    from tools import skill_usage
+    
+    sort_key = getattr(args, "sort", "activity")
+    prov_filter = getattr(args, "provenance", None)
+    format_json = getattr(args, "json", False)
+    min_usage = getattr(args, "min_usage", None)
+    max_usage = getattr(args, "max_usage", None)
+    
+    rows = skill_usage.usage_report()
+    
+    if prov_filter:
+        rows = [r for r in rows if r.get("provenance") == prov_filter]
+    
+    # Filter by usage thresholds
+    if min_usage is not None:
+        rows = [r for r in rows if (r.get("use_count") or 0) >= min_usage]
+    if max_usage is not None:
+        rows = [r for r in rows if (r.get("use_count") or 0) <= max_usage]
+    
+    if sort_key == "name":
+        rows.sort(key=lambda r: r["name"])
+    elif sort_key == "recent":
+        rows.sort(key=lambda r: r.get("last_activity_at") or "", reverse=True)
+    else:  # "activity" (default)
+        rows.sort(key=lambda r: r.get("activity_count", 0), reverse=True)
+    
+    if format_json:
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    
+    if not rows:
+        print("curator: no skills found")
+        return 0
+    
+    # Provenance tallies
+    counts = {"agent": 0, "bundled": 0, "hub": 0}
+    for r in rows:
+        counts[r.get("provenance", "agent")] = counts.get(r.get("provenance", "agent"), 0) + 1
+    print(
+        f"skills: {len(rows)} total  "
+        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})"
+    )
+    print()
+    print(
+        f"  {'skill':40s}  {'origin':8s}  "
+        f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity"
+    )
+    for r in rows:
+        last = _fmt_ts(r.get("last_activity_at"))
+        print(
+            f"  {r['name'][:40]:40s}  "
+            f"{r.get('provenance', 'agent'):8s}  "
+            f"{r.get('use_count', 0):>4d}  "
+            f"{r.get('view_count', 0):>4d}  "
+            f"{r.get('patch_count', 0):>5d}  "
+            f"{r.get('activity_count', 0):>4d}  "
+            f"{last}"
+        )
+    return 0
+
+
+# Batch operation commands
+
+    p_pin_batch = subs.add_parser(
+        "pin-batch",
+        help="Batch pin skills by name, usage threshold, or category",
+    )
+    p_pin_batch.add_argument(
+        "--batch", default=None,
+        help="Comma-separated skill names to pin",
+    )
+    p_pin_batch.add_argument(
+        "--by-usage", type=int, default=None, dest="by_usage",
+        help="Pin skills with use_count >= N",
+    )
+    p_pin_batch.add_argument(
+        "--by-category", default=None, dest="by_category",
+        help="Pin skills in category (not yet implemented)",
+    )
+    p_pin_batch.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be pinned without doing it",
+    )
+    p_pin_batch.set_defaults(func=_cmd_pin_batch)
+
+    p_unpin_batch = subs.add_parser(
+        "unpin-batch",
+        help="Batch unpin skills by name, usage threshold, or category",
+    )
+    p_unpin_batch.add_argument(
+        "--batch", default=None,
+        help="Comma-separated skill names to unpin",
+    )
+    p_unpin_batch.add_argument(
+        "--by-usage", type=int, default=None, dest="by_usage",
+        help="Unpin skills with use_count <= N",
+    )
+    p_unpin_batch.add_argument(
+        "--by-category", default=None, dest="by_category",
+        help="Unpin skills in category (not yet implemented)",
+    )
+    p_unpin_batch.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be unpinned without doing it",
+    )
+    p_unpin_batch.set_defaults(func=_cmd_unpin_batch)
+
+    p_archive_batch = subs.add_parser(
+        "archive-batch",
+        help="Batch archive skills by name, usage threshold, or idle days",
+    )
+    p_archive_batch.add_argument(
+        "--batch", default=None,
+        help="Comma-separated skill names to archive",
+    )
+    p_archive_batch.add_argument(
+        "--by-usage", type=int, default=None, dest="by_usage",
+        help="Archive skills with use_count <= N",
+    )
+    p_archive_batch.add_argument(
+        "--stale", type=int, default=None,
+        help="Archive skills idle for >= N days",
+    )
+    p_archive_batch.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    p_archive_batch.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Show what would be archived without doing it",
+    )
+    p_archive_batch.set_defaults(func=_cmd_archive_batch)
+
+    # Enhanced usage command with batch filtering
+    p_usage_enhanced = subs.add_parser(
+        "usage-filter",
+        help="Show usage telemetry with filtering options",
+    )
+    p_usage_enhanced.add_argument(
+        "--sort", choices=("activity", "recent", "name"), default="activity",
+        help="Sort order",
+    )
+    p_usage_enhanced.add_argument(
+        "--provenance", choices=("agent", "bundled", "hub"), default=None,
+        help="Filter by provenance",
+    )
+    p_usage_enhanced.add_argument(
+        "--min-usage", type=int, default=None, dest="min_usage",
+        help="Minimum use_count to include",
+    )
+    p_usage_enhanced.add_argument(
+        "--max-usage", type=int, default=None, dest="max_usage",
+        help="Maximum use_count to include",
+    )
+    p_usage_enhanced.add_argument(
+        "--json", action="store_true",
+        help="Output JSON instead of table",
+    )
+    p_usage_enhanced.set_defaults(func=_cmd_usage_batch)

@@ -1621,6 +1621,146 @@ class KanbanDbCorruptError(RuntimeError):
         )
 
 
+class LifecycleWriteForbiddenError(RuntimeError):
+    """Raised by :func:`reclaim_task` / :func:`complete_task` /
+    :func:`unblock_task` when the P0-G-B1 external lifecycle registry marks
+    the task's board QUARANTINED or ARCHIVED.
+
+    This is the core-function-level enforcement of
+    ``hermes_cli.kanban_lifecycle.check_write_allowed`` (P0-G-B1 round 2 —
+    "compatibility containment, real defense in depth"). Round 1 only
+    checked this at the CLI layer (``_lifecycle_guard_or_print`` in
+    ``hermes_cli/kanban.py``); any other caller — critically, the
+    always-mounted dashboard plugin
+    (``plugins/kanban/dashboard/plugin_api.py``), which calls these
+    functions directly with zero lifecycle awareness — could still
+    reclaim/complete/unblock tasks on a QUARANTINED/ARCHIVED board. Pushing
+    the check into the functions themselves closes that gap for every
+    caller, present or future, rather than relying on each call site to
+    remember to check first.
+
+    Callers that already gate at their own layer (the CLI guard) will
+    normally never observe this — it only fires if the board's state
+    changed between the caller's own check and this call (a narrow race),
+    or if the caller (like the dashboard) never checked at all. Either way,
+    fail closed: refuse the write, don't silently no-op it.
+    """
+
+    def __init__(self, *, operation: str, board: str, state: Optional[str], reason: str):
+        self.operation = operation
+        self.board = board
+        self.state = state
+        self.reason = reason
+        super().__init__(
+            f"kanban: {operation} refused for board {board!r}: {reason}"
+        )
+
+
+def _slug_for_conn(conn: sqlite3.Connection) -> str:
+    """Best-effort resolve which board slug an already-open ``conn`` belongs to.
+
+    :func:`reclaim_task`, :func:`complete_task`, and :func:`unblock_task`
+    take an already-connected ``conn`` with no explicit ``board`` parameter
+    — the board identity was decided once, by whichever caller opened the
+    connection (CLI, dashboard, gateway). To gate these functions
+    internally (P0-G-B1 round 2) without changing their public signature,
+    the board has to be recovered from the connection itself rather than
+    trusted from caller context — trusting caller context is exactly the
+    gap this containment closes (a caller could always forget to pass it).
+
+    Resolution:
+
+    1. ``PRAGMA database_list`` gives the on-disk file path SQLite has open
+       for this connection. Empty (in-memory ``:memory:`` test DBs) falls
+       through to step 3.
+    2. Compare the resolved path against the two known on-disk layouts —
+       ``<root>/kanban.db`` (the ``default`` board) and
+       ``<root>/kanban/boards/<slug>/kanban.db`` (every other board). A
+       match returns that slug directly, independent of any env var, so
+       this stays correct even for a dashboard request serving a board
+       that differs from the process's "current board".
+    3. No match (a custom path via ``HERMES_KANBAN_DB``, or an in-memory
+       test DB) — fall back to :func:`get_current_board`, the same
+       resolution :func:`connect` itself uses when given no explicit
+       ``db_path``/``board``.
+    """
+    path_str = ""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row is not None:
+            path_str = row[2] or ""
+    except sqlite3.Error:
+        path_str = ""
+    if path_str:
+        try:
+            resolved = Path(path_str).resolve()
+        except OSError:
+            resolved = Path(path_str)
+        try:
+            if resolved == (kanban_home() / "kanban.db").resolve():
+                return DEFAULT_BOARD
+        except OSError:
+            pass
+        try:
+            root = boards_root().resolve()
+            if root in resolved.parents:
+                rel = resolved.relative_to(root)
+                if rel.parts:
+                    return rel.parts[0]
+        except (OSError, ValueError):
+            pass
+    return get_current_board()
+
+
+def _enforce_lifecycle_write_gate(conn: sqlite3.Connection, *, operation: str) -> None:
+    """Core-function-level P0-G-B1 gate for reclaim/complete/unblock.
+
+    Raises :class:`LifecycleWriteForbiddenError` if the task's board is
+    QUARANTINED/ARCHIVED. Never raises for any other reason — a lifecycle
+    module import failure or an unexpected exception from the check itself
+    must not break every reclaim/complete/unblock call in a Hermes home
+    that hasn't run the P0-G-B1 migration; see
+    ``kanban_lifecycle.check_write_allowed``'s own fail-open-on-missing-
+    registry contract, which this simply delegates to.
+    """
+    try:
+        from hermes_cli import kanban_lifecycle as _lifecycle
+    except Exception:
+        logger.exception(
+            "kanban lifecycle: kanban_lifecycle unavailable while checking "
+            "%s; proceeding (see check_write_allowed pre-rollout contract)",
+            operation,
+        )
+        return
+    slug = _slug_for_conn(conn)
+    try:
+        result = _lifecycle.check_write_allowed(slug, operation=operation)
+    except Exception:
+        logger.exception(
+            "kanban lifecycle: check_write_allowed raised for board %s "
+            "operation %s; proceeding (fail-open per check_write_allowed "
+            "contract — an unreadable registry must not break %s on boards "
+            "that predate P0-G-B1)", slug, operation, operation,
+        )
+        return
+    if result.eligible:
+        return
+    try:
+        _lifecycle.emit_alert(
+            event_type="lifecycle_dispatch_denied",
+            board=slug,
+            reason=result.reason,
+            detector=f"core-function:{operation}",
+            dispatch_stopped=True,
+            operator_action_required=not result.registry_ok,
+        )
+    except Exception:
+        pass
+    raise LifecycleWriteForbiddenError(
+        operation=operation, board=slug, state=result.state, reason=result.reason,
+    )
+
+
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
     """Copy a corrupt DB (and its WAL/SHM sidecars) to a content-addressed backup.
 
@@ -3848,7 +3988,12 @@ def reclaim_task(
 
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
+
+    Raises :class:`LifecycleWriteForbiddenError` if the task's board is
+    QUARANTINED/ARCHIVED (P0-G-B1 core-function gate — see
+    :func:`_enforce_lifecycle_write_gate`).
     """
+    _enforce_lifecycle_write_gate(conn, operation="reclaim")
     row = conn.execute(
         "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
         (task_id,),
@@ -4100,7 +4245,12 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    Raises :class:`LifecycleWriteForbiddenError` if the task's board is
+    QUARANTINED/ARCHIVED (P0-G-B1 core-function gate — see
+    :func:`_enforce_lifecycle_write_gate`).
     """
+    _enforce_lifecycle_write_gate(conn, operation="complete")
     now = int(time.time())
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
@@ -4921,7 +5071,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Raises :class:`LifecycleWriteForbiddenError` if the task's board is
+    QUARANTINED/ARCHIVED (P0-G-B1 core-function gate — see
+    :func:`_enforce_lifecycle_write_gate`).
     """
+    _enforce_lifecycle_write_gate(conn, operation="unblock")
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
@@ -5832,6 +5987,20 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    skipped_lifecycle: bool = False
+    """True when this tick was skipped because the P0-G-B1 external
+    lifecycle registry does not mark this board LEGACY_ACTIVE/ACTIVE (see
+    ``hermes_cli.kanban_lifecycle.check_dispatch_eligibility``). Set by
+    :func:`dispatch_once` itself — round 2 of the containment rollout
+    pushes this check into the core function so that no caller (CLI,
+    gateway, dashboard, or anything else) can bypass it by forgetting to
+    check first. When True, no board-DB write of any kind happened this
+    tick — not even the reclaim/promote steps run before the spawn step —
+    and ``lifecycle_reason`` explains why."""
+    lifecycle_reason: str = ""
+    """Human-readable reason from the lifecycle eligibility check, set
+    alongside ``skipped_lifecycle=True``. Empty when lifecycle gating did
+    not skip this tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7045,13 +7214,64 @@ def dispatch_once(
     The lock is keyed off the board's resolved DB path, so unrelated
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
+
+    P0-G-B1 round 2: lifecycle eligibility (``LEGACY_ACTIVE``/``ACTIVE`` in
+    the external registry — see ``hermes_cli.kanban_lifecycle``) is now
+    enforced HERE, not just at the two operator-facing entrypoints (gateway
+    tick, manual ``hermes kanban dispatch`` CLI). Round 1 left this
+    low-level function ungated on the theory that the two named entrypoints
+    covered every real caller; that assumption was wrong — the
+    always-mounted dashboard plugin
+    (``plugins/kanban/dashboard/plugin_api.py``) calls this function
+    directly with zero lifecycle awareness, so an INACTIVE/QUARANTINED
+    board was still fully dispatchable (including fresh worker spawns)
+    through the ordinary dashboard UI. Gating here closes that for every
+    caller, present or future, matching exactly the same fail-closed rule
+    ``check_dispatch_eligibility`` already applies at the CLI/gateway
+    entrypoints (a completely missing/unreadable registry is NOT treated
+    as "pre-rollout, allow everything" here — it fails closed, same as
+    those entrypoints) so there is one single, consistent rule regardless
+    of which door a caller comes through. On ineligible: returns an empty
+    ``DispatchResult`` with ``skipped_lifecycle=True`` and does zero
+    board-DB writes — not even the lock is acquired.
     """
+    slug = _normalize_board_slug(board) or get_current_board()
+    try:
+        from hermes_cli import kanban_lifecycle as _lifecycle
+        eligibility = _lifecycle.check_dispatch_eligibility(slug)
+    except Exception:
+        logger.exception(
+            "kanban dispatcher: lifecycle eligibility check raised for "
+            "board %s inside dispatch_once; failing closed (skipping tick, "
+            "zero writes)", slug,
+        )
+        return DispatchResult(
+            skipped_lifecycle=True,
+            lifecycle_reason="lifecycle_check_raised (failing closed)",
+        )
+    if not eligibility.eligible:
+        try:
+            _lifecycle.emit_alert(
+                event_type="lifecycle_dispatch_denied",
+                board=slug,
+                reason=eligibility.reason,
+                detector="dispatch_once_internal_gate",
+                dispatch_stopped=True,
+                operator_action_required=not eligibility.registry_ok,
+            )
+        except Exception:
+            pass
+        return DispatchResult(
+            skipped_lifecycle=True, lifecycle_reason=eligibility.reason,
+        )
+
     try:
         db_path = kanban_db_path(board=board)
     except Exception:
         # Path resolution should never fail, but if it somehow does we
         # must not lose the tick — fall through to an unguarded dispatch
-        # rather than dropping work.
+        # rather than dropping work. Lifecycle eligibility was already
+        # confirmed above, so this is not a lifecycle-gating gap.
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
@@ -7066,24 +7286,6 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
 
-    # NOTE on P0-G-B1 scope: lifecycle/integrity gating is deliberately NOT
-    # enforced inside this low-level function. `dispatch_once` is called by
-    # many existing callers beyond the two operator-facing entrypoints the
-    # containment design targets (gateway tick, manual `hermes kanban
-    # dispatch` CLI) — including the entire pre-existing kanban_db/gateway
-    # test suite and any other in-process caller that never populated a
-    # lifecycle registry. Gating here as well as at the entrypoints would
-    # make dispatch_once fail closed for every one of those unrelated
-    # callers the moment no registry file exists, which is a real (and much
-    # broader) behavior change than the compatibility-preserving rollout
-    # this task authorizes. The two named entrypoints enforce the guard
-    # themselves, before ever reaching dispatch_once:
-    #   - gateway/kanban_watchers.py: _tick_once_for_board() calls
-    #     gateway_lifecycle_gate(slug) BEFORE `_kb.connect()`/dispatch_once.
-    #   - hermes_cli/kanban.py: _cmd_dispatch() calls
-    #     _lifecycle_guard_or_print("dispatch") BEFORE calling dispatch_once.
-    # See the P0-G-B1 implementation report for this explicit scoping
-    # decision and the regression it avoids.
     with _dispatch_tick_lock(db_path) as held:
         if not held:
             return DispatchResult(skipped_locked=True)

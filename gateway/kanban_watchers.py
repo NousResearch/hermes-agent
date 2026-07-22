@@ -1037,9 +1037,21 @@ class GatewayKanbanWatchersMixin:
             # INACTIVE — is skipped here with zero DB writes and zero
             # events, matching the containment design's "board merely
             # exists on disk != auto-dispatched" requirement for all
-            # boards created after this rollout. `dispatch_once` itself
-            # re-checks this (defense in depth for any other caller), but
-            # the gateway tick must not even open the connection.
+            # boards created after this rollout.
+            #
+            # P0-G-B1 round 2 (2026-07): `dispatch_once` itself NOW genuinely
+            # re-checks this internally (real defense in depth, not just a
+            # comment claiming it — round 1 shipped this exact comment
+            # without the internal check actually existing, which an
+            # Adversarial Review caught: the always-mounted dashboard
+            # plugin called `kanban_db.dispatch_once()`/`reclaim_task()`/
+            # `complete_task()`/`unblock_task()` directly with zero
+            # lifecycle awareness, so an INACTIVE/QUARANTINED board was
+            # still fully dispatchable through the dashboard UI). The gate
+            # here is kept anyway — it is still the only way to skip a
+            # non-eligible board with ZERO connection/schema-init work, since
+            # `dispatch_once` requires an already-open `conn` and can't avoid
+            # the connect() that happens before it's even called.
             if not gateway_lifecycle_gate(slug):
                 return None
 

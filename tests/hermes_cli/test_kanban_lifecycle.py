@@ -757,3 +757,225 @@ class TestRegressionInversion:
         lc.integrity_precheck(db_path)
         after2 = (db_path.stat().st_mtime_ns, db_path.stat().st_size)
         assert before2 == after2
+
+
+# ---------------------------------------------------------------------------
+# P0-G-B1 round 2: core-function gating (Adversarial Review BLOCKER 1 & 2).
+#
+# Round 1 gated only two entrypoints (gateway tick, manual CLI). The
+# always-mounted dashboard plugin (plugins/kanban/dashboard/plugin_api.py)
+# calls `kanban_db.dispatch_once()` / `reclaim_task()` / `complete_task()` /
+# `unblock_task()` DIRECTLY, with zero lifecycle awareness — proven
+# exploitable: a real ready task on an INACTIVE board WAS actually spawned
+# via a bare `dispatch_once()` call, bypassing both gated entrypoints
+# entirely. These tests reproduce that exact bypass shape (call the core
+# function directly, simulating what the dashboard's HTTP handler does —
+# no gateway_lifecycle_gate, no `_lifecycle_guard_or_print`) and confirm the
+# gate now lives inside the core function itself, so no caller can miss it.
+# ---------------------------------------------------------------------------
+
+class TestCoreFunctionDispatchGate:
+    def test_direct_dispatch_once_call_blocks_inactive_board(self, kanban_home, all_assignees_spawnable):
+        """Simulates the dashboard's ``POST /api/plugins/kanban/dispatch``
+        endpoint: `kb.dispatch_once(conn, board=slug, ...)` called directly,
+        with NEITHER `gateway_lifecycle_gate` NOR
+        `_lifecycle_guard_or_print` anywhere in the call chain. An INACTIVE
+        board must still not dispatch."""
+        lc.write_new_registry({"default": _entry("INACTIVE")})
+        with kb.connect() as conn:
+            kb.create_task(conn, title="t", assignee="w")
+        spawned = []
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", spawn_fn=lambda *a, **k: spawned.append(1),
+            )
+        assert result.skipped_lifecycle is True
+        assert "state=INACTIVE" in result.lifecycle_reason
+        assert spawned == []
+        assert result.spawned == []
+
+    def test_direct_dispatch_once_call_blocks_quarantined_board(self, kanban_home, all_assignees_spawnable):
+        """Same bypass shape as above, on a QUARANTINED board — the more
+        serious case, since QUARANTINED is meant to mean "known-corrupt or
+        under investigation, must not be touched at all"."""
+        lc.write_new_registry({"default": _entry("QUARANTINED")})
+        with kb.connect() as conn:
+            kb.create_task(conn, title="t", assignee="w")
+        spawned = []
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", spawn_fn=lambda *a, **k: spawned.append(1),
+            )
+        assert result.skipped_lifecycle is True
+        assert "state=QUARANTINED" in result.lifecycle_reason
+        assert spawned == []
+
+    def test_direct_dispatch_once_call_blocks_brand_new_unregistered_board(self, kanban_home, all_assignees_spawnable):
+        """A board with NO registry entry at all (fresh post-rollout board)
+        must default to not-dispatched even when dispatch_once is called
+        directly, bypassing both gated entrypoints."""
+        lc.write_new_registry({"other": _entry("LEGACY_ACTIVE")})
+        with kb.connect() as conn:
+            kb.create_task(conn, title="t", assignee="w")
+        spawned = []
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", spawn_fn=lambda *a, **k: spawned.append(1),
+            )
+        assert result.skipped_lifecycle is True
+        assert "no_registry_entry" in result.lifecycle_reason
+        assert spawned == []
+
+    def test_direct_dispatch_once_call_still_dispatches_legacy_active_board(self, kanban_home, all_assignees_spawnable):
+        """Compatibility check: the internal gate must not turn into a
+        blanket "always skip" — a real LEGACY_ACTIVE board dispatched
+        directly (no gateway/CLI in the chain) must still actually
+        dispatch, proving the gate discriminates by state rather than
+        just always refusing."""
+        lc.write_new_registry({"default": _entry("LEGACY_ACTIVE")})
+        with kb.connect() as conn:
+            kb.create_task(conn, title="t", assignee="w")
+        spawned = []
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", spawn_fn=lambda *a, **k: spawned.append(1),
+            )
+        assert result.skipped_lifecycle is False
+        assert spawned == [1]
+
+    def test_direct_dispatch_once_call_fails_closed_with_no_registry_at_all(self, hermes_home, monkeypatch):
+        """No registry FILE at all (pre-migration Hermes home) must still
+        fail closed for `dispatch_once` itself — the same rule
+        `check_dispatch_eligibility` already applies at the CLI/gateway
+        entrypoints (round 1). This is the explicit design decision from
+        the P0-G-B1 round 2 task: dispatch_once uses check_dispatch_
+        eligibility's rule verbatim, not a more lenient "no file at all ->
+        allow" rule (that rule is what check_write_allowed uses for
+        reclaim/complete/unblock instead — a deliberately different,
+        narrower check for single-task recovery ops, not dispatch)."""
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(hermes_home))
+        db_path = kb.kanban_db_path(board="default")
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        kb.init_db()
+        assert not lc.registry_path().exists()
+        spawned = []
+        with kb.connect(board="default") as conn:
+            result = kb.dispatch_once(
+                conn, board="default", spawn_fn=lambda *a, **k: spawned.append(1),
+            )
+        assert result.skipped_lifecycle is True
+        assert "registry_unreadable" in result.lifecycle_reason
+        assert spawned == []
+
+
+class TestCoreFunctionWriteGate:
+    """reclaim_task / complete_task / unblock_task called directly (as the
+    dashboard's reclaim/terminate-run/update-task/bulk-update endpoints do),
+    with no CLI guard anywhere in the chain."""
+
+    def test_direct_reclaim_call_raises_on_quarantined_board(self, kanban_home):
+        lc.write_new_registry({"default": _entry("QUARANTINED")})
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.claim_task(conn, tid)
+            with pytest.raises(kb.LifecycleWriteForbiddenError) as excinfo:
+                kb.reclaim_task(conn, tid, reason="operator abort")
+            assert excinfo.value.operation == "reclaim"
+            assert excinfo.value.board == "default"
+            assert excinfo.value.state == "QUARANTINED"
+            # The task must be untouched — still running, not silently
+            # reclaimed, and not left in some half-mutated state.
+            task = kb.get_task(conn, tid)
+            assert task.status == "running"
+
+    def test_direct_complete_call_raises_on_quarantined_board(self, kanban_home):
+        lc.write_new_registry({"default": _entry("QUARANTINED")})
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.claim_task(conn, tid)
+            with pytest.raises(kb.LifecycleWriteForbiddenError):
+                kb.complete_task(conn, tid, result="done")
+            task = kb.get_task(conn, tid)
+            assert task.status != "done"
+
+    def test_direct_unblock_call_raises_on_quarantined_board(self, kanban_home):
+        lc.write_new_registry({"default": _entry("QUARANTINED")})
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.block_task(conn, tid, reason="waiting")
+            with pytest.raises(kb.LifecycleWriteForbiddenError):
+                kb.unblock_task(conn, tid)
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked"
+
+    def test_direct_reclaim_call_raises_on_archived_board(self, kanban_home):
+        lc.write_new_registry({"default": _entry("LEGACY_ACTIVE")})
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.claim_task(conn, tid)
+        # ARCHIVED is terminal (forbidden entirely as a transition target
+        # this round — see _ALLOWED_TRANSITIONS); write it directly into
+        # the registry rather than via apply_board_transition, same as
+        # other tests in this file do for states reached out-of-band
+        # (e.g. migration-written entries).
+        _write_registry({"default": _entry("ARCHIVED")}, generation=2)
+        with kb.connect() as conn:
+            with pytest.raises(kb.LifecycleWriteForbiddenError) as excinfo:
+                kb.reclaim_task(conn, tid, reason="operator abort")
+            assert excinfo.value.state == "ARCHIVED"
+
+    def test_direct_reclaim_call_allowed_on_inactive_board(self, kanban_home):
+        """Round-1 residual #3, re-confirmed at the core-function level:
+        INACTIVE only forbids dispatch, not single-task recovery ops — this
+        must hold true even when reclaim_task is called directly (bypassing
+        the CLI), not just through the CLI's own (narrower) guard."""
+        lc.write_new_registry({"default": _entry("INACTIVE")})
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.claim_task(conn, tid)
+            assert kb.reclaim_task(conn, tid, reason="operator abort") is True
+
+    def test_direct_complete_call_allowed_with_no_registry_at_all(self, hermes_home, monkeypatch):
+        """check_write_allowed's own documented rule: a completely missing
+        registry (pre-migration Hermes home) is treated as pre-rollout and
+        ALLOWED for reclaim/complete/unblock — deliberately narrower/more
+        lenient than dispatch's fail-closed rule. Confirmed here at the
+        core-function level, not just the CLI layer."""
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(hermes_home))
+        db_path = kb.kanban_db_path(board="default")
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        kb.init_db()
+        assert not lc.registry_path().exists()
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.claim_task(conn, tid)
+            assert kb.complete_task(conn, tid, result="done") is True
+
+
+class TestSlugForConn:
+    """`_slug_for_conn` — how reclaim/complete/unblock recover the board
+    identity from an already-open connection with no explicit `board` arg."""
+
+    def test_resolves_default_board_from_db_path(self, kanban_home):
+        with kb.connect() as conn:
+            assert kb._slug_for_conn(conn) == "default"
+
+    def test_resolves_named_board_from_db_path(self, kanban_home):
+        kb._INITIALIZED_PATHS.discard(str(kb.kanban_db_path(board="other-board").resolve()))
+        kb.init_db(board="other-board")
+        with kb.connect(board="other-board") as conn:
+            assert kb._slug_for_conn(conn) == "other-board"
+
+    def test_falls_back_to_current_board_for_unrecognized_path(self, kanban_home, tmp_path, monkeypatch):
+        """A connection whose file path matches neither known layout (e.g.
+        an ad-hoc `HERMES_KANBAN_DB` override) falls back to
+        `get_current_board()`, same as `connect()` itself would resolve
+        with no explicit path/board."""
+        import sqlite3
+        custom_path = tmp_path / "custom.db"
+        conn = sqlite3.connect(str(custom_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            assert kb._slug_for_conn(conn) == kb.get_current_board() == "default"
+        finally:
+            conn.close()

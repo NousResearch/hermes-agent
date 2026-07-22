@@ -141,7 +141,7 @@ async def test_details_with_math_skips_rich_send_to_avoid_tdesktop_crash():
 
 @pytest.mark.asyncio
 async def test_details_without_math_still_uses_rich_send():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"telegram_web_safe": False})
 
     result = await adapter.send(
         "12345",
@@ -157,7 +157,7 @@ async def test_details_without_math_still_uses_rich_send():
 
 @pytest.mark.asyncio
 async def test_math_outside_details_still_uses_rich_send():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"telegram_web_safe": False})
 
     result = await adapter.send("12345", "Outside details: $$x^2 + y^2$$")
 

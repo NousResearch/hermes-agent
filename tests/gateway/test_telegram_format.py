@@ -39,6 +39,7 @@ from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,
+    _telegram_web_safe_routes_to_legacy,
     _wrap_markdown_tables,
 )
 
@@ -1217,3 +1218,312 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# _telegram_web_safe_routes_to_legacy — Telegram Web compatibility gate
+#
+# Web-safe delivery routes payloads that contain constructs Telegram Web
+# cannot render (`---`/`===` horizontal rules, `<details>`/`<summary>` HTML,
+# `$$ ... $$` block math) to the legacy MarkdownV2 fallback instead of the
+# rich fast-path. The fallback escapes the constructs harmlessly and
+# preserves the math expression (rendered as plain text), so the user sees
+# the formula rather than an empty gap.
+#
+# Invariants tested here:
+#   1. Constructs that escape format_message() (--- rules, <details> HTML,
+#      $$ ... $$ block math) trigger the routing decision.
+#   2. Constructs that format_message() handles correctly (## headers,
+#      fenced code, **bold**, pipe tables) do NOT trigger routing.
+#   3. Empty input is safe (returns False).
+#   4. False positives are guarded against (e.g. "details" in plain text,
+#      "--" inside a word, inline "$5" should not trigger).
+# =========================================================================
+
+
+class TestTelegramWebSafeRoutesToLegacy:
+    # --- 1. Constructs that DO trigger routing ------------------------------
+
+    def test_routes_when_dash_horizontal_rule_present(self):
+        assert _telegram_web_safe_routes_to_legacy("header\n---\nbody") is True
+
+    def test_routes_when_equals_horizontal_rule_present(self):
+        assert _telegram_web_safe_routes_to_legacy("header\n===\nbody") is True
+
+    def test_routes_when_long_dash_rule_present(self):
+        # 4+ dashes also counts (matches the [-=]{3,} pattern).
+        assert _telegram_web_safe_routes_to_legacy("header\n----\nbody") is True
+
+    def test_routes_when_details_tag_present(self):
+        assert _telegram_web_safe_routes_to_legacy(
+            "<details><summary>click</summary>body</details>"
+        ) is True
+
+    def test_routes_when_details_with_attributes_present(self):
+        assert _telegram_web_safe_routes_to_legacy(
+            '<details class="x" data-y="z">fine</details>'
+        ) is True
+
+    def test_routes_when_block_math_present(self):
+        assert _telegram_web_safe_routes_to_legacy(
+            "before\n$$\nE = mc^2\n$$\nafter"
+        ) is True
+
+    def test_routes_when_single_line_block_math_present(self):
+        # $$ ... $$ on a single line is also block math.
+        assert _telegram_web_safe_routes_to_legacy("Inline: $$x^2 + y^2$$") is True
+
+    def test_routes_when_only_block_math_markers_present(self):
+        # Even an empty $$ ... $$ pair triggers routing — the markers
+        # themselves render as literal text on Web.
+        assert _telegram_web_safe_routes_to_legacy("$$\n\n$$") is True
+
+    # --- 2. Constructs that do NOT trigger routing -------------------------
+
+    def test_does_not_route_for_markdown_header(self):
+        # ## headers are handled by format_message; not Web-unsafe.
+        assert _telegram_web_safe_routes_to_legacy("## Title\n\nbody") is False
+
+    def test_does_not_route_for_fenced_code_block(self):
+        assert _telegram_web_safe_routes_to_legacy(
+            "before\n```python\nprint('hi')\n```\nafter"
+        ) is False
+
+    def test_does_not_route_for_bold(self):
+        assert _telegram_web_safe_routes_to_legacy(
+            "this is **bold** text"
+        ) is False
+
+    def test_does_not_route_for_pipe_table(self):
+        # Tables are converted to bullets by format_message; safe on Web.
+        assert _telegram_web_safe_routes_to_legacy(
+            "| a | b |\n|---|---|\n| 1 | 2 |"
+        ) is False
+
+    def test_does_not_route_for_two_dashes_in_word(self):
+        # "end-of-line" contains "--" but is NOT a horizontal rule.
+        assert _telegram_web_safe_routes_to_legacy("use -- for emphasis") is False
+
+    def test_does_not_route_for_three_dashes_in_word(self):
+        # "pre---post" must not match the rule regex (rule requires line
+        # boundaries + whitespace).
+        assert _telegram_web_safe_routes_to_legacy("pre---post") is False
+
+    def test_does_not_route_for_inline_dollar(self):
+        # Single $ (not block math) must not trigger routing.
+        assert _telegram_web_safe_routes_to_legacy("cost is $5") is False
+
+    def test_does_not_route_for_details_substring_in_plain_text(self):
+        # "details" substring in non-tag text must not match the tag regex.
+        assert _telegram_web_safe_routes_to_legacy(
+            "see details for more info"
+        ) is False
+
+    # --- 3. Edge cases -----------------------------------------------------
+
+    def test_does_not_route_for_empty_string(self):
+        assert _telegram_web_safe_routes_to_legacy("") is False
+
+    def test_does_not_route_for_none(self):
+        assert _telegram_web_safe_routes_to_legacy(None) is False  # type: ignore[arg-type]
+
+    def test_routes_for_mixed_constructs(self):
+        # Mixed payload with multiple unsafe constructs triggers routing on
+        # the first one found.
+        text = (
+            "## Section\n\n"
+            "---\n"
+            "intro <details>hidden</details> done\n"
+            "$$x=1$$\n"
+            "**bold** survives\n"
+        )
+        assert _telegram_web_safe_routes_to_legacy(text) is True
+
+
+# =========================================================================
+# telegram_web_safe gate integration — applied consistently to send /
+# edit_message / send_draft. The gate is the RUNTIME ROUTING DECISION
+# (NOT a content mutation); the call site reads `_telegram_web_safe_enabled`
+# and decides whether to bypass the rich path in favor of the legacy
+# MarkdownV2 fallback. Tests here cover:
+#   - The gate bypasses the rich fast-path on all three delivery routes
+#     when Web-safe is enabled and content has Web-unsafe constructs.
+#   - The math expression survives end-to-end (preserved in legacy output
+#     rather than deleted).
+#   - Opt-out (`telegram_web_safe: false`) restores the rich path so native
+#     Telegram clients see full markdown including ``$$ ... $$`` rendering.
+# =========================================================================
+
+
+def _web_safe_adapter(extra=None):
+    """Build a TelegramAdapter with the Web-safe gate enabled and rich path
+    active. Used by the Web-safe gate integration tests below."""
+    config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={
+            "telegram_web_safe": True,
+            "rich_messages": True,
+            **(extra or {}),
+        },
+    )
+    adapter = TelegramAdapter(config)
+    adapter._bot = MagicMock()
+    # do_api_request as AsyncMock so _bot_supports_rich() returns True.
+    adapter._bot.do_api_request = AsyncMock(
+        return_value=SimpleNamespace(message_id=123)
+    )
+    adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    adapter._bot.edit_message_text = AsyncMock(
+        return_value=MagicMock(message_id=1)
+    )
+    adapter._bot.send_message_draft = AsyncMock(return_value=True)
+    return adapter
+
+
+class TestWebSafeGateSkipsRichOnSend:
+    @pytest.mark.asyncio
+    async def test_send_routes_to_legacy_when_content_has_block_math(self):
+        """Block-math content triggers the Web-safe gate, which bypasses
+        the rich fast-path. The math expression survives end-to-end in the
+        legacy MarkdownV2 output (rendered as plain text, not deleted)."""
+        adapter = _web_safe_adapter()
+        content = "intro\n$$\nE = mc^2\n$$\noutro"
+
+        result = await adapter.send("12345", content)
+
+        assert result.success is True
+        # Rich path was bypassed — legacy MarkdownV2 was used.
+        adapter._bot.do_api_request.assert_not_called()
+        adapter._bot.send_message.assert_awaited_once()
+
+        sent_text = adapter._bot.send_message.await_args.kwargs.get("text", "")
+        # Math expression preserved (rendered as plain text by MarkdownV2;
+        # format_message escapes some MarkdownV2-special chars like `=` but
+        # `mc^2` is unchanged since `^` isn't MarkdownV2-special).
+        assert "mc^2" in sent_text, sent_text
+        # The legacy path passes the original content through to format_message.
+        assert "$$" in sent_text, sent_text
+
+    @pytest.mark.asyncio
+    async def test_send_uses_rich_when_web_safe_disabled(self):
+        """Opt-out (`telegram_web_safe: false`) restores the rich fast-path
+        for content with block math on native Telegram clients."""
+        adapter = _web_safe_adapter(extra={"telegram_web_safe": False})
+        # Make sure rich_messages is on (the default is True).
+        adapter._rich_messages_enabled = True
+        content = "before\n$$\nE = mc^2\n$$\nafter"
+
+        await adapter.send("12345", content)
+
+        # Rich path is used (no gate forcing legacy).
+        adapter._bot.do_api_request.assert_awaited_once()
+        adapter._bot.send_message.assert_not_called()
+
+
+class TestWebSafeGateSkipsRichOnEditMessage:
+    @pytest.mark.asyncio
+    async def test_edit_message_routes_to_legacy_when_content_has_math(self):
+        """edit_message finalizes through the same gate as send. Block math
+        bypasses the rich edit-finalize and uses the legacy MarkdownV2 edit."""
+        adapter = _web_safe_adapter()
+        content = "intro\n$$\nE = mc^2\n$$\nbody"
+
+        result = await adapter.edit_message(
+            "12345", "456", content, finalize=True
+        )
+
+        assert result.success is True
+        # Rich edit-finalize was bypassed.
+        adapter._bot.do_api_request.assert_not_called()
+        adapter._bot.edit_message_text.assert_awaited()
+
+        # At least one edit was made via the legacy path. The math expression
+        # survives in the legacy output.
+        sent_texts = [
+            call.kwargs.get("text", "")
+            for call in adapter._bot.edit_message_text.await_args_list
+        ]
+        assert any("mc^2" in t for t in sent_texts), sent_texts
+
+    @pytest.mark.asyncio
+    async def test_edit_message_uses_rich_when_web_safe_disabled(self):
+        adapter = _web_safe_adapter(extra={"telegram_web_safe": False})
+        adapter._rich_messages_enabled = True
+        content = "intro\n$$\nE = mc^2\n$$\noutro"
+
+        await adapter.edit_message("12345", "456", content, finalize=True)
+
+        adapter._bot.do_api_request.assert_awaited_once()
+        adapter._bot.edit_message_text.assert_not_called()
+
+
+class TestWebSafeGateSkipsRichOnSendDraft:
+    @pytest.mark.asyncio
+    async def test_send_draft_routes_to_legacy_when_content_has_math(self):
+        """send_draft must apply the same routing gate. Otherwise the animated
+        rich preview would render constructs the Web user can't see, then
+        snap into MarkdownV2 at finalize — a jarring format shift mid-turn."""
+        adapter = _web_safe_adapter(extra={"rich_drafts": True})
+        content = "preview $$\nE = mc^2\n$$\nmore"
+
+        result = await adapter.send_draft("12345", draft_id=7, content=content)
+
+        assert result.success is True
+        # Rich-draft was bypassed; legacy draft used.
+        adapter._bot.do_api_request.assert_not_called()
+        adapter._bot.send_message_draft.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_draft_uses_rich_when_web_safe_disabled(self):
+        adapter = _web_safe_adapter(
+            extra={"telegram_web_safe": False, "rich_drafts": True}
+        )
+        content = "draft $$\nE = mc^2\n$$"
+
+        await adapter.send_draft("12345", draft_id=7, content=content)
+
+        adapter._bot.do_api_request.assert_awaited_once()
+        adapter._bot.send_message_draft.assert_not_called()
+
+
+# =========================================================================
+# Regression: existing rich-message tests must continue to pass. The gate
+# is additive — content without Web-unsafe constructs flows through the
+# rich path unchanged. These cases are pinned here so future refactors of
+# the gate can't silently regress them.
+# =========================================================================
+
+
+class TestWebSafeGateIsAdditiveForSafeContent:
+    @pytest.mark.asyncio
+    async def test_send_with_safe_content_uses_rich(self):
+        """Plain tables (no $$/<details>/---) flow through the rich path
+        unchanged — the gate does not touch them."""
+        from tests.gateway.test_telegram_rich_messages import RICH_CONTENT, _make_adapter
+        # The shared _make_adapter in test_telegram_rich_messages sets
+        # rich_messages: True but does NOT set telegram_web_safe, so the
+        # gate's default is True; however RICH_CONTENT has no Web-unsafe
+        # constructs, so the gate's routing helper returns False and the
+        # rich path stays active.
+        adapter = _make_adapter()
+        await adapter.send("12345", RICH_CONTENT)
+        adapter._bot.do_api_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_with_details_and_math_uses_rich_when_rich_safe(self):
+        """TDesktop details+math still triggers the existing rich-skip
+        (separate guard) — the Web-safe gate does not change that behavior.
+        Specifically: this content is rich-skip'd for TDesktop reasons, NOT
+        because the Web-safe gate added a new skip; the legacy path runs
+        either way."""
+        from tests.gateway.test_telegram_rich_messages import (
+            DANGEROUS_DETAILS_MATH,
+            _make_adapter,
+        )
+        adapter = _make_adapter()
+        await adapter.send("12345", DANGEROUS_DETAILS_MATH)
+        # Rich path was skipped (TDesktop guard).
+        adapter._bot.do_api_request.assert_not_called()
+        # Legacy path delivered.
+        adapter._bot.send_message.assert_awaited_once()

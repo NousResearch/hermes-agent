@@ -451,6 +451,78 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+# Constructs that Telegram Web cannot render and that survive both the rich
+# fast-path (Bot API 10.1, which Web refuses entirely) and the MarkdownV2
+# fallback (which parses but rejects malformed markdown at the server). The
+# sanitize pass runs at the top of send() before either path is chosen, so
+# both code paths see only Web-safe content. Kept intentionally narrow:
+# format_message() already handles headers, bold/italic, code fences, pipe
+# tables, and inline code for the legacy path. The regexes here cover the
+# three constructs that escape both paths' normalizers.
+#
+# - ``---`` / ``===`` horizontal rules: MarkdownV2 escapes ``-`` so the line
+#   renders as literal "\-\-\-" on Web, and rich frames render the rule on
+#   native but break the frame on Web.
+# - ``<details>`` / ``<summary>``: Telegram renders these only on native
+#   rich frames; on Web they leak as literal HTML.
+# - ``$$ ... $$`` block-math markers: Telegram renders these only on native
+#   rich frames; on Web they leak as literal ``$$`` and corrupt the line.
+#
+# Markdown headers (## / ###) and fenced code blocks are deliberately NOT
+# handled here: format_message() already converts headers to bold and
+# protects code blocks via placeholders before the MarkdownV2 escape pass.
+_WEB_UNSAFE_HRULE_RE = re.compile(r'(?m)^\s*[-=]{3,}\s*$')
+_WEB_UNSAFE_DETAILS_RE = re.compile(
+    r'(?is)<\s*/?\s*(?:details|summary)\b[^>]*>'
+)
+# Block math ``$$ ... $$`` markers. The rich-message path renders block math
+# natively on Telegram desktop/mobile (``_needs_rich_rendering`` triggers on
+# ``$$``); on Telegram Web the rich fast-path collapses multi-line content
+# and the markers leak as literal text. The rich path also has separate
+# guards (TDesktop details+math crash, CJK garble) that look for these
+# markers. We use the same markers here as routing signals — see
+# ``_telegram_web_safe_routes_to_legacy``.
+_WEB_UNSAFE_BLOCK_MATH_RE = re.compile(r'\$\$[\s\S]*?\$\$|\$\$')
+
+
+def _telegram_web_safe_routes_to_legacy(content: str) -> bool:
+    """True when Web-safe delivery should bypass the rich fast-path.
+
+    The rich fast-path renders ``---``/``===`` horizontal rules,
+    ``<details>``/``<summary>`` HTML, and ``$$ ... $$`` block math natively
+    on Telegram desktop/mobile clients. On Telegram Web the rich frame
+    collapses multi-line content into a ``"not supported on Telegram Web"``
+    stub — so for Web users the bot must route to the legacy MarkdownV2
+    fallback instead.
+
+    The fallback (``format_message`` → MarkdownV2) escapes the constructs
+    harmlessly:
+        - ``---``         → ``\-\-\-``  (rendered as literal dashes)
+        - ``<details>…``   → ``\<details\>…`` (escaped HTML)
+        - ``$$ … $$``      → ``$$ … $$``  (unchanged — ``$`` is not a
+                                              MarkdownV2 escape character)
+
+    The math expression therefore survives (rendered as plain text) rather
+    than being deleted — the v1 of this gate deleted the entire
+    ``$$ ... $$`` span and lost the expression. Routing preserves the
+    content end-to-end.
+
+    The same markers also drive the existing rich-eligibility guards
+    (``_has_telegram_desktop_details_math_crash_shape`` etc.); routing
+    rather than mutating keeps those guards intact.
+
+    Returns False when content is empty / has no Web-unsafe construct, so
+    the call site can fast-path without touching the original string.
+    """
+    if not content:
+        return False
+    return bool(
+        _WEB_UNSAFE_HRULE_RE.search(content)
+        or _WEB_UNSAFE_DETAILS_RE.search(content)
+        or _WEB_UNSAFE_BLOCK_MATH_RE.search(content)
+    )
+
+
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
     r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
 )
@@ -679,6 +751,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Telegram Web compat: strip constructs that Web cannot render
+        # (horizontal rules, <details>/<summary> HTML, $$ block math) before
+        # either the rich fast-path or the MarkdownV2 fallback sees the
+        # content. Bot API 10.1 rich frames are not supported on Web at
+        # all (the client renders the literal "not supported on Telegram Web"
+        # stub), so this only narrows what survives into both paths; native
+        # desktop/mobile users who want rich rendering can opt out via
+        # platforms.telegram.extra.telegram_web_safe: false.
+        self._telegram_web_safe_enabled: bool = self._coerce_bool_extra(
+            "telegram_web_safe", True
+        )
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -4034,14 +4117,39 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        # Telegram Web compatibility gate — runs before the rich fast-path so
+        # constructs the Web client cannot render (--- rules, <details> HTML,
+        # $$ ... $$ block math) route to the legacy MarkdownV2 fallback
+        # instead of producing the "not supported on Telegram Web" stub.
+        # The routing helper preserves the original content end-to-end so
+        # the math expression survives (rendered as plain text by the
+        # legacy path). See _telegram_web_safe_routes_to_legacy. Gated on
+        # extra.telegram_web_safe (default True). Opt-out is for users who
+        # have tested rich rendering on native Telegram clients and prefer
+        # it preserved at the cost of Web compatibility.
+        _web_safe_force_legacy = bool(
+            getattr(self, "_telegram_web_safe_enabled", True)
+            and _telegram_web_safe_routes_to_legacy(content)
+        )
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            #
+            # The Web-safe gate above sets ``_web_safe_force_legacy`` when the
+            # content has constructs Telegram Web can't render (--- rules,
+            # <details> HTML, $$ ... $$ block math). Forcing the rich path
+            # off here keeps the legacy fallback as the single source of
+            # truth for those payloads — no content mutation, so the math
+            # expression survives in the legacy rendering.
+            if (
+                not _web_safe_force_legacy
+                and self._should_attempt_rich(content, metadata=metadata)
+            ):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -4399,6 +4507,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # Telegram Web compatibility gate — same routing decision as in
+        # send(): when content has constructs Telegram Web can't render
+        # (--- rules, <details> HTML, $$ ... $$ block math), skip the rich
+        # edit-finalize path and let the legacy MarkdownV2 edit handle it.
+        # Without this gate, a streamed preview that started on a desktop
+        # client (rich path active) and then was finalized while the user's
+        # connection flipped to Web would attempt a rich edit on a client
+        # that can't render it. Routing preserves the math expression end-
+        # to-end. See _telegram_web_safe_routes_to_legacy.
+        _web_safe_force_legacy = bool(
+            getattr(self, "_telegram_web_safe_enabled", True)
+            and _telegram_web_safe_routes_to_legacy(content)
+        )
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -4409,7 +4531,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if (
+            finalize
+            and not _web_safe_force_legacy
+            and self._rich_eligible(content)
+        ):
             rich_result = await self._try_edit_rich(
                 chat_id, message_id, content, metadata=metadata,
             )
@@ -4867,11 +4993,29 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="not_connected")
 
+        # Telegram Web compatibility gate — same routing decision as in
+        # send() and edit_message(): when content has constructs Telegram
+        # Web can't render (--- rules, <details> HTML, $$ ... $$ block
+        # math), skip the rich-draft fast-path so the animated preview
+        # doesn't render constructs the Web user can't see (and then snap
+        # into a MarkdownV2 finalize at the end of the turn — a jarring
+        # format shift). Routing rather than mutating keeps the original
+        # content (including the math expression) end-to-end and preserves
+        # the TDesktop-crash check that also uses these markers. See
+        # _telegram_web_safe_routes_to_legacy.
+        _web_safe_force_legacy = bool(
+            getattr(self, "_telegram_web_safe_enabled", True)
+            and _telegram_web_safe_routes_to_legacy(content)
+        )
+
         # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
         # streaming preview with the same raw markdown the final
         # sendRichMessage will persist, so the animated draft matches the final
         # message. Any failure degrades to the legacy plain-text draft below.
-        if self._should_attempt_rich_draft(content):
+        if (
+            not _web_safe_force_legacy
+            and self._should_attempt_rich_draft(content)
+        ):
             if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
                 # Drafts have no message_id; report success without one.
                 return SendResult(success=True, message_id=None)

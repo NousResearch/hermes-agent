@@ -2649,6 +2649,7 @@ DEFAULT_CONFIG = {
         "extra": {
             "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
             "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
+            "telegram_web_safe": True,  # Strip Telegram-Web-unsafe constructs (--- rules, <details>/<summary> HTML, $$ block math) before the rich fast-path and MarkdownV2 fallback. Default ON because Bot API 10.1 rich frames render as the literal "not supported on Telegram Web" stub on Web, and MarkdownV2 leaks malformed markdown on long outputs. Set False only if you have verified native rendering and accept Web breakage.
         },
     },
 

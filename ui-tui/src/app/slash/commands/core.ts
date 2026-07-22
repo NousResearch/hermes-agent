@@ -1,6 +1,6 @@
 import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 
-import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
+import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
@@ -11,7 +11,8 @@ import type {
   SessionStatusResponse,
   SessionSteerResponse,
   SessionTitleResponse,
-  SessionUndoResponse
+  SessionUndoResponse,
+  SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -76,6 +77,14 @@ const DETAILS_USAGE =
 
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
+// Shown when /exit or /quit is refused in the hosted dashboard chat. Kept as a
+// constant so the test asserts against the same source of truth as production.
+export const DASHBOARD_EXIT_DISABLED_MESSAGE =
+  'exit is disabled in hosted dashboard chat — use /new to start a fresh session'
+
+export const DASHBOARD_UPDATE_DISABLED_MESSAGE =
+  'update is disabled in hosted dashboard chat — the hosted environment is managed separately'
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -98,7 +107,9 @@ export const coreCommands: SlashCommand[] = [
               '/details <section> [hidden|collapsed|expanded|reset]',
               'override one section (thinking/tools/subagents/activity)'
             ],
-            ['/fortune [random|daily]', 'show a random or daily local fortune']
+            ['/fortune [random|daily]', 'show a random or daily local fortune'],
+            ['/grid-test [cols]x[rows]', 'open the interactive widget-grid demo'],
+            ['/dialog-test [zone]', 'open a sample dialog overlay with a faked backdrop']
           ],
           title: 'TUI'
         },
@@ -113,13 +124,34 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
-    run: (_arg, ctx) => ctx.session.die()
+    run: (_arg, ctx) => {
+      // In the hosted dashboard chat there is no in-page restart path after
+      // the PTY child exits, so quitting bricks the tab until a refresh. The
+      // keyboard idle-exit (Ctrl+C / Ctrl+D) and SIGINT handling already refuse
+      // to die in this mode (see useInputHandlers + entry.tsx); gate /exit and
+      // /quit on the same DASHBOARD_TUI_MODE flag. Unlike the keyboard path
+      // (which auto-starts a fresh chat), the explicit quit command refuses and
+      // instructs the user to run /new themselves.
+      if (DASHBOARD_TUI_MODE) {
+        ctx.transcript.sys(DASHBOARD_EXIT_DISABLED_MESSAGE)
+
+        return
+      }
+
+      ctx.session.die()
+    }
   },
 
   {
     help: 'update Hermes Agent to the latest version (exits TUI)',
     name: 'update',
     run: (_arg, ctx) => {
+      if (DASHBOARD_TUI_MODE) {
+        ctx.transcript.sys(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+
+        return
+      }
+
       ctx.transcript.sys('exiting TUI to run update...')
       // Exit code 42 signals the Python wrapper to exec `hermes update`.
       // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
@@ -356,9 +388,7 @@ export const coreCommands: SlashCommand[] = [
         if (text) {
           return sys(`copied ${text.length} characters`)
         } else {
-          return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
-          )
+          return sys('clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence')
         }
       }
 
@@ -398,6 +428,24 @@ export const coreCommands: SlashCommand[] = [
     help: 'attach clipboard image',
     name: 'paste',
     run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+  },
+
+  {
+    aliases: ['compose'],
+    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
+    name: 'prompt',
+    run: (arg, ctx) => {
+      if (arg) {
+        // The TUI editor opens with the current composer draft; there is no
+        // separate seed arg. Drop any inline text into the composer first so
+        // it carries into the editor, matching the CLI's /prompt <text>.
+        ctx.composer.setInput(arg)
+      }
+
+      void ctx.composer.openEditor().catch((err: unknown) => {
+        ctx.transcript.sys(`editor failed: ${String(err)}`)
+      })
+    }
   },
 
   {
@@ -531,6 +579,45 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
+    }
+  },
+
+  {
+    help: 'toggle a color-coded battery indicator in the status bar [on|off|status]',
+    name: 'battery',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      // `/battery status` reports the current setting plus a live reading,
+      // matching the CLI surface. Fetch on demand so it works even while the
+      // indicator (and its poller) is off.
+      if (mode === 'status' || mode === 'show') {
+        const state = ctx.ui.battery ? 'on' : 'off'
+
+        ctx.gateway
+          .rpc<SystemBatteryResponse>('system.battery', {})
+          .then(r => {
+            if (r?.available && typeof r.percent === 'number') {
+              ctx.transcript.sys(`battery indicator ${state} — currently ${r.plugged ? '⚡' : '🔋'} ${r.percent}%`)
+            } else {
+              ctx.transcript.sys(`battery indicator ${state} — no battery detected on this machine`)
+            }
+          })
+          .catch(() => ctx.transcript.sys(`battery indicator ${state}`))
+
+        return
+      }
+
+      const next = flagFromArg(arg, ctx.ui.battery)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /battery [on|off|status]')
+      }
+
+      patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`battery indicator ${next ? 'on' : 'off'}`))
     }
   },
 

@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -16,6 +16,8 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+
+import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -186,6 +188,34 @@ function statusSessionCountLabel(count: number) {
   return `${count} ${count === 1 ? 'session' : 'sessions'}`
 }
 
+// Colour the battery read-out by its (Python-computed) category. Inverted vs
+// the context bar — a full battery is "good", an empty one "critical".
+function batteryColor(info: BatteryInfo, t: Theme): string {
+  if (info.category === 'good') {
+    return t.color.statusGood
+  }
+
+  if (info.category === 'warn') {
+    return t.color.statusWarn
+  }
+
+  if (info.category === 'bad') {
+    return t.color.statusBad
+  }
+
+  if (info.category === 'critical') {
+    return t.color.statusCritical
+  }
+
+  return t.color.muted
+}
+
+// Compact battery label: a bolt while charging, else a battery glyph.
+// Renders `--` for an unknown percent so a null can never surface as "null%".
+function batteryLabel(info: BatteryInfo): string {
+  return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
+}
+
 // Colour a credits notice by its level. The notice TEXT already carries its
 // own glyph (⚠ • ✕ ✓) from the Python policy — we only tint it here, never
 // prepend another glyph. `success` maps to the theme's green status colour.
@@ -248,8 +278,8 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
-  cost: boolean
   duration: boolean
+  subagents: boolean
   voice: boolean
 }
 
@@ -263,7 +293,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    cost: w >= 96
+    subagents: w >= 92
   }
 }
 
@@ -393,7 +423,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -403,6 +433,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  battery,
   cwdLabel,
   cols,
   busy,
@@ -418,7 +449,6 @@ export function StatusRule({
   lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
-  showCost,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -440,6 +470,12 @@ export function StatusRule({
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+
+  // Battery read-out — the first (pinned) status-bar element when enabled.
+  const showBattery = !!battery && battery.available && battery.percent != null
+  const batteryText = showBattery ? batteryLabel(battery!) : ''
+  const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
+  const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -466,6 +502,7 @@ export function StatusRule({
 
   const essentialWidth =
     stringWidth('─ ') +
+    batteryWidth +
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
@@ -480,6 +517,7 @@ export function StatusRule({
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
+
   const fits = (w: number) => {
     if (tailBudget >= w) {
       tailBudget -= w
@@ -492,7 +530,7 @@ export function StatusRule({
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -504,16 +542,31 @@ export function StatusRule({
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
-  const showIdle = segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+  const showIdle =
+    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
-  const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
-  // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  // Width-budgeted like every tail segment, so it drops first on a tight
+  // terminal where ⛓ already carries the signal.
+  const resumeHintText =
+    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
@@ -539,6 +592,12 @@ export function StatusRule({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
+          {showBattery ? (
+            <Text color={batteryColorVal}>
+              {batteryText}
+              <Text color={t.color.muted}>{' │ '}</Text>
+            </Text>
+          ) : null}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
@@ -619,10 +678,15 @@ export function StatusRule({
             {bgCount} bg
           </Text>
         ) : null}
-        {showCostSeg ? (
+        {showSubagents ? (
           <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}⛓ {subagentCount}
+          </Text>
+        ) : null}
+        {showResumeHint ? (
+          <Text color={t.color.muted} dim wrap="truncate-end">
             {' │ '}
-            {costText}
+            {resumeHintText}
           </Text>
         ) : null}
         {showDevCredits ? (
@@ -691,8 +755,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  const thumbColor = grab !== null ? t.color.primary : hover ? t.color.accent : t.color.border
-  const trackColor = hover ? t.color.border : t.color.muted
+  const { thumb: thumbColor, track: trackColor } = scrollbarColors(t, hover, grab !== null)
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
@@ -724,24 +787,21 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
       }}
       width={1}
     >
-      {!scrollable ? (
-        <Text color={trackColor} dim>
-          {' \n'.repeat(Math.max(0, vp - 1))}{' '}
-        </Text>
-      ) : (
+      {/* Nothing to scroll → draw nothing (the width={1} Box still reserves
+          the column). Drawn-blank cells composite to a black bar on
+          transparent terminals — same class as the removed opaque fills. */}
+      {!scrollable ? null : (
         <>
           {thumbTop > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}
-            </Text>
+            <Text color={trackColor}>{`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}</Text>
           ) : null}
           {thumb > 0 ? (
             <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
           ) : null}
           {vp - thumbTop - thumb > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}
-            </Text>
+            <Text
+              color={trackColor}
+            >{`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}</Text>
           ) : null}
         </>
       )}
@@ -750,6 +810,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  battery?: BatteryInfo | null
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number
@@ -762,7 +823,6 @@ interface StatusRuleProps {
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
-  showCost: boolean
   status: string
   statusColor: string
   t: Theme

@@ -57,6 +57,10 @@ def _make_agent(
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
     compressor.threshold_tokens = int(main_context * threshold_percent)
+    compressor.summary_target_ratio = 0.20
+    compressor.tail_token_budget = int(
+        compressor.threshold_tokens * compressor.summary_target_ratio
+    )
     agent.context_compressor = compressor
 
     return agent
@@ -96,6 +100,11 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert agent._compression_warning is not None
     # Threshold on the live compressor was actually lowered to aux_context.
     assert agent.context_compressor.threshold_tokens == 80_000
+    # Every threshold-derived budget must move with it. Keeping the original
+    # 20K tail here would protect 25% of the lowered threshold instead of the
+    # configured 20%, and larger real-world mismatches can make the tail's 1.5x
+    # soft ceiling wider than the entire compression trigger.
+    assert agent.context_compressor.tail_token_budget == 16_000
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -167,6 +176,7 @@ def test_feasibility_check_passes_live_main_runtime():
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "codex-token",
             "api_mode": "codex_responses",
+            "auth_mode": "",
         },
     )
 
@@ -304,6 +314,39 @@ def test_warns_when_no_auxiliary_provider(mock_get_client):
     assert len(messages) == 1
     assert "No auxiliary LLM provider" in messages[0]
     assert agent._compression_warning is not None
+
+
+def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
+    """Primary compression provider can be down if configured fallback works."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    fallback_client = MagicMock()
+    fallback_client.base_url = "https://chatgpt.com/backend-api/codex"
+    fallback_client.api_key = "codex-oauth-token"
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None),
+    ), patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(None, None),
+    ), patch(
+        "agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
+        return_value=(fallback_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)"),
+    ) as mock_fallback, patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=200_000,
+    ) as mock_ctx_len:
+        agent._check_compression_model_feasibility()
+
+    assert messages == []
+    assert agent._compression_warning is None
+    mock_fallback.assert_called_once_with("compression", "ollama-cloud")
+    mock_ctx_len.assert_called_once()
+    assert mock_ctx_len.call_args.args == ("gpt-5.4-mini",)
+    assert mock_ctx_len.call_args.kwargs["provider"] == "openai-codex"
 
 
 def test_skips_check_when_compression_disabled():

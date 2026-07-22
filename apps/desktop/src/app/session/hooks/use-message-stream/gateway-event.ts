@@ -22,6 +22,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -750,6 +751,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'pane.reveal') {
+        // Agent revealed a pane via the desktop-gated focus_pane tool, in
+        // response to an explicit user request. Active session only — a
+        // background turn must never move the user's focus (desktop AGENTS.md:
+        // offer, don't hijack).
+        if (isActiveEvent) {
+          revealDesktopPane(payload?.pane ?? '')
+        }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)

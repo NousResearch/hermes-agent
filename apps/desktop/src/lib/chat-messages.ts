@@ -80,6 +80,8 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
+  pane?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string

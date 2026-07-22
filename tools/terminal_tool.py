@@ -1428,6 +1428,7 @@ def _get_env_config() -> Dict[str, Any]:
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
+        "inactivity_timeout": _parse_env_var("TERMINAL_INACTIVITY_TIMEOUT", "60", float, "number"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
@@ -2727,6 +2728,7 @@ def terminal_tool(
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,
+                        "inactivity_timeout": config.get("inactivity_timeout"),
                         "cwd": command_cwd,
                         # Foreground model-facing output: cap retention while
                         # streaming (head/tail window) so a verbose command

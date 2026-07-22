@@ -62,6 +62,7 @@ class _BoundedOutputCollector:
         self._head_chars = 0
         self._tail_chars = 0
         self._total_chars = 0
+        self.last_update_time = time.monotonic()
         self._lock = threading.Lock()
 
     @property
@@ -78,6 +79,7 @@ class _BoundedOutputCollector:
         if not text:
             return
         with self._lock:
+            self.last_update_time = time.monotonic()
             text_len = len(text)
             self._total_chars += text_len
             start = 0
@@ -111,6 +113,17 @@ class _BoundedOutputCollector:
                     self._tail[0] = first[excess:]
                     self._tail_chars -= excess
 
+    def get_tail(self, chars: int = 1000) -> str:
+        with self._lock:
+            if not self._tail and not self._head:
+                return ""
+            tail_str = "".join(self._tail)
+            if len(tail_str) >= chars:
+                return tail_str[-chars:]
+            head_str = "".join(self._head)
+            combined = head_str + tail_str
+            return combined[-chars:]
+
     def render(self, *, suffix: str = "") -> str:
         """Render within ``max_chars``, preserving a required status suffix."""
         with self._lock:
@@ -142,6 +155,96 @@ class _BoundedOutputCollector:
             tail_chars = content_budget - head_chars
             rendered_tail = tail[-tail_chars:] if tail_chars else ""
             return head[:head_chars] + notice[:available] + rendered_tail + suffix
+
+
+import re
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+_INTERACTIVE_PROMPT_PATTERNS = [
+    re.compile(r"(?i)(?:\[y/n\]|\(y/n\)|\(y/n\?\)|\b\[y/n\?\]|\[yes/no\]|\(yes/no\))\s*\??\s*$"),
+    re.compile(r"(?i)(?:password|passphrase|enter passphrase|sudo password)(?:\s+for\s+[^\n:]+)?:\s*$"),
+    re.compile(r"(?i)(?:enter choice|select an option|choose one|select 1-\d+|\bchoice \[\d+-\d+\]):\s*$"),
+    re.compile(r"(?i)(?:press any key|press enter to continue|press \[enter\]|press return)[.\s]*$"),
+    re.compile(r"(?i)(?:login:|username:|passcode:|verification code:|authentication code:)\s*$"),
+    re.compile(r"(?i)\?\s+(?:Would you like to|Do you want to|Are you sure|Continue\?)\s*$"),
+    re.compile(r"(?i)(?:enter your|input required|waiting for user input|interactive prompt)\s*$"),
+]
+
+
+def _detect_interactive_prompt(text: str) -> str | None:
+    if not text:
+        return None
+    clean = _strip_ansi(text).rstrip()
+    if not clean:
+        return None
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    if not lines:
+        return None
+    last_line = lines[-1]
+    for pat in _INTERACTIVE_PROMPT_PATTERNS:
+        if pat.search(last_line):
+            return last_line[-80:]
+    return None
+
+
+_KNOWN_GUI_EXES = {
+    "soundvolumeview.exe", "notepad.exe", "calc.exe", "explorer.exe",
+    "mspaint.exe", "devenv.exe", "wireshark.exe", "vlc.exe",
+    "chrome.exe", "msedge.exe", "firefox.exe", "control.exe",
+    "mmc.exe", "taskmgr.exe", "snippingtool.exe", "wordpad.exe",
+    "soundvolumeview", "notepad", "calc", "explorer", "devenv",
+}
+
+_KNOWN_CLI_EXES = {
+    "cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe", "git.exe",
+    "node.exe", "python.exe", "python3.exe", "pip.exe", "conhost.exe",
+    "openconsole.exe", "wsl.exe", "ssh.exe", "curl.exe", "tar.exe",
+    "cargo.exe", "go.exe", "rustc.exe", "gcc.exe", "g++.exe", "cl.exe",
+    "make.exe", "cmake.exe", "ninja.exe", "git-bash.exe", "sh.exe",
+    "awk.exe", "sed.exe", "grep.exe", "find.exe", "sort.exe", "jq.exe",
+    "npm.exe", "npx.exe", "uv.exe", "deno.exe", "bun.exe"
+}
+
+
+def _detect_gui_child_process(pid: int) -> str | None:
+    if not pid:
+        return None
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        children = proc.children(recursive=True)
+        for child in children:
+            try:
+                name = child.name().lower()
+                if name in _KNOWN_GUI_EXES:
+                    return child.name()
+                if os.name == "nt" and name.endswith(".exe") and name not in _KNOWN_CLI_EXES:
+                    return child.name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        pass
+    return None
+
+
+_NONINTERACTIVE_ENV_DEFAULTS = {
+    "CI": "1",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "GIT_TERMINAL_PROMPT": "0",
+    "PIP_NO_INPUT": "1",
+    "PYTHONUNBUFFERED": "1",
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "NPM_CONFIG_YES": "true",
+    "AUTOMATED_TESTING": "1",
+    "TERRAFORM_INPUT": "0",
+}
 
 
 def set_activity_callback(cb: Callable[[str], None] | None) -> None:
@@ -414,6 +517,9 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        for k, v in _NONINTERACTIVE_ENV_DEFAULTS.items():
+            if k not in self.env:
+                self.env[k] = v
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -676,7 +782,12 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _wait_for_process(
-        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+        self,
+        proc: ProcessHandle,
+        timeout: int = 120,
+        *,
+        inactivity_timeout: float | None = None,
+        bounded_capture: bool = False,
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
@@ -848,6 +959,18 @@ class BaseEnvironment(ABC):
             "start": _now,
         }
 
+        if inactivity_timeout is None:
+            raw_inactivity = os.getenv("TERMINAL_INACTIVITY_TIMEOUT", "60")
+            if raw_inactivity.lower() in {"0", "none", "disabled", "false"}:
+                effective_inactivity = None
+            else:
+                try:
+                    effective_inactivity = float(raw_inactivity)
+                except ValueError:
+                    effective_inactivity = 60.0
+        else:
+            effective_inactivity = inactivity_timeout
+
         # --- Debug tracing (opt-in via HERMES_DEBUG_INTERRUPT=1) -------------
         # Captures loop entry/exit, interrupt state changes, and periodic
         # heartbeats so we can diagnose "agent never sees the interrupt"
@@ -898,6 +1021,63 @@ class BaseEnvironment(ABC):
                         "output": output.render(suffix=timeout_msg).lstrip()
                         if output.total_chars == 0
                         else output.render(suffix=timeout_msg),
+                        "returncode": 124,
+                    }
+
+                _now_mon = time.monotonic()
+                _idle_time = _now_mon - output.last_update_time
+
+                # Check for interactive prompts waiting on stdin input
+                _tail = output.get_tail(1000)
+                _prompt_match = _detect_interactive_prompt(_tail)
+                if _prompt_match and _idle_time >= 5.0:
+                    logger.warning(
+                        "Terminating process PID %s: interactive prompt detected ('%s')",
+                        _pid, _prompt_match,
+                    )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    prompt_msg = (
+                        f"\n[Command terminated: Process appeared to hang waiting for user input / interactive prompt ('{_prompt_match}'). "
+                        "Terminal tool executions are non-interactive. Use non-interactive flags (e.g. -y, --yes) or pipe input via stdin.]"
+                    )
+                    return {
+                        "output": output.render(suffix=prompt_msg),
+                        "returncode": 124,
+                    }
+
+                # Check for desktop GUI child processes (Windows / desktop apps)
+                if _pid and _idle_time >= 3.0 and _now_mon - _activity_state["start"] >= 3.0:
+                    _gui_app = _detect_gui_child_process(_pid)
+                    if _gui_app:
+                        logger.info(
+                            "GUI application '%s' (child of PID %s) detected running on screen. Releasing terminal wait.",
+                            _gui_app, _pid,
+                        )
+                        gui_msg = (
+                            f"\n[Detected desktop GUI application '{_gui_app}' running on screen. "
+                            "Released foreground terminal execution thread so Hermes does not block waiting for the window to close.]"
+                        )
+                        return {
+                            "output": output.render(suffix=gui_msg),
+                            "returncode": 0,
+                        }
+
+                # Check for output inactivity timeout
+                if effective_inactivity is not None and _idle_time >= effective_inactivity:
+                    logger.warning(
+                        "Terminating process PID %s: output inactivity for %.1fs",
+                        _pid, _idle_time,
+                    )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    inactivity_msg = (
+                        f"\n[Command terminated due to output inactivity ({int(effective_inactivity)}s without stdout/stderr). "
+                        "The process appears to be hanging, waiting for input, or deadlocked. "
+                        "For long-running or silent tasks, run with background=true and notify_on_complete=true.]"
+                    )
+                    return {
+                        "output": output.render(suffix=inactivity_msg),
                         "returncode": 124,
                     }
                 # Periodic activity touch so the gateway knows we're alive
@@ -1048,6 +1228,7 @@ class BaseEnvironment(ABC):
         cwd: str = "",
         *,
         timeout: int | None = None,
+        inactivity_timeout: float | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
@@ -1098,7 +1279,10 @@ class BaseEnvironment(ABC):
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
         result = self._wait_for_process(
-            proc, timeout=effective_timeout, bounded_capture=bounded_capture
+            proc,
+            timeout=effective_timeout,
+            inactivity_timeout=inactivity_timeout,
+            bounded_capture=bounded_capture,
         )
         self._update_cwd(result)
 

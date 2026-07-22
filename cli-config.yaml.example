@@ -214,6 +214,7 @@ terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
   timeout: 180
+  inactivity_timeout: 60  # Max seconds without stdout/stderr output before timing out an inactive process (0 to disable)
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
   #   real    - force your real OS-user HOME

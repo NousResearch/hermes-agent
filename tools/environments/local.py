@@ -1192,6 +1192,14 @@ def _make_run_env(env: dict) -> dict:
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
+    try:
+        from tools.environments.base import _NONINTERACTIVE_ENV_DEFAULTS
+        for k, v in _NONINTERACTIVE_ENV_DEFAULTS.items():
+            if k not in run_env:
+                run_env[k] = v
+    except Exception:
+        pass
+
     return run_env
 
 

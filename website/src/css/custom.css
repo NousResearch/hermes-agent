@@ -208,8 +208,9 @@ pre.prism-code.language-ascii code {
   text-decoration: none;
 }
 
-/* Scrollbar */
-[data-theme='dark'] ::-webkit-scrollbar {
+/* Scrollbar — width must stay constant across themes to avoid layout
+   shift in the navbar / content when toggling color modes. */
+::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
@@ -225,6 +226,19 @@ pre.prism-code.language-ascii code {
 
 [data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
   background: #2a2a40;
+}
+
+[data-theme='light'] ::-webkit-scrollbar-track {
+  background: #f5f3ee;
+}
+
+[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background: rgba(139, 101, 8, 0.25);
+  border-radius: 4px;
+}
+
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 101, 8, 0.45);
 }
 
 /* Search bar */

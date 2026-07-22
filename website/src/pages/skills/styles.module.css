@@ -115,6 +115,11 @@
   background: rgba(7, 7, 13, 0.85);
 }
 
+[data-theme="light"] .controlsBar {
+  background: rgba(255, 255, 255, 0.85);
+  border-bottom-color: rgba(139, 101, 8, 0.12);
+}
+
 .searchWrap {
   position: relative;
   width: 100%;
@@ -151,6 +156,26 @@
 .searchInput::placeholder {
   color: var(--ifm-font-color-secondary, #9a968e);
   opacity: 0.5;
+}
+
+[data-theme="light"] .searchIcon {
+  color: rgba(139, 101, 8, 0.75);
+}
+
+[data-theme="light"] .searchInput {
+  background: #ffffff;
+  border-color: rgba(139, 101, 8, 0.25);
+  color: #1a1a1a;
+}
+
+[data-theme="light"] .searchInput:focus {
+  border-color: rgba(139, 101, 8, 0.55);
+  box-shadow: 0 0 0 3px rgba(139, 101, 8, 0.10);
+}
+
+[data-theme="light"] .searchInput::placeholder {
+  color: #6e6a62;
+  opacity: 0.85;
 }
 
 .clearBtn {
@@ -967,5 +992,193 @@
 @media (min-width: 901px) and (max-width: 1100px) {
   .grid {
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
+}
+
+
+/* ─── Light theme overrides ──────────────────────────────────────────────────
+   Skills Hub was authored for dark theme only. Mirror the existing dark rules
+   with light-mode counterparts using a WCAG-AA dark-amber tone (#8B6508) so
+   the page stays readable on white. */
+
+[data-theme="light"] .heroEyebrow {
+  color: rgba(139, 101, 8, 0.75);
+}
+
+[data-theme="light"] .heroTitle {
+  color: #1a1a1a;
+}
+
+[data-theme="light"] .heroAccent {
+  color: #8B6508;
+}
+
+[data-theme="light"] .srcPill {
+  border-color: rgba(139, 101, 8, 0.2);
+}
+
+[data-theme="light"] .srcPill:hover {
+  border-color: rgba(139, 101, 8, 0.35);
+  color: #1a1a1a;
+}
+
+[data-theme="light"] .srcPillActive {
+  border-color: var(--pill-border, rgba(139, 101, 8, 0.4));
+  background: var(--pill-bg, rgba(139, 101, 8, 0.10));
+  color: var(--pill-color, #8B6508);
+}
+
+[data-theme="light"] .srcCount {
+  background: rgba(139, 101, 8, 0.08);
+}
+
+[data-theme="light"] .srcPillActive .srcCount {
+  background: rgba(139, 101, 8, 0.14);
+}
+
+[data-theme="light"] .sidebar {
+  border-right-color: rgba(139, 101, 8, 0.12);
+}
+
+[data-theme="light"] .catItem:hover {
+  background: rgba(139, 101, 8, 0.06);
+}
+
+[data-theme="light"] .catItemActive {
+  background: rgba(139, 101, 8, 0.10);
+  color: #8B6508;
+}
+
+[data-theme="light"] .catItemCount {
+  color: rgba(139, 101, 8, 0.45);
+}
+
+[data-theme="light"] .catItemActive .catItemCount {
+  color: rgba(139, 101, 8, 0.75);
+}
+
+[data-theme="light"] .sidebarClear,
+[data-theme="light"] .sidebarClear:hover,
+[data-theme="light"] .clearBtn:hover {
+  color: #8B6508;
+}
+
+[data-theme="light"] .filterSummary {
+  border-bottom-color: rgba(139, 101, 8, 0.12);
+}
+
+[data-theme="light"] .filterChip {
+  border-color: rgba(139, 101, 8, 0.25);
+  background: rgba(139, 101, 8, 0.06);
+  color: #6E4F00;
+}
+
+[data-theme="light"] .activeCatBadge {
+  background: rgba(139, 101, 8, 0.12);
+  color: #6E4F00;
+}
+
+[data-theme="light"] .card {
+  background: #ffffff;
+  border-color: rgba(139, 101, 8, 0.15);
+}
+
+[data-theme="light"] .card:hover {
+  border-color: rgba(139, 101, 8, 0.35);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(139, 101, 8, 0.10);
+}
+
+[data-theme="light"] .cardExpanded {
+  border-color: rgba(139, 101, 8, 0.45);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10), 0 0 0 1px rgba(139, 101, 8, 0.15);
+}
+
+[data-theme="light"] .catButton {
+  border-color: rgba(139, 101, 8, 0.25);
+  background: rgba(139, 101, 8, 0.06);
+  color: #6E4F00;
+}
+
+[data-theme="light"] .catButton:hover {
+  border-color: rgba(139, 101, 8, 0.45);
+  background: rgba(139, 101, 8, 0.12);
+  color: #5A4100;
+}
+
+[data-theme="light"] .tagPill {
+  border-color: rgba(139, 101, 8, 0.15);
+  background: rgba(139, 101, 8, 0.03);
+}
+
+[data-theme="light"] .tagPill:hover {
+  border-color: rgba(139, 101, 8, 0.35);
+  background: rgba(139, 101, 8, 0.10);
+  color: #5A4100;
+}
+
+[data-theme="light"] .prereqBlock {
+  border-color: rgba(139, 101, 8, 0.12);
+  background: rgba(139, 101, 8, 0.03);
+}
+
+[data-theme="light"] .prereqItem {
+  border-color: rgba(139, 101, 8, 0.15);
+  background: rgba(139, 101, 8, 0.04);
+  color: #6E4F00;
+}
+
+[data-theme="light"] .cardDetail {
+  border-top-color: rgba(139, 101, 8, 0.10);
+}
+
+[data-theme="light"] .installHint {
+  background: rgba(139, 101, 8, 0.06);
+  border-color: rgba(139, 101, 8, 0.15);
+}
+
+[data-theme="light"] .installHint code {
+  color: #5A4100;
+}
+
+[data-theme="light"] .highlight {
+  background: rgba(139, 101, 8, 0.20);
+  color: #5A4100;
+}
+
+[data-theme="light"] .loadMoreBtn {
+  border-color: rgba(139, 101, 8, 0.30);
+  background: rgba(139, 101, 8, 0.06);
+  color: #6E4F00;
+}
+
+[data-theme="light"] .loadMoreBtn:hover {
+  border-color: rgba(139, 101, 8, 0.50);
+  background: rgba(139, 101, 8, 0.12);
+  color: #5A4100;
+}
+
+[data-theme="light"] .emptyReset {
+  border-color: rgba(139, 101, 8, 0.35);
+  color: #6E4F00;
+}
+
+[data-theme="light"] .emptyReset:hover {
+  background: rgba(139, 101, 8, 0.10);
+}
+
+@media (max-width: 900px) {
+  [data-theme="light"] .sidebar {
+    background: #ffffff;
+    border-right-color: rgba(139, 101, 8, 0.20);
+  }
+
+  [data-theme="light"] .sidebarToggle {
+    border-color: rgba(139, 101, 8, 0.20);
+    background: rgba(139, 101, 8, 0.04);
+  }
+
+  [data-theme="light"] .sidebarToggle:hover {
+    border-color: rgba(139, 101, 8, 0.40);
+    color: #1a1a1a;
   }
 }

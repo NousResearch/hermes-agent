@@ -775,6 +775,70 @@ class TestTrackForgetQuick:
         assert summary["artifacts"] == 1
         assert not stale.exists()
 
+    def test_retention_preserves_replacement_after_selection(
+        self, _isolate_env, monkeypatch
+    ):
+        """Retention identity is bound before the delete helper runs."""
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-race"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        stale = session_dir / "old.txt"
+        stale.write_text("owned")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+        real_unlink = dg._atomic_unlink_regular
+
+        def replace_before_unlink(path, expected_identity=None):
+            assert expected_identity is not None
+            path.unlink()
+            path.write_text("human replacement")
+            return real_unlink(path, expected_identity)
+
+        monkeypatch.setattr(dg, "_atomic_unlink_regular", replace_before_unlink)
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 0
+        assert summary["errors"]
+        assert stale.read_text() == "human replacement"
+
+    def test_failed_retention_unlink_preserves_and_excludes_quarantine(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-locked-delete"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        stale = session_dir / "old.txt"
+        stale.write_text("preserve")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+        real_unlink = Path.unlink
+
+        def fail_quarantine_unlink(path, *args, **kwargs):
+            if dg._DELETE_QUARANTINE_TOKEN in path.name:
+                raise PermissionError("simulated live handle")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_quarantine_unlink)
+        first = dg.quick()
+        quarantines = [
+            path
+            for path in session_dir.iterdir()
+            if dg._DELETE_QUARANTINE_TOKEN in path.name
+        ]
+
+        assert first["artifacts"] == 0
+        assert len(quarantines) == 1
+        assert quarantines[0].read_text() == "preserve"
+
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        second = dg.quick()
+
+        assert second["artifacts"] == 0
+        assert quarantines[0].read_text() == "preserve"
+
     def test_quick_preserves_unmarked_stale_hook_output(self, _isolate_env):
         """Unknown files below an artifact-looking root are never junk by name."""
         dg = _load_lib()
@@ -833,6 +897,31 @@ class TestTrackForgetQuick:
         dg.quick()
 
         assert unowned.exists()
+
+    def test_empty_sweep_preserves_directory_replaced_after_selection(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        managed = _isolate_env / "scratch"
+        selected = managed / "nested" / "empty"
+        selected.mkdir(parents=True)
+        (managed / ".hermes-managed").write_text("scratch\n")
+        displaced = selected.with_name("selected-before-race")
+        real_rmdir = dg._atomic_rmdir_empty
+
+        def replace_before_rmdir(path, expected):
+            if path == selected:
+                path.rename(displaced)
+                path.mkdir()
+            return real_rmdir(path, expected)
+
+        monkeypatch.setattr(dg, "_atomic_rmdir_empty", replace_before_rmdir)
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 0
+        assert selected.exists(), "replacement directory must survive"
+        assert displaced.exists(), "selected directory must remain recoverable"
 
     def test_quick_preserves_tracked_path_outside_hermes_home(self, _isolate_env, tmp_path):
         """A stale tracking record cannot authorize deleting an external path."""

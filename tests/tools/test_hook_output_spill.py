@@ -234,6 +234,70 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertEqual(spill.read_text(), "preserve")
         self.assertEqual(list(spill.parent.glob("*.hermes-delete-*")), [])
 
+    def test_prune_preserves_replacement_after_retention_selection(self):
+        spill = Path(self.tmpdir) / "sess" / "old.txt"
+        spill.parent.mkdir()
+        (spill.parent / ".hermes-managed").write_text("hook_outputs\n")
+        spill.write_text("owned")
+        old_time = os.path.getmtime(spill) - 100
+        os.utime(spill, (old_time, old_time))
+        real_unlink = hos._atomic_unlink_spill
+
+        def replace_before_unlink(path, expected):
+            path.unlink()
+            path.write_text("human replacement")
+            return real_unlink(path, expected)
+
+        with patch.object(hos, "_atomic_unlink_spill", side_effect=replace_before_unlink):
+            removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(spill.read_text(), "human replacement")
+
+    def test_atomic_unlink_rejects_non_regular_opened_object(self):
+        spill = Path(self.tmpdir) / "sess" / "old.txt"
+        spill.parent.mkdir()
+        spill.write_text("preserve")
+        selected = spill.lstat()
+
+        with patch.object(hos.os, "fstat", return_value=spill.parent.stat()):
+            removed = hos._atomic_unlink_spill(spill, selected)
+
+        self.assertFalse(removed)
+        self.assertEqual(spill.read_text(), "preserve")
+
+    def test_failed_final_unlink_preserves_and_excludes_quarantine(self):
+        spill = Path(self.tmpdir) / "sess" / "old.txt"
+        spill.parent.mkdir()
+        (spill.parent / ".hermes-managed").write_text("hook_outputs\n")
+        spill.write_text("preserve")
+        old_time = os.path.getmtime(spill) - 100
+        os.utime(spill, (old_time, old_time))
+        real_unlink = Path.unlink
+
+        def fail_quarantine_unlink(path, *args, **kwargs):
+            if hos._DELETE_QUARANTINE_TOKEN in path.name:
+                raise PermissionError("simulated live handle")
+            return real_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_quarantine_unlink):
+            removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        quarantines = [
+            path
+            for path in spill.parent.iterdir()
+            if hos._DELETE_QUARANTINE_TOKEN in path.name
+        ]
+        self.assertEqual(removed, 0)
+        self.assertEqual(len(quarantines), 1)
+        self.assertEqual(quarantines[0].read_text(), "preserve")
+
+        self.assertEqual(
+            hos.prune_spill_files(self.tmpdir, retention_seconds=1),
+            0,
+        )
+        self.assertEqual(quarantines[0].read_text(), "preserve")
+
     def test_prune_preserves_unmarked_session_directory(self):
         session = Path(self.tmpdir) / "human-session"
         session.mkdir()

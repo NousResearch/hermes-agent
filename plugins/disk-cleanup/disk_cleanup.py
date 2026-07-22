@@ -285,6 +285,7 @@ _MANAGED_ARTIFACT_RETENTION_DAYS = {
 _MANAGED_ARTIFACT_SKIP_NAMES = frozenset({
     ".hermes-managed", ".in-progress", ".active", ".lock",
 })
+_DELETE_QUARANTINE_TOKEN = ".hermes-delete-"
 
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(),
@@ -355,6 +356,11 @@ def _is_narrow_top_level_artifact(name: str) -> bool:
     )
 
 
+def _is_delete_quarantine_path(path: Path) -> bool:
+    """Return whether *path* is preserved evidence from an uncertain delete."""
+    return any(_DELETE_QUARANTINE_TOKEN in part for part in path.parts)
+
+
 def _is_protected_cron_path(p: Path) -> bool:
     """Return True if *p* is a cron control-plane file/directory that must
     never be deleted.
@@ -399,6 +405,8 @@ def _is_protected_cron_path(p: Path) -> bool:
 
 def _is_protected_tracked_path(path: Path) -> bool:
     """Protect durable Hermes state from manual or stale tracking records."""
+    if _is_delete_quarantine_path(path):
+        return True
     try:
         rel = path.resolve().relative_to(get_hermes_home().resolve())
     except (OSError, ValueError):
@@ -577,8 +585,9 @@ def _remove_path(path: Path) -> Optional[str]:
 
 def _restore_quarantined_path(quarantine: Path, original: Path) -> str:
     try:
-        os.link(quarantine, original)
-        quarantine.unlink()
+        if os.path.lexists(original):
+            raise FileExistsError(str(original))
+        os.replace(quarantine, original)
         return f"filesystem identity changed during delete; restored {original}"
     except OSError:
         return f"filesystem identity changed during delete; preserved at {quarantine}"
@@ -628,6 +637,8 @@ def _atomic_unlink_regular(
     path: Path, expected_identity: Optional[Dict[str, int]] = None
 ) -> Optional[str]:
     """Move an opened object to a nonce path before unlinking it."""
+    if _is_delete_quarantine_path(path):
+        return "preserved delete quarantine"
     fd: Optional[int] = None
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
     try:
@@ -645,7 +656,10 @@ def _atomic_unlink_regular(
         moved = quarantine.lstat()
         if not os.path.samestat(opened, moved):
             return _restore_quarantined_path(quarantine, path)
-        quarantine.unlink()
+        try:
+            quarantine.unlink()
+        except OSError as exc:
+            return f"delete failed; preserved at {quarantine}: {exc}"
         return None
     except OSError as exc:
         return str(exc)
@@ -661,6 +675,50 @@ def _remove_tracked_path(path: Path, identity: Dict[str, int]) -> Optional[str]:
     if not stat.S_ISREG(identity.get("mode", 0)):
         return "tracked path is not a regular file"
     return _atomic_unlink_regular(path, identity)
+
+
+def _atomic_rmdir_empty(path: Path, expected: os.stat_result) -> bool:
+    """Remove the exact selected empty directory, preserving uncertainty."""
+    if _is_delete_quarantine_path(path):
+        return False
+    quarantine = path.with_name(
+        f".{path.name}{_DELETE_QUARANTINE_TOKEN}{uuid.uuid4().hex}"
+    )
+    try:
+        current = path.lstat()
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or _is_link_like(path)
+            or not os.path.samestat(expected, current)
+        ):
+            return False
+        os.replace(path, quarantine)
+        moved = quarantine.lstat()
+        if (
+            not stat.S_ISDIR(moved.st_mode)
+            or _is_link_like(quarantine)
+            or not os.path.samestat(expected, moved)
+        ):
+            if not os.path.lexists(path):
+                os.replace(quarantine, path)
+            return False
+        try:
+            quarantine.rmdir()
+        except OSError:
+            if not os.path.lexists(path):
+                try:
+                    os.replace(quarantine, path)
+                except OSError:
+                    pass
+            return False
+        return True
+    except OSError:
+        try:
+            if os.path.lexists(quarantine) and not os.path.lexists(path):
+                os.replace(quarantine, path)
+        except OSError:
+            pass
+        return False
 
 
 def fmt_size(n: float) -> str:
@@ -969,16 +1027,22 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
                 for artifact in session_dir.iterdir():
                     if (
                         artifact.name in _MANAGED_ARTIFACT_SKIP_NAMES
+                        or _is_delete_quarantine_path(artifact)
                         or _is_link_like(artifact)
                         or not artifact.is_file()
                     ):
                         continue
                     try:
-                        age_seconds = now.timestamp() - artifact.stat().st_mtime
+                        identity = _capture_identity(artifact)
+                        if identity is None or not stat.S_ISREG(identity["mode"]):
+                            continue
+                        age_seconds = (
+                            now.timestamp() - identity["mtime_ns"] / 1_000_000_000
+                        )
                         if age_seconds <= retention_days * 24 * 60 * 60:
                             continue
-                        size = artifact.stat().st_size
-                        error = _atomic_unlink_regular(artifact)
+                        size = identity["size"]
+                        error = _atomic_unlink_regular(artifact, identity)
                         if error is not None:
                             errors.append(f"{artifact}: {error}")
                             continue
@@ -995,40 +1059,43 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     # and desktop build under HERMES_HOME; a full rglob over that tree can
     # stall the gateway event loop for minutes.
     empty_removed = 0
-    sweep_stack: List[Tuple[Path, bool]] = []
+    sweep_stack: List[Tuple[Path, bool, os.stat_result]] = []
     try:
         for top in hermes_home.iterdir():
             if (
                 top.is_dir()
                 and not _is_link_like(top)
+                and not _is_delete_quarantine_path(top)
                 and _is_owned_empty_dir_root(top)
             ):
-                sweep_stack.append((top, False))
+                sweep_stack.append((top, False, top.lstat()))
     except OSError:
         sweep_stack = []
 
     while sweep_stack:
-        dirpath, visited = sweep_stack.pop()
+        dirpath, visited, selected_identity = sweep_stack.pop()
         if visited:
             try:
-                if not any(dirpath.iterdir()):
-                    dirpath.rmdir()
+                if not any(dirpath.iterdir()) and _atomic_rmdir_empty(
+                    dirpath, selected_identity
+                ):
                     empty_removed += 1
                     _log(f"DELETED: {dirpath} (empty dir)")
             except OSError:
                 pass
             continue
 
-        sweep_stack.append((dirpath, True))
+        sweep_stack.append((dirpath, True, selected_identity))
         try:
             for child in dirpath.iterdir():
                 if (
                     child.is_dir()
                     and not _is_link_like(child)
+                    and not _is_delete_quarantine_path(child)
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
                     and child.name not in _EMPTY_DIR_SWEEP_PROTECTED_NAMES
                 ):
-                    sweep_stack.append((child, False))
+                    sweep_stack.append((child, False, child.lstat()))
         except OSError:
             pass
 

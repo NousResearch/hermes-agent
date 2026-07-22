@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -60,6 +61,7 @@ DEFAULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_MAX_FILES_PER_SESSION = 100
 _OWNERSHIP_MARKER = ".hermes-managed"
 _OWNERSHIP_VALUE = "hook_outputs"
+_DELETE_QUARANTINE_TOKEN = ".hermes-delete-"
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -218,13 +220,20 @@ def _prepare_owned_spill_dir(path: Path) -> bool:
     return False
 
 
-def _atomic_unlink_spill(path: Path) -> bool:
+def _atomic_unlink_spill(path: Path, expected: os.stat_result) -> bool:
     """Unlink the exact opened spill object, never a pathname replacement."""
     fd: Optional[int] = None
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
     try:
-        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
-        if path.is_symlink() or attributes & 0x400 or not path.is_file():
+        current = path.lstat()
+        attributes = int(getattr(current, "st_file_attributes", 0))
+        if (
+            _DELETE_QUARANTINE_TOKEN in path.name
+            or path.is_symlink()
+            or attributes & 0x400
+            or not stat.S_ISREG(current.st_mode)
+            or not os.path.samestat(expected, current)
+        ):
             return False
         if os.name == "nt":
             import ctypes
@@ -263,15 +272,32 @@ def _atomic_unlink_spill(path: Path) -> bool:
                 flags |= os.O_NOFOLLOW
             fd = os.open(path, flags)
         opened = os.fstat(fd)
+        current = path.lstat()
+        current_attributes = int(getattr(current, "st_file_attributes", 0))
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or path.is_symlink()
+            or current_attributes & 0x400
+            or not os.path.samestat(expected, current)
+            or not os.path.samestat(opened, current)
+        ):
+            return False
         os.replace(path, quarantine)
         if not os.path.samestat(opened, quarantine.lstat()):
             try:
-                os.link(quarantine, path)
-                quarantine.unlink()
+                if os.path.lexists(path):
+                    raise FileExistsError(str(path))
+                os.replace(quarantine, path)
             except OSError:
                 pass
             return False
-        quarantine.unlink()
+        try:
+            quarantine.unlink()
+        except OSError:
+            # The exact spill remains preserved for operator inspection. Its
+            # quarantine name is permanently excluded from automatic pruning.
+            return False
         return True
     except OSError:
         return False
@@ -315,25 +341,31 @@ def prune_spill_files(
 
     for session_dir in session_dirs:
         try:
-            files = sorted(
-                (
-                    p for p in session_dir.iterdir()
-                    if p.is_file() and not p.is_symlink() and p.suffix == ".txt"
-                ),
-                key=lambda p: (p.stat().st_mtime, p.name),
+            files = []
+            for path in session_dir.iterdir():
+                if _DELETE_QUARANTINE_TOKEN in path.name or path.suffix != ".txt":
+                    continue
+                selected = path.lstat()
+                attributes = int(getattr(selected, "st_file_attributes", 0))
+                if (
+                    path.is_symlink()
+                    or attributes & 0x400
+                    or not stat.S_ISREG(selected.st_mode)
+                ):
+                    continue
+                files.append((path, selected))
+            files.sort(
+                key=lambda item: (item[1].st_mtime, item[0].name),
                 reverse=True,
             )
         except OSError:
             continue
-        for index, path in enumerate(files):
-            try:
-                expired = now - path.stat().st_mtime > retention
-            except OSError:
-                continue
+        for index, (path, selected) in enumerate(files):
+            expired = now - selected.st_mtime > retention
             if not expired and index < maximum:
                 continue
             try:
-                if _atomic_unlink_spill(path):
+                if _atomic_unlink_spill(path, selected):
                     removed += 1
             except OSError:
                 logger.debug("hook output spill prune skipped %s", path, exc_info=True)

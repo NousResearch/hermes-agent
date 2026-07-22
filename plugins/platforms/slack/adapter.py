@@ -1801,6 +1801,25 @@ class SlackAdapter(BasePlatformAdapter):
                 return metadata["thread_ts"]
         return reply_to
 
+    def _channel_uses_shared_session_scope(self, channel_id: str) -> bool:
+        """Return true when top-level messages in this channel share one session.
+
+        ``reply_in_thread=false`` already gives Slack a channel-wide session,
+        but it also changes delivery to flat channel replies. This narrower
+        option lets operator channels keep threaded Slack replies while sharing
+        context across new top-level mentions.
+        """
+        raw = self.config.extra.get("channel_session_scope_channels")
+        if raw is True:
+            return True
+        if isinstance(raw, str):
+            candidates = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            candidates = [str(part).strip() for part in raw]
+        else:
+            candidates = []
+        return bool(channel_id and channel_id in candidates)
+
     async def _upload_file(
         self,
         chat_id: str,
@@ -3327,6 +3346,11 @@ class SlackAdapter(BasePlatformAdapter):
             # variants (Copilot on #15464).
             if event_thread_ts_raw and event_thread_ts_raw != ts:
                 thread_ts = event_thread_ts_raw
+            elif self._channel_uses_shared_session_scope(channel_id):
+                # Keep outbound threading controlled by reply_in_thread, but
+                # scope the inbound top-level mention to the channel session so
+                # related follow-ups in operator channels retain context.
+                thread_ts = None
             elif self.config.extra.get("reply_in_thread", True):
                 # Legacy default: treat ts as a synthetic thread root so
                 # this top-level message gets its own session.
@@ -3751,6 +3775,15 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception:  # pragma: no cover - defensive
                 reply_to_text = None
 
+        reply_to_message_id = thread_ts if thread_ts != ts else None
+        if (
+            reply_to_message_id is None
+            and not is_dm
+            and self._channel_uses_shared_session_scope(channel_id)
+            and self.config.extra.get("reply_in_thread", True)
+        ):
+            reply_to_message_id = ts
+
         msg_event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -3759,7 +3792,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=thread_ts if thread_ts != ts else None,
+            reply_to_message_id=reply_to_message_id,
             channel_prompt=_channel_prompt,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,

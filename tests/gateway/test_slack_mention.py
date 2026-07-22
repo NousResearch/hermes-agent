@@ -603,6 +603,30 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     ) == "171.000"
 
 
+def test_config_bridges_slack_channel_session_scope_channels(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  channel_session_scope_channels:\n"
+        "    - C_CHAN\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("channel_session_scope_channels") == ["C_CHAN"]
+
+    adapter = SlackAdapter(slack_config)
+    assert adapter._channel_uses_shared_session_scope("C_CHAN") is True
+    assert adapter._channel_uses_shared_session_scope("C_OTHER") is False
+
+
 def test_config_bridges_slack_cron_continuable_surface_toplevel(monkeypatch, tmp_path):
     """The cron_continuable_surface key bridges from a top-level ``slack:`` block
     into slack.extra, mirroring reply_in_thread (specs D1/D6)."""

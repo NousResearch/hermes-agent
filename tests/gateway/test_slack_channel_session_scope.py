@@ -193,6 +193,36 @@ class TestChannelSessionScopeShared:
         )
 
     @pytest.mark.asyncio
+    async def test_configured_channel_can_share_session_while_replying_in_thread(self, adapter):
+        """Operator channels can share context without changing Slack delivery.
+
+        ``reply_in_thread`` remains true so the eventual response is still
+        threaded, but top-level mentions in the configured channel use the
+        channel-wide session key.
+        """
+        adapter.config.extra["reply_in_thread"] = True
+        adapter.config.extra["channel_session_scope_channels"] = ["C_CHAN"]
+        event = _channel_event(
+            "<@U_BOT> follow up on the previous request",
+            ts="1700000000.000006",
+        )
+
+        captured = []
+        adapter.handle_message = AsyncMock(
+            side_effect=lambda e: captured.append(e)
+        )
+        with patch.object(
+            adapter,
+            "_resolve_user_name",
+            new=AsyncMock(return_value="testuser"),
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        assert captured[0].source.thread_id is None
+        assert captured[0].reply_to_message_id == "1700000000.000006"
+
+    @pytest.mark.asyncio
     async def test_thread_reply_scopes_by_thread_even_when_shared(self, adapter):
         """Bug 1's fix targets ONLY top-level channel messages.  Genuine
         thread replies (``thread_ts != ts``) must still scope per-thread

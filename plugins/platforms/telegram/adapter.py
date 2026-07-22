@@ -2415,6 +2415,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._drain_polling_connections()
 
+        # #69314: Also drain the general request pool. When the send path
+        # has hit pool timeouts (exhausting the general request pool with
+        # CLOSE_WAIT sockets), polling-only recovery leaves the general
+        # pool wedged. The adapter stays alive but can't send or bootstrap
+        # because all general connections are dead. Draining both pools
+        # on polling network error ensures full recovery.
+        if getattr(self, "_send_path_degraded", False):
+            await self._drain_general_connections_after_pool_timeout()
+
         if getattr(self, "_polling_teardown_started", False):
             return
 

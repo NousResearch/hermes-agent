@@ -632,3 +632,133 @@ class TestFalKreaCatalog:
     def test_fal_krea_models_in_fal_catalog(self, image_tool):
         assert "fal-ai/krea/v2/medium/text-to-image" in image_tool.FAL_MODELS
         assert "fal-ai/krea/v2/large/text-to-image" in image_tool.FAL_MODELS
+
+
+# ---------------------------------------------------------------------------
+# Local file path → data URI conversion
+# ---------------------------------------------------------------------------
+
+class TestLocalPathToDataUri:
+    """Local file paths must be converted to base64 data URIs before
+    submission to FAL, since FAL servers cannot access local files."""
+
+    def test_converts_png_to_data_uri(self, image_tool, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        result = image_tool._local_path_to_data_uri(str(img))
+        assert result.startswith("data:image/png;base64,")
+        assert len(result) > 30
+
+    def test_converts_jpg_to_data_uri(self, image_tool, tmp_path):
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 50)
+        result = image_tool._local_path_to_data_uri(str(img))
+        assert result.startswith("data:image/jpeg;base64,")
+
+    def test_unknown_extension_uses_octet_stream(self, image_tool, tmp_path):
+        img = tmp_path / "file.xyz"
+        img.write_bytes(b"\x00" * 10)
+        result = image_tool._local_path_to_data_uri(str(img))
+        assert result.startswith("data:application/octet-stream;base64,")
+
+    def test_raises_file_not_found(self, image_tool):
+        with pytest.raises(FileNotFoundError, match="Image file not found"):
+            image_tool._local_path_to_data_uri("/nonexistent/path/image.png")
+
+    def test_skips_directories(self, image_tool, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            image_tool._local_path_to_data_uri(str(tmp_path))
+
+
+class TestEditPayloadLocalPathConversion:
+    """source_images with local paths should be converted to data URIs
+    before being passed to _build_fal_edit_payload."""
+
+    def _patch_fal_backend(self, image_tool):
+        """Return patches for FAL backend availability checks."""
+        image_tool._load_fal_client = lambda: type("FakeFal", (), {
+            "SyncClient": lambda: type("C", (), {"submit": lambda *a, **k: None})(),
+        })()
+        image_tool.fal_client = image_tool._load_fal_client()
+        return {
+            "fal_configured": True,
+            "managed_gateway": None,
+        }
+
+    def test_local_path_converted_in_source_images(self, image_tool, tmp_path, monkeypatch):
+        """A local file path in image_url should become a data URI."""
+        img = tmp_path / "input.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+
+        captured = {}
+        image_tool._load_fal_client = lambda: type("FakeFal", (), {
+            "SyncClient": lambda: type("C", (), {"submit": lambda *a, **k: None})(),
+        })()
+        image_tool.fal_client = image_tool._load_fal_client()
+
+        import json
+
+        class FakeResult:
+            def get(self, timeout=None):
+                return {"images": [{"url": "https://example.com/out.png", "width": 512, "height": 512}]}
+
+        image_tool._submit_fal_request = lambda model, arguments: (
+            captured.update({"arguments": arguments}) or FakeResult()
+        )
+
+        orig_resolve = image_tool._resolve_fal_model
+        image_tool._resolve_fal_model = lambda: (
+            "fal-ai/gpt-image-2",
+            {**image_tool.FAL_MODELS["fal-ai/gpt-image-2"], "edit_endpoint": "fal-ai/gpt-image-2/edit"},
+        )
+
+        try:
+            monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+            result = json.loads(image_tool.image_generate_tool(
+                prompt="describe edit",
+                image_url=str(img),
+            ))
+            image_urls = captured.get("arguments", {}).get("image_urls", [])
+            assert len(image_urls) == 1
+            assert image_urls[0].startswith("data:image/png;base64,"), (
+                f"Expected data URI, got: {image_urls[0][:60]}..."
+            )
+        finally:
+            image_tool._resolve_fal_model = orig_resolve
+
+    def test_remote_url_not_converted(self, image_tool, tmp_path, monkeypatch):
+        """HTTP URLs should be passed through unchanged."""
+        captured = {}
+
+        image_tool._load_fal_client = lambda: type("FakeFal", (), {
+            "SyncClient": lambda: type("C", (), {"submit": lambda *a, **k: None})(),
+        })()
+        image_tool.fal_client = image_tool._load_fal_client()
+
+        import json
+
+        class FakeResult:
+            def get(self, timeout=None):
+                return {"images": [{"url": "https://example.com/out.png", "width": 512, "height": 512}]}
+
+        image_tool._submit_fal_request = lambda model, arguments: (
+            captured.update({"arguments": arguments}) or FakeResult()
+        )
+
+        orig_resolve = image_tool._resolve_fal_model
+        image_tool._resolve_fal_model = lambda: (
+            "fal-ai/gpt-image-2",
+            {**image_tool.FAL_MODELS["fal-ai/gpt-image-2"], "edit_endpoint": "fal-ai/gpt-image-2/edit"},
+        )
+
+        try:
+            monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+            result = json.loads(image_tool.image_generate_tool(
+                prompt="describe edit",
+                image_url="https://example.com/photo.jpg",
+            ))
+            image_urls = captured.get("arguments", {}).get("image_urls", [])
+            assert len(image_urls) == 1
+            assert image_urls[0] == "https://example.com/photo.jpg"
+        finally:
+            image_tool._resolve_fal_model = orig_resolve

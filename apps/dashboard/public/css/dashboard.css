@@ -1400,7 +1400,12 @@ a.trk-title:hover { color: var(--accent); }
 .an-info-name { font-weight: 600; font-size: 14px; }
 .an-info-layer { text-transform: uppercase; letter-spacing: 0.06em; }
 .an-info-blurb { margin: 4px 0 8px; line-height: 1.4; }
-.an-cond, .an-quality { width: 100%; }
+.an-cond, .an-quality, .an-search { width: 100%; }
+.an-views { display: flex; flex-wrap: wrap; gap: 4px; }
+.an-view { flex: 1 1 auto; min-width: 40px; }
+.an-ghost { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 6px; cursor: pointer; }
+.an-hd-wrap { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.an-hd { width: 100%; }
 .an-note { margin-top: auto; }
 @media (max-width: 760px) {
   .an-wrap { flex-direction: column; }

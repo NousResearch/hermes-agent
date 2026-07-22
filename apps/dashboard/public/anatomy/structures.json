@@ -23,6 +23,10 @@
     { "id": "kidneys", "name": "Kidneys", "layer": "organ", "blurb": "Filter blood, regulate fluid/electrolytes and blood pressure." },
     { "id": "bladder", "name": "Urinary bladder", "layer": "organ", "blurb": "Stores urine before voiding." },
     { "id": "spleen", "name": "Spleen", "layer": "organ", "blurb": "Filters blood and supports immune function." },
-    { "id": "pancreas", "name": "Pancreas", "layer": "organ", "blurb": "Endocrine (insulin/glucagon) and exocrine (digestive enzymes) organ." }
+    { "id": "pancreas", "name": "Pancreas", "layer": "organ", "blurb": "Endocrine (insulin/glucagon) and exocrine (digestive enzymes) organ." },
+    { "id": "trachea", "name": "Trachea", "layer": "organ", "blurb": "The windpipe; conducts air between the larynx and the bronchi." },
+    { "id": "thyroid", "name": "Thyroid gland", "layer": "organ", "blurb": "Neck endocrine gland regulating metabolism via thyroid hormones." },
+    { "id": "gallbladder", "name": "Gallbladder", "layer": "organ", "blurb": "Stores and concentrates bile released with fatty meals." },
+    { "id": "diaphragm", "name": "Diaphragm", "layer": "organ", "blurb": "The primary muscle of respiration, separating thorax and abdomen." }
   ]
 }

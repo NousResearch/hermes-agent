@@ -62,6 +62,20 @@ mirrors the existing `hub:medbot-ask` bridge. Any widget can drive the model:
   (Z-Anatomy / BodyParts3D, CC-BY-SA) loaded on demand on capable devices;
   nervous/vascular layers; cross-section clipping plane.
 
+## Adding a high-detail model (Tier A)
+
+The 3D view has a **"Load high-detail model"** button. It looks for a glTF binary
+at **`public/anatomy/models/body.glb`** (not shipped — supply your own). When
+present it loads via the vendored `GLTFLoader` (resolved through the `three`
+import map in `index.html`) and replaces the procedural body.
+
+For structures to map to the layer toggles / highlighting / picking, **name each
+mesh in the GLB with a structure id** from `structures.json` (e.g. `liver`,
+`lungs`, `heart`, `skull`). Unnamed meshes still render (in the Organs layer)
+but won't be individually targetable. Recommended sources: **Z-Anatomy** or
+**BodyParts3D** (CC-BY-SA), decimated in Blender and exported as Draco-compressed
+`.glb`. Keep it a few MB for phones; desktops can take more.
+
 ## Attribution & licensing
 
 - three.js — MIT (`public/js/vendor/three/LICENSE`).

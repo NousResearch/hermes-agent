@@ -3157,6 +3157,11 @@ class Api:
     def changelog(self, params: dict) -> dict:
         return self.fetch_source("changelog")
 
+    def anatomy_model(self, params: dict) -> dict:
+        # Reports whether a high-detail Tier-A glTF atlas has been supplied.
+        model = PUBLIC_DIR / "anatomy" / "models" / "body.glb"
+        return {"available": model.is_file(), "url": "/anatomy/models/body.glb"}
+
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
         parsed = urllib.parse.urlparse(url)
@@ -3686,6 +3691,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/papers": "papers",
         "/api/commodities": "commodities",
         "/api/changelog": "changelog",
+        "/api/anatomy/model": "anatomy_model",
         "/api/ai-news": "ai_news",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",

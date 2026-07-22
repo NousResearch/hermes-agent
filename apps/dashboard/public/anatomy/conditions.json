@@ -23,6 +23,21 @@
     { "slug": "diabetes", "name": "Diabetes mellitus", "structures": ["pancreas"] },
     { "slug": "malaria", "name": "Malaria", "structures": ["spleen", "liver"] },
     { "slug": "osteoporosis", "name": "Osteoporosis", "structures": ["spine", "pelvis", "leg_bones"] },
-    { "slug": "fracture", "name": "Fracture", "structures": ["arm_bones", "leg_bones"] }
+    { "slug": "fracture", "name": "Fracture", "structures": ["arm_bones", "leg_bones"] },
+    { "slug": "bronchitis", "name": "Bronchitis", "structures": ["trachea", "lungs"] },
+    { "slug": "pulmonary-embolism", "name": "Pulmonary embolism", "structures": ["lungs", "heart"] },
+    { "slug": "cholecystitis", "name": "Cholecystitis (gallstones)", "structures": ["gallbladder", "liver"] },
+    { "slug": "pancreatitis", "name": "Pancreatitis", "structures": ["pancreas"] },
+    { "slug": "gerd", "name": "GORD / acid reflux", "structures": ["stomach"] },
+    { "slug": "pyelonephritis", "name": "Pyelonephritis", "structures": ["kidneys"] },
+    { "slug": "hypothyroidism", "name": "Hypothyroidism", "structures": ["thyroid"] },
+    { "slug": "hyperthyroidism", "name": "Hyperthyroidism", "structures": ["thyroid"] },
+    { "slug": "parkinsons", "name": "Parkinson's disease", "structures": ["brain"] },
+    { "slug": "alzheimers", "name": "Alzheimer's disease", "structures": ["brain"] },
+    { "slug": "endocarditis", "name": "Infective endocarditis", "structures": ["heart"] },
+    { "slug": "arrhythmia", "name": "Arrhythmia", "structures": ["heart"] },
+    { "slug": "nephrolithiasis", "name": "Kidney stones", "structures": ["kidneys", "bladder"] },
+    { "slug": "splenomegaly", "name": "Splenomegaly", "structures": ["spleen"] },
+    { "slug": "bowel-obstruction", "name": "Bowel obstruction", "structures": ["intestines"] }
   ]
 }

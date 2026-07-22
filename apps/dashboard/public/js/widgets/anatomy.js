@@ -75,6 +75,10 @@ function build2DRegions() {
   add("kidneys", "path", { d: "M96 198 a8 12 0 1 0 16 0 a8 12 0 1 0 -16 0 Z M128 198 a8 12 0 1 0 16 0 a8 12 0 1 0 -16 0 Z", class: "an2-organ" });
   add("intestines", "ellipse", { cx: 120, cy: 220, rx: 30, ry: 26, class: "an2-organ" });
   add("bladder", "ellipse", { cx: 120, cy: 268, rx: 13, ry: 11, class: "an2-organ" });
+  add("thyroid", "ellipse", { cx: 120, cy: 90, rx: 10, ry: 5, class: "an2-organ" });
+  add("trachea", "rect", { x: 116, y: 94, width: 8, height: 16, rx: 3, class: "an2-organ" });
+  add("gallbladder", "ellipse", { cx: 90, cy: 176, rx: 5, ry: 7, class: "an2-organ" });
+  add("diaphragm", "path", { d: "M80 150 Q120 138 160 150", fill: "none", "stroke-width": 4, class: "an2-organ" });
   return R;
 }
 
@@ -150,19 +154,70 @@ export default {
         applyCondition(cond);
       });
 
-      // quality selector
+      // search-to-structure
+      const focusStructure = (id) => {
+        if (!data.byId[id]) return;
+        engine?.highlight([id]); engine?.focus?.(id); showStructure(id);
+      };
+      const listId = `an-struct-${Math.random().toString(36).slice(2)}`;
+      const search = h("input.input.an-search", { type: "search", list: listId,
+        placeholder: "Find a structure…", "aria-label": "Find a structure" });
+      const datalist = h("datalist", { id: listId },
+        ...data.structures.map((s) => h("option", { value: s.name })));
+      const runSearch = () => {
+        const q = search.value.trim().toLowerCase();
+        if (!q) return;
+        const hit = data.structures.find((s) => s.name.toLowerCase() === q)
+          || data.structures.find((s) => s.name.toLowerCase().includes(q));
+        if (hit) focusStructure(hit.id);
+      };
+      search.addEventListener("change", runSearch);
+      search.addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+
+      // view presets + ghost skin
+      const VIEWS = [["front", "Front"], ["back", "Back"], ["left", "L"], ["right", "R"], ["top", "Top"]];
+      const viewRow = h("div.an-views");
+      for (const [v, label] of VIEWS) {
+        const b = h("button.btn.btn-tiny.an-view", { type: "button", "data-view": v }, label);
+        b.addEventListener("click", () => { S.view = v; persist(); engine?.setView?.(v); });
+        viewRow.append(b);
+      }
+      const resetBtn = h("button.btn.btn-tiny.an-view", { type: "button" }, "Reset");
+      resetBtn.addEventListener("click", () => { S.view = "front"; persist(); engine?.setView?.("reset"); });
+      viewRow.append(resetBtn);
+
+      const ghost = h("label.an-ghost", {},
+        h("input", { type: "checkbox", checked: !!S.ghost }), "Ghost skin");
+      ghost.querySelector("input").addEventListener("change", (e) => {
+        S.ghost = e.target.checked; persist(); engine?.setGhost?.(S.ghost);
+      });
+
+      // quality selector + high-detail (Tier A) loader
       const qual = h("select.select.an-quality", { "aria-label": "Render quality" },
         ...[["auto", "Auto"], ["3d", "3D"], ["2d", "2D"]].map(([v, l]) =>
           h("option", { value: v, selected: S.quality === v }, l)));
       qual.addEventListener("change", () => { S.quality = qual.value; persist(); draw(); });
 
+      const hdBtn = h("button.btn.btn-tiny.an-hd", { type: "button" }, "Load high-detail model");
+      const hdNote = h("div.muted.small", {});
+      hdBtn.addEventListener("click", async () => {
+        hdBtn.disabled = true; hdNote.textContent = "Checking for high-detail model…";
+        const ok = await engine?.loadHighDetail?.((msg) => { hdNote.textContent = msg; });
+        hdBtn.disabled = false;
+        if (!ok) hdBtn.textContent = "Load high-detail model";
+      });
+
       const viewport = h("div.an-viewport", { class: `an-viewport tier-${tier}` });
 
       const rail = h("div.an-rail", {},
         h("div.an-rail-group", {}, h("div.an-rail-label", {}, "LAYERS"), layerRow),
+        h("div.an-rail-group", {}, h("div.an-rail-label", {}, "FIND"), search, datalist),
+        h("div.an-rail-group", {}, h("div.an-rail-label", {}, "VIEW"), viewRow,
+          tier === "3d" ? ghost : null),
         h("div.an-rail-group", {}, h("div.an-rail-label", {}, "LEARN"), condSelect),
         h("div.an-rail-group", {}, h("div.an-rail-label", {}, "QUALITY"),
-          qual, tier === "2d" && S.quality !== "2d"
+          qual, tier === "3d" ? h("div.an-hd-wrap", {}, hdBtn, hdNote) : null,
+          tier === "2d" && S.quality !== "2d"
             ? h("div.muted.small", {}, "3D unavailable on this device — showing 2D.") : null),
         info,
         h("div.muted.small.an-note", {}, "Educational model · verify clinically. three.js (MIT)."));
@@ -259,14 +314,26 @@ function build2D(viewport, data, S, onSelect) {
     for (const [id, els] of Object.entries(shapes))
       for (const el of els) el.classList.toggle("an2-hot", set.has(id));
   };
-  return { setLayer, highlight, select: onSelect, dispose() {} };
+  const setView = (name) => {
+    // 2D supports front/back; other presets fall back to front.
+    S.view = (name === "back") ? "back" : "front";
+    svg.classList.toggle("an2-back", S.view === "back");
+    for (const l of data.layers) setLayer(l.id, !!S.layers[l.id]);
+  };
+  const focus = (id) => {
+    const el = (shapes[id] || [])[0];
+    el?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  };
+  return { setLayer, highlight, select: onSelect, setView, focus,
+    setGhost() {}, async loadHighDetail(report) { report?.("High-detail model needs the 3D renderer."); return false; },
+    dispose() {} };
 }
 
 // ---------------------------------------------------------------------------
 // Tier B — procedural three.js 3D
 // ---------------------------------------------------------------------------
 async function build3D(viewport, data, S, onSelect) {
-  const THREE = await import("../vendor/three/three.module.min.js");
+  const THREE = await import("three");
   clear(viewport);
 
   const width = viewport.clientWidth || 360;
@@ -337,6 +404,10 @@ async function build3D(viewport, data, S, onSelect) {
   organ("kidneys", 0.1, [0.24, 0.15, -0.15], [1, 1.4, 0.8]);
   organ("intestines", 0.34, [0, -0.05, 0.12], [1, 0.8, 0.7]);
   organ("bladder", 0.13, [0, -0.5, 0.14]);
+  organ("trachea", 0.05, [0, 1.15, 0.12], [1, 2.4, 1]);
+  organ("thyroid", 0.07, [0, 1.18, 0.16], [1.4, 0.6, 0.8]);
+  organ("gallbladder", 0.06, [-0.28, 0.36, 0.18]);
+  organ("diaphragm", 0.36, [0, 0.6, 0.05], [1, 0.16, 0.8]);
 
   // remember base emissive for highlight restore
   for (const m of meshes) m.userData.baseEmissive = m.material.emissive?.getHex?.() ?? 0x000000;
@@ -382,7 +453,58 @@ async function build3D(viewport, data, S, onSelect) {
   }, { passive: true });
   dom.addEventListener("touchend", () => { pinch = 0; });
 
+  // view presets (rotate the whole body to a canonical angle) + ghost skin
+  const VIEW_ANGLES = {
+    front: [0.1, 0], back: [0.1, Math.PI], left: [0.1, -Math.PI / 2],
+    right: [0.1, Math.PI / 2], top: [-Math.PI / 2, 0], reset: [0.1, 0],
+  };
+  const setView = (name) => {
+    const a = VIEW_ANGLES[name] || VIEW_ANGLES.front;
+    rotX = a[0]; rotY = a[1]; if (name === "reset") dist = 6;
+  };
+  const setGhost = (on) => { skinMat.opacity = on ? 0.07 : 0.28; skinMat.needsUpdate = true; };
+  const focus = (id) => {
+    const m = meshes.find((mm) => mm.userData.structure === id);
+    if (!m) return;
+    // rotate so the structure faces the camera and zoom in a little
+    rotY = Math.atan2(m.position.x, m.position.z || 0.001) * 0 + (m.position.x < 0 ? 0.4 : -0.4);
+    rotX = 0.1; dist = 4.5;
+  };
+
+  // Tier A — load a high-detail GLB atlas on demand (pluggable; see ANATOMY.md).
+  const MODEL_URL = "/anatomy/models/body.glb";
+  const loadHighDetail = async (report) => {
+    try {
+      const status = await fetch("/api/anatomy/model").then((r) => r.json()).catch(() => ({}));
+      if (!status.available) { report?.("No high-detail model installed. See ANATOMY.md to add one."); return false; }
+      report?.("Loading high-detail model…");
+      const { GLTFLoader } = await import("../vendor/three/GLTFLoader.js");
+      const gltf = await new GLTFLoader().loadAsync(MODEL_URL);
+      // replace procedural body; map named nodes to structures + layers
+      pivot.clear(); for (const l of data.layers) { groups[l.id] = new THREE.Group(); pivot.add(groups[l.id]); }
+      meshes.length = 0;
+      gltf.scene.traverse((o) => {
+        if (!o.isMesh) return;
+        const id = (o.name || "").toLowerCase();
+        const st = data.byId[id];
+        const layer = st ? st.layer : "organ";
+        o.userData.structure = st ? id : (o.name || "structure");
+        o.userData.baseEmissive = 0x000000;
+        (groups[layer] || groups.organ).add(o); meshes.push(o);
+      });
+      pivot.add(gltf.scene);
+      for (const l of data.layers) setLayer(l.id, !!S.layers[l.id]);
+      report?.("High-detail model loaded.");
+      return true;
+    } catch (err) {
+      report?.(`Couldn't load model: ${err.message}`);
+      return false;
+    }
+  };
+
   if (anatRaf) cancelAnimationFrame(anatRaf);
+  setView(S.view || "front");
+  if (S.ghost) setGhost(true);
   const loop = () => {
     if (!dom.isConnected) return; // self-terminate on unmount
     pivot.rotation.x = rotX; pivot.rotation.y = rotY;
@@ -394,7 +516,7 @@ async function build3D(viewport, data, S, onSelect) {
   };
   loop();
 
-  return { setLayer, highlight, select: onSelect,
+  return { setLayer, highlight, select: onSelect, setView, setGhost, focus, loadHighDetail,
     dispose() { if (anatRaf) cancelAnimationFrame(anatRaf); renderer.dispose(); } };
 }
 

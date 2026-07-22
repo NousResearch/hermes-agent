@@ -787,6 +787,17 @@ check("anatomy highlights from free text", anatText === true);
 await page.locator('.widget-anatomy [data-structure="heart"]').click({ force: true });
 check("anatomy info panel names the selection",
   /heart/i.test(await page.locator(".widget-anatomy .an-info-name").innerText()));
+// Phase 2 — view presets, search-to-structure, expanded conditions
+check("anatomy has view presets", (await page.locator(".widget-anatomy .an-view").count()) >= 5);
+await page.fill(".widget-anatomy .an-search", "gallbladder");
+await page.locator(".widget-anatomy .an-search").press("Enter");
+await page.waitForTimeout(200);
+check("anatomy search focuses a structure",
+  /gallbladder/i.test(await page.locator(".widget-anatomy .an-info-name").innerText()));
+await page.locator(".widget-anatomy .an-view", { hasText: "Back" }).click();
+await page.waitForTimeout(150);
+check("anatomy back view hides anterior organs", await page.evaluate(() =>
+  getComputedStyle(document.querySelector('.widget-anatomy [data-structure="heart"]')).display === "none"));
 
 await gotoWidget("meded");
 check("med ed lists OSCE stations", (await page.locator(".widget-meded .meded-station").count()) >= 10);

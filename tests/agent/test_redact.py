@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +13,21 @@ def _ensure_redaction_enabled(monkeypatch):
     monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
     # Also patch the module-level snapshot so it reflects the cleared env var
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+
+class TestMaskSecret:
+    def test_printable_secret_mask_shape_is_unchanged(self):
+        assert mask_secret("abcd0123456789zzzz") == "abcd...zzzz"
+
+    def test_strips_controls_from_visible_segments(self):
+        masked = mask_secret("ab\ncd0123456789zz\x85q", empty="missing")
+
+        assert "\n" not in masked
+        assert "\x85" not in masked
+        assert masked == "abcd...9zzq"
+
+    def test_all_control_input_uses_empty_fallback(self):
+        assert mask_secret("\x00\n\x85", empty="missing") == "missing"
 
 
 class TestKnownPrefixes:

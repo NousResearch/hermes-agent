@@ -795,7 +795,7 @@ export const fr = defineLocale({
       noneParen: '(aucun)',
       builtinOnly: 'Intégrés uniquement',
       notSet: 'Non défini',
-      commaSeparated: 'valeurs séparées par des virgules',
+      commaSeparated: 'séparer par des virgules',
       loading: 'Chargement de la configuration Hermes...',
       emptyTitle: 'Rien à configurer',
       emptyDesc: 'Cette section n\'a aucun paramètre réglable.',

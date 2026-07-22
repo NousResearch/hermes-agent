@@ -4982,3 +4982,47 @@ class TestSetCronSessionTitle:
         from cron.scheduler import _set_cron_session_title
         assert _set_cron_session_title(None, "sess-1", "X") is None
         assert _set_cron_session_title(MagicMock(), "", "X") is None
+
+
+class TestRunJobDoesNotLeakSessionDb:
+    """A wake-gated cron tick that skips the agent must not leak a SQLite connection.
+
+    Regression: the SQLite session store used to be constructed before the
+    wake-gate/skip early returns, so every ``wakeAgent=false`` tick leaked an
+    open connection (fd exhaustion -> EMFILE on a gateway that ticks cron
+    frequently).
+    """
+
+    def test_wake_gate_false_does_not_leak_session_db(self):
+        import hermes_state
+
+        created = []
+
+        class _TrackingSessionDB:
+            def __init__(self, *args, **kwargs):
+                self.closed = False
+                created.append(self)
+
+            def close(self):
+                self.closed = True
+
+        job = {
+            "id": "wake_gate_job",
+            "name": "wake-gated job",
+            "prompt": "do something",
+            "script": "/tmp/does-not-run.sh",
+        }
+
+        with patch(
+            "cron.scheduler._run_job_script", return_value=(True, '{"wakeAgent": false}')
+        ), patch.object(hermes_state, "SessionDB", _TrackingSessionDB):
+            success, _doc, final, _err = run_job(job)
+
+        # The tick short-circuited: the agent was skipped.
+        assert success is True
+        assert final == SILENT_MARKER
+        # No SQLite connection may be left open. On the buggy code the store was
+        # constructed before the wake-gate return and its close() never ran.
+        assert all(
+            db.closed for db in created
+        ), "run_job leaked an unclosed SessionDB connection on the wake-gate skip path"

@@ -50,8 +50,10 @@ Config file: `$HERMES_HOME/supermemory.json`
 | `container_tag` | `hermes` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags (e.g. `hermes-{identity}` → `hermes-coder`). |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
-| `max_recall_results` | `10` | Max recalled items to format into context |
-| `profile_frequency` | `50` | Include profile facts on first turn and every N turns |
+| `max_recall_results` | `10` | Total recalled-item budget across all context sections (bounded to 1–20) |
+| `recall_min_similarity` | `0.76` | Minimum 0–1 similarity for automatic semantic recall; missing/invalid scores are not injected |
+| `prefetch_include_profile` | `false` | Opt in to automatic static/dynamic profile context; explicit profile-tool behavior is unchanged |
+| `profile_frequency` | `50` | When profile prefetch is opted in, include it on the first turn and every N turns |
 | `capture_mode` | `all` | Skip tiny or trivial turns by default |
 | `search_mode` | `hybrid` | Search mode: `hybrid` (profile + memories), `memories` (memories only), `documents` (documents only) |
 | `entity_context` | built-in default | Extraction guidance passed to Supermemory |

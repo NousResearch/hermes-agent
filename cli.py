@@ -8174,17 +8174,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _clear_persisted_context_for_model_switch(self, result) -> None:
         """Drop a global context pin when its configured owner changes."""
         try:
-            from agent.agent_init import _context_route_mismatch
             from hermes_cli.config import load_config_readonly
+            from hermes_cli.route_identity import should_clear_context_pin
 
             config = load_config_readonly()
             model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
             if not isinstance(model_cfg, dict) or "context_length" not in model_cfg:
                 return
-            configured_model = model_cfg.get("default") or model_cfg.get("model")
-            if (
-                configured_model and configured_model != result.new_model
-            ) or _context_route_mismatch(
+            if should_clear_context_pin(
+                model_cfg.get("default") or model_cfg.get("model"),
+                result.new_model,
                 model_cfg.get("base_url"),
                 result.base_url,
                 model_cfg.get("provider"),

@@ -1730,16 +1730,12 @@ class GatewaySlashCommandsMixin:
                                     _persist_model_cfg = {}
                                     _persist_cfg["model"] = _persist_model_cfg
                                 try:
-                                    from agent.agent_init import _context_route_mismatch
+                                    from hermes_cli.route_identity import should_clear_context_pin
 
-                                    _old_default = (
+                                    if should_clear_context_pin(
                                         _persist_model_cfg.get("default")
-                                        or _persist_model_cfg.get("model")
-                                    )
-                                    if (
-                                        _old_default
-                                        and _old_default != result.new_model
-                                    ) or _context_route_mismatch(
+                                        or _persist_model_cfg.get("model"),
+                                        result.new_model,
                                         _persist_model_cfg.get("base_url"),
                                         result.base_url,
                                         _persist_model_cfg.get("provider"),
@@ -2062,12 +2058,11 @@ class GatewaySlashCommandsMixin:
                         model_cfg = {}
                         cfg["model"] = model_cfg
                     try:
-                        from agent.agent_init import _context_route_mismatch
+                        from hermes_cli.route_identity import should_clear_context_pin
 
-                        old_default = model_cfg.get("default") or model_cfg.get("model")
-                        if (
-                            old_default and old_default != result.new_model
-                        ) or _context_route_mismatch(
+                        if should_clear_context_pin(
+                            model_cfg.get("default") or model_cfg.get("model"),
+                            result.new_model,
                             model_cfg.get("base_url"),
                             result.base_url,
                             model_cfg.get("provider"),

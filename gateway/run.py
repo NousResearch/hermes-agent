@@ -11959,9 +11959,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _msg_config_ctx = None
                 if _msg_config_ctx is not None and isinstance(_msg_model_cfg, dict):
                     try:
-                        from agent.agent_init import _context_route_mismatch
+                        from hermes_cli.route_identity import should_clear_context_pin
 
-                        if _context_route_mismatch(
+                        if should_clear_context_pin(
+                            None,  # model match already checked above
+                            None,
                             _msg_model_cfg.get("base_url"),
                             _msg_base_url,
                             _msg_model_cfg.get("provider"),
@@ -12524,12 +12526,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 if _hyg_config_context_length is not None:
                     try:
-                        from agent.agent_init import _context_route_mismatch
+                        from hermes_cli.route_identity import should_clear_context_pin
 
-                        if (
-                            _hyg_configured_model
-                            and _hyg_model != _hyg_configured_model
-                        ) or _context_route_mismatch(
+                        if should_clear_context_pin(
+                            _hyg_configured_model,
+                            _hyg_model,
                             _hyg_configured_base_url,
                             _hyg_base_url,
                             _hyg_configured_provider,
@@ -13859,11 +13860,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if config_context_length is not None:
             try:
-                from agent.agent_init import _context_route_mismatch
+                from hermes_cli.route_identity import should_clear_context_pin
 
-                if (
-                    configured_model and model != configured_model
-                ) or _context_route_mismatch(
+                if should_clear_context_pin(
+                    configured_model,
+                    model,
                     configured_base_url,
                     base_url,
                     configured_provider,

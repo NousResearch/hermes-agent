@@ -4787,3 +4787,66 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+
+# ---------------------------------------------------------------------------
+# _api_key_passes_startup_guard — fail-closed on an unverifiable key
+# ---------------------------------------------------------------------------
+
+class TestApiKeyStartupGuardFailsClosed:
+    """The guard is the only thing between a guessable key and an endpoint the
+    code itself describes as ``terminal-capable agent work`` where "a guessable
+    key is remote code execution".
+
+    So "the strength check could not be run" must never resolve to "start
+    anyway" — the same posture ``tools/credential_files.py`` takes when its
+    deny-list cannot be consulted.
+    """
+
+    class _Stub:
+        name = "api_server"
+        _host = "0.0.0.0"
+
+        def __init__(self, key):
+            self._api_key = key
+
+    @staticmethod
+    def _guard(key):
+        return APIServerAdapter._api_key_passes_startup_guard(
+            TestApiKeyStartupGuardFailsClosed._Stub(key)
+        )
+
+    @staticmethod
+    def _blocking_auth_import():
+        real_import = __import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "hermes_cli.auth":
+                raise ImportError("simulated: hermes_cli.auth unavailable")
+            return real_import(name, *args, **kwargs)
+
+        return patch("builtins.__import__", _blocked)
+
+    def test_weak_key_refused_when_check_is_unavailable(self):
+        """The bug: an unimportable auth module silently dropped the check and
+        the server started on a 4-character key."""
+        with self._blocking_auth_import():
+            assert self._guard("test") is False
+
+    def test_strong_key_also_refused_when_check_is_unavailable(self):
+        """Fail-closed: we cannot verify the key, so we do not expose the
+        endpoint — the log tells the operator to repair the install."""
+        with self._blocking_auth_import():
+            assert self._guard("a" * 40) is False
+
+    def test_strong_key_still_starts_normally(self):
+        """Control: the happy path is unchanged."""
+        assert self._guard("a" * 40) is True
+
+    def test_weak_key_still_refused_normally(self):
+        """Control: the original rejection is unchanged."""
+        assert self._guard("test") is False
+
+    def test_missing_key_still_refused(self):
+        """Control: the empty-key branch is unchanged."""
+        assert self._guard("") is False

@@ -659,6 +659,62 @@ class TestAnthropicOAuthFlag:
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
+class TestMinimaxOAuthAuxiliary:
+    def test_resolve_provider_client_builds_minimax_oauth_client(self):
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            resolve_provider_client,
+        )
+
+        fake_creds = {
+            "provider": "minimax-oauth",
+            "api_key": "mxp-test-token",
+            "base_url": "https://api.minimax.io/anthropic",
+            "source": "oauth",
+        }
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+                return_value=fake_creds,
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ) as mock_build,
+        ):
+            client, model = resolve_provider_client("minimax-oauth")
+
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert model == "MiniMax-M2.7-highspeed"
+        mock_build.assert_called_once_with(
+            "mxp-test-token",
+            "https://api.minimax.io/anthropic",
+        )
+
+    def test_resolve_provider_client_handles_missing_minimax_oauth_credentials(
+        self, caplog
+    ):
+        from hermes_cli.auth import AuthError
+
+        caplog.set_level(logging.WARNING)
+
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            side_effect=AuthError(
+                "not logged in",
+                provider="minimax-oauth",
+                code="not_logged_in",
+            ),
+        ):
+            client, model = resolve_provider_client("minimax-oauth")
+
+        assert client is None
+        assert model is None
+        assert "unhandled auth_type oauth_minimax" not in caplog.text
+        assert "minimax-oauth requested but OAuth credentials are unavailable" in caplog.text
+
+
 class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (

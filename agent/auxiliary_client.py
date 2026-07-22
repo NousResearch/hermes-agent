@@ -5255,6 +5255,41 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    elif pconfig.auth_type == "oauth_minimax":
+        try:
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+
+            creds = resolve_minimax_oauth_runtime_credentials()
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but OAuth "
+                "credentials are unavailable (%s)",
+                exc,
+            )
+            return None, None
+
+        api_key = str(creds.get("api_key", "")).strip()
+        if not api_key:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but OAuth "
+                "credentials returned no access token"
+            )
+            return None, None
+
+        raw_base_url = (
+            str(creds.get("base_url", "")).strip().rstrip("/")
+            or pconfig.inference_base_url
+        )
+        base_url = _to_openai_base_url(raw_base_url)
+        default_model = _get_aux_model_for_provider(provider)
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
+
+        logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     if pconfig.auth_type == "external_process":
         creds = resolve_external_process_provider_credentials(provider)
         final_model = _normalize_resolved_model(

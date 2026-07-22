@@ -1034,12 +1034,14 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
-def _session_browse_picker(sessions: list) -> Optional[str]:
+def _session_browse_picker(sessions: list, sessions_dir=None) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
     Returns the selected session ID, or None if cancelled.
     Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
     bug in tmux/iTerm when arrow keys are used.
+
+    Press 'Ctrl+D' on a selected session to delete it (with confirmation).
     """
     if not sessions:
         print("No sessions found.")
@@ -1096,7 +1098,21 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             cursor = 0
             scroll_offset = 0
             search_text = ""
+            confirm_delete = False
             filtered = list(sessions)
+
+            def _do_delete(sid):
+                """Delete a session from DB and remove from lists."""
+                try:
+                    from hermes_state import SessionDB
+                    db2 = SessionDB()
+                    try:
+                        ok = db2.delete_session(sid, sessions_dir=sessions_dir)
+                    finally:
+                        db2.close()
+                    return ok
+                except Exception:
+                    return False
 
             while True:
                 stdscr.clear()
@@ -1118,7 +1134,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     if curses.has_colors():
                         header_attr |= curses.color_pair(3)
                 else:
-                    header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
+                    header = "  Browse sessions — ↑↓ navigate  Enter select  Ctrl+D delete  Type to filter  Esc quit"
                     header_attr = curses.A_BOLD
                     if curses.has_colors():
                         header_attr |= curses.color_pair(2)
@@ -1183,7 +1199,17 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 # Footer
                 footer_y = max_y - 1
-                if filtered:
+                if confirm_delete:
+                    sid = filtered[cursor]["id"]
+                    footer = f"  Delete session {sid[:18]}? [y/N]"
+                    try:
+                        stdscr.addnstr(
+                            footer_y, 0, footer, max_x - 1,
+                            curses.color_pair(1) if curses.has_colors() else curses.A_BOLD,
+                        )
+                    except curses.error:
+                        pass
+                elif filtered:
                     footer = f"  {cursor + 1}/{len(filtered)} sessions"
                     if len(filtered) < len(sessions):
                         footer += f" (filtered from {len(sessions)})"
@@ -1202,6 +1228,24 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 stdscr.refresh()
                 key = stdscr.getch()
+
+                if confirm_delete:
+                    if key in {ord("y"), ord("Y")}:
+                        # Delete confirmed
+                        sid = filtered[cursor]["id"]
+                        if _do_delete(sid):
+                            # Remove from both lists
+                            sessions[:] = [s for s in sessions if s["id"] != sid]
+                            filtered = [s for s in filtered if s["id"] != sid]
+                            if filtered and cursor >= len(filtered):
+                                cursor = len(filtered) - 1
+                            if not filtered:
+                                cursor = 0
+                        confirm_delete = False
+                    else:
+                        # Any other key cancels
+                        confirm_delete = False
+                    continue
 
                 if key in {curses.KEY_UP,}:
                     if filtered:
@@ -1232,6 +1276,8 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                             filtered = list(sessions)
                         cursor = 0
                         scroll_offset = 0
+                elif key == 4 and not search_text and filtered:  # Ctrl+D
+                    confirm_delete = True
                 elif key == ord("q") and not search_text:
                     return
                 elif 32 <= key <= 126:
@@ -1246,6 +1292,8 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
     except Exception:
         pass
+    except KeyboardInterrupt:
+        return None
 
     # Fallback: numbered list (Windows without curses, etc.)
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
@@ -15283,12 +15331,13 @@ def main():
             sessions = db.list_sessions_rich(
                 source=source, exclude_sources=_browse_exclude, limit=limit
             )
+            sessions_dir = get_hermes_home() / "sessions"
             db.close()
             if not sessions:
                 print("No sessions found.")
                 return
 
-            selected_id = _session_browse_picker(sessions)
+            selected_id = _session_browse_picker(sessions, sessions_dir=sessions_dir)
             if not selected_id:
                 print("Cancelled.")
                 return

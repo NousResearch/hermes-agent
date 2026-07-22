@@ -324,6 +324,27 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_recompute_ready_batches_dependency_and_sticky_block_reads(kanban_home):
+    """Dispatcher ticks must not issue one dependency/event query per task."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent")
+        for i in range(25):
+            kb.create_task(conn, title=f"waiting {i}", parents=[parent])
+        for i in range(25):
+            task_id = kb.create_task(conn, title=f"sticky {i}")
+            kb.block_task(conn, task_id, reason="needs review")
+
+        statements = []
+        conn.set_trace_callback(statements.append)
+        try:
+            assert kb.recompute_ready(conn) == 0
+        finally:
+            conn.set_trace_callback(None)
+
+        selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+        assert len(selects) <= 3
+
+
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
     """blocked tasks with all parents done should be promoted to ready,
     unless the circuit-breaker failure limit has been reached."""

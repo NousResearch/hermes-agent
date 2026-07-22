@@ -1,3 +1,6 @@
+// Importing the apps barrel registers the reference widget apps at startup.
+import '../sdk/apps/index.js'
+
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
@@ -19,6 +22,7 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -28,7 +32,6 @@ import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
-import { Dialog, Overlay } from './overlay.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
@@ -140,14 +143,15 @@ const TranscriptPane = memo(function TranscriptPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
+  const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
 
   // Keep transcript text clear of the floating pet, responsively:
   //  - wide terminals: reserve a right gutter so lines wrap to the pet's left
   //    (as long as enough width is left for comfortable reading);
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
-  const useGutter = !!petBox && composer.cols - petBox.width >= MIN_GUTTER_BODY_COLS
-  const bodyCols = useGutter && petBox ? composer.cols - petBox.width : composer.cols
+  const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
+  const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
@@ -359,6 +363,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
+      <AmbientDock placement="dock-top" />
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
@@ -439,6 +444,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
+      <AmbientDock placement="dock-bottom" />
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
   )
@@ -526,6 +532,7 @@ export const AppLayout = memo(function AppLayout({
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position="relative">
         <Box flexDirection="row" flexGrow={1}>
+          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
@@ -539,6 +546,7 @@ export const AppLayout = memo(function AppLayout({
               <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
             </PerfPane>
           )}
+          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
         </Box>
 
         {!overlay.agents && !overlay.journey && (
@@ -568,19 +576,7 @@ export const AppLayout = memo(function AppLayout({
         {!overlay.agents && <PetPane />}
       </Box>
 
-      {overlay.dialog && (
-        <Overlay backdrop zone={overlay.dialog.zone ?? 'center'}>
-          <Dialog
-            hint={overlay.dialog.hint ?? 'Esc/q close'}
-            title={overlay.dialog.title}
-            width={Math.min(60, composer.cols - 8)}
-          >
-            {overlay.dialog.body.split('\n').map((line, i) => (
-              <Text key={i}>{line || ' '}</Text>
-            ))}
-          </Dialog>
-        </Overlay>
-      )}
+      <ActiveWidgetSlot />
     </Shell>
   )
 })

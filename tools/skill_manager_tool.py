@@ -294,6 +294,75 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+# Every background-review refusal ends with this. A refusal that only says
+# "no" leaves the review fork with one obvious next move — try the same skill
+# again — which is exactly the loop this text exists to break. Naming the two
+# places the fork DOES own turns a dead end into a next action.
+_BACKGROUND_REVIEW_FALLBACK = (
+    " Do not retry this skill — the write is refused every time. Put the "
+    "lesson somewhere you own instead: create a NEW agent-owned skill with "
+    "skill_manage(action=\"create\", ...) that carries it, or, if it is a "
+    "fact about the user rather than a technique, save it with the memory "
+    "tool."
+)
+
+
+def _background_review_refusal(name: str, action: str, reason: str) -> Dict[str, Any]:
+    """Build the refusal payload for one block reason from the shared predicate."""
+    from tools import skill_provenance as prov
+
+    if reason == prov.BLOCK_PINNED:
+        detail = (
+            f"Refusing background curator {action} for pinned skill '{name}': "
+            "pinned skills are off-limits to autonomous maintenance. Ask the "
+            f"user to run `hermes curator unpin {name}` if they want it changed."
+        )
+    elif reason == prov.BLOCK_EXTERNAL:
+        detail = (
+            f"Refusing background curator {action} for skill '{name}': the "
+            "skill lives in skills.external_dirs, which are externally owned "
+            "and read-only to autonomous curation."
+        )
+    elif reason == prov.BLOCK_PROTECTED_BUILTIN:
+        detail = (
+            f"Refusing background curator {action} for protected built-in "
+            f"skill '{name}'."
+        )
+    elif reason == prov.BLOCK_HUB_INSTALLED:
+        detail = (
+            f"Refusing background curator {action} for hub-installed skill "
+            f"'{name}'."
+        )
+    elif reason == prov.BLOCK_BUNDLED:
+        detail = f"Refusing background curator {action} for bundled skill '{name}'."
+    elif reason == prov.BLOCK_NOT_AGENT_CREATED:
+        created_by = None
+        try:
+            from tools import skill_usage
+            record = skill_usage.load_usage().get(name)
+            if isinstance(record, dict):
+                created_by = record.get("created_by")
+        except Exception:
+            logger.debug("created_by lookup failed for %s", name, exc_info=True)
+        detail = (
+            f"Refusing background curator {action} for skill '{name}': the "
+            f"skill records show it is not agent-created "
+            f"(created_by={created_by!r}). Manually authored skills are "
+            "off-limits to autonomous curation."
+        )
+    else:  # pragma: no cover — defensive; every reason above is enumerated
+        detail = (
+            f"Refusing background curator {action} for skill '{name}': "
+            f"{reason}."
+        )
+
+    return {
+        "success": False,
+        "error": detail + _BACKGROUND_REVIEW_FALLBACK,
+        "blocked_because": reason,
+    }
+
+
 def _background_review_write_guard(
     name: str,
     skill_dir: Path,
@@ -305,95 +374,27 @@ def _background_review_write_guard(
     bundled, or hub-installed skills. The background review fork is different:
     it is autonomous lifecycle maintenance, so its write surface is restricted
     to local curator-owned sediment.
+
+    Ownership itself is decided by
+    ``skill_provenance.background_review_block_reason`` — the same predicate
+    ``skills_list`` uses to mark entries ``writable``. Enforcement and
+    discovery read one source of truth, so the fork is never shown a target
+    this guard will reject.
     """
     try:
-        from tools.skill_provenance import is_background_review
+        from tools.skill_provenance import (
+            background_review_block_reason,
+            is_background_review,
+        )
         if not is_background_review():
             return None
     except Exception:
         return None
 
-    # Pin must be respected by autonomous maintenance. The curator already
-    # skips pinned skills from every auto-transition; the background review
-    # fork is the same kind of autonomous, no-user-present actor, so it must
-    # not write to a pinned skill either (issue #25839). This is stricter than
-    # the foreground ``_pinned_guard`` (which only blocks deletion) precisely
-    # because there is no user in the loop to consent to an edit here.
-    try:
-        from tools import skill_usage
-        if skill_usage.get_record(name).get("pinned"):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for pinned skill "
-                    f"'{name}': pinned skills are off-limits to autonomous "
-                    "maintenance. Ask the user to run "
-                    f"`hermes curator unpin {name}` if they want it changed."
-                ),
-            }
-    except Exception:
-        logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
-
-    try:
-        from agent.skill_utils import is_external_skill_path
-        if is_external_skill_path(skill_dir):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for skill '{name}': "
-                    "the skill lives in skills.external_dirs, which are "
-                    "externally owned and read-only to autonomous curation."
-                ),
-            }
-    except Exception:
-        logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
-
-    try:
-        from tools import skill_usage
-        if skill_usage.is_protected_builtin(name):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for protected "
-                    f"built-in skill '{name}'."
-                ),
-            }
-        if skill_usage.is_hub_installed(name):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for hub-installed "
-                    f"skill '{name}'."
-                ),
-            }
-        if skill_usage.is_bundled(name):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for bundled "
-                    f"skill '{name}'."
-                ),
-            }
-        # Manually authored skills (created_by != "agent") are off-limits
-        # to autonomous curation. This prevents the LLM consolidation pass
-        # from archiving skills the user placed manually (e.g. via URL
-        # install or direct SKILL.md authoring), which lack the
-        # `created_by: "agent"` marker.
-        usage_data = skill_usage.load_usage()
-        usage_rec = usage_data.get(name)
-        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for skill "
-                    f"'{name}': the skill records show it is not agent-created "
-                    f"(created_by={usage_rec.get('created_by')!r}). Manually authored "
-                    f"skills are off-limits to autonomous curation."
-                ),
-            }
-    except Exception:
-        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
-    return None
+    reason = background_review_block_reason(name, skill_dir)
+    if reason is None:
+        return None
+    return _background_review_refusal(name, action, reason)
 
 
 def _background_review_read_before_write_guard(

@@ -900,8 +900,8 @@ export const api = {
     ),
 
   // Gateway / update actions
-  restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  restartGateway: (profile?: string) =>
+    fetchJSON<ActionResponse>(appendProfileParam("/api/gateway/restart", profile), { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -1143,10 +1143,10 @@ export const api = {
     }),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
-  startGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
-  stopGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+  startGateway: (profile?: string) =>
+    fetchJSON<ActionResponse>(appendProfileParam("/api/gateway/start", profile), { method: "POST" }),
+  stopGateway: (profile?: string) =>
+    fetchJSON<ActionResponse>(appendProfileParam("/api/gateway/stop", profile), { method: "POST" }),
 
   // ── Admin: Operations ───────────────────────────────────────────────
   runDoctor: () =>

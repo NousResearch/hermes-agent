@@ -4,6 +4,7 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
+  getExplicitExitChordAction,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
@@ -78,6 +79,34 @@ describe('handleIdleHotkeyExit', () => {
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
     expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+  })
+})
+
+const key = (overrides: Record<string, unknown> = {}) =>
+  ({ ctrl: false, meta: false, super: false, ...overrides }) as any
+
+describe('getExplicitExitChordAction', () => {
+  it('lets non-macOS Ctrl+D exit only when the composer is empty', () => {
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'd', false, false)).toBe('exit')
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'd', true, false)).toBe('composer')
+  })
+
+  it('uses only explicit Cmd/Super for macOS exit', () => {
+    expect(getExplicitExitChordAction(key({ super: true }), 'd', true, true)).toBe('exit')
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'd', false, true)).toBeNull()
+    expect(getExplicitExitChordAction(key({ meta: true }), 'd', false, true)).toBeNull()
+  })
+
+  it('requires the same bare Ctrl+D shape the composer readline path owns', () => {
+    // CSI-u Ctrl+Shift+D / Ctrl+Alt+D are neither exit nor delete-char; the
+    // composer swallows them, so the global handler must not claim them either.
+    expect(getExplicitExitChordAction(key({ ctrl: true, shift: true }), 'd', false, false)).toBeNull()
+    expect(getExplicitExitChordAction(key({ ctrl: true, alt: true }), 'd', false, false)).toBeNull()
+    expect(getExplicitExitChordAction(key({ ctrl: true, meta: true }), 'd', false, false)).toBeNull()
+  })
+
+  it('ignores unrelated explicit action chords', () => {
+    expect(getExplicitExitChordAction(key({ ctrl: true }), 'l', false, false)).toBeNull()
   })
 })
 

@@ -15,6 +15,10 @@ export const isMac = process.platform === 'darwin'
 export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean =>
   isMac ? key.meta || key.super === true : key.ctrl
 
+/** True only for unambiguous platform action-modifier events. */
+export const isExplicitActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean =>
+  isMac ? key.super === true : key.ctrl
+
 /**
  * Accept raw Ctrl+<letter> as an action shortcut on macOS, where `isActionMod`
  * otherwise means Cmd. Two motivations:
@@ -33,6 +37,55 @@ export const isMacActionFallback = (
 /** Match action-modifier + a single character (case-insensitive). */
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
+
+/** Match explicit action-modifier + a single character (case-insensitive). */
+export const isExplicitAction = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  target: string
+): boolean => isExplicitActionMod(key) && ch.toLowerCase() === target
+
+export interface ChordKey {
+  alt?: boolean
+  ctrl: boolean
+  meta: boolean
+  shift?: boolean
+  super?: boolean
+}
+
+/** Ctrl with no other modifier — the shape readline chords key off. */
+export const isBareCtrl = (key: ChordKey): boolean =>
+  key.ctrl && !key.alt && !key.meta && key.super !== true && !key.shift
+
+/**
+ * Action chords the focused composer must consume so they never fall through
+ * as typed text. hermes-ink reports Ctrl+<letter> with ``input`` set to the
+ * bare letter, so unowned control chords would otherwise insert that letter
+ * (or clobber an active selection).
+ *
+ *  - macOS broad action-modifier + d/l: exit / clear-screen chords (Cmd via
+ *    ``key.super``, legacy Cmd and Option both via ``key.meta``). The global
+ *    handler only acts on the explicit ``key.super`` form; the ambiguous
+ *    ``key.meta`` forms are consumed here as no-ops.
+ *  - Ctrl+L on every platform: the global handler owns redraw/clear.
+ *  - Non-bare Ctrl+D (Ctrl+Shift+D, Ctrl+Alt+D via CSI-u terminals): not an
+ *    exit chord and not readline delete-char, but still a control chord that
+ *    must not insert a literal ``d``. Bare Ctrl+D is excluded — the readline
+ *    edit path owns it.
+ */
+export const shouldSwallowActionChordText = (key: ChordKey, ch: string): boolean => {
+  const c = ch.toLowerCase()
+
+  if (isMac && isActionMod(key) && (c === 'd' || c === 'l')) {
+    return true
+  }
+
+  if (key.ctrl && c === 'l') {
+    return true
+  }
+
+  return key.ctrl && c === 'd' && !isBareCtrl(key)
+}
 
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
@@ -152,8 +205,7 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
  * bindings (Copilot round-8 review on #19835). */
 const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
 
-/** On macOS the action-modifier intercepts these editor chords via
- * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:
+/** On macOS the action-modifier intercepts these editor chords before voice:
  *  - super+c → copy
  *  - super+d → exit
  *  - super+l → clear screen
@@ -164,14 +216,11 @@ const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
  * non-mac users (Copilot round-8 review on #19835). */
 const _RESERVED_SUPER_CHARS = new Set(['c', 'd', 'l', 'v'])
 
-/** On macOS ``isActionMod`` accepts ``key.meta`` as the action
- * modifier — but hermes-ink reports Alt as ``key.meta`` on many
- * terminals. So on darwin a configured ``alt+c`` / ``alt+d`` / ``alt+l``
- * gets swallowed by ``isCopyShortcut`` / ``isAction`` before the voice
- * check runs. Block at parse time so /voice status doesn't advertise
- * a shortcut that actually copies / quits / clears (Copilot round-12
- * review on #19835). */
-const _RESERVED_ALT_CHARS_MAC = new Set(['c', 'd', 'l'])
+/** On macOS ``isCopyShortcut`` keeps the broad ``key.meta`` fallback
+ * because legacy terminals can report Cmd+C that way. hermes-ink also
+ * reports Alt as ``key.meta`` on many terminals, so configured ``alt+c``
+ * would be swallowed by copy before the voice check runs. */
+const _RESERVED_ALT_CHARS_MAC = new Set(['c'])
 
 interface RuntimeKeyEvent {
   alt?: boolean
@@ -288,7 +337,6 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
 
   // Same for ``super+c`` / ``super+d`` / ``super+l`` / ``super+v`` on
   // macOS only — those are copy / exit / clear / paste and get claimed
-  // by ``isCopyShortcut`` / ``isAction`` / the TextInput paste layer
   // before voice has a chance to toggle. On Linux/Windows the TUI
   // globals key off Ctrl (not Super), so kitty/CSI-u ``super+<letter>``
   // bindings stay usable for non-mac users.
@@ -296,11 +344,10 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
     return DEFAULT_VOICE_RECORD_KEY
   }
 
-  // On macOS hermes-ink reports Alt as ``key.meta``, which ``isActionMod``
-  // accepts as the mac action modifier. So ``alt+c`` / ``alt+d`` / ``alt+l``
-  // collide with copy / exit / clear in ``useInputHandlers()`` before the
-  // voice check. Reject at parse time on darwin only — non-mac ``alt+<letter>``
-  // bindings are still usable (Copilot round-12 review on #19835).
+  // On macOS hermes-ink reports Alt as ``key.meta``, and copy keeps
+  // the broad ``key.meta`` fallback for legacy Cmd+C compatibility.
+  // Reject ``alt+c`` at parse time on darwin only; non-mac ``alt+<letter>``
+  // bindings and macOS Alt+D/L remain usable.
   if (isMac && mod === 'alt' && last.length === 1 && _RESERVED_ALT_CHARS_MAC.has(last)) {
     return DEFAULT_VOICE_RECORD_KEY
   }

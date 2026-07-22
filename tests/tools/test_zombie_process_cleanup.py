@@ -342,3 +342,42 @@ class TestDelegationCleanup:
         child.close.assert_called_once()
         assert child not in parent._active_children
         assert result["status"] == "error"
+
+
+class TestAtexitProcessCleanup:
+    """Verify _atexit_cleanup() kills tracked background processes
+    before tearing down environments (issue: orphan-process leak)."""
+
+    def test_atexit_calls_kill_all_before_env_cleanup(self):
+        """_atexit_cleanup must call process_registry.kill_all() before
+        cleanup_all_environments() so tracked bg processes are reaped."""
+        import tools.terminal_tool  # ensure module is loaded for patch
+        from unittest.mock import call, patch
+
+        with patch.object(tools.terminal_tool, "_stop_cleanup_thread"), \
+             patch.object(tools.terminal_tool, "_active_environments", {"task-1": object()}), \
+             patch.object(tools.terminal_tool, "cleanup_all_environments") as mock_env_cleanup, \
+             patch("tools.process_registry.process_registry") as mock_registry, \
+             patch.object(tools.terminal_tool, "logger"):
+            tools.terminal_tool._atexit_cleanup()
+
+            mock_registry.kill_all.assert_called_once()
+            mock_env_cleanup.assert_called_once()
+
+    def test_atexit_env_cleanup_runs_when_kill_all_raises(self):
+        """Environment cleanup must still run even if process_registry.kill_all()
+        raises — never leave orphan containers/Docker resources behind."""
+        import tools.terminal_tool  # ensure module is loaded for patch
+        from unittest.mock import patch
+
+        with patch.object(tools.terminal_tool, "_stop_cleanup_thread"), \
+             patch.object(tools.terminal_tool, "_active_environments", {"task-1": object()}), \
+             patch.object(tools.terminal_tool, "cleanup_all_environments") as mock_env_cleanup, \
+             patch("tools.process_registry.process_registry") as mock_registry, \
+             patch.object(tools.terminal_tool, "logger"):
+            mock_registry.kill_all.side_effect = RuntimeError("boom")
+
+            tools.terminal_tool._atexit_cleanup()
+
+            # env cleanup must still run despite kill_all failure
+            mock_env_cleanup.assert_called_once()

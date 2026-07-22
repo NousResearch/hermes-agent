@@ -261,12 +261,17 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
           setProbe(result)
           setProbeStatus(result.reachable ? 'done' : 'error')
+
+          if (!result.reachable) {
+            console.warn('[gateway-settings] Remote gateway unreachable:', result.error)
+          }
         })
-        .catch(() => {
+        .catch(err => {
           if (seq !== probeSeq.current) {
             return
           }
 
+          console.error('[gateway-settings] probeConnectionConfig threw:', err)
           setProbe(null)
           setProbeStatus('error')
         })
@@ -970,7 +975,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           {state.mode === 'remote' && probeStatus === 'error' ? (
             <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              {g.probeError}
+              <div>
+                <div>{g.probeError}</div>
+                {probe?.error ? (
+                  <div className="mt-1 text-(--ui-text-quaternary) break-all text-xs">{probe.error}</div>
+                ) : null}
+              </div>
             </div>
           ) : null}
 

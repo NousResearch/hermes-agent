@@ -6404,13 +6404,16 @@ async function probeRemoteAuthMode(rawUrl) {
   try {
     status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
   } catch (error: any) {
+    const detail = error instanceof Error ? error.message : String(error)
+    rememberLog(`[gateway] probe: /api/status failed for ${baseUrl}: ${detail}`)
+
     return {
       baseUrl,
       reachable: false,
       authMode: 'unknown',
       providers: [],
       version: null,
-      error: error instanceof Error ? error.message : String(error)
+      error: detail
     }
   }
 
@@ -6483,7 +6486,17 @@ async function testDesktopConnectionConfig(input: any = {}) {
     authMode = normAuthMode(remote.authMode)
   }
 
-  const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })) as any
+  rememberLog(`[gateway] testing remote gateway: ${baseUrl} (auth: ${authMode})`)
+
+  let status
+
+  try {
+    status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })) as any
+  } catch (error: any) {
+    const detail = error instanceof Error ? error.message : String(error)
+    rememberLog(`[gateway] /api/status fetch failed for ${baseUrl}: ${detail}`)
+    throw error
+  }
 
   // The HTTP status check above proves the backend is reachable, but the chat
   // surface only works once the renderer's live WebSocket to ``/api/ws``
@@ -6501,12 +6514,15 @@ async function testDesktopConnectionConfig(input: any = {}) {
     const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
 
     if (!probe.ok) {
+      rememberLog(`[gateway] WebSocket probe failed for ${baseUrl}: ${probe.reason}`)
       throw new Error(
         `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
           'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
       )
     }
   }
+
+  rememberLog(`[gateway] remote gateway reachable: ${baseUrl}`)
 
   return {
     ok: true,

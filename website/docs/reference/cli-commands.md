@@ -1060,6 +1060,7 @@ Subcommands:
 | `opt-out` | Stop bundled skills from being seeded into the active profile. Writes a `.no-bundled-skills` marker so the installer, `hermes update`, and any sync skip bundled-skill seeding. Safe by default — nothing on disk is touched. With `--remove`, also deletes already-present bundled skills that are **unmodified** (user-edited, hub-installed, and hand-written skills are never removed; previews and confirms first, `--yes` to skip). |
 | `opt-in` | Undo `opt-out` by removing the `.no-bundled-skills` marker so bundled skills are seeded again on the next `hermes update`. With `--sync`, re-seed immediately. |
 | `publish` | Publish a skill to a registry. |
+| `optimize` | Promote a candidate `SKILL.md` through the SkillOpt validation gate. |
 | `snapshot` | Export/import skill configurations. |
 | `tap` | Manage custom skill sources. |
 | `config` | Interactive enable/disable configuration for skills by platform. |
@@ -1085,6 +1086,7 @@ hermes skills reset google-workspace --restore --yes
 hermes skills opt-out                  # stop future bundled-skill seeding (nothing deleted)
 hermes skills opt-out --remove --yes   # also delete UNMODIFIED bundled skills
 hermes skills opt-in --sync            # undo: remove marker and re-seed now
+hermes skills optimize ~/.hermes/skills/my-skill --candidate /tmp/candidate-SKILL.md --baseline-score 0.72 --candidate-score 0.81
 ```
 
 Notes:

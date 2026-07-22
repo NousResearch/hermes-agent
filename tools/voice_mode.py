@@ -10,6 +10,7 @@ Dependencies (optional):
 """
 
 import logging
+import math
 import os
 import platform
 import re
@@ -288,6 +289,41 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # ============================================================================
 # Audio cues (beep tones)
 # ============================================================================
+_DEFAULT_BEEP_VOLUME = 0.3   # Backward-compatible default (matches prior hardcoded value)
+
+
+def _get_beep_volume() -> float:
+    """Read ``voice.beep_volume`` from config.yaml; clamps to 0.0-1.0.
+
+    Defaults to 0.3 when the key is missing, invalid, or when the config
+    system can't be imported (e.g. broken ~/.hermes/config.yaml during a
+    partial install). Failures fall back silently so the audio cue never
+    breaks the voice loop on a degenerate config.
+    """
+    try:
+        from hermes_cli.config import load_config
+        voice_cfg = load_config().get("voice", {})
+        if not isinstance(voice_cfg, dict):
+            return _DEFAULT_BEEP_VOLUME
+        raw = voice_cfg.get("beep_volume", _DEFAULT_BEEP_VOLUME)
+    except Exception:
+        return _DEFAULT_BEEP_VOLUME
+    try:
+        volume = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_BEEP_VOLUME
+    if isinstance(raw, bool) or volume < 0.0 or volume > 1.0 or _is_nan(volume):
+        return _DEFAULT_BEEP_VOLUME
+    return volume
+
+
+def _is_nan(value: float) -> bool:
+    try:
+        return math.isnan(value)
+    except Exception:
+        return False
+
+
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
     """Play a short beep tone using numpy + sounddevice.
 
@@ -305,6 +341,7 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         samples_per_beep = int(SAMPLE_RATE * duration)
         samples_per_gap = int(SAMPLE_RATE * gap)
 
+        beep_volume = _get_beep_volume()
         parts = []
         for i in range(count):
             t = np.linspace(0, duration, samples_per_beep, endpoint=False)
@@ -313,7 +350,7 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
             fade_len = min(int(SAMPLE_RATE * 0.01), samples_per_beep // 4)
             tone[:fade_len] *= np.linspace(0, 1, fade_len)
             tone[-fade_len:] *= np.linspace(1, 0, fade_len)
-            parts.append((tone * 0.3 * 32767).astype(np.int16))
+            parts.append((tone * beep_volume * 32767).astype(np.int16))
             if i < count - 1:
                 parts.append(np.zeros(samples_per_gap, dtype=np.int16))
 

@@ -25,8 +25,51 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_lifecycle as lifecycle
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name
+
+
+def _lifecycle_guard_or_print(operation: str, *, board: Optional[str] = None, strict: bool = False) -> bool:
+    """P0-G-B1 manual-path enforcement.
+
+    ``strict=True`` (used by ``dispatch``, which really does dispatch a
+    task) requires LEGACY_ACTIVE/ACTIVE — the same fail-closed contract as
+    the gateway tick, via ``check_dispatch_eligibility``.
+
+    ``strict=False`` (used by ``reclaim``/``unblock``/``complete``, which
+    only change a single task's state rather than spawning a worker) only
+    forbids QUARANTINED/ARCHIVED, via ``check_write_allowed`` — see that
+    function's docstring for why INACTIVE and "no registry at all" are not
+    blocked at this narrower checkpoint.
+
+    Returns True if the caller should proceed, False if it must abort
+    (the caller is responsible for returning a non-zero exit code in that
+    case). Prints a one-line, operator-facing reason to stderr on refusal.
+    """
+    slug = board or kb.get_current_board()
+    if strict:
+        result = lifecycle.check_dispatch_eligibility(slug)
+    else:
+        result = lifecycle.check_write_allowed(slug, operation=operation)
+    if not result.eligible:
+        print(
+            f"kanban: {operation} refused for board {slug!r}: {result.reason}",
+            file=sys.stderr,
+        )
+        try:
+            lifecycle.emit_alert(
+                event_type="lifecycle_dispatch_denied",
+                board=slug,
+                reason=result.reason,
+                detector=f"manual-cli:{operation}",
+                dispatch_stopped=True,
+                operator_action_required=not result.registry_ok,
+            )
+        except Exception:
+            pass
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +345,85 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("slug")
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
+
+    # --- P0-G-B1 lifecycle registry commands ---
+    # External lifecycle registry (<HERMES_HOME>/kanban-control/boards.json)
+    # consulted by the gateway/manual dispatch paths BEFORE any board-DB
+    # touch. See hermes_cli.kanban_lifecycle for the full contract.
+    b_lifecycle_show = boards_sub.add_parser(
+        "lifecycle-show",
+        help="Show a board's lifecycle registry entry (state/purpose/actor/reason)",
+    )
+    b_lifecycle_show.add_argument("slug", nargs="?", default=None,
+                                  help="Defaults to the current board")
+
+    b_registry_list = boards_sub.add_parser(
+        "registry-list",
+        help="List every board's lifecycle registry entry",
+    )
+    b_registry_list.add_argument("--json", action="store_true")
+
+    def _add_transition_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("slug")
+        p.add_argument("--actor", required=True, help="Who is making this change")
+        p.add_argument("--reason", required=True, help="Why (audit trail)")
+        p.add_argument("--expected-generation", type=int, default=None,
+                       help="Fail the transition if the registry generation "
+                            "has moved past this value (optimistic-lock read)")
+
+    b_activate = boards_sub.add_parser(
+        "activate",
+        help="ACTIVE — requires a passing Level-2 integrity check",
+    )
+    _add_transition_args(b_activate)
+    b_activate.add_argument("--json", action="store_true")
+
+    b_deactivate = boards_sub.add_parser(
+        "deactivate",
+        help="-> INACTIVE (dispatch forbidden)",
+    )
+    _add_transition_args(b_deactivate)
+    b_deactivate.add_argument("--json", action="store_true")
+
+    b_quarantine = boards_sub.add_parser(
+        "quarantine",
+        help="-> QUARANTINED (dispatch + manual writes forbidden)",
+    )
+    _add_transition_args(b_quarantine)
+    b_quarantine.add_argument("--json", action="store_true")
+
+    b_archive = boards_sub.add_parser(
+        "archive-lifecycle",
+        help="-> ARCHIVED (read-only reference; irreversible this round)",
+    )
+    _add_transition_args(b_archive)
+    b_archive.add_argument("--json", action="store_true")
+
+    b_quarantine_restore = boards_sub.add_parser(
+        "quarantine-restore",
+        help=(
+            "Distinct, harder-to-invoke restore path OUT of QUARANTINED. "
+            "Requires --repair-approved in addition to --actor/--reason, "
+            "plus a passing Level-2 integrity check."
+        ),
+    )
+    _add_transition_args(b_quarantine_restore)
+    b_quarantine_restore.add_argument(
+        "--repair-approved", action="store_true",
+        help="Explicit second confirmation — required, not a default-true flag",
+    )
+    b_quarantine_restore.add_argument(
+        "--target-state", default="INACTIVE", choices=["INACTIVE", "ACTIVE"],
+    )
+    b_quarantine_restore.add_argument("--json", action="store_true")
+
+    b_integrity_check = boards_sub.add_parser(
+        "integrity-check",
+        help="Run a Level-2 (full PRAGMA integrity_check) read-only check",
+    )
+    b_integrity_check.add_argument("slug", nargs="?", default=None,
+                                   help="Defaults to the current board")
+    b_integrity_check.add_argument("--json", action="store_true")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -1031,6 +1153,22 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "lifecycle-show":
+        return _cmd_lifecycle_show(args)
+    if sub == "registry-list":
+        return _cmd_registry_list(args)
+    if sub == "activate":
+        return _cmd_lifecycle_transition(args, "ACTIVE", require_level2=True)
+    if sub == "deactivate":
+        return _cmd_lifecycle_transition(args, "INACTIVE")
+    if sub == "quarantine":
+        return _cmd_lifecycle_transition(args, "QUARANTINED")
+    if sub == "archive-lifecycle":
+        return _cmd_lifecycle_transition(args, "ARCHIVED")
+    if sub == "quarantine-restore":
+        return _cmd_quarantine_restore(args)
+    if sub == "integrity-check":
+        return _cmd_integrity_check(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1204,6 +1342,221 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     else:
         print(f"Board {normed!r} default workdir cleared.")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# P0-G-B1 lifecycle registry commands (hermes kanban boards <lifecycle-cmd>)
+# ---------------------------------------------------------------------------
+
+def _resolve_lifecycle_slug(raw_slug: Optional[str]) -> str:
+    return raw_slug or kb.get_current_board()
+
+
+def _actual_db_path_and_hash(slug: str) -> "tuple[str, str]":
+    try:
+        db_path = kb.kanban_db_path(board=slug)
+    except Exception:
+        return "", ""
+    if not db_path.exists():
+        return str(db_path), ""
+    try:
+        return str(db_path), lifecycle.compute_db_fingerprint(db_path)
+    except lifecycle.LifecycleRegistryError:
+        return str(db_path), ""
+
+
+def _cmd_lifecycle_show(args: argparse.Namespace) -> int:
+    slug = _resolve_lifecycle_slug(getattr(args, "slug", None))
+    registry, err = lifecycle.try_load_registry()
+    actual_db_path, actual_hash = _actual_db_path_and_hash(slug)
+    entry = None if registry is None else registry["boards"].get(slug)
+    payload = {
+        "board": slug,
+        "requested_state": None,
+        "actual_state": entry["state"] if entry else None,
+        "requested_db": actual_db_path,
+        "actual_db": actual_db_path,
+        "integrity_status": None,
+        "actor": entry["actor"] if entry else None,
+        "reason": entry["reason"] if entry else (err or "no registry entry"),
+        "changed": False,
+        "purpose": entry["purpose"] if entry else None,
+        "db_fingerprint_registered": entry["db_fingerprint"] if entry else None,
+        "db_fingerprint_actual": actual_hash,
+        "registry_ok": registry is not None,
+        "updated_at": entry["updated_at"] if entry else None,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if registry is not None else 1
+
+
+def _cmd_registry_list(args: argparse.Namespace) -> int:
+    registry, err = lifecycle.try_load_registry()
+    if registry is None:
+        print(f"kanban registry-list: registry unreadable: {err}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(registry, indent=2, sort_keys=True))
+        return 0
+    print(f"schema_version={registry['schema_version']} generation={registry['generation']}")
+    for slug in sorted(registry["boards"]):
+        entry = registry["boards"][slug]
+        print(f"  {slug:60s} {entry['state']:14s} purpose={entry['purpose']}")
+    return 0
+
+
+def _cmd_lifecycle_transition(args: argparse.Namespace, target_state: str, *, require_level2: bool = False) -> int:
+    slug = args.slug
+    actor = args.actor.strip()
+    reason = args.reason.strip()
+    as_json = getattr(args, "json", False)
+    actual_db_path, actual_hash = _actual_db_path_and_hash(slug)
+
+    registry, err = lifecycle.try_load_registry()
+    if registry is None:
+        print(f"kanban {target_state.lower()}: registry unreadable: {err}", file=sys.stderr)
+        return 1
+    entry = registry["boards"].get(slug)
+    prior_state = entry["state"] if entry else None
+    schema_ok = registry.get("schema_version") == lifecycle.SCHEMA_VERSION
+    board_actually_exists = kb.board_exists(slug)
+    integrity_status = "not_run"
+
+    if require_level2:
+        if not board_actually_exists or not actual_db_path:
+            print(f"kanban activate: board {slug!r} has no DB on disk", file=sys.stderr)
+            return 1
+        result = lifecycle.integrity_full_check(Path(actual_db_path))
+        integrity_status = "pass" if result.passed else f"fail: {result.reason}"
+        if not result.passed:
+            print(f"kanban activate: Level-2 integrity check FAILED: {result.reason}", file=sys.stderr)
+            payload = {
+                "board": slug, "requested_state": target_state, "actual_state": prior_state,
+                "requested_db": actual_db_path, "actual_db": actual_db_path,
+                "integrity_status": integrity_status, "actor": actor, "reason": reason,
+                "changed": False,
+            }
+            if as_json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            return 1
+
+    try:
+        outcome = lifecycle.apply_board_transition(
+            slug, target_state, actor=actor, reason=reason,
+            db_fingerprint=actual_hash or None,
+            expected_generation=getattr(args, "expected_generation", None) or registry["generation"],
+        )
+    except (lifecycle.LifecycleTransitionError, lifecycle.LifecycleCasConflictError,
+            lifecycle.LifecycleLockTimeoutError) as exc:
+        print(f"kanban {target_state.lower()}: {exc}", file=sys.stderr)
+        payload = {
+            "board": slug, "requested_state": target_state, "actual_state": prior_state,
+            "requested_db": actual_db_path, "actual_db": actual_db_path,
+            "integrity_status": integrity_status, "actor": actor, "reason": reason,
+            "changed": False,
+        }
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
+
+    payload = {
+        "board": slug,
+        "requested_state": target_state,
+        "actual_state": outcome["entry"]["state"],
+        "requested_db": actual_db_path,
+        "actual_db": actual_db_path,
+        "integrity_status": integrity_status,
+        "actor": actor,
+        "reason": reason,
+        "changed": prior_state != outcome["entry"]["state"],
+        "generation": outcome["generation"],
+        "schema_version_supported": schema_ok,
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Board {slug!r}: {prior_state} -> {outcome['entry']['state']}")
+    return 0
+
+
+def _cmd_quarantine_restore(args: argparse.Namespace) -> int:
+    slug = args.slug
+    actor = args.actor.strip()
+    reason = args.reason.strip()
+    as_json = getattr(args, "json", False)
+    actual_db_path, actual_hash = _actual_db_path_and_hash(slug)
+    registry, err = lifecycle.try_load_registry()
+    if registry is None:
+        print(f"kanban quarantine-restore: registry unreadable: {err}", file=sys.stderr)
+        return 1
+    if not actual_db_path or not kb.board_exists(slug):
+        print(f"kanban quarantine-restore: board {slug!r} has no DB on disk", file=sys.stderr)
+        return 1
+    result = lifecycle.integrity_full_check(Path(actual_db_path))
+    integrity_status = "pass" if result.passed else f"fail: {result.reason}"
+    entry = registry["boards"].get(slug)
+    prior_state = entry["state"] if entry else None
+    try:
+        outcome = lifecycle.restore_quarantined_board(
+            slug, actor=actor, reason=reason,
+            repair_approved=bool(getattr(args, "repair_approved", False)),
+            integrity_status="pass" if result.passed else "fail",
+            target_state=getattr(args, "target_state", "INACTIVE"),
+            expected_generation=getattr(args, "expected_generation", None) or registry["generation"],
+        )
+    except (lifecycle.LifecycleTransitionError, lifecycle.LifecycleCasConflictError,
+            lifecycle.LifecycleLockTimeoutError) as exc:
+        print(f"kanban quarantine-restore: {exc}", file=sys.stderr)
+        payload = {
+            "board": slug, "requested_state": getattr(args, "target_state", "INACTIVE"),
+            "actual_state": prior_state, "requested_db": actual_db_path,
+            "actual_db": actual_db_path, "integrity_status": integrity_status,
+            "actor": actor, "reason": reason, "changed": False,
+        }
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
+    payload = {
+        "board": slug,
+        "requested_state": getattr(args, "target_state", "INACTIVE"),
+        "actual_state": outcome["entry"]["state"],
+        "requested_db": actual_db_path,
+        "actual_db": actual_db_path,
+        "integrity_status": integrity_status,
+        "actor": actor,
+        "reason": reason,
+        "changed": prior_state != outcome["entry"]["state"],
+        "generation": outcome["generation"],
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Board {slug!r} restored from QUARANTINED: {prior_state} -> {outcome['entry']['state']}")
+    return 0
+
+
+def _cmd_integrity_check(args: argparse.Namespace) -> int:
+    slug = _resolve_lifecycle_slug(getattr(args, "slug", None))
+    actual_db_path, actual_hash = _actual_db_path_and_hash(slug)
+    if not actual_db_path or not kb.board_exists(slug):
+        print(f"kanban integrity-check: board {slug!r} has no DB on disk", file=sys.stderr)
+        return 1
+    result = lifecycle.integrity_full_check(Path(actual_db_path))
+    payload = {
+        "board": slug,
+        "db": actual_db_path,
+        "level": result.level,
+        "passed": result.passed,
+        "reason": result.reason,
+        "details": result.details,
+        "db_fingerprint": actual_hash,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        status = "PASS" if result.passed else f"FAIL ({result.reason})"
+        print(f"Board {slug!r} Level-{result.level} integrity check: {status}")
+    return 0 if result.passed else 1
 
 
 # ---------------------------------------------------------------------------
@@ -1627,6 +1980,8 @@ def _cmd_assign(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    if not _lifecycle_guard_or_print("reclaim"):
+        return 1
     with kb.connect_closing() as conn:
         ok = kb.reclaim_task(
             conn, args.task_id,
@@ -1869,6 +2224,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    if not _lifecycle_guard_or_print("complete"):
+        return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
     # Guard: structured handoff fields are per-run, so they'd be
@@ -2000,6 +2357,8 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    if not _lifecycle_guard_or_print("unblock"):
+        return 1
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None
@@ -2115,6 +2474,13 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    # P0-G-B1: dispatch_once() itself re-checks lifecycle eligibility
+    # (fail-closed, defense in depth) and will return a DispatchResult with
+    # skipped_lifecycle=True instead of dispatching. This early check just
+    # gives a clearer, immediate CLI message instead of a quiet all-zero
+    # dispatch summary.
+    if not _lifecycle_guard_or_print("dispatch", strict=True):
+        return 1
     # Honour kanban.default_assignee as the fallback for unassigned ready
     # tasks (#27145), kanban.max_in_progress as the global concurrency cap
     # (#33488), kanban.max_in_progress_per_profile as the per-profile

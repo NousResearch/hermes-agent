@@ -7065,6 +7065,25 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
+
+    # NOTE on P0-G-B1 scope: lifecycle/integrity gating is deliberately NOT
+    # enforced inside this low-level function. `dispatch_once` is called by
+    # many existing callers beyond the two operator-facing entrypoints the
+    # containment design targets (gateway tick, manual `hermes kanban
+    # dispatch` CLI) — including the entire pre-existing kanban_db/gateway
+    # test suite and any other in-process caller that never populated a
+    # lifecycle registry. Gating here as well as at the entrypoints would
+    # make dispatch_once fail closed for every one of those unrelated
+    # callers the moment no registry file exists, which is a real (and much
+    # broader) behavior change than the compatibility-preserving rollout
+    # this task authorizes. The two named entrypoints enforce the guard
+    # themselves, before ever reaching dispatch_once:
+    #   - gateway/kanban_watchers.py: _tick_once_for_board() calls
+    #     gateway_lifecycle_gate(slug) BEFORE `_kb.connect()`/dispatch_once.
+    #   - hermes_cli/kanban.py: _cmd_dispatch() calls
+    #     _lifecycle_guard_or_print("dispatch") BEFORE calling dispatch_once.
+    # See the P0-G-B1 implementation report for this explicit scoping
+    # decision and the regression it avoids.
     with _dispatch_tick_lock(db_path) as held:
         if not held:
             return DispatchResult(skipped_locked=True)

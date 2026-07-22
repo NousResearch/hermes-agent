@@ -25,6 +25,52 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def gateway_lifecycle_gate(slug: str) -> bool:
+    """P0-G-B1 lifecycle guard for the gateway dispatch tick.
+
+    Returns True when ``slug`` is dispatch-eligible (LEGACY_ACTIVE/ACTIVE in
+    the external lifecycle registry) and the gateway tick should proceed —
+    False when it must skip this board entirely for this tick, with ZERO
+    board-DB touch (no ``_kb.connect()``, no write, no event).
+
+    Module-level (not a closure inside ``_kanban_dispatcher_watcher``)
+    specifically so it can be unit-tested directly without booting the
+    whole async watcher loop. Never raises — any internal failure (import
+    error, unexpected exception from the lifecycle module) fails CLOSED
+    (returns False), because we cannot prove eligibility.
+    """
+    try:
+        from hermes_cli import kanban_lifecycle as _lifecycle
+    except Exception:
+        logger.exception(
+            "kanban dispatcher: kanban_lifecycle unavailable for board %s; "
+            "failing closed (skipping tick)", slug,
+        )
+        return False
+    try:
+        eligibility = _lifecycle.check_dispatch_eligibility(slug)
+    except Exception:
+        logger.exception(
+            "kanban dispatcher: lifecycle eligibility check raised "
+            "for board %s; failing closed (skipping tick)", slug,
+        )
+        return False
+    if not eligibility.eligible:
+        try:
+            _lifecycle.emit_alert(
+                event_type="lifecycle_dispatch_denied",
+                board=slug,
+                reason=eligibility.reason,
+                detector="gateway_kanban_dispatcher",
+                dispatch_stopped=True,
+                operator_action_required=not eligibility.registry_ok,
+            )
+        except Exception:
+            pass
+        return False
+    return True
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -982,6 +1028,21 @@ class GatewayKanbanWatchersMixin:
             connection handle or accidentally claim across each other.
             """
             conn = None
+
+            # P0-G-B1 lifecycle guard — checked BEFORE any board-DB touch
+            # (including `_kb.connect()`, which can run first-open schema/
+            # migration work). A board that is not LEGACY_ACTIVE/ACTIVE in
+            # the external lifecycle registry — including a brand-new board
+            # with no registry entry at all, which fails closed to
+            # INACTIVE — is skipped here with zero DB writes and zero
+            # events, matching the containment design's "board merely
+            # exists on disk != auto-dispatched" requirement for all
+            # boards created after this rollout. `dispatch_once` itself
+            # re-checks this (defense in depth for any other caller), but
+            # the gateway tick must not even open the connection.
+            if not gateway_lifecycle_gate(slug):
+                return None
+
             fingerprint = _board_db_fingerprint(slug)
             disabled_entry = disabled_corrupt_boards.get(slug)
             if disabled_entry is not None:

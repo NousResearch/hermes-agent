@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.config import (
     format_managed_message,
     get_managed_system,
+    is_managed,
     recommended_update_command,
 )
 from hermes_cli.main import cmd_update
@@ -15,6 +18,17 @@ def test_get_managed_system_homebrew(monkeypatch):
 
     assert get_managed_system() == "Homebrew"
     assert recommended_update_command() == "brew upgrade hermes-agent"
+
+
+@pytest.mark.parametrize("false_value", ["false", "0", "no", "off", "FALSE", "False"])
+def test_get_managed_system_treats_false_values_as_unmanaged(monkeypatch, false_value):
+    """HERMES_MANAGED=false (and other falsey strings) must mean 'not managed'.
+    Previously any non-empty value was treated as an opaque package-manager
+    name, so HERMES_MANAGED=false made is_managed() return True and blocked
+    `hermes update`. (#12880)"""
+    monkeypatch.setenv("HERMES_MANAGED", false_value)
+    assert get_managed_system() is None
+    assert is_managed() is False
 
 
 def test_format_managed_message_homebrew(monkeypatch):

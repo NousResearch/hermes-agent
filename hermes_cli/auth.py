@@ -2293,6 +2293,8 @@ def _nous_effective_provider_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> bool:
+    if not isinstance(access_token, str) or not access_token.strip():
+        return True
     claims = _decode_jwt_claims(access_token)
     exp = claims.get("exp")
     if not isinstance(exp, (int, float)):
@@ -3316,7 +3318,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
-def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+def _read_codex_tokens(*, _lock: bool = True, allow_missing_access_token: bool = False) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
@@ -3346,12 +3348,15 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     if not isinstance(access_token, str) or not access_token.strip():
-        raise AuthError(
-            "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.",
-            provider="openai-codex",
-            code="codex_auth_missing_access_token",
-            relogin_required=True,
-        )
+        if allow_missing_access_token:
+            access_token = ""
+        else:
+            raise AuthError(
+                "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.",
+                provider="openai-codex",
+                code="codex_auth_missing_access_token",
+                relogin_required=True,
+            )
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
             "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.",
@@ -3652,6 +3657,7 @@ def _refresh_codex_auth_tokens(
     
     Saves the new tokens to Hermes auth store automatically.
     """
+    logger.info("Codex OAuth access token missing/expiring; refreshing on demand")
     try:
         refreshed = refresh_codex_oauth_pure(
             str(tokens.get("access_token", "") or ""),
@@ -3741,7 +3747,7 @@ def resolve_codex_runtime_credentials(
     """
     read_error: Optional[AuthError] = None
     try:
-        data = _read_codex_tokens()
+        data = _read_codex_tokens(allow_missing_access_token=True)
     except AuthError as exc:
         read_error = exc
         if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
@@ -3811,7 +3817,7 @@ def resolve_codex_runtime_credentials(
     if should_refresh:
         # Re-read under lock to avoid racing with other Hermes processes
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_codex_tokens(_lock=False)
+            data = _read_codex_tokens(_lock=False, allow_missing_access_token=True)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
 

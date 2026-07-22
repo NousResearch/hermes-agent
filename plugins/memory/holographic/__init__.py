@@ -150,7 +150,7 @@ class HolographicMemoryProvider(MemoryProvider):
         _default_db = f"{display_hermes_home()}/memory_store.db"
         return [
             {"key": "db_path", "description": "SQLite database path", "default": _default_db},
-            {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
+            {"key": "auto_extract", "description": "Auto-extract facts after each turn and at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
         ]
@@ -220,9 +220,11 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        # Holographic memory stores explicit facts via tools, not auto-sync.
-        # The on_session_end hook handles auto-extraction if configured.
-        pass
+        if not self._auto_extract_enabled():
+            return
+        if not self._store or not user_content:
+            return
+        self._auto_extract_facts([{"role": "user", "content": user_content}])
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
@@ -235,7 +237,7 @@ class HolographicMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._config.get("auto_extract", False):
+        if not self._auto_extract_enabled():
             return
         if not self._store or not messages:
             return
@@ -264,6 +266,12 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic shutdown close() failed: %s", e)
         self._store = None
         self._retriever = None
+
+    def _auto_extract_enabled(self) -> bool:
+        value = self._config.get("auto_extract", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
 
     # -- Tool handlers -------------------------------------------------------
 
@@ -365,47 +373,99 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception as exc:
             return tool_error(str(exc))
 
-    # -- Auto-extraction (on_session_end) ------------------------------------
+    # -- Auto-extraction -----------------------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            re.compile(r'(?:我|我的|以后|后续).{0,24}(?:喜欢|偏好|更喜欢|习惯|通常|默认|希望|想要|需要|不喜欢|讨厌).+'),
+            re.compile(r'(?:我叫|我的名字是|我是|我主要|我负责|我从事).+'),
+            re.compile(r'(?:请|帮我).{0,24}(?:默认|以后|后续|一直|优先).+'),
+            re.compile(r'(?:不要|别|不需要|不想).+'),
         ]
-        _DECISION_PATTERNS = [
+        _PROJECT_PATTERNS = [
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            re.compile(r'(?:项目|仓库|代码库|系统|服务|框架|Hermes|hermes|agent_assisstant).{0,40}(?:使用|采用|依赖|需要|要求|部署|运行|工作目录|入口|端口|配置|保存|存储).+'),
+            re.compile(r'(?:决定|确定|约定|统一|以后|后续).{0,40}(?:使用|采用|保留|删除|不再|迁移|改成|放在|写入).+'),
+            re.compile(r'.{0,24}(?:工作目录|部署目录|配置文件|记忆文件|数据库|服务名|端口).{0,24}(?:是|在|为|叫).+'),
         ]
 
         extracted = 0
+        seen_norms = self._existing_fact_norms()
         for msg in messages:
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
-            if not isinstance(content, str) or len(content) < 10:
+            if not isinstance(content, str) or len(content) < 5:
                 continue
 
-            for pattern in _PREF_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="user_pref")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
+            for sentence in self._candidate_fact_sentences(content):
+                category = None
+                if any(pattern.search(sentence) for pattern in _PROJECT_PATTERNS):
+                    category = "project"
+                elif any(pattern.search(sentence) for pattern in _PREF_PATTERNS):
+                    category = "user_pref"
 
-            for pattern in _DECISION_PATTERNS:
-                if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="project")
-                        extracted += 1
-                    except Exception:
-                        pass
-                    break
+                if category and self._add_extracted_fact(sentence, category, seen_norms):
+                    extracted += 1
 
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)
+
+    def _candidate_fact_sentences(self, content: str) -> List[str]:
+        sentences: List[str] = []
+        for line in re.split(r'\n+', content):
+            for match in re.finditer(r'[^。！？!?；;]+[。！？!?；;]?', line):
+                sentence = re.sub(r'\s+', ' ', match.group(0).strip())
+                if len(sentence) < 5 or self._looks_like_question(sentence):
+                    continue
+                sentences.append(sentence)
+        return sentences
+
+    def _looks_like_question(self, sentence: str) -> bool:
+        stripped = sentence.strip()
+        if stripped.endswith(("?", "？")):
+            return True
+        return any(marker in stripped for marker in (
+            "什么", "为什么", "怎么", "如何", "哪里", "哪儿", "是否", "是不是", "吗",
+        ))
+
+    def _add_extracted_fact(self, content: str, category: str, seen_norms: set[str]) -> bool:
+        if not self._store:
+            return False
+        content = re.sub(r'\s+', ' ', content).strip()
+        content = content.strip('。！？!?；;，,、')
+        if len(content) < 5:
+            return False
+
+        norm = self._normalize_fact_text(content)
+        if not norm or norm in seen_norms:
+            return False
+
+        try:
+            self._store.add_fact(content[:400], category=category)
+            seen_norms.add(norm)
+            return True
+        except Exception as e:
+            logger.debug("Holographic auto-extract add failed: %s", e)
+            return False
+
+    def _existing_fact_norms(self) -> set[str]:
+        if not self._store:
+            return set()
+        try:
+            rows = self._store._conn.execute("SELECT content FROM facts").fetchall()
+            return {self._normalize_fact_text(row["content"]) for row in rows}
+        except Exception as e:
+            logger.debug("Holographic auto-extract dedupe load failed: %s", e)
+            return set()
+
+    def _normalize_fact_text(self, content: str) -> str:
+        content = re.sub(r'\s+', ' ', content).strip().casefold()
+        return content.strip('。！？!?；;，,、. ')
 
 
 # ---------------------------------------------------------------------------

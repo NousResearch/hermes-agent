@@ -685,6 +685,13 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    # One resolved per-turn compression attempt cap, shared by every site that
+    # consumes ``compression_attempts``: the pre-API pressure gate, the
+    # overflow/413 retry handlers, and the post-tool compaction gate.
+    # Config-driven via compression.max_attempts (parsed + validated in
+    # agent_init); default 3 preserves the prior hardcoded behavior for
+    # objects without the attribute (older pickles / minimal stubs).
+    max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
@@ -1168,7 +1175,7 @@ def run_conversation(
         if (
             agent.compression_enabled
             and len(messages) > 1
-            and compression_attempts < 3
+            and compression_attempts < max_compression_attempts
             and not _preflight_compression_blocked
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
@@ -1177,12 +1184,13 @@ def run_conversation(
             compression_attempts += 1
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
-                "(context=%s, attempt=%s/3)",
+                "(context=%s, attempt=%s/%s)",
                 f"{request_pressure_tokens:,}",
                 f"{int(getattr(_compressor, 'threshold_tokens', 0) or 0):,}",
                 f"{int(getattr(_compressor, 'context_length', 0) or 0):,}"
                 if getattr(_compressor, "context_length", 0) else "unknown",
                 compression_attempts,
+                max_compression_attempts,
             )
             agent._emit_status(
                 f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
@@ -1252,9 +1260,6 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
-        # Config-driven via compression.max_attempts (parsed + validated in
-        # agent_init).  Default 3 preserves the prior hardcoded behavior.
-        max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -5179,7 +5184,7 @@ def run_conversation(
 
                 if (
                     agent.compression_enabled
-                    and compression_attempts < 3
+                    and compression_attempts < max_compression_attempts
                     and _compressor.should_compress(_real_tokens)
                 ):
                     compression_attempts += 1

@@ -665,7 +665,13 @@ def build_turn_context(
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
-            for _pass in range(3):
+            # Preflight passes honor the same configured per-turn cap
+            # (compression.max_attempts) as the loop's compression sites;
+            # default 3 preserves the prior hardcoded behavior.
+            _max_preflight_passes = max(
+                1, int(getattr(agent, "max_compression_attempts", 3) or 3)
+            )
+            for _pass in range(_max_preflight_passes):
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
                 messages, active_system_prompt = agent._compress_context(

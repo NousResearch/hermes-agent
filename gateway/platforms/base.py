@@ -1852,6 +1852,32 @@ class MessageEvent:
 
 
 @dataclass
+class MessageSendContext:
+    """Mutable context passed to ``pre_message_send`` plugin hooks."""
+
+    platform: str
+    chat_id: str
+    content: str
+    thread_id: Optional[str] = None
+    is_dm: bool = False
+    cancel: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def apply_pre_message_send(ctx: MessageSendContext) -> MessageSendContext:
+    """Run outbound message hooks and return their mutable context."""
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        invoke_hook("pre_message_send", ctx=ctx)
+    except ImportError:
+        # Platform adapters remain usable in minimal installs without the
+        # optional plugin loader.
+        pass
+    return ctx
+
+
+@dataclass
 class TextDebounceState:
     event: MessageEvent
     task: asyncio.Task | None

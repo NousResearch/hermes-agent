@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. [`pre_message_send`](#pre_message_send) mutates its context instead. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -390,6 +390,7 @@ def register(ctx):
 | [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`pre_message_send`](#pre_message_send) | Slack is about to deliver a completed message | Mutate `ctx.content` or set `ctx.cancel = True` |
 | [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
 | [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
@@ -993,6 +994,29 @@ def register(ctx):
 :::info
 With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `subagent_stop` fires many times per turn. Keep your callback fast; push expensive work to a background queue.
 :::
+
+---
+
+### `pre_message_send`
+
+Fires immediately before Slack posts a completed message or finalizes a
+streamed message edit. Intermediate streaming previews do not fire it. The
+callback receives one mutable `MessageSendContext` as `ctx`:
+
+```python
+def guard_outbound(*, ctx, **kwargs):
+    if "internal only" in ctx.content.lower():
+        ctx.cancel = True
+        return
+    ctx.content = ctx.content.replace("Recovered", "Recovery unverified")
+
+def register(ctx):
+    ctx.register_hook("pre_message_send", guard_outbound)
+```
+
+The context exposes `platform`, `chat_id`, `content`, `thread_id`, `is_dm`,
+`metadata`, and `cancel`. Returning a value has no effect. Cancelling is treated
+as a successful no-op so gateway retry logic does not resend the blocked text.
 
 ---
 

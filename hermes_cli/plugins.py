@@ -159,6 +159,10 @@ VALID_HOOKS: Set[str] = {
     "api_request_error",
     "on_session_start",
     "on_session_end",
+    # Gateway platform hook fired immediately before a completed outbound
+    # message is delivered. Callbacks may rewrite ``ctx.content`` or set
+    # ``ctx.cancel``. Kwargs: ctx: gateway.platforms.base.MessageSendContext.
+    "pre_message_send",
     "on_session_finalize",
     "on_session_reset",
     "subagent_start",
@@ -400,6 +404,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
+        max_result_size_chars: int | float | None = None,
     ) -> None:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
@@ -438,11 +443,29 @@ class PluginContext:
             description=description,
             emoji=emoji,
             override=override,
+            max_result_size_chars=max_result_size_chars,
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug(
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
+        )
+
+    def register_memory_provider(self, provider) -> None:
+        """Register a memory provider exposed by a multi-capability plugin.
+
+        Directory-only memory plugins continue to use the exclusive
+        ``plugins/memory`` loader. This bridge lets pip entry-point and
+        standalone plugins expose a provider without duplicating themselves
+        into ``$HERMES_HOME/plugins``.
+        """
+        from plugins.memory import register_memory_provider
+
+        register_memory_provider(provider)
+        logger.info(
+            "Plugin '%s' registered memory provider: %s",
+            self.manifest.name,
+            provider.name,
         )
 
     # -- override trust gate ------------------------------------------------
@@ -1285,6 +1308,12 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
+        # Memory providers registered by standalone/entry-point plugins are
+        # rebuilt by this discovery sweep. Clear stale registrations first so
+        # disabling a plugin or entering safe mode also removes its provider.
+        from plugins.memory import clear_registered_memory_providers
+
+        clear_registered_memory_providers()
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True

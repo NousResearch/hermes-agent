@@ -27,7 +27,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Type
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,36 @@ _MEMORY_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
 _USER_NAMESPACE = "_hermes_user_memory"
+
+# Providers registered by general standalone/pip plugins through
+# PluginContext.register_memory_provider(). Store classes, not instances:
+# MemoryProvider objects carry per-session state and must be fresh per agent.
+_REGISTERED_PROVIDER_CLASSES: Dict[str, Type["MemoryProvider"]] = {}
+_REGISTERED_PROVIDER_DESCRIPTIONS: Dict[str, str] = {}
+
+
+def register_memory_provider(provider: "MemoryProvider") -> None:
+    """Register a provider instance as a fresh-instance factory."""
+    from agent.memory_provider import MemoryProvider
+
+    if not isinstance(provider, MemoryProvider):
+        raise TypeError("provider must inherit from MemoryProvider")
+    name = str(provider.name or "").strip()
+    if not name:
+        raise ValueError("memory provider name cannot be empty")
+    provider_class = type(provider)
+    _REGISTERED_PROVIDER_CLASSES[name] = provider_class
+    description = str(getattr(provider, "description", "") or "").strip()
+    if not description:
+        doc = (provider_class.__doc__ or "").strip()
+        description = doc.splitlines()[0] if doc else ""
+    _REGISTERED_PROVIDER_DESCRIPTIONS[name] = description
+
+
+def clear_registered_memory_providers() -> None:
+    """Clear providers contributed by the general plugin discovery sweep."""
+    _REGISTERED_PROVIDER_CLASSES.clear()
+    _REGISTERED_PROVIDER_DESCRIPTIONS.clear()
 
 
 def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -151,7 +181,9 @@ def list_memory_provider_names() -> List[str]:
     call at module-import time (e.g. when building the dashboard config
     schema).
     """
-    return sorted({name for name, _ in _iter_provider_dirs()})
+    return sorted(
+        {name for name, _ in _iter_provider_dirs()} | set(_REGISTERED_PROVIDER_CLASSES)
+    )
 
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
@@ -161,8 +193,10 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     Bundled providers take precedence on name collisions.
     """
     results = []
+    directory_names = set()
 
     for name, child in _iter_provider_dirs():
+        directory_names.add(name)
         # Read description from plugin.yaml if available
         desc = ""
         yaml_file = child / "plugin.yaml"
@@ -188,6 +222,17 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
 
         results.append((name, desc, available))
 
+    for name, provider_class in sorted(_REGISTERED_PROVIDER_CLASSES.items()):
+        if name in directory_names:
+            continue
+        try:
+            available = bool(provider_class().is_available())
+        except Exception:
+            available = False
+        results.append(
+            (name, _REGISTERED_PROVIDER_DESCRIPTIONS.get(name, ""), available)
+        )
+
     return results
 
 
@@ -201,9 +246,17 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     Returns None if the provider is not found or fails to load.
     """
     provider_dir = find_provider_dir(name)
-    if not provider_dir:
+    provider_class = _REGISTERED_PROVIDER_CLASSES.get(name)
+    if not provider_dir and provider_class is None:
         logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
         return None
+
+    if not provider_dir:
+        try:
+            return provider_class()
+        except Exception as e:
+            logger.warning("Failed to load memory provider '%s': %s", name, e)
+            return None
 
     try:
         provider = _load_provider_from_dir(provider_dir)

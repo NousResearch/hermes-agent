@@ -201,6 +201,7 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
 | [`subagent_stop`](/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
 | [`pre_gateway_dispatch`](/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
+| [`pre_message_send`](/user-guide/features/hooks#pre_message_send) | Slack is about to deliver a completed message. Mutate `ctx.content` or set `ctx.cancel = True`. |
 
 ## Plugin types
 

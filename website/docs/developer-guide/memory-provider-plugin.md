@@ -139,6 +139,11 @@ def register(ctx) -> None:
     ctx.register_memory_provider(MyMemoryProvider())
 ```
 
+The same registration works from a standalone or pip entry-point plugin that
+also provides tools or hooks. Hermes stores the provider class and creates a
+fresh instance for every agent session; provider classes therefore need a
+zero-argument constructor.
+
 ## plugin.yaml
 
 ```yaml

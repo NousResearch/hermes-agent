@@ -1617,6 +1617,21 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
+        ssh_env: dict[str, str] = {}
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+            from tools.environments.docker import _load_hermes_env_vars
+            passthrough_keys = set(get_all_passthrough()) - _HERMES_PROVIDER_ENV_BLOCKLIST
+            hermes_env = _load_hermes_env_vars() if passthrough_keys else {}
+            for key in passthrough_keys:
+                value = os.getenv(key)
+                if value is None:
+                    value = hermes_env.get(key)
+                if value is not None:
+                    ssh_env[key] = value
+        except Exception:
+            pass
         return _SSHEnvironment(
             host=ssh_config["host"],
             user=ssh_config["user"],
@@ -1624,6 +1639,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
+            env=ssh_env or None,
         )
 
     else:

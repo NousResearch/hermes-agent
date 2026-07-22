@@ -43,12 +43,14 @@ class SSHEnvironment(BaseEnvironment):
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 env: dict[str, str] | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
         self.port = port
         self.key_path = key_path
+        self._injected_env: dict[str, str] = dict(env) if env else {}
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +81,32 @@ class SSHEnvironment(BaseEnvironment):
         self._sync_manager.sync(force=True)
 
         self.init_session()
+        if self._injected_env and self._snapshot_ready:
+            self._inject_env_into_snapshot()
+
+    def _inject_env_into_snapshot(self) -> None:
+        """Append skill-required passthrough env vars to the remote session snapshot."""
+        appends = []
+        for k, v in self._injected_env.items():
+            line = f"export {k}={shlex.quote(v)}"
+            appends.append(f"echo {shlex.quote(line)} >> {self._snapshot_path}")
+        script = "; ".join(appends)
+        cmd = self._build_ssh_command()
+        cmd.extend(["bash", "-c", shlex.quote(script)])
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                logger.warning(
+                    "SSH: failed to inject passthrough env vars into snapshot: %s",
+                    result.stderr.strip(),
+                )
+            else:
+                logger.debug(
+                    "SSH: injected %d passthrough env var(s) into session snapshot",
+                    len(self._injected_env),
+                )
+        except Exception as exc:
+            logger.warning("SSH: passthrough env var injection failed: %s", exc)
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]

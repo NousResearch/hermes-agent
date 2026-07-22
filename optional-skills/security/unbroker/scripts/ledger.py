@@ -31,7 +31,11 @@ TRANSITIONS: dict[str, set[str]] = {
     # direct listing (-> found).
     "indirect_exposure": {"submitted", "human_task_queued", "not_found", "found", "blocked"},
     "action_selected": {"submitted", "human_task_queued", "blocked"},
-    "submitted": {"verification_pending", "awaiting_processing", "human_task_queued", "blocked"},
+    # submitted -> confirmed_removed: a submission with no verification loop (a plain web form or a
+    # right-to-delete email that never confirms by email) is re-verified straight from `submitted` by
+    # the due-recheck re-scan; if the listing is gone that re-scan records confirmed_removed directly.
+    "submitted": {"verification_pending", "awaiting_processing", "confirmed_removed",
+                  "human_task_queued", "blocked"},
     # verification_pending -> awaiting_processing: the verify link was opened/acknowledged and the
     # broker is now processing the removal (their stated window). confirmed_removed still requires a
     # verifying re-scan, never the submission flow's own say-so.

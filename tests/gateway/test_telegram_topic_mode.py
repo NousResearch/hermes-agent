@@ -1055,6 +1055,26 @@ def test_telegram_topic_auto_rename_disabled_string_truthy(tmp_path):
     assert runner._telegram_topic_auto_rename_disabled(source) is False
 
 
+def test_telegram_topic_auto_rename_disabled_reads_raw_config_dict(tmp_path):
+    """Live gateway config may be a raw dict, not typed PlatformConfig objects."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    source = _make_source(thread_id="42")
+    setattr(
+        runner,
+        "config",
+        {
+            "platforms": {
+                "telegram": {
+                    "extra": {"disable_topic_auto_rename": True},
+                }
+            }
+        },
+    )
+
+    assert runner._telegram_topic_auto_rename_disabled(source) is True
+
+
 def test_general_topic_is_treated_as_root_lobby(tmp_path):
     """Messages in the Telegram General topic (thread_id=1) route to the lobby, not a lane."""
     db = SessionDB(db_path=tmp_path / "state.db")

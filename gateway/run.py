@@ -15248,15 +15248,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Controlled via ``gateway.platforms.telegram.extra.disable_topic_auto_rename``.
         Default is False (auto-rename enabled, preserves prior behaviour).
+        The gateway may hold config as typed objects or as the raw dict loaded
+        from config.yaml, so support both shapes.
         """
-        platform_cfg = (
-            self.config.platforms.get(source.platform)
-            if getattr(self, "config", None) and getattr(self.config, "platforms", None)
-            else None
-        )
+
+        def _field(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        config = getattr(self, "config", None)
+        platforms = _field(config, "platforms", {})
+        platform_cfg = None
+        if isinstance(platforms, dict):
+            candidate_keys = [source.platform, str(source.platform)]
+            platform_value = getattr(source.platform, "value", None)
+            if platform_value is not None:
+                candidate_keys.append(platform_value)
+            for key in candidate_keys:
+                platform_cfg = platforms.get(key)
+                if platform_cfg is not None:
+                    break
         if platform_cfg is None:
             return False
-        extra = getattr(platform_cfg, "extra", None) or {}
+        extra = _field(platform_cfg, "extra", None) or {}
+        if not isinstance(extra, dict):
+            return False
         value = extra.get("disable_topic_auto_rename")
         if value is None:
             return False

@@ -22,14 +22,18 @@ function makeFakeServerFactory(port = 51234) {
   const createServer: any = (handler: any) => {
     state.handler = handler
     const server: any = new EventEmitter()
+
     server.listen = (_port: number, _host: string, cb: () => void) => {
       state.listening = true
       cb()
     }
+
     server.address = () => ({ address: '127.0.0.1', family: 'IPv4', port })
+
     server.close = () => {
       state.closed = true
     }
+
     state.server = server
 
     return server

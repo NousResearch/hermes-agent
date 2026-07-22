@@ -10,11 +10,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  oauthSessionIsLive,
-  resolveJsonBody,
-  resolveOauthRestAuth
-} from './native-auth-decisions'
+import { oauthSessionIsLive, resolveJsonBody, resolveOauthRestAuth } from './native-auth-decisions'
 
 // --- 1. body encoding (guards the double-JSON.stringify 422) ---
 

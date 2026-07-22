@@ -34,6 +34,7 @@ test('generatePkcePair produces a valid S256 verifier/challenge', () => {
   assert.equal(pair.method, 'S256')
   // Verifier length within RFC 7636 range (43–128).
   assert.ok(pair.verifier.length >= 43 && pair.verifier.length <= 128)
+
   // Challenge must be the base64url SHA-256 of the verifier.
   const expected = createHash('sha256')
     .update(pair.verifier, 'ascii')
@@ -41,6 +42,7 @@ test('generatePkcePair produces a valid S256 verifier/challenge', () => {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '')
+
   assert.equal(pair.challenge, expected)
   // No padding / URL-unsafe chars.
   assert.doesNotMatch(pair.verifier, /[+/=]/)
@@ -91,6 +93,7 @@ test('buildNativeAuthorizeUrl encodes params and honours a path prefix', () => {
     state: 'STATE',
     provider: 'nous'
   })
+
   const parsed = new URL(url)
 
   assert.equal(parsed.origin, 'https://gw.example.com')
@@ -108,6 +111,7 @@ test('buildNativeAuthorizeUrl omits provider when not given and preserves prefix
     redirectUri: 'http://127.0.0.1:1/cb',
     state: 'S'
   })
+
   const parsed = new URL(url)
 
   assert.equal(parsed.pathname, '/hermes/auth/native/authorize')
@@ -128,10 +132,7 @@ test('parseLoopbackCallback returns the code on a state match', () => {
 })
 
 test('parseLoopbackCallback throws on state mismatch (CSRF)', () => {
-  assert.throws(
-    () => parseLoopbackCallback('/callback?code=abc&state=attacker', 'expected'),
-    /state mismatch/i
-  )
+  assert.throws(() => parseLoopbackCallback('/callback?code=abc&state=attacker', 'expected'), /state mismatch/i)
 })
 
 test('parseLoopbackCallback surfaces a gateway error param', () => {

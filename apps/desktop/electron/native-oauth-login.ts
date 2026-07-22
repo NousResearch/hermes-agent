@@ -32,10 +32,10 @@ import {
   buildNativeAuthorizeUrl,
   generatePkcePair,
   generateState,
+  type NativeTokenSet,
   nativeTokenUrl,
   parseLoopbackCallback,
-  parseTokenResponse,
-  type NativeTokenSet
+  parseTokenResponse
 } from './native-oauth'
 
 // Loopback login must complete inside this window (user opens browser,
@@ -90,6 +90,7 @@ export async function runNativeLogin(
   return new Promise<NativeTokenSet>((resolve, reject) => {
     let settled = false
     let timer: NodeJS.Timeout | null = null
+
     const server = createServer((req, res) => {
       // Only the callback path carries the code; any other path (favicon,
       // etc.) still gets the friendly page so the browser tab looks sane.
@@ -179,6 +180,7 @@ export async function runNativeLogin(
       }
 
       const redirectUri = `http://127.0.0.1:${addr.port}/callback`
+
       const authorizeUrl = buildNativeAuthorizeUrl(baseUrl, {
         challenge,
         redirectUri,

@@ -86,10 +86,7 @@ export function statusSupportsNativeFlow(statusBody: any): boolean {
  * (e.g. a corporate proxy that blocks loopback). Precedence written down here,
  * in one place, as a pure function — per the desktop "observable ladder" rule.
  */
-export function resolveLoginStrategy(
-  statusBody: any,
-  opts: { forceEmbedded?: boolean } = {}
-): 'native' | 'embedded' {
+export function resolveLoginStrategy(statusBody: any, opts: { forceEmbedded?: boolean } = {}): 'native' | 'embedded' {
   if (opts.forceEmbedded) {
     return 'embedded'
   }
@@ -109,6 +106,7 @@ export function buildNativeAuthorizeUrl(
 ): string {
   const parsed = new URL(baseUrl)
   const prefix = parsed.pathname.replace(/\/+$/, '')
+
   const q = new URLSearchParams({
     code_challenge: params.challenge,
     code_challenge_method: 'S256',
@@ -145,10 +143,7 @@ export function nativeRefreshUrl(baseUrl: string): string {
  * `expectedState` MUST match (CSRF defense — RFC 6749 §10.12); a mismatch
  * throws rather than proceeding.
  */
-export function parseLoopbackCallback(
-  requestUrl: string,
-  expectedState: string
-): { code: string } {
+export function parseLoopbackCallback(requestUrl: string, expectedState: string): { code: string } {
   // requestUrl is the path+query the loopback server received, e.g.
   // "/callback?code=...&state=...". Resolve against a dummy origin to parse.
   const parsed = new URL(requestUrl, 'http://127.0.0.1')
@@ -203,7 +198,11 @@ export function parseTokenResponse(body: any): NativeTokenSet {
  * before use. `skewSeconds` refreshes slightly early to avoid a race where
  * the token expires in flight (mirrors the server's 60s cookie floor).
  */
-export function tokenNeedsRefresh(tokens: Pick<NativeTokenSet, 'expiresAt'>, nowSeconds: number, skewSeconds = 60): boolean {
+export function tokenNeedsRefresh(
+  tokens: Pick<NativeTokenSet, 'expiresAt'>,
+  nowSeconds: number,
+  skewSeconds = 60
+): boolean {
   if (!tokens || !Number.isFinite(tokens.expiresAt) || tokens.expiresAt <= 0) {
     // Unknown expiry ⇒ treat as needing refresh so we validate before use.
     return true

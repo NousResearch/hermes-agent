@@ -57,6 +57,10 @@ def _make_agent(
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
     compressor.threshold_tokens = int(main_context * threshold_percent)
+    compressor.summary_target_ratio = 0.20
+    compressor.tail_token_budget = int(
+        compressor.threshold_tokens * compressor.summary_target_ratio
+    )
     agent.context_compressor = compressor
 
     return agent
@@ -96,6 +100,11 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert agent._compression_warning is not None
     # Threshold on the live compressor was actually lowered to aux_context.
     assert agent.context_compressor.threshold_tokens == 80_000
+    # Every threshold-derived budget must move with it. Keeping the original
+    # 20K tail here would protect 25% of the lowered threshold instead of the
+    # configured 20%, and larger real-world mismatches can make the tail's 1.5x
+    # soft ceiling wider than the entire compression trigger.
+    assert agent.context_compressor.tail_token_budget == 16_000
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)

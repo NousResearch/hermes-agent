@@ -20,7 +20,7 @@ type Sys = (text: string) => void
  * `org_id` pins the page to the correct account in multi-org situations.
  * Falls back to bare `/manage-subscription` if org_id is absent.
  */
-function buildManageUrl(s: SubscriptionStateResponse): string | null {
+function buildManageUrl(s: SubscriptionStateResponse, tierId?: string): string | null {
   // portal_url is already an absolute URL resolved by resolve_portal_base_url()
   // on the Python side (e.g. https://portal.nousresearch.com/billing). Strip any
   // path so we can attach /manage-subscription cleanly.
@@ -46,6 +46,10 @@ function buildManageUrl(s: SubscriptionStateResponse): string | null {
     url.searchParams.set('org_id', s.org_id)
   }
 
+  if (tierId) {
+    url.searchParams.set('plan', tierId)
+  }
+
   return url.toString()
 }
 
@@ -64,8 +68,8 @@ const buildSubscriptionCtx = (
       .rpc<BillingStateResponse>('billing.state', {})
       .then(r => (r?.ok ? (r.card ?? null) : null))
       .catch(() => null),
-  openManageLink: () => {
-    const url = buildManageUrl(initialState)
+  openManageLink: (tierId?: string) => {
+    const url = buildManageUrl(initialState, tierId)
 
     if (!url) {
       sys('Could not build manage URL — is your portal configured?')

@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
-    "./charge-settlement": "./src/charge-settlement.ts"
+    "./charge-settlement": "./src/charge-settlement.ts",
+    "./skin": "./src/skin.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

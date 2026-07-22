@@ -20,7 +20,12 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     )
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
-    profile_subparsers.add_parser("list", help="List all profiles")
+    profile_list = profile_subparsers.add_parser("list", help="List all profiles")
+    profile_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the human table",
+    )
     profile_use = profile_subparsers.add_parser(
         "use", help="Set sticky default profile"
     )

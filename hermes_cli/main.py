@@ -11780,6 +11780,7 @@ def cmd_profile(args):
     """Profile management — create, delete, list, switch, alias."""
     from hermes_cli.profiles import (
         list_profiles,
+        profile_info_to_dict,
         create_profile,
         delete_profile,
         seed_profile_skills,
@@ -11823,6 +11824,15 @@ def cmd_profile(args):
 
     if action == "list":
         profiles = list_profiles()
+
+        if getattr(args, "json", False):
+            print(json.dumps(
+                {"profiles": [profile_info_to_dict(p) for p in profiles]},
+                indent=2,
+                ensure_ascii=False,
+            ))
+            return
+
         active = get_active_profile_name()
 
         if not profiles:

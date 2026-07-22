@@ -28,6 +28,26 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Dialectic noise filter
+# ---------------------------------------------------------------------------
+# The deriver (memory-formation agent) sometimes returns housekeeping strings
+# instead of actionable context when session history is sparse — e.g. after
+# only a few greeting messages.  These patterns are derived from the deriver's
+# own prompt wording ("if nothing is worth saving, just say 'Nothing to save.'").
+# Matching is done on a lowercased, stripped copy; exact-phrase prefixes keep
+# false-positive risk low.  The bare `startswith("nothing")` guard is
+# intentionally excluded to avoid discarding legitimate responses like
+# "Nothing in the user's history suggests X, but they did mention Y…".
+_DERIVER_NOISE_PHRASES = (
+    "nothing to save",
+    "no new information",
+    "no information",
+    "no relevant information",
+    "nothing relevant",
+    "nothing notable",
+)
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -834,7 +854,12 @@ class HonchoMemoryProvider(MemoryProvider):
         dialectic_result = self._consume_pending_dialectic()
 
         if dialectic_result and dialectic_result.strip():
-            parts.append(dialectic_result)
+            normalized = dialectic_result.strip().lower()
+            is_deriver_noise = any(
+                normalized.startswith(phrase) for phrase in _DERIVER_NOISE_PHRASES
+            )
+            if not is_deriver_noise:
+                parts.append(f"## Honcho Contextual Analysis\n{dialectic_result.strip()}")
 
         if not parts:
             return ""

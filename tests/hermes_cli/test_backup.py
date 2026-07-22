@@ -1789,6 +1789,33 @@ class TestQuickSnapshot:
 
         assert notes.read_text() == "keep"
 
+    def test_prune_preserves_snapshot_when_owner_marker_changes_during_move(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        root = hermes_home / "state-snapshots"
+        snapshot = root / snap_id
+        original_replace = backup_mod.os.replace
+
+        def replace_marker_after_move(source, destination):
+            result = original_replace(source, destination)
+            if Path(source) == snapshot:
+                moved_marker = Path(destination) / backup_mod._QUICK_OWNERSHIP_MARKER
+                moved_marker.unlink()
+                moved_marker.write_text("foreign")
+            return result
+
+        monkeypatch.setattr(backup_mod.os, "replace", replace_marker_after_move)
+
+        assert backup_mod.prune_quick_snapshots(
+            keep=0, hermes_home=hermes_home
+        ) == 0
+        quarantines = list(root.glob(f".{snap_id}.hermes-delete-*"))
+        assert len(quarantines) == 1
+        assert (quarantines[0] / "config.yaml").exists()
+
     def test_snapshot_includes_pairing_directories(self, hermes_home):
         """Pairing JSONs live outside state.db — snapshot must capture them
         recursively (generic + per-platform) so approved-user lists survive

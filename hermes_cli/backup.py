@@ -918,14 +918,28 @@ def _remove_owned_snapshot_file(path: Path, expected: os.stat_result) -> bool:
         return False
 
 
-def _remove_owned_snapshot_dir(path: Path, expected: os.stat_result) -> bool:
+def _remove_owned_snapshot_dir(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    marker_name: str,
+    marker_identity: os.stat_result,
+    marker_payload: Dict[str, Any],
+) -> bool:
     quarantine = _move_owned_snapshot_path(path, expected)
     if quarantine is None:
         return False
     try:
+        moved_marker = quarantine / marker_name
+        if (
+            not os.path.samestat(marker_identity, moved_marker.lstat())
+            or json.loads(moved_marker.read_text(encoding="utf-8"))
+            != marker_payload
+        ):
+            return False
         shutil.rmtree(quarantine)
         return True
-    except OSError:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return False
 
 
@@ -1139,7 +1153,13 @@ def create_quick_snapshot(
 
     if not manifest:
         try:
-            _remove_owned_snapshot_dir(snap_dir, snap_dir.lstat())
+            _remove_owned_snapshot_dir(
+                snap_dir,
+                snap_dir.lstat(),
+                marker_name=_QUICK_IN_PROGRESS_MARKER,
+                marker_identity=marker_identity,
+                marker_payload=marker_payload,
+            )
         except OSError:
             pass
         return None
@@ -1417,7 +1437,13 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
             )
             if payload is None or _snapshot_process_is_running(payload["pid"]):
                 continue
-            if _remove_owned_snapshot_dir(candidate, candidate.lstat()):
+            if _remove_owned_snapshot_dir(
+                candidate,
+                candidate.lstat(),
+                marker_name=_QUICK_IN_PROGRESS_MARKER,
+                marker_identity=marker.lstat(),
+                marker_payload=payload,
+            ):
                 deleted += 1
         except (OSError, ValueError, json.JSONDecodeError):
             continue
@@ -1435,7 +1461,15 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
 
     for d in dirs[keep:]:
         try:
-            if _remove_owned_snapshot_dir(d, d.lstat()):
+            marker = d / _QUICK_OWNERSHIP_MARKER
+            payload = _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER)
+            if payload is not None and _remove_owned_snapshot_dir(
+                d,
+                d.lstat(),
+                marker_name=_QUICK_OWNERSHIP_MARKER,
+                marker_identity=marker.lstat(),
+                marker_payload=payload,
+            ):
                 deleted += 1
         except OSError as exc:
             logger.warning("Failed to prune snapshot %s: %s", d.name, exc)

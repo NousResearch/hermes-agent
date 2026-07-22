@@ -4574,7 +4574,8 @@ def cmd_backup(args):
     else:
         from hermes_cli.backup import run_backup
 
-        run_backup(args)
+        if run_backup(args) is False:
+            raise SystemExit(1)
 
 
 def cmd_import(args):

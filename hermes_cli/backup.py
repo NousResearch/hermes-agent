@@ -296,8 +296,8 @@ def _format_size(nbytes: int) -> str:
     return f"{nbytes:.1f} TB"
 
 
-def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
+def run_backup(args) -> bool:
+    """Create a zip backup and return whether it completed without errors."""
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -378,7 +378,7 @@ def run_backup(args) -> None:
 
     if not files_to_add and not external_to_add:
         print("No files to back up.")
-        return
+        return True
 
     # Create the zip
     file_count = len(files_to_add) + len(external_to_add)
@@ -473,6 +473,8 @@ def run_backup(args) -> None:
 
     if not errors:
         print(f"\nRestore with: hermes import {out_path.name}")
+
+    return not errors
 
 
 # ---------------------------------------------------------------------------

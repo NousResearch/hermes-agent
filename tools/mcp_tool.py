@@ -1495,6 +1495,7 @@ class SamplingHandler:
                 self.server_name, self.max_rpm,
             )
             self.metrics["errors"] += 1
+            self._tool_loop_count = 0
             return self._error(
                 f"Sampling rate limit exceeded for server '{self.server_name}' "
                 f"({self.max_rpm} requests/minute)"
@@ -1515,6 +1516,7 @@ class SamplingHandler:
                 self.server_name, resolved_model,
             )
             self.metrics["errors"] += 1
+            self._tool_loop_count = 0
             return self._error(
                 f"Model '{resolved_model}' not allowed for server "
                 f"'{self.server_name}'. Allowed: {', '.join(self.allowed_models)}"
@@ -1573,12 +1575,14 @@ class SamplingHandler:
             )
         except asyncio.TimeoutError:
             self.metrics["errors"] += 1
+            self._tool_loop_count = 0
             return self._error(
                 f"Sampling LLM call timed out after {self.timeout}s "
                 f"for server '{self.server_name}'"
             )
         except Exception as exc:
             self.metrics["errors"] += 1
+            self._tool_loop_count = 0
             return self._error(
                 f"Sampling LLM call failed: {_sanitize_error(_exc_str(exc))}"
             )
@@ -1586,6 +1590,7 @@ class SamplingHandler:
         # Guard against empty choices (content filtering, provider errors)
         if not getattr(response, "choices", None):
             self.metrics["errors"] += 1
+            self._tool_loop_count = 0
             return self._error(
                 f"LLM returned empty response (no choices) for server "
                 f"'{self.server_name}'"

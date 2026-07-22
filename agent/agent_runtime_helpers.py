@@ -1873,6 +1873,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "junie-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://junie"):
+        from agent.junie_acp_client import JunieACPClient
+
+        client = JunieACPClient(**client_kwargs)
+        _ra().logger.info(
+            "Junie ACP client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

@@ -9492,6 +9492,23 @@ def _copilot_acp_status() -> Dict[str, Any]:
     }
 
 
+def _junie_acp_status() -> Dict[str, Any]:
+    """Status for junie-acp — credentials are owned by the Junie CLI.
+
+    Like copilot-acp/claude-code: no cheap programmatic probe for the ACP
+    subprocess, so this is a read-only "managed by the Junie CLI" card and
+    Hermes never claims a login state it can't verify.
+    """
+    return {
+        "logged_in": False,
+        "source": "junie_cli",
+        "source_label": "Managed by the JetBrains Junie CLI",
+        "token_preview": None,
+        "expires_at": None,
+        "has_refresh_token": False,
+    }
+
+
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
 # can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
 # the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
@@ -9561,6 +9578,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "copilot /login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
+    },
+    {
+        "id": "junie-acp",
+        "name": "JetBrains Junie (ACP)",
+        "flow": "external",
+        "cli_command": "junie",
+        "docs_url": "https://junie.jetbrains.com/docs/junie-cli.html",
+        "status_fn": _junie_acp_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
     # first, then the subscription OAuth path (which only works with extra

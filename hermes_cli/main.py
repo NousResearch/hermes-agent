@@ -750,6 +750,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_named_custom,
     _model_flow_copilot,
     _model_flow_copilot_acp,
+    _model_flow_junie_acp,
     _model_flow_kimi,
     _model_flow_stepfun,
     _model_flow_bedrock_api_key,
@@ -3324,6 +3325,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "junie-acp":
+        _model_flow_junie_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -13157,6 +13160,7 @@ def _build_provider_choices() -> list[str]:
         # Fallback: static list guarantees the CLI always works
         return [
             "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
+            "junie-acp",
             "anthropic", "gemini", "vertex", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",

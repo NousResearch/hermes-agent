@@ -96,6 +96,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_JUNIE_ACP_BASE_URL = "acp://junie"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -231,6 +232,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "junie-acp": ProviderConfig(
+        id="junie-acp",
+        name="JetBrains Junie ACP",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_JUNIE_ACP_BASE_URL,
+        base_url_env_var="JUNIE_ACP_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1772,6 +1780,8 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        # JetBrains Junie (ACP coding agent)
+        "jetbrains-junie-acp": "junie-acp", "junie-acp-agent": "junie-acp", "junie": "junie-acp",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -6376,19 +6386,80 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+# Per-provider launch specs for external-process (local subprocess) providers.
+# Keeps each ACP-agent integration independent: copilot-acp and junie-acp
+# resolve their command/args/auth from their own env vars with their own
+# defaults, so changes to one cannot affect the other.
+_EXTERNAL_PROCESS_SPECS: Dict[str, Dict[str, Any]] = {
+    "copilot-acp": {
+        "command_env_vars": ("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
+        "default_command": "copilot",
+        "args_env_var": "HERMES_COPILOT_ACP_ARGS",
+        "default_args": ["--acp", "--stdio"],
+        "auth_env_vars": (),
+        "auth_flag": None,
+        "missing_cli_hint": (
+            "Install GitHub Copilot CLI or set "
+            "HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+        ),
+    },
+    "junie-acp": {
+        "command_env_vars": ("HERMES_JUNIE_ACP_COMMAND", "JUNIE_CLI_PATH"),
+        "default_command": "junie",
+        "args_env_var": "HERMES_JUNIE_ACP_ARGS",
+        "default_args": ["--acp=true", "--skip-update-check"],
+        "auth_env_vars": ("JUNIE_API_KEY",),
+        "auth_flag": "--auth",
+        "missing_cli_hint": (
+            "Install the JetBrains Junie CLI or set "
+            "HERMES_JUNIE_ACP_COMMAND/JUNIE_CLI_PATH."
+        ),
+    },
+}
+
+
+def _resolve_external_process_launch(provider_id: str, *, include_auth: bool = True) -> Dict[str, Any]:
+    """Resolve command + args for a subprocess provider.
+
+    ``include_auth=True`` injects the auth token into args (for the actual
+    subprocess launch). ``include_auth=False`` omits it — use for status /
+    display paths so the secret never lands in a dict that might be logged or
+    serialized.
+    """
+    spec = _EXTERNAL_PROCESS_SPECS.get(provider_id, _EXTERNAL_PROCESS_SPECS["copilot-acp"])
+    command = ""
+    for env_var in spec["command_env_vars"]:
+        command = os.getenv(env_var, "").strip()
+        if command:
+            break
+    if not command:
+        command = spec["default_command"]
+
+    raw_args = os.getenv(spec["args_env_var"], "").strip()
+    args = shlex.split(raw_args) if raw_args else list(spec["default_args"])
+
+    auth_flag = spec.get("auth_flag")
+    if include_auth and auth_flag and auth_flag not in args and not any(
+        a.startswith(f"{auth_flag}=") for a in args
+    ):
+        for env_var in spec.get("auth_env_vars", ()):
+            token = os.getenv(env_var, "").strip()
+            if token:
+                args = args + [auth_flag, token]
+                break
+    return {"command": command, "args": args, "missing_cli_hint": spec["missing_cli_hint"]}
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    # Status is a display/serialization surface — never embed the auth token.
+    launch = _resolve_external_process_launch(provider_id, include_auth=False)
+    command = launch["command"]
+    args = launch["args"]
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -6423,7 +6494,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    if target in {"copilot-acp", "junie-acp"}:
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -6606,25 +6677,21 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    launch = _resolve_external_process_launch(provider_id)
+    command = launch["command"]
+    args = launch["args"]
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the CLI command '{command}' for provider "
+            f"'{provider_id}'. {launch['missing_cli_hint']}",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_external_cli",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

@@ -271,6 +271,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    # Only the provider sentinel — like copilot-acp. Junie picks its own model
+    # via ACP configOptions; a specific model is passed with `-m <id>` and
+    # forwarded verbatim (session/set_config_option{model}), NOT drawn from this
+    # list. Listing real ids here would make detect_provider_for_model()
+    # mis-resolve claude/gemini/gpt models to junie-acp (breaks anthropic/openai
+    # resolution — see the gateway/detect tests).
+    "junie-acp": [
+        "junie-acp",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1079,6 +1088,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("junie-acp",      "JetBrains Junie ACP",      "JetBrains Junie ACP (Spawns junie --acp=true)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -1157,6 +1167,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
+    "junie":    ("JetBrains Junie",  "Junie CLI coding agent via ACP subprocess",       ["junie-acp"]),
 }
 
 # Reverse index: member slug -> group_id. Built once at import.
@@ -1241,6 +1252,10 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    # JetBrains Junie (ACP coding agent)
+    "jetbrains-junie-acp": "junie-acp",
+    "junie-acp-agent": "junie-acp",
+    "junie": "junie-acp",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -2461,6 +2476,21 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "junie-acp":
+        # Live catalog from the Junie ACP subprocess (session/new config_options).
+        # Cached + best-effort; NOT added to _PROVIDER_MODELS, so
+        # detect_provider_for_model() still reverse-maps claude/gemini/gpt ids to
+        # their real providers (see commit 09fb55ac6). Falls back to the sentinel.
+        try:
+            from agent.junie_acp_client import fetch_junie_models
+
+            live = fetch_junie_models(force_refresh=force_refresh)
+            if live:
+                sentinel = list(_PROVIDER_MODELS.get("junie-acp", []))
+                return sentinel + [m for m in live if m not in sentinel]
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("junie-acp", []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

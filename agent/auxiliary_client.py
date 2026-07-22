@@ -295,6 +295,10 @@ _PROVIDER_ALIASES = {
     "github-models": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    # JetBrains Junie (ACP coding agent)
+    "jetbrains-junie-acp": "junie-acp",
+    "junie-acp-agent": "junie-acp",
+    "junie": "junie-acp",
     "tencent": "tencent-tokenhub",
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
@@ -1634,6 +1638,12 @@ def _maybe_wrap_anthropic(
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if _safe_isinstance(client_obj, CopilotACPClient):
+            return client_obj
+    except ImportError:
+        pass
+    try:
+        from agent.junie_acp_client import JunieACPClient
+        if _safe_isinstance(client_obj, JunieACPClient):
             return client_obj
     except ImportError:
         pass
@@ -4606,6 +4616,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return sync_client, model
     except ImportError:
         pass
+    try:
+        from agent.junie_acp_client import JunieACPClient
+        if isinstance(sync_client, JunieACPClient):
+            return sync_client, model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -5263,26 +5279,31 @@ def resolve_provider_client(
             or _read_main_model(),
             provider,
         )
-        if provider == "copilot-acp":
+        if provider in {"copilot-acp", "junie-acp"}:
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None
             args = list(creds.get("args") or [])
             if not final_model:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
+                    "resolve_provider_client: %s requested but no model "
+                    "was provided or configured",
+                    provider,
                 )
                 return None, None
             if not api_key or not base_url:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
+                    "resolve_provider_client: %s requested but external "
+                    "process credentials are incomplete",
+                    provider,
                 )
                 return None, None
-            from agent.copilot_acp_client import CopilotACPClient
+            if provider == "junie-acp":
+                from agent.junie_acp_client import JunieACPClient as _ACPClient
+            else:
+                from agent.copilot_acp_client import CopilotACPClient as _ACPClient
 
-            client = CopilotACPClient(
+            client = _ACPClient(
                 api_key=api_key,
                 base_url=base_url,
                 command=command,

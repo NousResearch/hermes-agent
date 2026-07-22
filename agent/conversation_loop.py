@@ -1451,8 +1451,9 @@ def run_conversation(
                 # stream.  Mirror the ACP exclusion used for Responses
                 # API upgrade (lines ~1083-1085).
                 elif (
-                    agent.provider in {"copilot-acp"}
+                    agent.provider in {"copilot-acp", "junie-acp"}
                     or str(agent.base_url or "").lower().startswith("acp://copilot")
+                    or str(agent.base_url or "").lower().startswith("acp://junie")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
                 ):
                     _use_streaming = False

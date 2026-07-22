@@ -7,11 +7,17 @@ import { cn } from '@/lib/utils'
  */
 export const composerFill = 'bg-(--composer-fill)'
 
-/** Backdrop treatment for the composer input surface. Harmless when the fill
+const composerFillTransition = 'transition-[background-color] duration-150 ease-out'
+
+/** Paint for the frequently repainting editable surface. Keep backdrop filters
+ *  off this hot path so typing does not re-blur the transcript each frame. */
+export const composerInputSurface = cn(composerFill, composerFillTransition)
+
+/** Backdrop treatment for non-input composer chrome. Harmless when the fill
  *  goes opaque (drawer open) — nothing shows through to blur. */
 export const composerSurfaceGlass = cn(
   'backdrop-blur-[0.75rem] backdrop-saturate-[1.12] [-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
-  'transition-[background-color] duration-150 ease-out'
+  composerFillTransition
 )
 
 const composerDockEdge = (edge: 'bottom' | 'top') =>

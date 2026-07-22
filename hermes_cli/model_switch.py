@@ -2198,6 +2198,23 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
+        # Vertex credentials live in Google's ADC chain, not in an API-key
+        # env var or the Hermes auth store.  Use the adapter's fast structural
+        # detector so Vertex appears in task/model pickers without performing
+        # token acquisition or network I/O while the picker opens.
+        if not _cp_has_creds:
+            try:
+                from providers import get_provider_profile
+                _cp_runtime_profile = get_provider_profile(_cp.slug)
+            except Exception:
+                _cp_runtime_profile = None
+            if _cp_runtime_profile and _cp_runtime_profile.auth_type == "vertex":
+                try:
+                    from agent.vertex_adapter import has_vertex_credentials
+                    _cp_has_creds = bool(has_vertex_credentials())
+                except Exception as exc:
+                    logger.debug("Vertex credential check failed: %s", exc)
+
         if not _cp_has_creds:
             continue
 

@@ -6438,6 +6438,24 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
             return {"logged_in": has_aws_credentials(), "provider": target}
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
+    # Plugin-backed providers such as Vertex intentionally live outside the
+    # legacy auth PROVIDER_REGISTRY.  Resolve their auth type from the runtime
+    # provider registry, which is the source of truth for routability.
+    try:
+        from providers import get_provider_profile
+        runtime_profile = get_provider_profile(target)
+    except Exception:
+        runtime_profile = None
+    # Vertex uses Google Application Default Credentials rather than an API
+    # key or Hermes auth-store entry.  Keep this structural and fast: the
+    # adapter checks for an explicit project / credentials path without
+    # importing google-auth or minting a token.
+    if runtime_profile and runtime_profile.auth_type == "vertex":
+        try:
+            from agent.vertex_adapter import has_vertex_credentials
+            return {"logged_in": has_vertex_credentials(), "provider": target}
+        except Exception as exc:
+            return {"logged_in": False, "provider": target, "error": str(exc)}
     return {"logged_in": False}
 
 

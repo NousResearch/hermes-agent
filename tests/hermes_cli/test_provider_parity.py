@@ -11,6 +11,7 @@ an invariant against the real FastAPI endpoints (not a snapshot / count), so it
 can never silently drift again when a provider plugin is added.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli.models import CANONICAL_PROVIDERS
@@ -95,3 +96,17 @@ def test_no_provider_appears_on_both_tabs():
     """
     overlap = (_keys_tab_providers() & _accounts_tab_providers()) - _EXEMPT - _DUAL_TAB
     assert not overlap, f"providers appearing on BOTH desktop tabs: {sorted(overlap)}"
+
+
+@pytest.mark.asyncio
+async def test_vertex_adc_marks_desktop_provider_connected(monkeypatch):
+    import agent.vertex_adapter as vertex_adapter
+    import hermes_cli.web_server as web_server
+
+    monkeypatch.setattr(web_server, "load_env", lambda: {})
+    monkeypatch.setattr(vertex_adapter, "has_vertex_credentials", lambda: True)
+
+    result = await web_server.get_env_vars()
+
+    assert result["VERTEX_CREDENTIALS_PATH"]["is_set"] is True
+    assert result["VERTEX_CREDENTIALS_PATH"]["redacted_value"] is None

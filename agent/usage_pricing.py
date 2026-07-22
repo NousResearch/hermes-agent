@@ -867,6 +867,47 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.fireworks.ai/serverless/pricing",
         pricing_version="fireworks-pricing-2026-07",
     ),
+    # ── xAI Grok ─────────────────────────────────────────────────────────
+    # Source: https://docs.x.ai/developers/models and https://x.ai/api
+    # (as of 2026-07-22). Cache rates are not published separately; treat
+    # cache_read at 25% of input (common industry default) so sessions that
+    # report cached prompt tokens still estimate instead of falling to n/a.
+    (
+        "xai",
+        "grok-4.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("6.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("2.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.x.ai/developers/models",
+        pricing_version="xai-grok-4.5-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.75"),
+        cache_write_cost_per_million=Decimal("3.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.x.ai/developers/models",
+        pricing_version="xai-grok-4-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4.1-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.50"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        cache_write_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://docs.x.ai/developers/models",
+        pricing_version="xai-grok-4.1-fast-2026-07",
+    ),
 }
 
 # GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
@@ -934,9 +975,31 @@ def resolve_billing_route(
         # Fireworks model ids look like accounts/fireworks/models/<name>;
         # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
         return BillingRoute(provider="fireworks", model=model.rsplit("/", 1)[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # xai-oauth (SuperGrok OAuth) and bare xai share the same published list
+    # rates for status-bar estimates. Subscription billing may still be
+    # "included" at the account level; we estimate API-equivalent spend so the
+    # desktop $ chip is not blank when display.show_cost is on.
+    if (
+        provider_name in {"xai", "xai-oauth", "x-ai"}
+        or base_url_host_matches(base_url or "", "api.x.ai")
+    ):
+        bare = model.split("/")[-1].lower()
+        if bare.startswith("x-ai/"):
+            bare = bare[len("x-ai/") :]
+        return BillingRoute(
+            provider="xai",
+            model=bare,
+            base_url=base_url or "",
+            billing_mode="official_docs_snapshot",
+        )
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
-    return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
+    return BillingRoute(
+        provider=provider_name or "unknown",
+        model=model.split("/")[-1] if model else "",
+        base_url=base_url or "",
+        billing_mode="unknown",
+    )
 
 
 def _normalize_bedrock_model_name(model: str) -> str:

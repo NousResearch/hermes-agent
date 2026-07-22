@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -851,7 +852,39 @@ def _root_go(file_path: str, workspace: str) -> Optional[str]:
 
 
 def _root_rust(file_path: str, workspace: str) -> Optional[str]:
-    return _root_or_workspace(file_path, workspace, ["Cargo.toml", "Cargo.lock"])
+    """Resolve Rust files to the enclosing Cargo workspace when present.
+
+    A workspace member has its own ``Cargo.toml``, but rust-analyzer must
+    start from the manifest that declares ``[workspace]`` so it loads the
+    whole workspace once instead of starting one server per member.
+    """
+    current = os.path.abspath(file_path)
+    if os.path.isfile(current):
+        current = os.path.dirname(current)
+    workspace_root = os.path.abspath(workspace) if workspace else None
+    nearest_cargo: Optional[str] = None
+
+    while True:
+        manifest = os.path.join(current, "Cargo.toml")
+        if os.path.isfile(manifest):
+            if nearest_cargo is None:
+                nearest_cargo = current
+            try:
+                with open(manifest, "rb") as handle:
+                    manifest_data = tomllib.load(handle)
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+                manifest_data = {}
+            if isinstance(manifest_data.get("workspace"), dict):
+                return current
+
+        if workspace_root and current == workspace_root:
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    return nearest_cargo or workspace
 
 
 def _root_ruby(file_path: str, workspace: str) -> Optional[str]:

@@ -20,7 +20,7 @@
     "profile:main:cpu": "wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "npm run build && electron .",
     "prebuild": "tsc -b . --clean",
-    "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
+    "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && npm run generate-licenses && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
     "postbuild": "node scripts/assert-dist-built.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
@@ -53,7 +53,10 @@
     "check": "npm run typecheck && npm run test && npm run test:desktop:all",
     "test:e2e": "playwright test e2e/",
     "test:e2e:visual": "WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
-    "test:e2e:update-snapshots": "WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"
+    "test:e2e:update-snapshots": "WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
+    "generate-licenses": "node scripts/generate-js-licenses.mjs && node scripts/generate-python-licenses.mjs",
+    "generate-licenses:js": "node scripts/generate-js-licenses.mjs",
+    "generate-licenses:python": "node scripts/generate-python-licenses.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.23",
@@ -151,6 +154,7 @@
     "eslint-plugin-unused-imports": "^4.4.1",
     "globals": "^16.5.0",
     "jsdom": "^29.1.1",
+    "license-checker": "^25.0.1",
     "prettier": "^3.8.3",
     "rcedit": "^5.0.2",
     "tsx": "^4.22.4",
@@ -194,6 +198,14 @@
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "dist/dependencies.txt",
+        "to": "dependencies.txt"
+      },
+      {
+        "from": "dist/dependencies-python.txt",
+        "to": "dependencies-python.txt"
       }
     ],
     "asar": true,

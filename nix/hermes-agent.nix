@@ -226,6 +226,11 @@ stdenv.mkDerivation (finalAttrs: {
 
   passthru =
     let
+      # A sealed, non-editable venv containing the normal [all] runtime
+      # groups plus [dev] tooling.  Desktop's Nix renderer build uses this
+      # only for pip-licenses, so the generated attribution inventory matches
+      # the locked Python closure without making license tooling a runtime dep.
+      licensePython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).venv;
       devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
     in
     {
@@ -234,6 +239,7 @@ stdenv.mkDerivation (finalAttrs: {
         hermesWeb
         hermesNpmLib
         hermesVenv
+        licensePython
         ;
 
       # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
@@ -244,7 +250,7 @@ stdenv.mkDerivation (finalAttrs: {
       # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
       # of the agent resolution in the desktop wrapper.
       hermesDesktop = callPackage ./desktop.nix {
-        inherit hermesNpmLib electron;
+        inherit hermesNpmLib electron licensePython;
         hermesAgent = finalAttrs.finalPackage;
       };
 

@@ -9491,6 +9491,47 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+// Read a bundled license file from the app's extraResources directory.
+// The desktop build generates dependencies.txt (JS deps) and
+// dependencies-python.txt (Python deps) via the generate-licenses scripts,
+// and electron-builder ships them via extraResources so they land at
+// process.resourcesPath/<filename> in the packaged app. In dev (running
+// from a checkout), they live in apps/desktop/dist/<filename>.
+//
+// Returns the file contents as a string, or null if the file is missing.
+// The Settings → Licenses page uses this to display third-party license
+// attributions required by MIT/Apache/BSD licenses.
+ipcMain.handle('hermes:readBundledLicenseFile', async (_event, filename: string) => {
+  if (!filename || typeof filename !== 'string') {
+    return null
+  }
+
+  // Only allow plain filenames — no path traversal.
+  const safe = path.basename(filename)
+  if (safe !== filename) {
+    return null
+  }
+
+  // electron-builder extraResources place files directly in resources/.
+  // The Nix package preserves the renderer's dist/ directory instead, so
+  // support both layouts plus the local dev build location.
+  const candidates = [
+    process.resourcesPath ? path.join(process.resourcesPath, safe) : null,
+    process.resourcesPath ? path.join(process.resourcesPath, 'dist', safe) : null,
+    path.join(APP_ROOT, 'dist', safe)
+  ].filter(Boolean)
+
+  for (const p of candidates) {
+    try {
+      return await fs.promises.readFile(p, 'utf8')
+    } catch {
+      // ENOENT — try next candidate
+    }
+  }
+
+  return null
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
 

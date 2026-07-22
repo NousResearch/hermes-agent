@@ -219,7 +219,8 @@ export const zhHant = defineLocale({
       archivedChats: '已封存聊天',
       about: '關於',
       billing: '帳單',
-      notifications: '通知'
+      notifications: '通知',
+      licenses: '授權條款'
     },
     notifications: {
       title: '通知',

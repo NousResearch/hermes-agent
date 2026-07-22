@@ -11,6 +11,7 @@ import {
   BarChart3,
   Bell,
   Download,
+  FileText,
   Globe,
   Info,
   Keyboard,
@@ -38,6 +39,7 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
+import { LicensesSettings } from './licenses-settings'
 import { NotificationsSettings } from './notifications-settings'
 import { PluginsSettings } from './plugins-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
@@ -54,7 +56,8 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'billing',
   'plugins',
   'sessions',
-  'about'
+  'about',
+  'licenses'
 ]
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
@@ -249,6 +252,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       id: 'about',
       label: t.settings.nav.about,
       onSelect: () => setActiveView('about')
+    },
+    {
+      active: activeView === 'licenses',
+      icon: FileText,
+      id: 'licenses',
+      label: t.settings.nav.licenses,
+      onSelect: () => setActiveView('licenses')
     }
   ]
 
@@ -293,6 +303,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
+          ) : activeView === 'licenses' ? (
+            <LicensesSettings />
           ) : activeView === 'gateway' ? (
             <GatewaySettings />
           ) : activeView === 'keybinds' ? (

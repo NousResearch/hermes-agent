@@ -284,6 +284,7 @@ export interface Translations {
       billing: string
       notifications: string
       plugins: string
+      licenses: string
     }
     plugins: {
       title: string

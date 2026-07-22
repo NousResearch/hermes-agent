@@ -14,6 +14,7 @@
   hermesNpmLib,
   electron,
   hermesAgent,
+  licensePython,
   ...
 }:
 let
@@ -72,10 +73,14 @@ let
           # typecheck :3
           npm exec tsc -b
 
-          # build the renderer bundle
-          # vite's emptyOutDir wipes dist/ on every run
-          # so it has to be first
+          # Build the renderer bundle first: Vite's emptyOutDir wipes dist/.
           npm exec vite build
+
+          # Generate attribution files AFTER Vite, otherwise emptyOutDir would
+          # delete them. HERMES_PYTHON points at the sealed nix venv that has
+          # hermes's locked runtime closure plus pip-licenses from [dev].
+          HERMES_PYTHON=${licensePython}/bin/python3 node scripts/generate-js-licenses.mjs
+          HERMES_PYTHON=${licensePython}/bin/python3 node scripts/generate-python-licenses.mjs
 
           # build the electron bundle
           node scripts/bundle-electron-main.mjs

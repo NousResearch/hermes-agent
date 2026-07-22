@@ -724,44 +724,22 @@ def _windows_directory_handle_matches_stat(
     handle: int,
     expected: os.stat_result,
 ) -> bool:
-    """Compare an opened Windows directory handle with Python stat evidence."""
-    import ctypes
+    """Compare a raw handle with Python stat using Python's own encoding.
 
-    class _FileTime(ctypes.Structure):
-        _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
-
-    class _ByHandleFileInformation(ctypes.Structure):
-        _fields_ = [
-            ("attributes", ctypes.c_uint32),
-            ("creation_time", _FileTime),
-            ("access_time", _FileTime),
-            ("write_time", _FileTime),
-            ("volume_serial", ctypes.c_uint32),
-            ("size_high", ctypes.c_uint32),
-            ("size_low", ctypes.c_uint32),
-            ("links", ctypes.c_uint32),
-            ("index_high", ctypes.c_uint32),
-            ("index_low", ctypes.c_uint32),
-        ]
-
-    information = _ByHandleFileInformation()
-    get_information = ctypes.WinDLL(
-        "kernel32", use_last_error=True
-    ).GetFileInformationByHandle
-    get_information.argtypes = [
-        ctypes.c_void_p,
-        ctypes.POINTER(_ByHandleFileInformation),
-    ]
-    get_information.restype = ctypes.c_int
-    if not get_information(handle, ctypes.byref(information)):
+    Windows exposes a 32-bit volume serial through
+    ``BY_HANDLE_FILE_INFORMATION``, while some Python builds encode ``st_dev``
+    as a wider device identifier. Re-stat the kernel-resolved handle path so
+    both sides use the same representation, then compare stable file IDs.
+    """
+    try:
+        actual = _windows_opened_handle_path(handle).lstat()
+        return bool(
+            stat.S_ISDIR(actual.st_mode)
+            and not int(getattr(actual, "st_file_attributes", 0)) & 0x400
+            and os.path.samestat(expected, actual)
+        )
+    except OSError:
         return False
-    file_index = (information.index_high << 32) | information.index_low
-    return bool(
-        information.volume_serial == expected.st_dev
-        and file_index == expected.st_ino
-        and not (information.attributes & 0x400)
-        and bool(information.attributes & 0x10)
-    )
 
 
 def _same_artifact_path(left: Path, right: Path) -> bool:

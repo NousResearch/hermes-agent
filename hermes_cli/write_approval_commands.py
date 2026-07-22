@@ -29,6 +29,17 @@ def approval_toggle_allowed(profile_name: str) -> bool:
     return (profile_name or "").strip().lower() not in HOUSEHOLD_PROFILES
 
 
+def approval_profile_name(source_profile: str | None, active_profile: str | None) -> str:
+    """Resolve the profile whose approval command is being handled.
+
+    Multiplexed gateways stamp the routed profile on the inbound source. That
+    profile must win over the process-active profile, otherwise a household
+    route can inherit the admin/default gateway's toggle permission. Unstamped
+    legacy events retain the active-profile fallback.
+    """
+    return (source_profile or active_profile or "").strip()
+
+
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
     return f"{subsystem}.write_approval = {'on' if on else 'off'}"

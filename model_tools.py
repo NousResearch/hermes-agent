@@ -991,6 +991,46 @@ def _coerce_boolean(value: str):
     return value
 
 
+def validate_required_params(
+    tool_name: str, args: Dict[str, Any]
+) -> list[str]:
+    """Return a list of missing required parameter names.
+
+    Checks the tool's JSON Schema ``required`` array against the keys present
+    in *args*.  Returns an empty list when all required params are present
+    (or when no schema / no required array exists for the tool).
+
+    Callers validate at the final execution boundary. Registry calls have
+    already applied initial argument coercion by then, and request middleware
+    may supply required fields while execution middleware cannot remove them
+    undetected. This only catches genuinely *missing* params that would
+    otherwise surface as a confusing ``KeyError`` or default-value-when-none-
+    existed deep inside the tool handler.
+    """
+    if not isinstance(args, dict):
+        return []
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return []
+    required = (schema.get("parameters") or {}).get("required")
+    if not required or not isinstance(required, list):
+        return []
+    return [r for r in required if r not in args]
+
+
+def required_params_error(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Return the model-facing missing-required-parameter error, if any."""
+    missing = validate_required_params(tool_name, args)
+    if not missing:
+        return None
+    hint = (
+        f"Missing required parameter(s): {', '.join(missing)}. "
+        "Please retry with all required parameters."
+    )
+    logger.info("validate_required_params: %s missing %s", tool_name, missing)
+    return json.dumps({"error": hint}, ensure_ascii=False)
+
+
 def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
@@ -1096,6 +1136,7 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
@@ -1292,6 +1333,9 @@ def handle_function_call(
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    validation_error = required_params_error(function_name, next_args)
+                    if validation_error is not None:
+                        return validation_error
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1300,6 +1344,9 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    validation_error = required_params_error(function_name, next_args)
+                    if validation_error is not None:
+                        return validation_error
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,

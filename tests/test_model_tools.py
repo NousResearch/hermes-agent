@@ -30,14 +30,15 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
-    def test_exception_returns_json_error(self):
-        # Even if something goes wrong, should return valid JSON
-        result = handle_function_call("web_search", None)  # None args may cause issues
+    def test_missing_required_param_returns_json_error(self):
+        result = handle_function_call("web_search", {})
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
         assert "error" in parsed
-        assert len(parsed["error"]) > 0
-        assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
+        assert parsed["error"] == (
+            "Missing required parameter(s): query. "
+            "Please retry with all required parameters."
+        )
 
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
@@ -47,7 +48,7 @@ class TestHandleFunctionCall:
         ):
             result = handle_function_call(
                 "web_search",
-                {"q": "test"},
+                {"query": "test"},
                 task_id="task-1",
                 tool_call_id="call-1",
                 session_id="session-1",
@@ -58,7 +59,7 @@ class TestHandleFunctionCall:
             call(
                 "pre_tool_call",
                 tool_name="web_search",
-                args={"q": "test"},
+                args={"query": "test"},
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
@@ -69,7 +70,7 @@ class TestHandleFunctionCall:
             call(
                 "post_tool_call",
                 tool_name="web_search",
-                args={"q": "test"},
+                args={"query": "test"},
                 result='{"ok":true}',
                 task_id="task-1",
                 session_id="session-1",
@@ -85,7 +86,7 @@ class TestHandleFunctionCall:
             call(
                 "transform_tool_result",
                 tool_name="web_search",
-                args={"q": "test"},
+                args={"query": "test"},
                 result='{"ok":true}',
                 task_id="task-1",
                 session_id="session-1",
@@ -110,7 +111,7 @@ class TestHandleFunctionCall:
             patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
-            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+            handle_function_call("web_search", {"query": "test"}, task_id="t1")
 
         kwargs_by_hook = {
             c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
@@ -140,7 +141,7 @@ class TestHandleFunctionCall:
             patch("hermes_cli.plugins.has_hook", return_value=False),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
-            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
+            result = handle_function_call("web_search", {"query": "test"}, task_id="t1")
 
         assert result == '{"ok":true}'
         fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
@@ -185,16 +186,16 @@ class TestHandleFunctionCall:
         result = json.loads(
             handle_function_call(
                 "web_search",
-                {"q": "test"},
+                {"query": "test"},
                 task_id="task-1",
                 tool_call_id="tool-1",
                 session_id="session-1",
             )
         )
 
-        assert seen["execution_args"] == {"q": "test", "rewritten": True}
-        assert seen["dispatch"][1] == {"q": "test", "rewritten": True, "wrapped": True}
-        assert result["args"] == {"q": "test", "rewritten": True, "wrapped": True}
+        assert seen["execution_args"] == {"query": "test", "rewritten": True}
+        assert seen["dispatch"][1] == {"query": "test", "rewritten": True, "wrapped": True}
+        assert result["args"] == {"query": "test", "rewritten": True, "wrapped": True}
         expected_trace = [{"source": "test-middleware", "reason": "rewrite"}]
         pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
@@ -269,7 +270,7 @@ class TestPreToolCallBlocking:
         monkeypatch.setattr("tools.file_tools.notify_other_tool_call",
                             lambda task_id: notifications.append(task_id))
 
-        result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
+        result = json.loads(handle_function_call("web_search", {"query": "test"}, task_id="t1"))
         assert result == {"error": "Blocked"}
         assert notifications == []
 
@@ -311,7 +312,7 @@ class TestPreToolCallBlocking:
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: json.dumps({"ok": True}))
 
-        handle_function_call("web_search", {"q": "test"}, task_id="t1",
+        handle_function_call("web_search", {"query": "test"}, task_id="t1",
                              skip_pre_tool_call_hook=True)
 
         # Single-fire contract: when skip=True the caller already fired
@@ -351,13 +352,13 @@ class TestPreToolCallBlocking:
 
         # Step 1: caller checks for a block directive (this fires pre_tool_call once).
         block = get_pre_tool_call_block_message(
-            "web_search", {"q": "test"}, task_id="t1",
+            "web_search", {"query": "test"}, task_id="t1",
         )
         assert block is None
 
         # Step 2: caller dispatches with skip=True so the hook isn't re-fired.
         handle_function_call(
-            "web_search", {"q": "test"}, task_id="t1",
+            "web_search", {"query": "test"}, task_id="t1",
             skip_pre_tool_call_hook=True,
         )
 

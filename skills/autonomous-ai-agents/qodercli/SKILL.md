@@ -1,7 +1,7 @@
 ---
 name: qodercli
 description: "Delegate coding to Qoder CLI (features, PRs, refactors)."
-version: 2.5.0
+version: 2.5.1
 author: explicitcontextualunderstanding
 license: MIT
 platforms: [linux, macos, windows]
@@ -120,8 +120,8 @@ process(action="write", session_id="<id>", data="\x03")
 
 **Environment friction detection:** Poll output includes a runtime friction index computed from the NDJSON stream (error rate, context velocity, retry density). When the background session hits environment problems (missing packages, broken imports, permission errors), you will see:
 
-- `errors: N/M` — mild friction (some tool calls failing)
-- `⚠ Friction: HIGH-ERROR (N/M) | RETRY Bash x4` — heavy friction (session is stuck in fix→fail loops)
+- `errors: N/M` — mild friction (some tool calls failing). Monitor — the session may self-recover. No action needed unless it escalates to heavy friction.
+- `⚠ Friction: HIGH-ERROR (N/M) | RETRY Bash x4` — heavy friction (session is stuck in fix→fail loops). Act immediately.
 
 **When you see `⚠ Friction` — this is a regime response, not a task decision:**
 
@@ -136,6 +136,8 @@ The friction signal means the *environment* is broken, not the task or the skill
 ```
 terminal(command="qodercli -p '<same task, tighter scope>' --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
 ```
+
+**Exit-42 pipe conflict:** If qodercli exits with code 42, it means `-i` (interactive) was rejected because stdin is piped. This is expected in background/pipe mode. Fall back to `-p` immediately — do NOT retry with `-i` in a different configuration. The task and prompt are fine; only the mode flag needs changing.
 
 Clean sessions show zero friction overhead — no indicator appears when the environment is healthy.
 

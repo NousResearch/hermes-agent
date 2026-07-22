@@ -5601,9 +5601,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _current_reasoning_callback(self):
         """Return the active reasoning display callback for the current mode."""
-        if self.show_reasoning and self.streaming_enabled:
-            return self._stream_reasoning_delta
-        if self.verbose and not self.show_reasoning:
+        if self.show_reasoning:
+            return (
+                self._stream_reasoning_delta
+                if self.streaming_enabled
+                else self._on_reasoning
+            )
+        if self.verbose:
             return self._on_reasoning
         return None
 
@@ -5612,6 +5616,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
+        if getattr(self, "show_reasoning", False):
+            self._reasoning_shown_this_turn = True
 
         try:
             term_width = shutil.get_terminal_size().columns

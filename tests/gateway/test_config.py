@@ -1706,6 +1706,24 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
 
+    def test_bridges_telegram_rich_message_max_chars_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "telegram:\n  extra:\n    rich_message_max_chars: 4096\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.TELEGRAM].extra["rich_message_max_chars"]
+            == 4096
+        )
+
     def test_loads_telegram_rich_drafts_from_gateway_platform_extra(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -1736,6 +1754,7 @@ class TestLoadGatewayConfig:
         config = load_config()
 
         assert config["telegram"]["extra"]["rich_messages"] is False
+        assert config["telegram"]["extra"]["rich_message_max_chars"] == 32768
         assert config["telegram"]["extra"]["rich_drafts"] is False
 
     def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):

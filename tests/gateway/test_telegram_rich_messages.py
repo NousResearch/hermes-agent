@@ -283,6 +283,54 @@ async def test_rich_messages_can_be_opted_out():
 
 
 @pytest.mark.asyncio
+async def test_rich_message_max_chars_falls_back_to_legacy_chunking():
+    """Users can keep native rich rendering for short replies while routing
+    longer, client-risky documents through the proven MarkdownV2 path."""
+    adapter = _make_adapter(extra={"rich_message_max_chars": len(RICH_CONTENT) - 1})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_message_max_chars_is_inclusive():
+    adapter = _make_adapter(extra={"rich_message_max_chars": len(RICH_CONTENT)})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_long_rich_document_uses_multiple_legacy_chunks_below_hybrid_cutoff():
+    adapter = _make_adapter(extra={"rich_message_max_chars": 4096})
+    long_rich_content = RICH_CONTENT + "\n\n" + ("Long paragraph.\n\n" * 400)
+
+    result = await adapter.send("12345", long_rich_content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    assert bot.send_message.await_count > 1
+
+
+def test_rich_message_max_chars_controls_streaming_overflow_limit():
+    adapter = _make_adapter(extra={"rich_message_max_chars": 4096})
+
+    assert adapter.streaming_overflow_limit() == 4096
+
+
+@pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy
     MarkdownV2 path for consistent client rendering, even with rich enabled."""

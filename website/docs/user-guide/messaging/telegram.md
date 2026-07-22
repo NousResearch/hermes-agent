@@ -958,7 +958,9 @@ gateway:
 
 **Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. During streaming, the final answer is delivered by **editing the existing preview in place** via `editMessageText`'s `rich_message` parameter — no second message, no delete, so there is no duplicate-delivery flicker at the end of a turn. In DMs the live streaming preview also uses `sendRichMessageDraft`, so the animated draft matches the final rich message. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
 
-The rich path is skipped automatically when content exceeds the 32,768-character rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
+The rich path is skipped automatically when content exceeds `rich_message_max_chars` (default: Telegram's 32,768-character rich text limit), and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
+
+Some Telegram clients accept but render long, block-heavy rich documents incompletely. To keep native rich formatting for short replies while routing longer answers through the proven 4,096-character MarkdownV2 chunking path, set a lower hybrid cutoff such as `rich_message_max_chars: 4096`.
 
 **MarkdownV2 fallback.** When the rich path is unavailable for a message, Hermes converts markdown to MarkdownV2. Since MarkdownV2 has no native table syntax, pipe tables are normalized:
 
@@ -973,6 +975,7 @@ gateway:
     telegram:
       extra:
         rich_messages: true
+        rich_message_max_chars: 4096
         rich_drafts: false
 ```
 

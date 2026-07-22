@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -1886,3 +1887,118 @@ class TestEnsureClientReloadsEnv:
 
         out = provider.handle_tool_call("viking_search", {"query": "x"})
         assert "not connected" in out.lower()
+
+
+class TestEnsureClientFailureHardening:
+    """Follow-up hardening on top of #21130: failed-config cooldown and
+    torn-identity-safe connection snapshots."""
+
+    def test_failed_config_probes_once_then_cools_down(self, monkeypatch):
+        """A down endpoint must not pay a health probe on every access."""
+        probes = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                probes.append(self.endpoint)
+                return False
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://down.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-x")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        assert provider._ensure_client() is None
+        assert provider._ensure_client() is None
+        assert provider._ensure_client() is None
+        # Only the first access probes; the rest hit the cooldown.
+        assert len(probes) == 1
+
+    def test_failed_config_retries_after_cooldown(self, monkeypatch):
+        probes = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                probes.append(self.endpoint)
+                return len(probes) > 1  # down on first probe, up on retry
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://flaky.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-x")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        assert provider._ensure_client() is None
+        # Simulate the cooldown elapsing.
+        failed_key, _failed_at = provider._failed_refresh
+        provider._failed_refresh = (
+            failed_key,
+            time.monotonic() - openviking_plugin._FAILED_CONFIG_RETRY_COOLDOWN_SECONDS - 1,
+        )
+        assert provider._ensure_client() is not None
+        assert len(probes) == 2
+        assert provider._failed_refresh is None
+
+    def test_failed_config_retries_immediately_on_config_change(self, monkeypatch):
+        probes = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                probes.append(self.endpoint)
+                return self.endpoint == "https://up.example"
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://down.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-x")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        assert provider._ensure_client() is None
+        # /reload lands a new endpoint: cooldown must not block the new config.
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://up.example")
+        client = provider._ensure_client()
+        assert client is not None
+        assert client.endpoint == "https://up.example"
+
+    def test_conn_snapshot_published_only_on_healthy(self, monkeypatch):
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                return self.endpoint == "https://up.example"
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://up.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-good")
+        monkeypatch.delenv("OPENVIKING_ACCOUNT", raising=False)
+        monkeypatch.delenv("OPENVIKING_USER", raising=False)
+        monkeypatch.delenv("OPENVIKING_AGENT", raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        assert provider._ensure_client() is not None
+        healthy_snapshot = provider._conn_snapshot
+        assert healthy_snapshot is not None
+        assert healthy_snapshot[0] == "https://up.example"
+        assert healthy_snapshot[1] == "sk-good"
+
+        # A failed refresh must NOT advance the snapshot: background writers
+        # (_new_client) keep targeting the last identity that passed health.
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://down.example")
+        assert provider._ensure_client() is None
+        assert provider._conn_snapshot == healthy_snapshot
+        built = provider._new_client()
+        assert built.endpoint == "https://up.example"

@@ -126,6 +126,11 @@ _GENERATED_MEMORY_SUMMARY_FILENAMES = {
 }
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
+# After a refresh attempt fails for a given (unchanged) config, skip re-probing
+# for this long. Keeps "unavailable endpoints reconnect on a later access"
+# true while preventing every provider access from paying a 3s health probe
+# (and emitting a warning) under _client_refresh_lock while a server is down.
+_FAILED_CONFIG_RETRY_COOLDOWN_SECONDS = 30.0
 _OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
 _OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
 _PENDING_SESSIONS_RELATIVE_DIR = Path("openviking") / "pending_sessions"
@@ -1895,6 +1900,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Connection settings and _client are one published state. Serialize
         # refreshes so callers never observe a new config with the old client.
         self._client_refresh_lock = threading.Lock()
+        # Last connection identity that passed a health check, published as a
+        # single tuple assignment (atomic in CPython) so lock-free background
+        # writers (_new_client, on_memory_write) never see a torn mix of old
+        # and new fields, and never target an endpoint that failed health.
+        self._conn_snapshot: Optional[tuple] = None
+        # (settings tuple, monotonic timestamp) of the last refresh attempt
+        # that failed. While the resolved config still matches and the retry
+        # cooldown hasn't elapsed, _ensure_client_locked() returns None without
+        # re-probing — keeping provider accesses cheap while a server is down.
+        self._failed_refresh: Optional[tuple] = None
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._runtime_start_pending = False
@@ -2177,6 +2192,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     )
                 else:
                     self._client = client
+                    self._conn_snapshot = (
+                        endpoint, self._api_key, self._account, self._user, self._agent,
+                    )
+                    self._failed_refresh = None
                     status_message = (
                         f"Local OpenViking server at {endpoint} is reachable; "
                         "OpenViking memory is active for later turns."
@@ -2273,6 +2292,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._account = settings["account"]
         self._user = settings["user"]
         self._agent = settings["agent"]
+        # Baseline established — subsequent accesses may refresh from env
+        # (#21130). Set here (not at the end of initialize) so an exception in
+        # the connection attempt below — swallowed by MemoryManager's guard —
+        # can't leave the provider silently stuck in never-refresh mode.
+        self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
         hermes_home = str(kwargs.get("hermes_home") or "").strip()
@@ -2318,14 +2342,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._client = None
 
         if self._client:
+            self._conn_snapshot = (
+                self._endpoint, self._api_key, self._account, self._user, self._agent,
+            )
             self._recover_pending_sessions()
 
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self
-
-        # Baseline established — subsequent accesses may refresh from env (#21130).
-        self._env_refresh_enabled = True
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Return the active client, rebuilding it if the resolved config changed.
@@ -2360,6 +2384,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         account = settings["account"]
         user = settings["user"]
         agent = settings["agent"]
+        settings_key = (endpoint, api_key, account, user, agent)
 
         config_unchanged = (
             endpoint == getattr(self, "_endpoint", None)
@@ -2377,6 +2402,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     or (self._runtime_start_thread and self._runtime_start_thread.is_alive())
                 ):
                     return self._client
+            # The last attempt at this exact config failed. Don't pay a
+            # network probe (3s timeout, under the refresh lock) on every
+            # access while the server stays down — retry after a cooldown or
+            # as soon as the resolved config changes.
+            failed = self._failed_refresh
+            if failed is not None:
+                failed_key, failed_at = failed
+                if (
+                    failed_key == settings_key
+                    and time.monotonic() - failed_at < _FAILED_CONFIG_RETRY_COOLDOWN_SECONDS
+                ):
+                    return None
 
         self._endpoint = endpoint
         self._api_key = api_key
@@ -2396,9 +2433,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         health_state, health_message = _classify_runtime_openviking_health(client, endpoint)
         if health_state == "healthy":
             self._client = client
+            self._conn_snapshot = settings_key
+            self._failed_refresh = None
             return self._client
+        self._failed_refresh = (settings_key, time.monotonic())
         if health_state == "responded":
-            logger.warning("%s OpenViking memory disabled until config changes.", health_message)
+            logger.warning(
+                "%s OpenViking memory disabled; will retry on a later access "
+                "(after cooldown) or when the config changes.",
+                health_message,
+            )
         else:  # unreachable
             self._handle_runtime_openviking_unreachable()
         self._client = None
@@ -2601,6 +2645,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 t.join(timeout=slice_left)
 
     def _new_client(self) -> _VikingClient:
+        # Read the connection identity as ONE tuple load: these builders run on
+        # background writer threads without _client_refresh_lock, and reading
+        # the five fields individually could observe a torn mix of old and new
+        # values mid-refresh (new endpoint + old api_key). The snapshot is only
+        # published after a successful health check; fall back to the field
+        # reads for legacy/hand-wired paths where no snapshot exists yet.
+        snapshot = self._conn_snapshot
+        if snapshot is not None:
+            endpoint, api_key, account, user, agent = snapshot
+            return _VikingClient(
+                endpoint, api_key, account=account, user=user, agent=agent,
+            )
         return _VikingClient(
             self._endpoint,
             self._api_key,
@@ -3032,13 +3088,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if self._env_refresh_enabled:
                 client = self._ensure_client()
             elif self._client is not None:
-                client = _VikingClient(
-                    self._endpoint,
-                    self._api_key,
-                    account=self._account,
-                    user=self._user,
-                    agent=self._agent,
-                )
+                # Legacy/hand-wired path: no env baseline yet. Build from the
+                # cached identity, degrading to "" like the rest of prefetch.
+                try:
+                    client = self._new_client()
+                except Exception as e:
+                    logger.debug("OpenViking prefetch client build failed: %s", e)
+                    return ""
         if client is None:
             return ""
 
@@ -4165,10 +4221,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def _write():
             try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
-                )
+                client = self._new_client()
                 client.post("/api/v1/content/write", {
                     "uri": uri,
                     "content": content,

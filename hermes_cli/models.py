@@ -2623,7 +2623,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
+                try:
+                    live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
+                except TypeError:
+                    live = _p.fetch_models(api_key=api_key)
                 if live:
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,

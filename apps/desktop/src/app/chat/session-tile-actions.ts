@@ -61,11 +61,10 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   const storedIdRef = useRef(storedSessionId)
   storedIdRef.current = storedSessionId
   // A tile IS its session (see the comment on the useSubmitPrompt call below)
-  // — there is no route/reselect divergence for the entry-time ownership
-  // check in submit.ts to catch, so an empty, stable cache is correct here:
-  // the check only ever blocks on a PROVEN mismatch, never on an absent
-  // entry, so this is a no-op that preserves existing tile submit behavior.
-  const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
+  // A tile owns one stable stored/runtime pair, so seed the shared ownership
+  // cache explicitly rather than relying on the primary route cache.
+  const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
+  runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -136,16 +135,20 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // The REAL submit pipeline with tile seams: session always exists, and the
   // scope's writers replace the global view/attachment writes.
   const submitPromptText = useSubmitPrompt({
-    activeSessionId: runtimeId,
     activeSessionIdRef: runtimeIdRef,
     busyRef,
     copy,
     createBackendSessionForSend: async () => runtimeIdRef.current,
+    getRoutedStoredSessionId: () => storedIdRef.current,
+    getRuntimeIdForStoredSession: storedId => (storedId === storedIdRef.current ? runtimeIdRef.current : null),
     // A tile IS its session — no route to abandon, so the create-abort guard's
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
     runtimeIdByStoredSessionIdRef,
+    // Tile ids are always bound before this hook mounts, so routed recovery is
+    // unreachable here; keep the shared submit contract explicit.
+    resumeStoredSession: () => undefined,
     selectedStoredSessionIdRef: storedIdRef,
     syncAttachmentsForSubmit,
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),

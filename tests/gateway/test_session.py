@@ -299,6 +299,49 @@ class TestBuildSessionContextPrompt:
         assert "pin" in prompt.lower()
         assert "current message's slack block/attachment payload" in prompt.lower()
 
+    def test_shared_slack_prompt_warns_against_guessed_self_mentions(self):
+        """Shared Slack threads must instruct the agent to bind mention
+        targets to the current turn's sender prefix (#17916)."""
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="team-channel",
+            chat_type="group",
+            user_id="U123",
+            user_name="Alice",
+            thread_id="171.000",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "current turn's sender prefix" in prompt
+        assert "Do not guess or reuse `<@U...>` mentions" in prompt
+
+    def test_non_shared_slack_prompt_omits_self_mention_guidance(self):
+        """1:1 Slack DMs are single-user: the shared-thread mention guidance
+        must not appear."""
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D123",
+            chat_type="dm",
+            user_id="U123",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "current turn's sender prefix" not in prompt
+
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
         config = GatewayConfig(
@@ -1571,6 +1614,91 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+
+class TestSessionMetadata:
+    """SessionEntry metadata should persist arbitrary lightweight state."""
+
+    def test_session_entry_metadata_roundtrip(self):
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            metadata={"slack_thread_watermark:C123:123.000": "123.456"},
+        )
+
+        restored = SessionEntry.from_dict(entry.to_dict())
+        assert restored.metadata == {"slack_thread_watermark:C123:123.000": "123.456"}
+
+    def test_store_session_metadata_get_set(self, tmp_path):
+        """set/get_session_metadata round-trips through the store and
+        persists via _save (restart survival is provided by the routing
+        index — state.db gateway_routing + sessions.json mirror)."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        assert store.set_session_metadata(
+            "k1", "slack_thread_watermark:C123:123.000", "123.456"
+        )
+        store._save.assert_called_once()
+        assert (
+            store.get_session_metadata("k1", "slack_thread_watermark:C123:123.000")
+            == "123.456"
+        )
+        # Missing entry / missing key fall back safely.
+        assert store.set_session_metadata("missing", "k", "v") is False
+        assert store.get_session_metadata("missing", "k", "dflt") == "dflt"
+        assert store.get_session_metadata("k1", "other", "dflt") == "dflt"
+
+    def test_session_metadata_survives_reload(self, tmp_path):
+        """Metadata written through the store must survive a full reload
+        from disk (simulated gateway restart)."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None  # force sessions.json path
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U123",
+            thread_id="123.000",
+        )
+
+        entry = store.get_or_create_session(source)
+        assert store.set_session_metadata(
+            entry.session_key,
+            "slack_thread_watermark:C123:123.000",
+            "123.456",
+        )
+
+        reloaded = SessionStore(sessions_dir=tmp_path, config=config)
+        reloaded._db = None
+        assert (
+            reloaded.get_session_metadata(
+                entry.session_key,
+                "slack_thread_watermark:C123:123.000",
+            )
+            == "123.456"
+        )
+
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 
@@ -1660,6 +1788,157 @@ class TestRewriteTranscriptPreservesReasoning:
 
 
 class TestGatewaySessionDbRecovery:
+    def test_transcript_append_rebuilds_fts_and_retries_dirty_rows_in_order(self):
+        import threading
+
+        class FakeDb:
+            def __init__(self):
+                self.attempts = []
+                self.persisted = []
+                self.rebuild_calls = 0
+
+            def rebuild_fts(self):
+                self.rebuild_calls += 1
+                return 1
+
+            def append_message(self, **kwargs):
+                content = kwargs["content"]
+                self.attempts.append(content)
+                if len(self.attempts) <= 2:
+                    raise RuntimeError("database disk image is malformed")
+                self.persisted.append(content)
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript("s1", {"role": "user", "content": "first"})
+        assert [m["content"] for m in store._dirty_transcripts["s1"]] == ["first"]
+        assert store._db.rebuild_calls == 1
+
+        store.append_to_transcript("s1", {"role": "assistant", "content": "second"})
+
+        assert store._db.persisted == ["first", "second"]
+        assert "s1" not in store._dirty_transcripts
+
+    def test_transcript_append_clears_dirty_on_rewrite(self):
+        """rewrite_transcript must clear pending dirty messages so /retry
+        and /compress don't re-insert replaced rows."""
+        import threading
+
+        class FakeDb:
+            def __init__(self):
+                self.persisted = []
+                self.replaced = []
+
+            def rebuild_fts(self):
+                return 0
+
+            def append_message(self, **kwargs):
+                raise RuntimeError("database disk image is malformed")
+
+            def replace_messages(self, session_id, messages):
+                self.replaced.append((session_id, messages))
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = True  # prevent rebuild attempt
+
+        # Queue a failed message
+        store.append_to_transcript("s1", {"role": "user", "content": "stale"})
+        assert "s1" in store._dirty_transcripts
+
+        # rewrite_transcript should clear the dirty queue
+        store.rewrite_transcript("s1", [{"role": "user", "content": "fresh"}])
+        assert "s1" not in store._dirty_transcripts
+        assert len(store._db.replaced) == 1
+
+    def test_transcript_append_clears_dirty_on_rewind(self):
+        """rewind_session must clear pending dirty messages so /undo
+        doesn't re-insert rewound rows."""
+        import threading
+
+        class FakeDb:
+            def __init__(self):
+                self.persisted = []
+
+            def rebuild_fts(self):
+                return 0
+
+            def append_message(self, **kwargs):
+                raise RuntimeError("database disk image is malformed")
+
+            def list_recent_user_messages(self, session_id, limit=10):
+                return [{"id": 1, "content": "old"}]
+
+            def rewind_to_message(self, session_id, target_id):
+                return {"target_message": {"id": target_id, "content": "old"}}
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = True
+
+        store.append_to_transcript("s1", {"role": "user", "content": "stale"})
+        assert "s1" in store._dirty_transcripts
+
+        store.rewind_session("s1", 1)
+        assert "s1" not in store._dirty_transcripts
+
+    def test_fts_corruption_error_does_not_match_false_positives(self):
+        """_is_fts_corruption_error must not match unrelated error strings
+        containing 'fts' as a substring (e.g. 'shifts', 'gifts')."""
+        assert SessionStore._is_fts_corruption_error(
+            RuntimeError("database disk image is malformed")
+        )
+        assert SessionStore._is_fts_corruption_error(
+            RuntimeError("no such table: messages_fts")
+        )
+        assert not SessionStore._is_fts_corruption_error(
+            RuntimeError("shifts were applied")
+        )
+        assert not SessionStore._is_fts_corruption_error(
+            RuntimeError("gifts received")
+        )
+
+    def test_pending_queue_caps_at_max(self):
+        """Pending queue should drop oldest messages when exceeding the cap
+        to prevent unbounded memory growth on persistent DB failure."""
+        import threading
+
+        class FakeDb:
+            def __init__(self):
+                self.count = 0
+
+            def rebuild_fts(self):
+                return 0
+
+            def append_message(self, **kwargs):
+                self.count += 1
+                raise RuntimeError("database disk image is malformed")
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = True
+
+        # Fill beyond the cap
+        for i in range(store._MAX_PENDING_PER_SESSION + 10):
+            store.append_to_transcript("s1", {"role": "user", "content": f"msg{i}"})
+
+        pending = store._dirty_transcripts.get("s1", [])
+        assert len(pending) <= store._MAX_PENDING_PER_SESSION
+
     def test_new_session_records_gateway_peer_fields(self, tmp_path):
         store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
         source = SessionSource(

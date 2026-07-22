@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-15T04:51:12Z",
+  "updated_at": "2026-07-20T08:23:45Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -105,12 +105,8 @@
           "description": ""
         },
         {
-          "id": "moonshotai/kimi-k2.6",
+          "id": "moonshotai/kimi-k3",
           "description": "recommended"
-        },
-        {
-          "id": "moonshotai/kimi-k2.7-code",
-          "description": ""
         },
         {
           "id": "minimax/minimax-m3",
@@ -248,10 +244,7 @@
           "id": "qwen/qwen3.6-35b-a3b"
         },
         {
-          "id": "moonshotai/kimi-k2.6"
-        },
-        {
-          "id": "moonshotai/kimi-k2.7-code"
+          "id": "moonshotai/kimi-k3"
         },
         {
           "id": "minimax/minimax-m3"

@@ -8,10 +8,12 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   Archive,
+  BarChart3,
   Bell,
   Download,
   Globe,
   Info,
+  Keyboard,
   KeyRound,
   Package,
   RefreshCw,
@@ -30,9 +32,11 @@ import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
+import { BillingSettings } from './billing'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
+import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { NotificationsSettings } from './notifications-settings'
 import { PluginsSettings } from './plugins-settings'
@@ -44,8 +48,10 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  'keybinds',
   'keys',
   'notifications',
+  'billing',
   'plugins',
   'sessions',
   'about'
@@ -148,6 +154,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       onSelect: () => setActiveView('notifications')
     },
     {
+      active: activeView === 'billing',
+      icon: BarChart3,
+      id: 'billing',
+      label: t.settings.nav.billing,
+      onSelect: () => setActiveView('billing')
+    },
+    {
       active: activeView === 'providers',
       children: [
         {
@@ -163,6 +176,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           id: 'pview:keys',
           label: t.settings.nav.providerApiKeys,
           onSelect: () => openProviderView('keys')
+        },
+        {
+          active: activeView === 'providers' && providerView === 'custom-endpoints',
+          icon: Globe,
+          id: 'pview:custom-endpoints',
+          label: t.settings.nav.providerCustomEndpoints,
+          onSelect: () => openProviderView('custom-endpoints')
         }
       ],
       gapBefore: true,
@@ -177,6 +197,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       id: 'gateway',
       label: t.settings.nav.gateway,
       onSelect: () => setActiveView('gateway')
+    },
+    {
+      active: activeView === 'keybinds',
+      icon: Keyboard,
+      id: 'keybinds',
+      label: t.settings.nav.keybinds,
+      onSelect: () => setActiveView('keybinds')
     },
     {
       active: activeView === 'keys',
@@ -261,13 +288,15 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <OverlaySplitLayout>
         <OverlayNav footer={navFooter} groups={navGroups} />
 
-        <OverlayMain className="px-0 pb-0">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
           ) : activeView === 'gateway' ? (
             <GatewaySettings />
+          ) : activeView === 'keybinds' ? (
+            <KeybindSettings />
           ) : activeView.startsWith('config:') ? (
             <ConfigSettings
               activeSectionId={activeView.slice('config:'.length)}
@@ -276,11 +305,19 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
               onMainModelChanged={onMainModelChanged}
             />
           ) : activeView === 'providers' ? (
-            <ProvidersSettings onClose={onClose} onViewChange={setProviderView} view={providerView} />
+            <ProvidersSettings
+              onClose={onClose}
+              onConfigSaved={onConfigSaved}
+              onMainModelChanged={onMainModelChanged}
+              onViewChange={setProviderView}
+              view={providerView}
+            />
           ) : activeView === 'keys' ? (
             <KeysSettings view={keysView} />
           ) : activeView === 'notifications' ? (
             <NotificationsSettings />
+          ) : activeView === 'billing' ? (
+            <BillingSettings />
           ) : activeView === 'plugins' ? (
             <PluginsSettings />
           ) : (

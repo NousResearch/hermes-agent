@@ -2512,6 +2512,26 @@ def test_delete_attachment_never_unlinks_outside_task_storage(kanban_home):
     assert outside.read_text() == "keep"
 
 
+def test_delete_attachment_preserves_pathname_replacement(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="replacement-safe delete")
+        attachment_id = kb.store_attachment_bytes(
+            conn,
+            task_id,
+            "report.txt",
+            b"agent result",
+        )
+        attachment = kb.get_attachment(conn, attachment_id)
+        assert attachment is not None and attachment.filesystem_identity is not None
+        stored = Path(attachment.stored_path)
+        stored.unlink()
+        stored.write_text("human replacement")
+
+        assert kb.delete_attachment(conn, attachment_id) is not None
+
+    assert stored.read_text() == "human replacement"
+
+
 def test_completion_rollback_removes_staged_artifact_copy(
     kanban_home, monkeypatch
 ):
@@ -2609,7 +2629,7 @@ def test_rollback_cleanup_preserves_replaced_staged_path(
 
         monkeypatch.setattr(kb, "_insert_completion_attachment", replace_then_insert)
         monkeypatch.setattr(kb, "_execute_boundary_with_retry", fail_commit)
-        with pytest.raises(sqlite3.OperationalError, match="forced commit failure"):
+        with pytest.raises(kb.ArtifactPreservationError, match="identity changed"):
             kb.complete_task(
                 conn,
                 task_id,
@@ -2705,7 +2725,7 @@ def test_artifact_copy_rejects_source_changed_at_end_of_stream(
     kanban_home, monkeypatch
 ):
     """A concurrent writer cannot produce a mixed completion artifact."""
-    original_open = Path.open
+    original_fdopen = kb.os.fdopen
     source_path = None
 
     class MutatingReader:
@@ -2728,14 +2748,14 @@ def test_artifact_copy_rejects_source_changed_at_end_of_stream(
             data = self.stream.read(*args, **kwargs)
             if not data and not self.mutated:
                 self.mutated = True
-                with original_open(self.path, "ab") as writer:
+                with self.path.open("ab") as writer:
                     writer.write(b"-changed")
             return data
 
-    def mutate_source(path, mode="r", *args, **kwargs):
-        stream = original_open(path, mode, *args, **kwargs)
-        if mode == "rb" and source_path is not None and path == source_path:
-            return MutatingReader(stream, path)
+    def mutate_source(fd, mode="r", *args, **kwargs):
+        stream = original_fdopen(fd, mode, *args, **kwargs)
+        if mode == "rb" and source_path is not None:
+            return MutatingReader(stream, source_path)
         return stream
 
     with kb.connect() as conn:
@@ -2745,7 +2765,7 @@ def test_artifact_copy_rejects_source_changed_at_end_of_stream(
         kb.set_workspace_path(conn, task_id, workspace)
         source_path = workspace / "report.txt"
         source_path.write_text("result")
-        monkeypatch.setattr(Path, "open", mutate_source)
+        monkeypatch.setattr(kb.os, "fdopen", mutate_source)
 
         with pytest.raises(kb.ArtifactPreservationError, match="changed while"):
             kb.complete_task(
@@ -2759,6 +2779,41 @@ def test_artifact_copy_rejects_source_changed_at_end_of_stream(
 
     attachment_dir = kb.task_attachments_dir(task_id)
     assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
+
+
+def test_artifact_copy_rejects_source_replaced_before_open(
+    kanban_home, monkeypatch
+):
+    original_os_open = kb.os.open
+    source_path = None
+    swapped = False
+
+    def replace_then_open(path, flags, *args):
+        nonlocal swapped
+        if source_path is not None and Path(path) == source_path and not swapped:
+            swapped = True
+            source_path.unlink()
+            source_path.write_text("human replacement")
+        return original_os_open(path, flags, *args)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="source replacement")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        source_path = workspace / "report.txt"
+        source_path.write_text("agent result")
+        monkeypatch.setattr(kb.os, "open", replace_then_open)
+
+        with pytest.raises(kb.ArtifactPreservationError, match="identity changed"):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(source_path)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert source_path.read_text() == "human replacement"
 
 
 def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
@@ -3099,6 +3154,40 @@ def test_scratch_cleanup_preserves_malformed_owner_marker(kanban_home):
 
     assert workspace.is_dir()
     assert (workspace / "important.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_scratch_cleanup_preserves_directory_replacement_at_delete_boundary(
+    kanban_home, monkeypatch
+):
+    original_replace = kb.os.replace
+    injected = False
+    displaced = None
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="scratch replacement")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        (workspace / "agent.txt").write_text("agent")
+
+        def replace_workspace(source, destination):
+            nonlocal injected, displaced
+            source_path = Path(source)
+            if source_path == workspace and not injected:
+                injected = True
+                displaced = workspace.with_name(f"{workspace.name}-agent-original")
+                original_replace(workspace, displaced)
+                workspace.mkdir()
+                (workspace / "human.txt").write_text("keep")
+            return original_replace(source, destination)
+
+        monkeypatch.setattr(kb.os, "replace", replace_workspace)
+        assert kb.complete_task(conn, task_id, result="done")
+
+    assert displaced is not None and (displaced / "agent.txt").read_text() == "agent"
+    quarantines = list(workspace.parent.glob(f".{workspace.name}.hermes-delete-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "human.txt").read_text() == "keep"
 
 
 # ---------------------------------------------------------------------------

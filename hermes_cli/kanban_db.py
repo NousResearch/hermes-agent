@@ -1101,6 +1101,7 @@ class Attachment:
     size: int
     uploaded_by: Optional[str]
     created_at: int
+    filesystem_identity: Optional[tuple[int, int, int, int, int, int]] = None
 
 
 @dataclass
@@ -1269,7 +1270,8 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     content_type TEXT,
     size         INTEGER NOT NULL DEFAULT 0,
     uploaded_by  TEXT,
-    created_at   INTEGER NOT NULL
+    created_at   INTEGER NOT NULL,
+    filesystem_identity TEXT
 );
 
 -- Subscription from a gateway source (platform + chat + thread) to a
@@ -2386,6 +2388,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
 
+    attachment_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_attachments'"
+    ).fetchone() is not None
+    if attachment_table_exists:
+        attachment_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_attachments)")
+        }
+        if "filesystem_identity" not in attachment_cols:
+            _add_column_if_missing(
+                conn,
+                "task_attachments",
+                "filesystem_identity",
+                "filesystem_identity TEXT",
+            )
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -3377,6 +3395,65 @@ def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
     return dest_dir / candidate
 
 
+_FilesystemIdentity = tuple[int, int, int, int, int, int]
+
+
+def _filesystem_identity(st: os.stat_result) -> _FilesystemIdentity:
+    return (
+        st.st_dev,
+        st.st_ino,
+        st.st_mode,
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ctime_ns,
+    )
+
+
+def _encode_filesystem_identity(identity: Optional[_FilesystemIdentity]) -> Optional[str]:
+    return json.dumps(identity) if identity is not None else None
+
+
+def _decode_filesystem_identity(raw: object) -> Optional[_FilesystemIdentity]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        values = json.loads(raw)
+        if (
+            not isinstance(values, list)
+            or len(values) != 6
+            or any(not isinstance(value, int) for value in values)
+        ):
+            return None
+        return tuple(values)  # type: ignore[return-value]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _atomic_remove_expected_file(path: Path, expected: _FilesystemIdentity) -> bool:
+    """Remove only the exact expected file, preserving mismatches for recovery."""
+    quarantine = path.with_name(
+        f".{path.name}.hermes-delete-{secrets.token_hex(16)}"
+    )
+    try:
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or _filesystem_identity(current) != expected
+        ):
+            return False
+        os.replace(path, quarantine)
+        moved = quarantine.lstat()
+        if (
+            not stat.S_ISREG(moved.st_mode)
+            or _filesystem_identity(moved) != expected
+        ):
+            return False
+        quarantine.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def store_attachment_bytes(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3416,6 +3493,7 @@ def store_attachment_bytes(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
+    dest_identity = _filesystem_identity(dest_path.lstat())
     try:
         return add_attachment(
             conn,
@@ -3425,12 +3503,13 @@ def store_attachment_bytes(
             content_type=content_type,
             size=len(data),
             uploaded_by=uploaded_by,
+            filesystem_identity=dest_identity,
         )
     except Exception:
         # Don't leave an orphan blob if the metadata insert fails (most
         # commonly: the task id doesn't exist).
         try:
-            dest_path.unlink(missing_ok=True)
+            _atomic_remove_expected_file(dest_path, dest_identity)
         except OSError:
             pass
         raise
@@ -3445,6 +3524,7 @@ def add_attachment(
     content_type: Optional[str] = None,
     size: int = 0,
     uploaded_by: Optional[str] = None,
+    filesystem_identity: Optional[_FilesystemIdentity] = None,
 ) -> int:
     """Record a file attachment for a task. Returns the new attachment id.
 
@@ -3456,6 +3536,16 @@ def add_attachment(
         raise ValueError("attachment filename is required")
     if not stored_path or not stored_path.strip():
         raise ValueError("attachment stored_path is required")
+    stored = Path(stored_path)
+    try:
+        current_identity = _filesystem_identity(stored.lstat())
+        if stored.is_symlink() or not stat.S_ISREG(current_identity[2]):
+            current_identity = None
+    except OSError:
+        current_identity = None
+    if filesystem_identity is not None and current_identity != filesystem_identity:
+        raise ValueError("attachment filesystem identity changed before registration")
+    bound_identity = filesystem_identity or current_identity
     now = int(time.time())
     with write_txn(conn):
         if not conn.execute(
@@ -3464,8 +3554,8 @@ def add_attachment(
             raise ValueError(f"unknown task {task_id}")
         cur = conn.execute(
             "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(task_id, filename, stored_path, content_type, size, uploaded_by, "
+            "created_at, filesystem_identity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 filename.strip(),
@@ -3474,6 +3564,7 @@ def add_attachment(
                 int(size),
                 uploaded_by,
                 now,
+                _encode_filesystem_identity(bound_identity),
             ),
         )
         _append_event(
@@ -3500,6 +3591,11 @@ def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]
             size=r["size"] or 0,
             uploaded_by=r["uploaded_by"],
             created_at=r["created_at"],
+            filesystem_identity=_decode_filesystem_identity(
+                r["filesystem_identity"]
+                if "filesystem_identity" in r.keys()
+                else None
+            ),
         )
         for r in rows
     ]
@@ -3520,6 +3616,9 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
         size=r["size"] or 0,
         uploaded_by=r["uploaded_by"],
         created_at=r["created_at"],
+        filesystem_identity=_decode_filesystem_identity(
+            r["filesystem_identity"] if "filesystem_identity" in r.keys() else None
+        ),
     )
 
 
@@ -3542,13 +3641,12 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         p = Path(att.stored_path)
         board = _connection_board(conn)
         owned_root = task_attachments_dir(att.task_id, board=board).resolve(strict=False)
-        resolved = p.resolve(strict=True)
         if (
-            p.is_file()
-            and not p.is_symlink()
-            and resolved.parent == owned_root
+            att.filesystem_identity is not None
+            and p.is_absolute()
+            and p.parent.resolve(strict=True) == owned_root
         ):
-            p.unlink()
+            _atomic_remove_expected_file(p, att.filesystem_identity)
     except (OSError, ValueError):
         pass
     return att
@@ -4570,15 +4668,22 @@ def complete_task(
             return False
         if isinstance(metadata, dict):
             _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
+            for staged in metadata.pop("_staged_artifacts", []):
+                stored_path = staged["path"]
+                identity = tuple(staged["identity"])
                 path = Path(stored_path)
+                if _filesystem_identity(path.lstat()) != identity:
+                    raise ArtifactPreservationError(
+                        f"preserved artifact identity changed before registration: {path}"
+                    )
                 _insert_completion_attachment(
                     conn,
                     task_id,
                     filename=path.name,
                     stored_path=str(path),
-                    size=path.stat().st_size,
+                    size=identity[3],
                     created_at=now,
+                    filesystem_identity=identity,
                 )
         run_id = _end_run(
             conn, task_id,
@@ -4785,8 +4890,8 @@ def _persist_scratch_completion_artifacts(
         for copied in used_destinations:
             try:
                 expected = copied_identities.get(copied)
-                if expected is not None and _current_identity(copied) == expected:
-                    copied.unlink(missing_ok=True)
+                if expected is not None:
+                    _atomic_remove_expected_file(copied, expected)
             except OSError:
                 pass
         try:
@@ -4811,13 +4916,27 @@ def _persist_scratch_completion_artifacts(
             persisted.append(artifact)
             continue
 
-        if src.is_symlink() or not src.is_file():
+        try:
+            source_path_stat = resolved_src.lstat()
+            source_path_identity = _stat_identity(source_path_stat)
+            source_reparse = int(
+                getattr(source_path_stat, "st_file_attributes", 0)
+            ) & 0x400
+        except OSError:
+            source_path_identity = None
+            source_reparse = 0
+        if (
+            source_path_identity is None
+            or src.is_symlink()
+            or source_reparse
+            or not stat.S_ISREG(source_path_identity[2])
+        ):
             _discard_copies()
             raise ArtifactPreservationError(
                 f"declared scratch artifact is unavailable or not a regular file: {artifact}"
             )
 
-        size = resolved_src.stat().st_size
+        size = source_path_identity[3]
         if size > KANBAN_ATTACHMENT_MAX_BYTES:
             _discard_copies()
             raise ArtifactPreservationError(
@@ -4830,12 +4949,23 @@ def _persist_scratch_completion_artifacts(
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
+            source_flags = os.O_RDONLY
+            if hasattr(os, "O_BINARY"):
+                source_flags |= os.O_BINARY
+            if hasattr(os, "O_NOFOLLOW"):
+                source_flags |= os.O_NOFOLLOW
+            source_fd = os.open(resolved_src, source_flags)
+            with os.fdopen(source_fd, "rb") as source_file, dest.open(
+                "xb"
+            ) as destination_file:
                 try:
                     source_before = _stat_identity(os.fstat(source_file.fileno()))
-                    if not stat.S_ISREG(source_before[2]):
+                    if (
+                        source_before != source_path_identity
+                        or not stat.S_ISREG(source_before[2])
+                    ):
                         raise ArtifactPreservationError(
-                            f"declared scratch artifact is not a regular file: {artifact}"
+                            f"declared scratch artifact identity changed before copy: {artifact}"
                         )
                     copied = 0
                     while chunk := source_file.read(1024 * 1024):
@@ -4864,8 +4994,8 @@ def _persist_scratch_completion_artifacts(
         except BaseException as exc:
             if dest is not None:
                 try:
-                    if dest_identity is not None and _current_identity(dest) == dest_identity:
-                        dest.unlink(missing_ok=True)
+                    if dest_identity is not None:
+                        _atomic_remove_expected_file(dest, dest_identity)
                 except OSError:
                     pass
             _discard_copies()
@@ -4882,6 +5012,12 @@ def _persist_scratch_completion_artifacts(
             raise ArtifactPreservationError(
                 f"could not bind preserved artifact identity: {artifact}"
             )
+        if _current_identity(dest) != dest_identity:
+            _atomic_remove_expected_file(dest, dest_identity)
+            _discard_copies()
+            raise ArtifactPreservationError(
+                f"preserved artifact identity changed before registration: {artifact}"
+            )
         used_destinations.add(dest)
         copied_identities[dest] = dest_identity
         persisted.append(str(dest.resolve()))
@@ -4891,9 +5027,13 @@ def _persist_scratch_completion_artifacts(
         metadata["artifacts"] = persisted
         attachment_root = attachment_dir.resolve()
         metadata["_staged_artifacts"] = [
-            path
+            {
+                "path": path,
+                "identity": list(copied_identities[Path(path)]),
+            }
             for path in persisted
             if Path(path).resolve().parent == attachment_root
+            and Path(path) in copied_identities
         ]
 
 
@@ -4905,13 +5045,32 @@ def _insert_completion_attachment(
     stored_path: str,
     size: int,
     created_at: int,
+    filesystem_identity: _FilesystemIdentity,
 ) -> None:
     """Record a worker-produced artifact in the existing attachment table."""
+    try:
+        current_identity = _filesystem_identity(Path(stored_path).lstat())
+    except OSError as exc:
+        raise ArtifactPreservationError(
+            f"preserved artifact disappeared before registration: {stored_path}"
+        ) from exc
+    if current_identity != filesystem_identity:
+        raise ArtifactPreservationError(
+            f"preserved artifact identity changed before registration: {stored_path}"
+        )
     conn.execute(
         "INSERT INTO task_attachments "
-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, "
+        "created_at, filesystem_identity) "
+        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?, ?)",
+        (
+            task_id,
+            filename,
+            stored_path,
+            size,
+            created_at,
+            _encode_filesystem_identity(filesystem_identity),
+        ),
     )
     _append_event(
         conn,
@@ -5285,8 +5444,31 @@ def _remove_managed_scratch_workspace(
             tenant,
         )
         return
+    marker = wp / _SCRATCH_OWNER_MARKER_NAME
     try:
-        shutil.rmtree(wp)
+        workspace_identity = wp.lstat()
+        marker_identity = marker.lstat()
+        quarantine = wp.with_name(
+            f".{wp.name}.hermes-delete-{secrets.token_hex(16)}"
+        )
+        os.replace(wp, quarantine)
+        moved_marker = quarantine / _SCRATCH_OWNER_MARKER_NAME
+        if (
+            not os.path.samestat(workspace_identity, quarantine.lstat())
+            or not os.path.samestat(marker_identity, moved_marker.lstat())
+            or not _read_scratch_owner_marker(
+                quarantine,
+                task_id=task_id,
+                board=board,
+                tenant=tenant,
+            )
+        ):
+            _log.warning(
+                "Preserved scratch cleanup quarantine after ownership changed: %s",
+                quarantine,
+            )
+            return
+        shutil.rmtree(quarantine)
         _log.debug("Removed scratch workspace: %s", wp)
     except OSError as exc:
         _log.warning("Could not remove scratch workspace for task %s: %s", task_id, exc)

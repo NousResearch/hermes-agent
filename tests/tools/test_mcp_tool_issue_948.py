@@ -219,3 +219,100 @@ def test_run_stdio_malware_check_times_out_fail_open():
         assert elapsed < 1.0, f"startup did not fail-open promptly ({elapsed:.1f}s)"
 
     asyncio.run(_test())
+
+
+def test_resolve_stdio_command_falls_back_to_nvm(tmp_path):
+    """When ``npx`` isn't on the filtered PATH and isn't under
+    ``$HERMES_HOME/node/bin``, ``~/.local/bin`` or ``/usr/local/bin``, the
+    resolver should still locate it under ``~/.nvm/versions/node/<version>/bin``
+    (nvm's real layout — note the ``node`` segment between ``versions`` and the
+    version number).
+
+    Node installed via nvm (the most common interactive-dev setup) lives there
+    and is never on the Hermes daemon PATH, so a bare ``command: npx`` MCP
+    server otherwise fails with ENOENT at ``execvp`` on every Linux distro and
+    on macOS alike. See the companion fix that extends ``_resolve_stdio_command``
+    candidates with ``_node_version_manager_dirs()``.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    # The exact version string is arbitrary — _node_version_manager_dirs()
+    # scans every version under ~/.nvm/versions/node/ dynamically, so this
+    # fixture only needs to model nvm's <runtime>/<version>/bin layout.
+    nvm_bin = home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+    nvm_bin.mkdir(parents=True)
+    npx_path = nvm_bin / "npx"
+    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx_path.chmod(0o755)
+
+    # Pretend ONLY the nvm candidate exists and is executable; the other
+    # candidates must fail isfile()/access() so the resolver falls through.
+    target = str(npx_path)
+
+    def _fake_isfile(path):
+        return path == target
+
+    def _fake_access(path, _mode):
+        return path == target
+
+    with patch.dict("os.environ", {"HOME": str(home)}, clear=False), \
+         patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile", side_effect=_fake_isfile), \
+         patch("tools.mcp_tool.os.access", side_effect=_fake_access):
+        command, env = _resolve_stdio_command("npx", {"PATH": "/usr/bin:/bin"})
+
+    assert command == target
+    # The resolved dir must be prepended so npx's shebang (`/usr/bin/env node`)
+    # can find node in the same directory.
+    assert env["PATH"].split(os.pathsep)[0] == str(nvm_bin)
+
+
+def _assert_resolves_to(tmp_path, node_bin, command_exe="npx"):
+    """Drive ``_resolve_stdio_command`` with ONLY ``node_bin`` present and
+    confirm the resolver falls through to it (the other candidates fail
+    isfile()/access() so the resolver must reach this one).
+    """
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    node_bin.mkdir(parents=True)
+    target = node_bin / command_exe
+    target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    target.chmod(0o755)
+
+    resolved_target = str(target)
+
+    def _fake_isfile(path):
+        return path == resolved_target
+
+    def _fake_access(path, _mode):
+        return path == resolved_target
+
+    with patch.dict("os.environ", {"HOME": str(home)}, clear=False), \
+         patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile", side_effect=_fake_isfile), \
+         patch("tools.mcp_tool.os.access", side_effect=_fake_access):
+        command, env = _resolve_stdio_command(command_exe, {"PATH": "/usr/bin:/bin"})
+
+    assert command == resolved_target
+    assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def test_resolve_stdio_command_falls_back_to_fnm(tmp_path):
+    """fnm installs Node under ``~/.fnm/node-versions/<version>/installation/bin``,
+    which is never on the Hermes daemon PATH. A bare ``command: npx`` MCP server
+    would otherwise fail with ENOENT at execvp.
+    """
+    _assert_resolves_to(
+        tmp_path,
+        tmp_path / "home" / ".fnm" / "node-versions" / "v22.21.1" / "installation" / "bin",
+    )
+
+
+def test_resolve_stdio_command_falls_back_to_volta(tmp_path):
+    """volta shims node/npm/npx directly under ``~/.volta/bin``, outside the
+    Hermes daemon PATH. Cover the third common version manager.
+    """
+    _assert_resolves_to(
+        tmp_path,
+        tmp_path / "home" / ".volta" / "bin",
+    )

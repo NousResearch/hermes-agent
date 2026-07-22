@@ -634,6 +634,46 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
     return items
 
 
+def _node_version_manager_dirs() -> list[str]:
+    """Directories that hold node/npm/npx when installed via a version manager.
+
+    These are the canonical install roots for nvm, fnm, and volta. None of them
+    sit on the Hermes daemon PATH (the daemon never sources shell rc files), so
+    a bare ``command: npx`` MCP server otherwise fails with ENOENT until the
+    user manually symlinks node into ``~/.local/bin`` or ``/usr/local/bin``.
+    """
+    home = os.path.expanduser("~")
+    dirs: list[str] = []
+
+    # nvm: installs under ~/.nvm/versions/<runtime>/<version>/bin where
+    # <runtime> is normally "node" (and rarely "io.js").
+    nvm_versions = os.path.join(home, ".nvm", "versions")
+    if os.path.isdir(nvm_versions):
+        for runtime in sorted(os.listdir(nvm_versions)):
+            runtime_root = os.path.join(nvm_versions, runtime)
+            if not os.path.isdir(runtime_root):
+                continue
+            for version in sorted(os.listdir(runtime_root)):
+                node_bin = os.path.join(runtime_root, version, "bin")
+                if os.path.isdir(node_bin):
+                    dirs.append(node_bin)
+
+    # fnm: <root>/node-versions/<version>/installation/bin
+    fnm_root = os.path.join(home, ".fnm", "node-versions")
+    if os.path.isdir(fnm_root):
+        for entry in sorted(os.listdir(fnm_root)):
+            node_bin = os.path.join(fnm_root, entry, "installation", "bin")
+            if os.path.isdir(node_bin):
+                dirs.append(node_bin)
+
+    # volta: shims live directly in ~/.volta/bin
+    volta_bin = os.path.join(home, ".volta", "bin")
+    if os.path.isdir(volta_bin):
+        dirs.append(volta_bin)
+
+    return dirs
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
@@ -668,6 +708,17 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
                 # PATH only fails one layer deeper because npx's shebang
                 # re-execs /usr/bin/env node which needs the same directory.
                 os.path.join(os.sep, "usr", "local", "bin", resolved_command),
+                # Node installed via a version manager (nvm, fnm, volta) is the
+                # common case for interactive dev machines. On these setups
+                # `~/.nvm/versions/node/<version>/bin`, `~/.fnm/node-versions/<version>/installation/bin`
+                # or `~/.volta/bin` hold node/npm/npx, but none of them are on the
+                # Hermes daemon PATH (the daemon does not source shell rc files).
+                # Without these candidates a bare `command: npx` MCP server fails
+                # with ENOENT at execvp on every distro and on macOS alike.
+                *(
+                    os.path.join(d, resolved_command)
+                    for d in _node_version_manager_dirs()
+                ),
             ]
             for candidate in candidates:
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):

@@ -82,7 +82,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     createBackendSessionForSend,
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
-    getRouteToken,
     requestGateway,
     resumeStoredSession,
     selectedStoredSessionIdRef,
@@ -173,11 +172,29 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         ? routedStoredSessionId
         : (selectedStoredSessionId ?? routedStoredSessionId)
 
-      let startingRouteToken = getRouteToken()
+      // The drift guard must compare session IDENTITY, not the raw route
+      // token. The route (and its token) comes from useLocation() and only
+      // refreshes on re-render, so after createBackendSessionForSend's
+      // navigate() the new route flushes asynchronously: a submit with a real
+      // await in this window (file.attach's WS round-trip) sees the flush
+      // land mid-pipeline and misreads our own re-home as a user switch —
+      // aborting silently and restoring the draft (new chat + file
+      // attachment never sent, while text-only/folder submits finished
+      // before the flush). A route that hasn't caught up (no session id) is
+      // not drift; only a route pointing at a DIFFERENT session is.
+      const sessionContextDrifted = (): boolean => {
+        if (!targetStartedInCurrentView) {
+          return false
+        }
 
-      const sessionContextDrifted = (): boolean =>
-        targetStartedInCurrentView &&
-        (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
+        if (selectedStoredSessionIdRef.current !== startingStoredSessionId) {
+          return true
+        }
+
+        const routed = getRoutedStoredSessionId()
+
+        return routed !== null && routed !== startingStoredSessionId
+      }
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionContextDrifted()
 
@@ -429,7 +446,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Re-pin the baseline to the created chat for the rest of the
         // pipeline; the closures (seedOptimistic et al) see the new value.
         startingStoredSessionId = selectedStoredSessionIdRef.current
-        startingRouteToken = getRouteToken()
 
         seedOptimistic(sessionId)
       }
@@ -562,7 +578,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       createBackendSessionForSend,
       getRoutedStoredSessionId,
       getRuntimeIdForStoredSession,
-      getRouteToken,
       requestGateway,
       resumeStoredSession,
       scope,

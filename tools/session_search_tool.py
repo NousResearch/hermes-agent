@@ -540,21 +540,11 @@ def _discover(
             "message": "No matching sessions found.",
         }, ensure_ascii=False)
 
-    # Dedupe by lineage. Keep the raw owning session_id on the surviving
-    # row — only that pairs validly with the FTS5 match id for the anchored
-    # window. parent_session_id is exposed separately when different.
+    # ── Dedupe by lineage ──────────────────────────────────────────────
+    # Keep the raw owning session_id on the surviving row — only that
+    # pairs validly with the FTS5 match id for the anchored window.
     seen_sessions = {}
-    results = []
-
-    if title_result:
-        title_lineage = title_result.pop("_lineage_root", None)
-        if title_lineage:
-            seen_sessions[title_lineage] = {"_title_only": True}
-        results.append(title_result)
-
     for r in raw_results:
-        if len(seen_sessions) >= limit:
-            break
         raw_sid = r["session_id"]
         resolved_sid = _resolve_to_parent(db, raw_sid)
         # Skip the current session lineage
@@ -566,8 +556,18 @@ def _discover(
             row = dict(r)
             row["_lineage_root"] = resolved_sid
             seen_sessions[resolved_sid] = row
-        if len(seen_sessions) >= limit:
-            break
+
+    # Truncate to limit after dedup.
+    seen_sessions = dict(list(seen_sessions.items())[:limit])
+
+    # ── Build results ──────────────────────────────────────────────────
+    results = []
+
+    if title_result:
+        title_lineage = title_result.pop("_lineage_root", None)
+        if title_lineage:
+            seen_sessions.setdefault(title_lineage, {"_title_only": True})
+        results.append(title_result)
 
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):

@@ -3107,15 +3107,11 @@ class TestSharedBoardPaths:
 
         from gateway import session_context as sc
 
-        monkeypatch.setattr(sc, "_session_context_engaged", True)
+        # A dispatcher can launch before the gateway binds its first session.
+        monkeypatch.setattr(sc, "_session_context_engaged", False)
         sc.reset_session_vars()
-        for key, value in {
-            "HERMES_SESSION_PLATFORM": "telegram",
-            "HERMES_SESSION_CHAT_ID": "-100123",
-            "HERMES_SESSION_THREAD_ID": "12",
-            "HERMES_SESSION_KEY": "agent:main:telegram:group:-100123:12",
-        }.items():
-            monkeypatch.setenv(key, value)
+        for key in sc._VAR_MAP:
+            monkeypatch.setenv(key, "stale-routing-value")
 
         captured = {}
 
@@ -3154,12 +3150,7 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
-        for key in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_THREAD_ID",
-            "HERMES_SESSION_KEY",
-        ):
+        for key in sc._VAR_MAP:
             assert key not in env
 
 

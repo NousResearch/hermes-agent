@@ -411,6 +411,17 @@ class TestCopilotNormalization:
         }]
         assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
 
+    def test_copilot_api_mode_honors_catalog_only_responses_for_claude(self):
+        catalog = [{
+            "id": "claude-opus-4.8",
+            "supported_endpoints": ["/responses"],
+            "capabilities": {"type": "chat"},
+        }]
+        assert copilot_model_api_mode(
+            "claude-opus-4.8",
+            catalog=catalog,
+        ) == copilot_model_api_mode("gpt-5.4")
+
     def test_normalize_opencode_model_id_strips_provider_prefix(self):
         assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
         assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"

@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli import __version__ as _HERMES_VERSION
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -219,12 +219,7 @@ def _read_disk_cache() -> tuple[dict[str, Any] | None, float]:
 def _write_disk_cache(data: dict[str, Any]) -> None:
     path = _cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-            fh.write("\n")
-        atomic_replace(tmp, path)
+        atomic_json_write(path, data, indent=2, mode=0o600)
     except OSError as exc:
         logger.info("model catalog cache write failed: %s", exc)
 

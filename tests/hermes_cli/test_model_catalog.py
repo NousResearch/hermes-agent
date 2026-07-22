@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -108,6 +109,8 @@ class TestFetchSuccess:
 
         cache_file = model_catalog._cache_path()
         assert cache_file.exists()
+        if os.name != "nt":
+            assert stat.S_IMODE(cache_file.stat().st_mode) == 0o600
         with open(cache_file) as fh:
             assert json.load(fh) == manifest
 

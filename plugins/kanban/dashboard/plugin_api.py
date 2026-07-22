@@ -2115,6 +2115,8 @@ def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete
     """Archive (default) or hard-delete a board."""
     try:
         res = kanban_db.remove_board(slug, archive=not delete)
+    except kanban_db.BoardDeleteRecoveryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"result": res, "current": kanban_db.get_current_board()}
@@ -2453,7 +2455,10 @@ async def stream_events(ws: WebSocket):
             ws_board = None
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
-            conn = kanban_db.connect(board=ws_board)
+            # The event tail is a stale/read-only consumer. It must not take
+            # the schema-init path or recreate a board after Archive/Delete
+            # atomically moved the public board directory away.
+            conn = kanban_db.connect_existing_readonly(board=ws_board)
             try:
                 rows = conn.execute(
                     "SELECT id, task_id, run_id, kind, payload, created_at "
@@ -2493,6 +2498,10 @@ async def stream_events(ws: WebSocket):
         # CancelledError is a BaseException in 3.8+ so the bare Exception
         # handler below would not catch it; without this clause Uvicorn
         # surfaces the cancellation as an application traceback. Quiet it.
+        return
+    except FileNotFoundError:
+        # Normal board lifecycle: Archive/Delete removed a named board while
+        # this browser tab still had its old event stream open.
         return
     except Exception as exc:  # defensive: never crash the dashboard worker
         log.warning("Kanban event stream error: %s", exc)

@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -785,6 +786,27 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
+class BoardDeleteRecoveryError(RuntimeError):
+    """Hard delete failed after detach and rollback could not restore it."""
+
+    def __init__(
+        self,
+        slug: str,
+        recovery_path: Path,
+        cleanup_error: OSError,
+        restore_error: OSError,
+    ) -> None:
+        self.slug = slug
+        self.recovery_path = recovery_path
+        self.cleanup_error = cleanup_error
+        self.restore_error = restore_error
+        super().__init__(
+            f"hard-delete cleanup failed for board {slug!r}, and automatic "
+            "rollback to the public board path also failed; inspect the "
+            f"detached board recovery path: {recovery_path}"
+        )
+
+
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Remove or archive a board.
 
@@ -805,30 +827,108 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
 
+    was_current = get_current_board() == normed
+    db_cache_key = str((d / "kanban.db").resolve())
+    was_initialized = db_cache_key in _INITIALIZED_PATHS
+
     # If the user removed the currently-active board, revert to default.
-    if get_current_board() == normed:
+    if was_current:
         clear_current_board()
 
     # A concurrent connect(board=normed) after the rename/delete recreates
     # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
     # dropped first so the schema init pass re-runs on that fresh file.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    _INITIALIZED_PATHS.discard(db_cache_key)
+
+    def _restore_pre_remove_state(*, restore_init_cache: bool) -> None:
+        if was_current:
+            set_current_board(normed)
+        if restore_init_cache and was_initialized:
+            _INITIALIZED_PATHS.add(db_cache_key)
 
     if archive:
-        archive_root = boards_root() / "_archived"
-        archive_root.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        target = archive_root / f"{normed}-{ts}"
-        # Avoid collision on rapid double-archives.
-        suffix = 1
-        while target.exists():
-            target = archive_root / f"{normed}-{ts}-{suffix}"
-            suffix += 1
-        d.rename(target)
+        try:
+            archive_root = boards_root() / "_archived"
+            archive_root.mkdir(parents=True, exist_ok=True)
+            ts = int(time.time())
+            target = archive_root / f"{normed}-{ts}"
+            # Avoid collision on rapid double-archives.
+            suffix = 1
+            while target.exists():
+                target = archive_root / f"{normed}-{ts}-{suffix}"
+                suffix += 1
+            d.rename(target)
+        except OSError:
+            _restore_pre_remove_state(restore_init_cache=True)
+            raise
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
         import shutil
-        shutil.rmtree(d)
+
+        # Detach the public board path atomically before recursive cleanup.
+        # A live SQLite reader can create or remove WAL/SHM sidecars while
+        # rmtree is walking the directory; deleting in place can therefore
+        # lose the race at the final rmdir with ENOTEMPTY. Once renamed, stale
+        # readers still holding the old DB path cannot add entries to the
+        # detached directory, and new named-board readers fail closed.
+        try:
+            delete_target = d.with_name(
+                f".deleting-{normed}-{secrets.token_hex(8)}"
+            )
+            while delete_target.exists():
+                delete_target = d.with_name(
+                    f".deleting-{normed}-{secrets.token_hex(8)}"
+                )
+            d.rename(delete_target)
+        except OSError:
+            _restore_pre_remove_state(restore_init_cache=True)
+            raise
+
+        def _ignore_disappeared_nested_entry(_func, entry_path, exc_info):
+            # A concurrent SQLite reader may close between rmtree's directory
+            # scan and unlink, removing its own -wal/-shm sidecar first. Python
+            # 3.13+ ignores these nested FileNotFoundError races; preserve that
+            # behavior on supported older runtimes without hiding a missing
+            # cleanup root or any other error.
+            exc = exc_info[1]
+            if (
+                isinstance(exc, FileNotFoundError)
+                and Path(entry_path) != delete_target
+            ):
+                return
+            raise exc
+
+        cleanup_error = None
+        for attempt in range(3):
+            try:
+                shutil.rmtree(
+                    delete_target,
+                    onerror=_ignore_disappeared_nested_entry,
+                )
+                break
+            except OSError as exc:
+                if exc.errno == errno.ENOTEMPTY and attempt < 2:
+                    # Let a detached SQLite reader finish closing/unlinking
+                    # sidecars before the bounded retry.
+                    time.sleep(0.01 * (attempt + 1))
+                    continue
+                cleanup_error = exc
+                break
+        if cleanup_error is not None:
+            try:
+                delete_target.rename(d)
+            except OSError as restore_error:
+                raise BoardDeleteRecoveryError(
+                    normed,
+                    delete_target,
+                    cleanup_error,
+                    restore_error,
+                ) from restore_error
+            # Cleanup may already have removed or truncated DB files. Restore
+            # the current-board pointer, but force the next connection to
+            # revalidate and reinitialize instead of trusting stale cache state.
+            _restore_pre_remove_state(restore_init_cache=False)
+            raise cleanup_error
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
@@ -1321,13 +1421,31 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
-    """Open a Kanban SQLite connection with consistent lock waiting."""
+def _sqlite_connect(
+    path: Path,
+    *,
+    create_if_missing: bool = True,
+    read_only: bool = False,
+) -> sqlite3.Connection:
+    """Open a Kanban SQLite connection with consistent lock waiting.
+
+    ``create_if_missing=False`` uses SQLite's ``mode=rw`` URI so a stale
+    consumer cannot recreate a named board after it has been archived or
+    deleted. ``read_only=True`` uses ``mode=ro`` and is reserved for callers
+    that must not initialize or mutate the database.
+    """
     busy_timeout_ms = _resolve_busy_timeout_ms()
+    database = str(path)
+    uri = False
+    if read_only or not create_if_missing:
+        mode = "ro" if read_only else "rw"
+        database = f"{path.resolve().as_uri()}?mode={mode}"
+        uri = True
     conn = sqlite3.connect(
-        str(path),
+        database,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
+        uri=uri,
     )
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
     # the PRAGMA explicitly so it is observable and survives future wrapper
@@ -1337,7 +1455,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
 
 
 @contextlib.contextmanager
-def _cross_process_init_lock(path: Path):
+def _cross_process_init_lock(path: Path, *, create_parent: bool = True):
     """Serialize first-connect WAL/schema/integrity setup across processes.
 
     ``_INIT_LOCK`` only protects threads inside one Python process. During a
@@ -1360,7 +1478,8 @@ def _cross_process_init_lock(path: Path):
     is redundant work, not corruption. A bounded "proceed anyway" beats an
     unbounded hang that silently stops the board.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
     handle = lock_path.open("a+b")
     acquired = False
@@ -2017,6 +2136,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create_if_missing: bool = True,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -2035,12 +2155,20 @@ def connect(
     * Neither → :func:`kanban_db_path` resolves via
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
+
+    ``create_if_missing=False`` is for stale/read-only consumers such as the
+    dashboard event stream. It atomically refuses to open a DB that was moved
+    away by board archive/delete instead of silently creating an empty board
+    at the old path.
     """
     if db_path is not None:
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_if_missing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.is_file():
+        raise FileNotFoundError(f"kanban board database does not exist: {path}")
 
     # Fast path: once THIS process has initialized this path, the expensive
     # first-open work (header validation, integrity probe, schema + additive
@@ -2054,7 +2182,7 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, create_if_missing=create_if_missing)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -2070,7 +2198,7 @@ def connect(
             raise
         return conn
 
-    with _cross_process_init_lock(path):
+    with _cross_process_init_lock(path, create_parent=create_if_missing):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
@@ -2079,7 +2207,7 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, create_if_missing=create_if_missing)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -2116,6 +2244,45 @@ def connect(
         except Exception:
             conn.close()
             raise
+    return conn
+
+
+def connect_existing_readonly(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> sqlite3.Connection:
+    """Open an existing Kanban DB without initialization or write pragmas.
+
+    This is the event-stream connection path. It intentionally bypasses the
+    init lock, integrity repair, WAL activation, schema migrations, and
+    ``_INITIALIZED_PATHS`` cache so a stale consumer cannot mutate or recreate
+    a board that is being archived or deleted.
+    """
+    path = db_path if db_path is not None else kanban_db_path(board=board)
+    if not path.is_file():
+        raise FileNotFoundError(f"kanban board database does not exist: {path}")
+    try:
+        conn = _sqlite_connect(
+            path,
+            create_if_missing=False,
+            read_only=True,
+        )
+    except sqlite3.OperationalError:
+        # Close the check/open race cleanly when archive/delete moved the board
+        # after ``is_file()`` but before SQLite acquired it. Preserve unrelated
+        # SQLite failures (permissions, malformed URI, I/O) unchanged.
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"kanban board database does not exist: {path}"
+            ) from None
+        raise
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 

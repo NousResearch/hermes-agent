@@ -60,6 +60,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks across the current session. |
 | `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/user-guide/cli#background-sessions). |
 | `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path) |
+| `/journey [list\|delete <id>\|edit <id>]` (aliases: `/learning`, `/memory-graph`) | Open the learning journey timeline — review the skills and memories Hermes has learned over time, and edit or delete individual entries. CLI-only. |
 | `/handoff <platform>` | **CLI only.** Hand the current session off to a messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix). The gateway picks it up immediately, creates a fresh thread on platforms that support threads (Telegram topics, Discord text-channel threads, Slack message-anchored threads), re-binds the destination to your CLI session_id so the full role-aware transcript replays, and forges a synthetic user turn so the agent confirms it's working in the new place. Your CLI exits cleanly on success with a `/resume` hint; resume locally any time with `/resume <title>`. Refused mid-turn. Requires the gateway to be running and a home channel configured for the target platform (`/sethome` from the destination chat). See [Cross-Platform Handoff](/user-guide/sessions#cross-platform-handoff). |
 
 ### Configuration
@@ -113,8 +114,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/help` | Show this help message |
 | `/version` | Show Hermes Agent version, build, and environment info. |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
-| `/credits` | Show your Nous credit balance and a top-up handoff link. |
-| `/billing` | CLI Remote Spending flow for Nous — view balance, buy credits, and manage auto-reload / monthly limits. |
+| `/topup` | Show your Nous balance and manage billing on the portal. |
+| `/subscription` (alias: `/upgrade`) | View your Nous plan and change it in the browser. CLI-only. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
 | `/paste` | Attach a clipboard image |
@@ -221,7 +222,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
-| `/credits` | Show your Nous credit balance and a top-up link that opens the portal billing page in a browser. |
+| `/topup` | Show your Nous balance and a link to manage billing on the portal. |
 | `/insights [days]` | Show usage analytics. |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
@@ -251,11 +252,11 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/snapshot`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/battery`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, `/billing`, and `/quit` are **CLI-only** commands.
+- `/skin`, `/snapshot`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/battery`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, `/subscription`, `/journey`, and `/quit` are **CLI-only** commands.
 - `/skills` is **CLI-only for search/browse/install**; its write-approval review subcommands (`pending`, `approve`, `reject`, `diff`, `approval`) also work on messaging platforms when `skills.write_approval` is on. `/memory` works on **both** surfaces.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform`, and `/commands` are **messaging-only** commands.
-- `/status`, `/version`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/credits`, `/suggestions`, `/blueprint`, `/learn`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
+- `/status`, `/version`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/topup`, `/suggestions`, `/blueprint`, `/learn`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 - In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 

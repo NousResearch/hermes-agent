@@ -3199,7 +3199,11 @@ def test_auto_provider_with_local_base_url_bypasses_anthropic_key(monkeypatch):
     assert "anthropic.com" not in resolved.get("base_url", ""), (
         f"Expected custom endpoint, got Anthropic: {resolved}"
     )
-    assert resolved["base_url"] == "http://localhost:11434"
+    assert resolved["base_url"] == "http://localhost:11434/v1", (
+        "Bare local-server URLs must get /v1 appended (issue #4600) -- this "
+        "assertion covers the resolver's side effect; the ANTHROPIC_API_KEY "
+        "regression this test targets is the assertion below."
+    )
     # provider should be custom/openrouter (OpenAI-compat), not anthropic
     assert resolved["provider"] != "anthropic", (
         f"Should have routed to custom endpoint, not anthropic: {resolved}"
@@ -3416,3 +3420,144 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+
+class TestAppendV1AtResolverBoundary:
+    """Regression tests (review of #63224) for the /v1 normalization applied
+    by the resolve_runtime_provider() wrapper -- the single true exit
+    boundary covering every "provider": "custom" return path (direct alias,
+    named custom_providers entry, and credential-pool results), not just
+    the generic openrouter/custom fallback function. Scope is intentionally
+    narrow: only bare local-model-server URLs (matching the same pattern
+    the interactive setup's "Add /v1?" prompt uses) are touched."""
+
+    def test_direct_alias_custom_bare_local_url_gets_v1(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="custom", explicit_base_url="http://localhost:8000"
+        )
+
+        assert resolved["provider"] == "custom"
+        assert resolved["base_url"] == "http://localhost:8000/v1", resolved
+
+    def test_named_custom_provider_bare_local_url_gets_v1(self, monkeypatch):
+        """A named custom_providers entry (e.g. a user-given name like
+        'my-ollama', not the literal string 'custom') must be normalized
+        too -- this is the exact gap flagged in review: the resolver's
+        actual internal "provider" field is literally "custom" regardless
+        of the user-facing entry name, but the earlier fix only patched
+        one of several functions that can produce that result."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-ollama")
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda p: {
+                "name": "my-ollama",
+                "base_url": "http://localhost:11434",
+                "api_key": "",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="my-ollama")
+
+        assert resolved["provider"] == "custom"
+        assert resolved["base_url"] == "http://localhost:11434/v1", resolved
+
+    def test_pool_result_bare_local_url_gets_v1(self, monkeypatch):
+        """A credential-pool result for a named custom provider must also
+        be normalized -- pool results bypass the generic fallback path
+        entirely, so this only passes through the wrapper's final check."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda p: {"name": "my-server", "base_url": "http://localhost:8000", "api_key": ""},
+        )
+        monkeypatch.setattr(
+            rp, "_try_resolve_from_custom_pool",
+            lambda *a, **k: {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": "http://localhost:8000",
+                "api_key": "pool-key",
+                "source": "pool:custom:my-server",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="my-server")
+
+        assert resolved["provider"] == "custom"
+        assert resolved["base_url"] == "http://localhost:8000/v1", resolved
+
+    def test_named_custom_provider_bare_remote_url_left_unchanged(self, monkeypatch):
+        """A non-local custom endpoint (arbitrary remote OpenAI-compatible
+        relay) must NOT be rewritten -- the resolver has no live way to
+        validate whether /v1 is actually correct for an unknown remote host
+        the way the interactive setup's probe_api_models() does, so
+        guessing here risks corrupting a working non-standard endpoint."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-relay")
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+        monkeypatch.setattr(
+            rp, "_get_named_custom_provider",
+            lambda p: {
+                "name": "my-relay",
+                "base_url": "https://relay.example.com",
+                "api_key": "sk-test",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="my-relay")
+
+        assert resolved["base_url"] == "https://relay.example.com", (
+            "Arbitrary remote custom endpoints must be left exactly as configured"
+        )
+
+    def test_already_versioned_local_url_left_unchanged(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="custom", explicit_base_url="http://localhost:11434/v1"
+        )
+
+        assert resolved["base_url"] == "http://localhost:11434/v1"
+
+    def test_codex_backend_api_path_left_unchanged(self, monkeypatch):
+        """Never append /v1 to a Codex-style endpoint, even if it were
+        somehow local (defensive -- the /backend-api/codex suffix exclusion
+        must survive the narrowed local-only scope change)."""
+        from hermes_cli.runtime_provider import _append_v1_if_needed
+
+        result = _append_v1_if_needed(
+            "http://localhost:8080/backend-api/codex", "chat_completions"
+        )
+        assert result == "http://localhost:8080/backend-api/codex"
+
+    def test_non_chat_completions_mode_left_unchanged(self):
+        from hermes_cli.runtime_provider import _append_v1_if_needed
+
+        result = _append_v1_if_needed("http://localhost:11434", "anthropic_messages")
+        assert result == "http://localhost:11434"
+
+    def test_auto_provider_bare_local_url_gets_v1(self, monkeypatch):
+        """The 'auto' resolution path can label a local custom endpoint as
+        'openrouter' (its OpenAI-compat fallback) rather than literally
+        'custom' -- the wrapper must still normalize it since the gate is
+        on api_mode + URL pattern, not the provider label."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            rp, "_get_model_config",
+            lambda: {
+                "default": "ollama/minimax-m2.7:cloud",
+                "provider": "auto",
+                "base_url": "http://localhost:11434",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider()
+
+        assert resolved["base_url"] == "http://localhost:11434/v1", resolved

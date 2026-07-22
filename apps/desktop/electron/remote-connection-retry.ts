@@ -8,14 +8,15 @@ interface RemoteConnectionRetryOptions {
   sleep?: (delayMs: number) => Promise<void>
 }
 
-function requiresOauthLogin(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
+function requiresOauthLogin(error: unknown, seen = new Set<object>()): boolean {
+  if (!error || typeof error !== 'object' || seen.has(error)) {
     return false
   }
 
-  const candidate = error as { cause?: unknown; needsOauthLogin?: unknown }
+  seen.add(error)
+  const candidate = error as { cause?: unknown }
 
-  return candidate.needsOauthLogin === true || isGatewayAuthRejection(error) || isGatewayAuthRejection(candidate.cause)
+  return isGatewayAuthRejection(error) || Boolean(candidate.cause && requiresOauthLogin(candidate.cause, seen))
 }
 
 const RETRYABLE_NETWORK_CODES = new Set([

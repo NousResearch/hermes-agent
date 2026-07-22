@@ -51,6 +51,30 @@ test('wrapped sign-in-required failures are never retried', async () => {
   assert.equal(attempts, 1)
 })
 
+test('deeply wrapped auth rejections are never retried', async () => {
+  let attempts = 0
+  const authError = Object.assign(new Error('connection resolution failed'), {
+    cause: Object.assign(new Error('ticket mint failed'), {
+      cause: Object.assign(new Error('forbidden'), { statusCode: 403 })
+    })
+  })
+
+  await assert.rejects(
+    () =>
+      resolveRemoteConnectionWithRetry(
+        async () => {
+          attempts += 1
+          throw authError
+        },
+        { maxAttempts: 5, sleep: async () => undefined }
+      ),
+    error => error === authError
+  )
+
+  assert.equal(requiresOauthLogin(authError), true)
+  assert.equal(attempts, 1)
+})
+
 test('timeouts and 5xx failures use fresh resolver calls with exponential backoff', async () => {
   const errors = [
     new Error('Timed out connecting to Hermes backend after 8000ms'),

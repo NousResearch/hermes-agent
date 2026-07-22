@@ -1,26 +1,26 @@
-"""
+﻿"""
 OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
-- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
-- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
-- GET  /v1/responses/{response_id} — Retrieve a stored response
-- DELETE /v1/responses/{response_id} — Delete a stored response
-- GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
-- GET  /v1/capabilities            — machine-readable API capabilities for external UIs
-- GET  /api/sessions               — list client-visible Hermes sessions
-- POST /api/sessions               — create an empty Hermes session
-- GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
-- GET  /api/sessions/{session_id}/messages — read session message history
-- POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
-- POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
-- POST /v1/runs                    — start a run, returns run_id immediately (202)
-- GET  /v1/runs/{run_id}           — retrieve current run status
-- GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
-- POST /v1/runs/{run_id}/approval — resolve a pending run approval
-- POST /v1/runs/{run_id}/stop       — interrupt a running agent
-- GET  /health                     — health check
-- GET  /health/detailed            — rich status for cross-container dashboard probing
+- POST /v1/chat/completions        鈥?OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
+- POST /v1/responses               鈥?OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
+- GET  /v1/responses/{response_id} 鈥?Retrieve a stored response
+- DELETE /v1/responses/{response_id} 鈥?Delete a stored response
+- GET  /v1/models                  鈥?lists hermes-agent and any configured model_routes aliases
+- GET  /v1/capabilities            鈥?machine-readable API capabilities for external UIs
+- GET  /api/sessions               鈥?list client-visible Hermes sessions
+- POST /api/sessions               鈥?create an empty Hermes session
+- GET/PATCH/DELETE /api/sessions/{session_id} 鈥?read/update/delete a session
+- GET  /api/sessions/{session_id}/messages 鈥?read session message history
+- POST /api/sessions/{session_id}/fork 鈥?branch a session using SessionDB lineage
+- POST /api/sessions/{session_id}/chat[/stream] 鈥?chat with a persisted session
+- POST /v1/runs                    鈥?start a run, returns run_id immediately (202)
+- GET  /v1/runs/{run_id}           鈥?retrieve current run status
+- GET  /v1/runs/{run_id}/events    鈥?SSE stream of structured lifecycle events
+- POST /v1/runs/{run_id}/approval 鈥?resolve a pending run approval
+- POST /v1/runs/{run_id}/stop       鈥?interrupt a running agent
+- GET  /health                     鈥?health check
+- GET  /health/detailed            鈥?rich status for cross-container dashboard probing
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -28,7 +28,7 @@ through this adapter by pointing at http://localhost:8642/v1 and
 authenticating with API_SERVER_KEY.
 
 When ``gateway.multiplex_profiles`` is on, the default profile owns this
-listener and secondary profiles are reached via a URL prefix — same contract
+listener and secondary profiles are reached via a URL prefix 鈥?same contract
 as the webhook adapter:
 
     GET  /p/<profile>/v1/models
@@ -58,8 +58,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
-# names a profile this gateway does not serve (→ 404). Distinct from None
-# (no prefix / multiplexing off → handle as the default profile).
+# names a profile this gateway does not serve (鈫?404). Distinct from None
+# (no prefix / multiplexing off 鈫?handle as the default profile).
 _PROFILE_REJECTED = object()
 
 # Profile selected by the /p/<profile>/ URL prefix for the current request.
@@ -96,25 +96,22 @@ logger = logging.getLogger(__name__)
 
 
 def _hermes_version() -> str:
-    """Return the canonical Hermes Agent version string.
+    """Return the hermes-agent version string, or "dev" if it can't be resolved.
 
-    ``hermes_cli.__version__`` is the runtime source of truth used by the CLI,
-    dashboard, portal tags, and release script. Prefer it over installed
-    distribution metadata because editable/source checkouts can retain stale
-    ``hermes_agent-*.dist-info`` after a source update until the environment is
-    reinstalled. Never raises — a version probe must not be able to break the
-    health endpoint.
+    Tries the installed package metadata first (authoritative for a pip/uv
+    install), then the in-tree ``hermes_cli.__version__`` (covers editable /
+    source checkouts where metadata may be stale or absent). Never raises 鈥?    a version probe must not be able to break the health endpoint.
     """
-    try:
-        from hermes_cli import __version__
-
-        return __version__
-    except Exception:
-        pass
     try:
         from importlib.metadata import version
 
         return version("hermes-agent")
+    except Exception:
+        pass
+    try:
+        from hermes_cli import __version__
+
+        return __version__
     except Exception:
         return "dev"
 
@@ -123,7 +120,7 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_REQUEST_BYTES = 10_000_000  # 10 MB 鈥?accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -249,10 +246,10 @@ def _normalize_multimodal_content(content: Any) -> Any:
     converts (``_preprocess_anthropic_content`` for Anthropic).
 
     Raises ``ValueError`` with an OpenAI-style code on invalid input:
-      * ``unsupported_content_type`` — file/input_file/file_id parts, or
+      * ``unsupported_content_type`` 鈥?file/input_file/file_id parts, or
         non-image ``data:`` URLs.
-      * ``invalid_image_url`` — missing URL or unsupported scheme.
-      * ``invalid_content_part`` — malformed text/image objects.
+      * ``invalid_image_url`` 鈥?missing URL or unsupported scheme.
+      * ``invalid_content_part`` 鈥?malformed text/image objects.
 
     Callers translate the ValueError into a 400 response.
     """
@@ -338,7 +335,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
                 "but uploaded files and document inputs are not supported on this endpoint."
             )
 
-        # Unknown part type — reject explicitly so clients get a clear error
+        # Unknown part type 鈥?reject explicitly so clients get a clear error
         # instead of a silently dropped turn.
         raise ValueError(
             f"unsupported_content_type:Unsupported content part type {raw_type!r}. "
@@ -431,7 +428,7 @@ class ResponseStore:
             self._db_path = None
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
-        # issue addressed for state.db/kanban.db — see
+        # issue addressed for state.db/kanban.db 鈥?see
         # hermes_state._WAL_INCOMPAT_MARKERS).
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
@@ -452,7 +449,7 @@ class ResponseStore:
         # response_store.db contains conversation history (tool payloads,
         # prompts, results). Tighten to owner-only after creation so other
         # local users on a shared box can't read it. Run once at __init__
-        # rather than after every commit — chmod-on-every-write is wasted
+        # rather than after every commit 鈥?chmod-on-every-write is wasted
         # syscalls on a hot path.
         self._tighten_file_permissions()
 
@@ -629,7 +626,7 @@ def _resolve_media_to_data_urls(text: str) -> str:
     Uses the same anchored ``MEDIA_TAG_CLEANUP_RE`` matcher and
     ``validate_media_delivery_path`` safety check every other platform
     adapter's media delivery already goes through (gateway/platforms/base.py)
-    — an absolute-path anchor plus a known-extension requirement, and a
+    鈥?an absolute-path anchor plus a known-extension requirement, and a
     resolved-path check against the credential/system-path denylist. The
     prior pattern here matched any bare token after ``MEDIA:`` (including a
     relative/traversal path like ``../../etc/passwd.png``) and read the file
@@ -765,7 +762,7 @@ if AIOHTTP_AVAILABLE:
             return await handler(request)
         except web.HTTPRequestEntityTooLarge:
             # aiohttp's client_max_size tripped mid-read (chunked bodies carry
-            # no Content-Length) — return a proper 413 instead of letting the
+            # no Content-Length) 鈥?return a proper 413 instead of letting the
             # handler's broad JSON except turn it into 400 "Invalid JSON".
             return web.json_response(
                 _openai_error("Request body too large.", code="body_too_large"),
@@ -895,7 +892,7 @@ except ImportError:
 
 def _notify_cron_provider_jobs_changed() -> None:
     """Tell the active cron scheduler provider the job set changed after a REST
-    mutation (no-op for the built-in). Best-effort — never breaks the handler."""
+    mutation (no-op for the built-in). Best-effort 鈥?never breaks the handler."""
     try:
         from cron.scheduler import _notify_provider_jobs_changed
         _notify_provider_jobs_changed()
@@ -906,7 +903,7 @@ def _notify_cron_provider_jobs_changed() -> None:
 # user-supplied prompt for exfiltration/injection payloads at create/update
 # time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
 # (every handler runs _check_auth, and connect() refuses to start without
-# API_SERVER_KEY), so this is not the trust boundary — it's parity with the
+# API_SERVER_KEY), so this is not the trust boundary 鈥?it's parity with the
 # tool path so a malicious prompt is rejected the same way regardless of
 # which surface created the job.  Imported defensively: a missing scanner
 # must not disable the cron REST API.
@@ -930,12 +927,12 @@ class APIServerAdapter(BasePlatformAdapter):
     # outbound channel to push a background completion to a client that already
     # received its response, and ``send()`` is a no-op stub. So async-delivery
     # tools (terminal notify_on_complete / watch_patterns, delegate_task
-    # background=True) must NOT promise delivery on this path — see
+    # background=True) must NOT promise delivery on this path 鈥?see
     # ``async_delivery_supported()``.
     supports_async_delivery: bool = False
 
     # Same statelessness applies to the startup auto-resume prompt: no client
-    # is waiting to answer "session restored — what next?", so a resumed turn
+    # is waiting to answer "session restored 鈥?what next?", so a resumed turn
     # should complete the interrupted work rather than acknowledge (#57056).
     interactive_resume: bool = False
 
@@ -962,11 +959,11 @@ class APIServerAdapter(BasePlatformAdapter):
         #   model_routes:
         #     minimax-m2:          # alias the client sends as the "model" field
         #       model: "minimax/minimax-m1"
-        #       provider: "openrouter"   # optional — resolved via the provider
+        #       provider: "openrouter"   # optional 鈥?resolved via the provider
         #                                # credential chain when set
-        #       api_key: "sk-…"          # optional — per-route UPSTREAM provider
+        #       api_key: "sk-鈥?          # optional 鈥?per-route UPSTREAM provider
         #                                # key override (NOT caller auth; never logged)
-        #       base_url: "https://…"    # optional — per-route base URL override
+        #       base_url: "https://鈥?    # optional 鈥?per-route base URL override
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
@@ -1071,13 +1068,7 @@ class APIServerAdapter(BasePlatformAdapter):
         active_api_runs = sum(
             1
             for status in self._run_statuses.values()
-            # "stopping" (set by _handle_stop_run) is not terminal: the run
-            # stays in this state, doing real executor-thread work, until the
-            # agent actually notices the interrupt and the task settles to
-            # "cancelled" — an unbounded window, not the old ~5s hard-timeout
-            # wait. Excluding it here undercounts active_api_runs for the
-            # whole duration of a cooperative stop.
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+            if status.get("status") in {"queued", "running", "waiting_for_approval"}
         )
         process_depth = 0
         active_delegations = 0
@@ -1348,7 +1339,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ok, code = await verifier(auth_header)
             else:
                 # Platform verifiers may do blocking network I/O (e.g. Google
-                # signing-cert fetches) — keep that off the event loop.
+                # signing-cert fetches) 鈥?keep that off the event loop.
                 ok, code = await asyncio.to_thread(verifier, auth_header)
         except Exception:
             # Fail closed: a crashing verifier must never admit the event.
@@ -1398,7 +1389,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(result if isinstance(result, dict) else {})
 
     # ------------------------------------------------------------------
-    # Multi-profile multiplexing (/p/<profile>/…)
+    # Multi-profile multiplexing (/p/<profile>/鈥?
     # ------------------------------------------------------------------
 
     def _resolve_request_profile(self, request: "web.Request"):
@@ -1418,7 +1409,7 @@ class APIServerAdapter(BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         cfg = getattr(runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            # Prefix supplied but multiplexing is off — ignore it, behave as
+            # Prefix supplied but multiplexing is off 鈥?ignore it, behave as
             # the single-profile gateway (don't 404 a would-be valid route).
             return None
         try:
@@ -1440,7 +1431,7 @@ class APIServerAdapter(BasePlatformAdapter):
         port-binding platform that lives on the default profile, and with
         multiplex fail-closed ``get_secret`` active, an unscoped agent run
         raises ``UnscopedSecretError`` on its first credential read (#61276).
-        Single-profile gateways keep the no-op — ``get_secret`` falls through
+        Single-profile gateways keep the no-op 鈥?``get_secret`` falls through
         to ``os.environ`` there, unchanged.
         """
         if not profile:
@@ -1509,7 +1500,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),
             # Generic platform HTTP event callback ingress. Authenticated by
             # the target adapter's own verifier (platform-signed bearer), NOT
-            # API_SERVER_KEY — external platforms hold no API server key.
+            # API_SERVER_KEY 鈥?external platforms hold no API server key.
             ("POST", "/api/platforms/{platform}/events", self._handle_platform_event_callback),
             ("GET", "/api/jobs", self._handle_list_jobs),
             ("POST", "/api/jobs", self._handle_create_job),
@@ -1526,7 +1517,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
         ]
         if _CRON_AVAILABLE:
-            # Chronos managed-cron fire webhook (NAS → agent). Authenticated
+            # Chronos managed-cron fire webhook (NAS 鈫?agent). Authenticated
             # by a NAS-minted JWT (NOT API_SERVER_KEY).
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
         return routes
@@ -1606,7 +1597,7 @@ class APIServerAdapter(BasePlatformAdapter):
         Shared by the sync (``_ensure_session_db``) and async
         (``_ensure_session_db_async``) entry points so both honor the same
         per-profile cache. Deliberately does NOT write into ``self._session_db``
-        — that stays reserved for an explicit test/manual override, so the first
+        鈥?that stays reserved for an explicit test/manual override, so the first
         profile served can't pin every later request to its DB.
         """
         from hermes_state import SessionDB
@@ -1629,8 +1620,7 @@ class APIServerAdapter(BasePlatformAdapter):
         shows API-server conversations alongside CLI and gateway ones.
 
         Under multiplex ``/p/<profile>/`` requests the profile runtime scope
-        redirects ``get_hermes_home()``, so each profile gets its own DB —
-        never the default profile's file. Synchronous: used by ``_create_agent``
+        redirects ``get_hermes_home()``, so each profile gets its own DB 鈥?        never the default profile's file. Synchronous: used by ``_create_agent``
         (itself sync, and run in both loop and worker contexts). Request
         handlers use ``_ensure_session_db_async`` to keep the SQLite open off
         the event loop.
@@ -1690,7 +1680,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Security: per-route ``api_key`` values are UPSTREAM provider
         credentials (used to call the routed model's backend), not caller
-        authentication — callers still authenticate with the global
+        authentication 鈥?callers still authenticate with the global
         API_SERVER_KEY bearer token via ``_check_auth``.  Route api_keys must
         never be logged; only alias names and non-secret fields may appear in
         logs.
@@ -1738,7 +1728,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ``GatewayRunner._session_model_overrides``.  API-server requests that
         share such a session key must keep honouring the explicit session
         override even when the request's ``model`` field matches a configured
-        route — a user-issued ``/model`` always wins over static config.
+        route 鈥?a user-issued ``/model`` always wins over static config.
         """
         if not session_key:
             return None
@@ -1776,16 +1766,15 @@ class APIServerAdapter(BasePlatformAdapter):
         which scopes the short-term transcript and rotates on /new, this
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
-        — matching the semantics of the native gateway's ``session_key``.
+        鈥?matching the semantics of the native gateway's ``session_key``.
 
         ``route`` is an optional ``model_routes`` entry (per-client model
-        routing).  When set — and no session ``/model`` override exists for
-        this session — its model/provider/api_key/base_url override the
+        routing).  When set 鈥?and no session ``/model`` override exists for
+        this session 鈥?its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
         """
         from run_agent import AIAgent
         from gateway.run import (
-            _checkpoint_agent_kwargs,
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
             _resolve_gateway_model,
@@ -1804,7 +1793,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Pop it and let it override the config model, mirroring the native
         # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
         # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
-        # spread → "got multiple values for keyword argument 'model'", 500ing
+        # spread 鈫?"got multiple values for keyword argument 'model'", 500ing
         # every /v1/chat/completions request while a fallback is active.
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
@@ -1812,8 +1801,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Per-client model routing (model_routes config).  The route was
         # resolved from the request's ``model`` field by the HTTP handler.
-        # Precedence (highest first): session ``/model`` override → model_routes
-        # route → global config — an explicit user-issued ``/model`` on the
+        # Precedence (highest first): session ``/model`` override 鈫?model_routes
+        # route 鈫?global config 鈥?an explicit user-issued ``/model`` on the
         # session always beats static per-client route config.
         session_override = self._session_model_override_for(
             gateway_session_key or session_id
@@ -1867,7 +1856,6 @@ class APIServerAdapter(BasePlatformAdapter):
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
-            **_checkpoint_agent_kwargs(user_config),
             max_iterations=max_iterations,
             quiet_mode=True,
             verbose_logging=False,
@@ -1891,13 +1879,13 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
-        """GET /health — simple health check."""
+        """GET /health 鈥?simple health check."""
         return web.json_response(
             {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
-        """GET /health/detailed — rich status for cross-container dashboard probing.
+        """GET /health/detailed 鈥?rich status for cross-container dashboard probing.
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
@@ -1910,7 +1898,6 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.status import (
             derive_gateway_busy,
             derive_gateway_drainable,
-            normalize_updated_at,
             parse_active_agents,
             read_runtime_status,
         )
@@ -1919,7 +1906,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
         # This endpoint is served BY the gateway process, so it is by definition
-        # alive — gateway_running is True. Derive busy/drainable from the same
+        # alive 鈥?gateway_running is True. Derive busy/drainable from the same
         # shared contract /api/status uses so the two surfaces never disagree.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
@@ -1949,14 +1936,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_state=gw_state,
             ),
             "exit_reason": runtime.get("exit_reason"),
-            # Contract: updated_at is RFC3339 string | null, never a number —
-            # the state file may carry legacy epoch floats or hand-edited junk.
-            "updated_at": normalize_updated_at(runtime.get("updated_at")),
+            "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — list hermes-agent and any configured model_routes aliases.
+        """GET /v1/models 鈥?list hermes-agent and any configured model_routes aliases.
 
         Under ``/p/<profile>/v1/models`` (multiplex on) the advertised primary
         model id follows that profile's name/config, not the default adapter's
@@ -1986,7 +1971,7 @@ class APIServerAdapter(BasePlatformAdapter):
             }
         ]
         # Expose configured model route aliases so clients can discover them.
-        # Only the alias and resolved model name are exposed — never provider
+        # Only the alias and resolved model name are exposed 鈥?never provider
         # credentials.
         for alias, route_cfg in self._model_routes.items():
             if alias == model_name:
@@ -2004,7 +1989,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"object": "list", "data": models})
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
-        """GET /v1/capabilities — advertise the stable API surface.
+        """GET /v1/capabilities 鈥?advertise the stable API surface.
 
         External UIs and orchestrators use this endpoint to discover the API
         server's plugin-safe contract without scraping docs or assuming that
@@ -2084,7 +2069,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
-        """GET /v1/skills — list installed skills visible to the API-server agent.
+        """GET /v1/skills 鈥?list installed skills visible to the API-server agent.
 
         Read-only listing intended for external clients that need to know
         which skills are available without sending a chat message and asking
@@ -2115,7 +2100,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_toolsets(self, request: "web.Request") -> "web.Response":
-        """GET /v1/toolsets — list toolsets and their resolved tools.
+        """GET /v1/toolsets 鈥?list toolsets and their resolved tools.
 
         Returns the toolset surface the api_server platform actually exposes
         to its agent: each toolset's enabled/configured state plus the
@@ -2171,7 +2156,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     # ------------------------------------------------------------------
-    # /api/sessions — thin client/session resource API
+    # /api/sessions 鈥?thin client/session resource API
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -2244,7 +2229,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return []
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
-        """GET /api/sessions — list persisted Hermes sessions."""
+        """GET /api/sessions 鈥?list persisted Hermes sessions."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -2374,7 +2359,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
-        """PATCH /api/sessions/{session_id} — update client-safe session metadata."""
+        """PATCH /api/sessions/{session_id} 鈥?update client-safe session metadata."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -2433,7 +2418,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
+        """POST /api/sessions/{session_id}/fork 鈥?branch via current SessionDB primitives."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -2481,7 +2466,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        """POST /api/sessions/{session_id}/chat 鈥?one synchronous agent turn."""
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -2502,7 +2487,6 @@ class APIServerAdapter(BasePlatformAdapter):
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
-            ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
         )
@@ -2523,7 +2507,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
-        """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        """POST /api/sessions/{session_id}/chat/stream 鈥?SSE wrapper over _run_agent."""
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -2589,7 +2573,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
-                    ephemeral_system_prompt=system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
@@ -2662,7 +2645,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @_admit_api_agent_request
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
-        """POST /v1/chat/completions — OpenAI Chat Completions format."""
+        """POST /v1/chat/completions 鈥?OpenAI Chat Completions format."""
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -2690,15 +2673,7 @@ class APIServerAdapter(BasePlatformAdapter):
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
             raw_content = msg.get("content", "")
-            if role == "system":
-                # System messages don't support images (Anthropic rejects, OpenAI
-                # text-model systems don't render them).  Flatten to text.
-                content = _normalize_chat_content(raw_content)
-                if system_prompt is None:
-                    system_prompt = content
-                else:
-                    system_prompt = system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
+            if role in {"user", "assistant"}:
                 try:
                     content = _normalize_multimodal_content(raw_content)
                 except ValueError as exc:
@@ -2800,7 +2775,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _stream_q: _q.Queue = _q.Queue()
 
             def _on_delta(delta):
-                # Filter out None — the agent fires stream_delta_callback(None)
+                # Filter out None 鈥?the agent fires stream_delta_callback(None)
                 # to signal the CLI display to close its response box before
                 # tool execution, but the SSE writer uses None as end-of-stream
                 # sentinel.  Forwarding it would prematurely close the HTTP
@@ -2826,7 +2801,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ``toolCallId``/``status`` correlation fields (#16588).
 
                 Skips tools whose names start with ``_`` so internal
-                events (``_thinking``, …) stay off the wire — matching
+                events (``_thinking``, 鈥? stay off the wire 鈥?matching
                 the prior ``_on_tool_progress`` filter exactly.
                 """
                 if not tool_call_id or function_name.startswith("_"):
@@ -2870,7 +2845,6 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
@@ -2894,7 +2868,6 @@ class APIServerAdapter(BasePlatformAdapter):
             return await self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
@@ -2944,7 +2917,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
 
-        # Hard-fail path: no usable assistant text AND a real failure → 5xx
+        # Hard-fail path: no usable assistant text AND a real failure 鈫?5xx
         # with OpenAI-style error envelope so SDK clients raise instead of
         # silently rendering the internal failure string as message.content.
         if not final_response and (is_failed or is_partial):
@@ -3044,7 +3017,7 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
-            # Helper — route a queue item to the correct SSE event.
+            # Helper 鈥?route a queue item to the correct SSE event.
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
 
@@ -3102,7 +3075,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # failed/partial/incomplete. Both previously fell through to a
             # ``finish_reason: "stop"`` chunk, so OpenAI-compatible clients
             # saw a fake success. Surface either as a non-"stop" finish so
-            # the failure is detectable — mirroring the non-streaming path's
+            # the failure is detectable 鈥?mirroring the non-streaming path's
             # decision logic (see the finish_reason block above).
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
             result = None
@@ -3218,20 +3191,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Emits spec-compliant event types as the agent runs:
 
-        - ``response.created`` — initial envelope (status=in_progress)
-        - ``response.output_text.delta`` / ``response.output_text.done`` —
-          streamed assistant text
+        - ``response.created`` 鈥?initial envelope (status=in_progress)
+        - ``response.output_text.delta`` / ``response.output_text.done`` 鈥?          streamed assistant text
         - ``response.output_item.added`` / ``response.output_item.done``
-          with ``item.type == "function_call"`` — when the agent invokes a
+          with ``item.type == "function_call"`` 鈥?when the agent invokes a
           tool (both events fire; the ``done`` event carries the finalized
           ``arguments`` string)
         - ``response.output_item.added`` with
-          ``item.type == "function_call_output"`` — tool result with
+          ``item.type == "function_call_output"`` 鈥?tool result with
           ``{call_id, output, status}``
-        - ``response.completed`` — terminal event carrying the full
+        - ``response.completed`` 鈥?terminal event carrying the full
           response object with all output items + usage (same payload
           shape as the non-streaming path for parity)
-        - ``response.failed`` — terminal event on agent error
+        - ``response.failed`` 鈥?terminal event on agent error
 
         If the client disconnects mid-stream, ``agent.interrupt()`` is
         called so the agent stops issuing upstream LLM calls, then the
@@ -3278,7 +3250,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # clients that validate the OpenAI event schema can parse our stream.
         sequence_number = 0
         # Track the assistant message item id + content index for text
-        # delta events — the spec ties deltas to a specific item.
+        # delta events 鈥?the spec ties deltas to a specific item.
         message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         message_output_index: Optional[int] = None
         message_opened = False
@@ -3360,7 +3332,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         try:
-            # response.created — initial envelope, status=in_progress
+            # response.created 鈥?initial envelope, status=in_progress
             created_env = _envelope("in_progress")
             created_env["output"] = []
             await _write_event("response.created", {
@@ -3463,7 +3435,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             pending = pending_tool_calls.pop(i)
                             break
                 if pending is None:
-                    # Completion without a matching start — skip to avoid
+                    # Completion without a matching start 鈥?skip to avoid
                     # emitting orphaned done events.
                     return
 
@@ -3510,11 +3482,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
-            # Main drain loop — thread-safe queue fed by agent callbacks.
+            # Main drain loop 鈥?thread-safe queue fed by agent callbacks.
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
 
-                Plain strings are text deltas — they are batched (50ms)
+                Plain strings are text deltas 鈥?they are batched (50ms)
                 to reduce Open WebUI re-render storms.  Tagged tuples
                 with ``__tool_started__`` / ``__tool_completed__``
                 prefixes are tool lifecycle events and flush the buffer
@@ -3531,13 +3503,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
                 elif isinstance(it, str):
-                    # Batch text deltas — append to buffer, flush on timer
+                    # Batch text deltas 鈥?append to buffer, flush on timer
                     _batch_buf.append(it)
                     if _batch_timer is None:
                         _batch_timer = asyncio.create_task(_batch_flush_after(0.05))
                 # Other types are silently dropped.
 
-            # ── Batching state ──
+            # 鈹€鈹€ Batching state 鈹€鈹€
             _batch_buf: List[str] = []
             _batch_timer: Optional[asyncio.Task] = None
             _batch_lock = asyncio.Lock()
@@ -3662,7 +3634,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         if isinstance(_args, dict):
                             for _k in ("content", "query", "pattern", "old_string", "new_string"):
                                 if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
-                                    _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
+                                    _args[_k] = "[" + str(len(_args[_k])) + " chars 鈥?truncated for response.completed]"
                             _item["arguments"] = json.dumps(_args)
                     except Exception:
                         pass
@@ -3735,7 +3707,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             _persist_incomplete_if_needed()
-            # Client disconnected — interrupt the agent so it stops
+            # Client disconnected 鈥?interrupt the agent so it stops
             # making upstream LLM calls, then cancel the task.
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
@@ -3751,8 +3723,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
             logger.info("SSE client disconnected; interrupted agent task %s", response_id)
         except asyncio.CancelledError:
-            # Server-side cancellation (e.g. shutdown, request timeout) —
-            # persist an incomplete snapshot so GET /v1/responses/{id} and
+            # Server-side cancellation (e.g. shutdown, request timeout) 鈥?            # persist an incomplete snapshot so GET /v1/responses/{id} and
             # previous_response_id chaining still work, then re-raise so the
             # runtime's cancellation semantics are respected.
             _persist_incomplete_if_needed()
@@ -3795,7 +3766,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @_admit_api_agent_request
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
-        """POST /v1/responses — OpenAI Responses API format."""
+        """POST /v1/responses 鈥?OpenAI Responses API format."""
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -3831,7 +3802,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Resolve conversation name to latest response_id
         if conversation:
             previous_response_id = self._response_store.get_conversation(conversation)
-            # No error if conversation doesn't exist yet — it's a new conversation
+            # No error if conversation doesn't exist yet 鈥?it's a new conversation
 
         # Normalize input to message list
         input_messages: List[Dict[str, Any]] = []
@@ -3910,7 +3881,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
-            # Streaming branch — emit OpenAI Responses SSE events as the
+            # Streaming branch 鈥?emit OpenAI Responses SSE events as the
             # agent runs so frontends can render text deltas and tool
             # calls in real time.  See _write_sse_responses for details.
             import queue as _q
@@ -4085,7 +4056,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
-        """GET /v1/responses/{response_id} — retrieve a stored response."""
+        """GET /v1/responses/{response_id} 鈥?retrieve a stored response."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4098,7 +4069,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(stored["response"])
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
-        """DELETE /v1/responses/{response_id} — delete a stored response."""
+        """DELETE /v1/responses/{response_id} 鈥?delete a stored response."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4119,7 +4090,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
-    # Allowed fields for update — prevents clients injecting arbitrary keys
+    # Allowed fields for update 鈥?prevents clients injecting arbitrary keys
     _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
@@ -4148,7 +4119,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return job_id, None
 
     async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
-        """GET /api/jobs — list all cron jobs."""
+        """GET /api/jobs 鈥?list all cron jobs."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4163,7 +4134,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
-        """POST /api/jobs — create a new cron job."""
+        """POST /api/jobs 鈥?create a new cron job."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4183,13 +4154,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Name is required"}, status=400)
             if len(name) > self._MAX_NAME_LENGTH:
                 return web.json_response(
-                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
+                    {"error": f"Name must be 鈮?{self._MAX_NAME_LENGTH} characters"}, status=400,
                 )
             if not schedule:
                 return web.json_response({"error": "Schedule is required"}, status=400)
             if len(prompt) > self._MAX_PROMPT_LENGTH:
                 return web.json_response(
-                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                    {"error": f"Prompt must be 鈮?{self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
             if prompt and _scan_cron_prompt is not None:
                 scan_error = _scan_cron_prompt(prompt)
@@ -4217,7 +4188,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
-        """GET /api/jobs/{job_id} — get a single cron job."""
+        """GET /api/jobs/{job_id} 鈥?get a single cron job."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4236,7 +4207,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
-        """PATCH /api/jobs/{job_id} — update a cron job."""
+        """PATCH /api/jobs/{job_id} 鈥?update a cron job."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4255,11 +4226,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # Validate lengths if present
             if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
                 return web.json_response(
-                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
+                    {"error": f"Name must be 鈮?{self._MAX_NAME_LENGTH} characters"}, status=400,
                 )
             if "prompt" in sanitized and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH:
                 return web.json_response(
-                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                    {"error": f"Prompt must be 鈮?{self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
             if sanitized.get("prompt") and _scan_cron_prompt is not None:
                 scan_error = _scan_cron_prompt(sanitized["prompt"])
@@ -4274,7 +4245,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
-        """DELETE /api/jobs/{job_id} — delete a cron job."""
+        """DELETE /api/jobs/{job_id} 鈥?delete a cron job."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4294,7 +4265,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
-        """POST /api/jobs/{job_id}/pause — pause a cron job."""
+        """POST /api/jobs/{job_id}/pause 鈥?pause a cron job."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4314,7 +4285,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
-        """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
+        """POST /api/jobs/{job_id}/resume 鈥?resume a paused cron job."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4334,7 +4305,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
-        """POST /api/jobs/{job_id}/run — trigger immediate execution."""
+        """POST /api/jobs/{job_id}/run 鈥?trigger immediate execution."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4356,10 +4327,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
-        """POST /api/cron/fire — Chronos managed-cron fire webhook (NAS → agent).
+        """POST /api/cron/fire 鈥?Chronos managed-cron fire webhook (NAS 鈫?agent).
 
         Authenticated by a NAS-minted JWT (verified via the pluggable
-        fire-verifier), NOT API_SERVER_KEY — NAS holds no API server key, and
+        fire-verifier), NOT API_SERVER_KEY 鈥?NAS holds no API server key, and
         this is the only inbound that can trigger remote job execution, so it
         gets its own purpose-scoped token check.
 
@@ -4490,7 +4461,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ``tool.*`` events, and a single ``assistant.completed`` carrying only
         the final reply.  A client that accumulates deltas into one buffer
         cannot reconstruct *intermediate* assistant text segments that preceded
-        tool calls — so when the page is re-opened mid/post-stream those
+        tool calls 鈥?so when the page is re-opened mid/post-stream those
         segments appear lost, even though state.db persisted them correctly.
 
         Emitting the authoritative per-turn transcript on ``run.completed`` lets
@@ -4610,7 +4581,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """Bind session contextvars for an API-server agent run.
 
         This is the SINGLE structural chokepoint every API-server agent-entry
-        path must use to seed session context — it hardwires
+        path must use to seed session context 鈥?it hardwires
         ``platform="api_server"`` and ``async_delivery=False`` so a new route
         physically cannot reintroduce the silent-no-op bug (#10760) by
         forgetting to mark the channel as non-delivering. There is no
@@ -4619,7 +4590,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns reset tokens; pass them to ``clear_session_vars`` in a
         ``finally`` block (the binding is request-scoped and must not outlive
-        the turn — a session resumed later on a delivering interface, e.g. the
+        the turn 鈥?a session resumed later on a delivering interface, e.g. the
         CLI or a gateway platform, re-binds fresh and is NOT blocked).
         """
         from gateway.session_context import set_session_vars
@@ -4662,7 +4633,7 @@ class APIServerAdapter(BasePlatformAdapter):
         another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_running_loop()
-        # Capture before hopping to the executor — ContextVars do not follow
+        # Capture before hopping to the executor 鈥?ContextVars do not follow
         # run_in_executor threads, so the profile scope must be re-entered
         # inside _run() from this explicit value.
         request_profile = _api_request_profile.get()
@@ -4718,7 +4689,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._inflight_agent_runs -= 1
 
     # ------------------------------------------------------------------
-    # /v1/runs — structured event streaming
+    # /v1/runs 鈥?structured event streaming
     # ------------------------------------------------------------------
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
@@ -4787,7 +4758,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
-        """POST /v1/runs — start an agent run, return run_id immediately."""
+        """POST /v1/runs 鈥?start an agent run, return run_id immediately."""
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -4941,7 +4912,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
                     # Redact credentials from the command before it enters the
-                    # SSE/API event stream — same egress bug as #48456, second
+                    # SSE/API event stream 鈥?same egress bug as #48456, second
                     # transport: API/desktop clients would otherwise receive the
                     # raw command Tirith flagged. Reuse the gateway seam.
                     if "command" in event:
@@ -5029,7 +5000,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
-                # block below never fires — issue #15561).
+                # block below never fires 鈥?issue #15561).
                 elif isinstance(result, dict) and result.get("failed"):
                     error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
                     _put_event_if_active({
@@ -5134,7 +5105,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
-        """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
+        """GET /v1/runs/{run_id} 鈥?return pollable run status for external UIs."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -5149,7 +5120,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """GET /v1/runs/{run_id}/events 鈥?SSE stream of structured agent lifecycle events."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -5185,7 +5156,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(b": keepalive\n\n")
                     continue
                 if event is None:
-                    # Run finished — send final SSE comment and close
+                    # Run finished 鈥?send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
                 payload = f"data: {json.dumps(event)}\n\n"
@@ -5201,7 +5172,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
 
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
-        """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
+        """POST /v1/runs/{run_id}/approval 鈥?resolve a pending run approval."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -5289,7 +5260,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
-        """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
+        """POST /v1/runs/{run_id}/stop 鈥?interrupt a running agent."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -5380,7 +5351,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.error(
                     "[%s] Refusing to start: API_SERVER_KEY is a "
                     "placeholder or too short (<16 chars). This endpoint "
-                    "dispatches terminal-capable agent work — a guessable "
+                    "dispatches terminal-capable agent work 鈥?a guessable "
                     "key is remote code execution. Generate a strong secret "
                     "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
                     "before starting the API server on %s.",
@@ -5413,7 +5384,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
-            # Native routes + multiplex /p/<profile>/… mirrors. Same handlers;
+            # Native routes + multiplex /p/<profile>/鈥?mirrors. Same handlers;
             # the profile-prefix middleware validates the prefix and scopes
             # config/credentials to that profile when multiplexing is on.
             for method, path, handler in self._http_route_table():
@@ -5441,8 +5412,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # agent's terminal/file tools as the host user; on a public bind
             # that is the exact surface the hermes-0day campaign abused to write
             # ~/.hermes/config.yaml and plant persistence. Sandboxing (Docker /
-            # remote backend) contains the blast radius. Warn, don't refuse —
-            # the operator may have an external firewall / strong key.
+            # remote backend) contains the blast radius. Warn, don't refuse 鈥?            # the operator may have an external firewall / strong key.
             if is_network_accessible(self._host):
                 try:
                     from hermes_cli.config import load_config as _load_cfg
@@ -5466,7 +5436,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly instead of probing 127.0.0.1 first — the old
+            # Bind directly instead of probing 127.0.0.1 first 鈥?the old
             # single-family pre-probe raced the real bind and reported a
             # TIME_WAIT socket as "in use" (#10297), failing gateway
             # restarts for up to ~60s.
@@ -5474,7 +5444,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # SO_REUSEADDR is platform-dependent (same rationale as the
             # webhook adapter, #65482):
             #   - macOS (BSD semantics): two sockets with SO_REUSEADDR can
-            #     silently split traffic while both report success — disable.
+            #     silently split traffic while both report success 鈥?disable.
             #   - Linux: SO_REUSEADDR only permits rebinding past TIME_WAIT
             #     (a second live listener needs SO_REUSEPORT, never set), so
             #     keep the default (enabled) for instant restart rebinds.
@@ -5492,7 +5462,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._site = None
                 if getattr(exc, "errno", None) == errno.EADDRINUSE:
                     # A port conflict is a configuration error, not a
-                    # transient blip — another process holds the port for
+                    # transient blip 鈥?another process holds the port for
                     # its lifetime. A bare ``return False`` makes the
                     # reconnect watcher in gateway.run treat it as retryable
                     # and loop forever at the backoff cap (observed: 1568+
@@ -5532,9 +5502,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Closes the ResponseStore SQLite connection in addition to stopping
         the aiohttp web server. Without this, every adapter instance leaks
-        2 file descriptors (the database file and its WAL sidecar) — the
+        2 file descriptors (the database file and its WAL sidecar) 鈥?the
         reconnect loop in ``gateway.run`` constructs a fresh adapter on
-        every retry, so 2 fds/retry × 300s backoff cap ≈ 12 fds/hour, which
+        every retry, so 2 fds/retry 脳 300s backoff cap 鈮?12 fds/hour, which
         exhausts the default 2560 fd limit after ~12h of failed reconnects
         and turns the whole gateway into a zombie
         (OSError: [Errno 24] Too many open files, #37011).
@@ -5564,7 +5534,7 @@ class APIServerAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
-        Not used — HTTP request/response cycle handles delivery directly.
+        Not used 鈥?HTTP request/response cycle handles delivery directly.
         """
         return SendResult(success=False, error="API server uses HTTP request/response, not send()")
 

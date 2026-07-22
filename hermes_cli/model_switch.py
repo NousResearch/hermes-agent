@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, List, NamedTuple, Optional
+from typing import Any, Callable, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     ProviderDef,
@@ -1588,6 +1589,44 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
+class _BoundedProviderCatalogLoader:
+    """Prefetch independent provider catalogs with a small fixed worker cap."""
+
+    def __init__(
+        self,
+        fetch: Callable[[str], list[str]],
+        *,
+        max_workers: int = 4,
+    ) -> None:
+        self._fetch = fetch
+        self._max_workers = max(1, max_workers)
+        self._executor: ThreadPoolExecutor | None = None
+        self._futures: dict[str, Future[list[str]]] = {}
+
+    def prefetch(self, providers: list[str]) -> None:
+        unique = list(dict.fromkeys(provider for provider in providers if provider))
+        if not unique:
+            return
+
+        self._executor = ThreadPoolExecutor(
+            max_workers=min(self._max_workers, len(unique)),
+            thread_name_prefix="model-catalog",
+        )
+        for provider in unique:
+            self._futures[provider] = self._executor.submit(self._fetch, provider)
+
+    def get(self, provider: str) -> list[str]:
+        future = self._futures.get(provider)
+        if future is None:
+            return self._fetch(provider)
+        return future.result()
+
+    def close(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+
+
 def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
     """Return whether *provider* has a credential that can be selected now.
 
@@ -1677,6 +1716,7 @@ def list_authenticated_providers(
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
     excluded_providers: list | None = None,
+    explicit_only: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1713,6 +1753,11 @@ def list_authenticated_providers(
     opens: probe only the currently-selected custom endpoint so its model list
     matches the active provider without blocking on every saved/offline custom
     endpoint.
+
+    ``explicit_only`` prunes ambient providers *before* credential/catalog
+    discovery.  The payload builder still applies its row-level filter as a
+    defence in depth, but expensive live model discovery must never run for a
+    provider that the configured-only Desktop picker will discard.
     """
     import os
     from agent.models_dev import (
@@ -1743,6 +1788,62 @@ def list_authenticated_providers(
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     _current_provider_norm = str(current_provider or "").strip().lower()
     _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
+
+    _configured_provider_slugs = {
+        str(slug or "").strip().lower()
+        for slug in (user_providers or {})
+        if str(slug or "").strip()
+    }
+    for row in custom_providers or []:
+        if not isinstance(row, dict):
+            continue
+        for candidate in (
+            row.get("slug"),
+            row.get("provider"),
+            custom_provider_slug(str(row.get("name") or "")),
+        ):
+            normalized = str(candidate or "").strip().lower()
+            if normalized:
+                _configured_provider_slugs.add(normalized)
+
+    _explicit_config_cache: dict[str, bool] = {}
+
+    def _explicit_provider_allowed(*slugs: str) -> bool:
+        if not explicit_only:
+            return True
+
+        normalized = {
+            str(slug or "").strip().lower()
+            for slug in slugs
+            if str(slug or "").strip()
+        }
+        if not normalized:
+            return False
+        if _current_provider_norm and _current_provider_norm in normalized:
+            return True
+        if normalized & _configured_provider_slugs:
+            return True
+
+        from hermes_cli.auth import is_provider_explicitly_configured
+
+        for slug in normalized:
+            allowed = _explicit_config_cache.get(slug)
+            if allowed is None:
+                allowed = bool(is_provider_explicitly_configured(slug))
+                _explicit_config_cache[slug] = allowed
+            if allowed:
+                return True
+        return False
+
+    _models_dev_data_cache: dict = {}
+    _models_dev_data_loaded = False
+
+    def _models_dev_data() -> dict:
+        nonlocal _models_dev_data_cache, _models_dev_data_loaded
+        if not _models_dev_data_loaded:
+            _models_dev_data_cache = fetch_models_dev()
+            _models_dev_data_loaded = True
+        return _models_dev_data_cache
 
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
@@ -1823,7 +1924,69 @@ def list_authenticated_providers(
         except Exception:
             return False
 
-    data = fetch_models_dev()
+    # Provider catalog requests are independent HTTP calls. Start the subset
+    # with a concrete local credential/config signal together, then consume
+    # their futures in the existing deterministic section order below.
+    from hermes_cli.models import CANONICAL_PROVIDERS as _prefetch_canonical
+    from hermes_cli.providers import HERMES_OVERLAYS as _prefetch_overlays
+
+    _prefetch_store_slugs: set[str] = set()
+    try:
+        from hermes_cli.auth import _load_auth_store as _load_prefetch_auth_store
+
+        _prefetch_store = _load_prefetch_auth_store() or {}
+        _prefetch_store_slugs.update(
+            str(slug).strip().lower()
+            for slug in (_prefetch_store.get("providers") or {})
+            if str(slug).strip()
+        )
+        _prefetch_store_slugs.update(
+            str(slug).strip().lower()
+            for slug in (_prefetch_store.get("credential_pool") or {})
+            if str(slug).strip()
+        )
+    except Exception:
+        pass
+
+    _prefetch_signal_slugs = set(_configured_provider_slugs)
+    if _current_provider_norm:
+        _prefetch_signal_slugs.add(_current_provider_norm)
+    _prefetch_signal_slugs.update(_prefetch_store_slugs)
+    for _slug, _config in PROVIDER_REGISTRY.items():
+        if any(os.environ.get(name) for name in (_config.api_key_env_vars or ())):
+            _prefetch_signal_slugs.add(str(_slug).strip().lower())
+    for _pid, _overlay in _prefetch_overlays.items():
+        if any(os.environ.get(name) for name in (_overlay.extra_env_vars or ())):
+            _prefetch_signal_slugs.add(str(_pid).strip().lower())
+
+    _prefetch_mdev_to_hermes = {
+        value: key for key, value in PROVIDER_TO_MODELS_DEV.items()
+    }
+    _prefetch_known_slugs = set(PROVIDER_TO_MODELS_DEV)
+    _prefetch_known_slugs.update(
+        _prefetch_mdev_to_hermes.get(pid, pid) for pid in _prefetch_overlays
+    )
+    _prefetch_known_slugs.update(provider.slug for provider in _prefetch_canonical)
+    _prefetch_skip = {"lmstudio", "nous", "ollama-cloud"}
+    _prefetch_providers = [
+        slug
+        for slug in sorted(_prefetch_known_slugs)
+        if slug not in _prefetch_skip
+        and slug.lower() not in _excluded
+        and _explicit_provider_allowed(slug)
+        and (
+            slug.lower() in _prefetch_signal_slugs
+            or any(
+                PROVIDER_TO_MODELS_DEV.get(slug) == signaled
+                for signaled in _prefetch_signal_slugs
+            )
+        )
+    ]
+    _catalog_loader = _BoundedProviderCatalogLoader(
+        cached_provider_model_ids,
+        max_workers=4,
+    )
+    _catalog_loader.prefetch(_prefetch_providers)
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
@@ -1833,9 +1996,10 @@ def list_authenticated_providers(
     # newly added Portal models surface in the /model picker without
     # requiring a Hermes release. Falls back to the in-repo
     # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
-    curated["nous"] = get_curated_nous_model_ids()
+    if _explicit_provider_allowed("nous"):
+        curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
-    if "ollama-cloud" not in curated:
+    if "ollama-cloud" not in curated and _explicit_provider_allowed("ollama-cloud"):
         from hermes_cli.models import fetch_ollama_cloud_models
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
     # LM Studio has no static catalog — probe its native /api/v1/models
@@ -1904,6 +2068,9 @@ def list_authenticated_providers(
         if _canonical != hermes_id:
             continue
 
+        if not _explicit_provider_allowed(hermes_id, mdev_id, _canonical):
+            continue
+
         # Skip duplicates: another entry with the same slug was already
         # emitted (e.g. two PROVIDER_TO_MODELS_DEV entries routing to the
         # same hermes_id).  Distinct canonical profiles that share a
@@ -1914,9 +2081,6 @@ def list_authenticated_providers(
             continue
         if hermes_id.lower() in _excluded or mdev_id.lower() in _excluded:
             continue
-        pdata = data.get(mdev_id)
-        if not isinstance(pdata, dict):
-            continue
 
         # Prefer auth.py PROVIDER_REGISTRY for env var names — it's our
         # source of truth.  models.dev can have wrong mappings (e.g.
@@ -1925,6 +2089,9 @@ def list_authenticated_providers(
         # Skip non-API-key auth providers here — they are handled in
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
+            continue
+        pdata = _models_dev_data().get(mdev_id)
+        if not isinstance(pdata, dict):
             continue
         # models.dev catalogs include providers Hermes may not route yet.
         # Gate on runtime capability rather than registry membership: special
@@ -1961,7 +2128,7 @@ def list_authenticated_providers(
         # /model picker sees the SAME list `hermes model` would build, with
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(hermes_id)
+        model_ids = _catalog_loader.get(hermes_id)
         if not model_ids:
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
@@ -2018,6 +2185,8 @@ def list_authenticated_providers(
         if hermes_slug.lower() in seen_slugs:
             continue
         if pid.lower() in _excluded or hermes_slug.lower() in _excluded:
+            continue
+        if not _explicit_provider_allowed(pid, hermes_slug):
             continue
 
         # Check if credentials exist
@@ -2102,12 +2271,12 @@ def list_authenticated_providers(
             # catalog. ``cached_provider_model_ids()`` falls back to the
             # curated list when the live endpoint is unreachable, so this
             # is safe for unauthenticated and offline cases too.
-            model_ids = cached_provider_model_ids(hermes_slug)
+            model_ids = _catalog_loader.get(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
         elif overlay.auth_type == "aws_sdk":
             try:
-                _ids = cached_provider_model_ids(hermes_slug)
+                _ids = _catalog_loader.get(hermes_slug)
                 model_ids = _ids if _ids else (curated.get(hermes_slug, []) or curated.get(pid, []))
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
@@ -2152,7 +2321,7 @@ def list_authenticated_providers(
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
             # when the live fetcher comes up empty.
-            model_ids = cached_provider_model_ids(hermes_slug)
+            model_ids = _catalog_loader.get(hermes_slug)
             if not model_ids:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
@@ -2190,6 +2359,8 @@ def list_authenticated_providers(
             continue
         if _cp.slug.lower() in _excluded:
             continue
+        if not _explicit_provider_allowed(_cp.slug):
+            continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
@@ -2226,13 +2397,13 @@ def list_authenticated_providers(
         # region (eu.*, us.*, ap.*) instead of the hardcoded us.* static list.
         if _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             try:
-                _ids = cached_provider_model_ids(_cp.slug)
+                _ids = _catalog_loader.get(_cp.slug)
                 _cp_model_ids = _ids if _ids else curated.get(_cp.slug, [])
             except Exception:
                 _cp_model_ids = curated.get(_cp.slug, [])
         else:
             # Unified pathway — same as sections 1 and 2.
-            _cp_model_ids = cached_provider_model_ids(_cp.slug)
+            _cp_model_ids = _catalog_loader.get(_cp.slug)
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
@@ -2787,6 +2958,7 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
+    _catalog_loader.close()
     return results
 
 

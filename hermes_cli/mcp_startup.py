@@ -60,16 +60,19 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
         def _discover() -> None:
             try:
-                _discover_mcp_tools_without_interactive_oauth()
-                try:
-                    from tools.mcp_tool import get_mcp_status
-                    status = get_mcp_status() or []
-                    if not any(entry.get("connected") for entry in status):
-                        logger.warning(
-                            "Background MCP discovery completed with zero connected servers"
-                        )
-                except Exception:
-                    logger.debug("Failed to inspect MCP status after background discovery", exc_info=True)
+                from hermes_cli.perf_diagnostics import track_activity
+
+                with track_activity("background", "mcp.discovery"):
+                    _discover_mcp_tools_without_interactive_oauth()
+                    try:
+                        from tools.mcp_tool import get_mcp_status
+                        status = get_mcp_status() or []
+                        if not any(entry.get("connected") for entry in status):
+                            logger.warning(
+                                "Background MCP discovery completed with zero connected servers"
+                            )
+                    except Exception:
+                        logger.debug("Failed to inspect MCP status after background discovery", exc_info=True)
             except Exception:
                 logger.debug("Background MCP tool discovery failed", exc_info=True)
             finally:

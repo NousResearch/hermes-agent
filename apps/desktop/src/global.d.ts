@@ -10,12 +10,14 @@ import type {
 export {}
 
 declare global {
+  type HermesConnectionReason = 'primary_boot' | 'profile_activate' | 'background_session' | 'unknown'
+
   interface Window {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
-      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      getConnection: (profile?: string | null, reason?: HermesConnectionReason) => Promise<HermesConnection>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer

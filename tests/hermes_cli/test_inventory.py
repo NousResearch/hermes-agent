@@ -19,11 +19,13 @@ depend on:
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import patch
 
 
 from hermes_cli.inventory import (
     ConfigContext,
+    build_cached_models_payload,
     build_models_payload,
     load_picker_context,
 )
@@ -1031,3 +1033,176 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
+
+
+# ─── cached picker payload ─────────────────────────────────────────────
+
+
+def _clear_models_payload_cache() -> None:
+    from hermes_cli import inventory
+
+    with inventory._models_payload_cache_lock:
+        inventory._models_payload_cache.clear()
+        inventory._models_payload_inflight.clear()
+        inventory._models_payload_refresh_epoch = 0
+
+
+def _cached_payload(marker: str) -> dict:
+    return {
+        "providers": [{"slug": marker, "models": [marker]}],
+        "model": marker,
+        "provider": marker,
+    }
+
+
+def test_cached_models_payload_uses_ttl_and_returns_deep_copy(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: ("g1",))
+    builder = patch("hermes_cli.inventory.build_models_payload", return_value=_cached_payload("one"))
+    with builder as build:
+        first = build_cached_models_payload(_empty_ctx())
+        first["providers"][0]["models"].append("mutated")
+        second = build_cached_models_payload(_empty_ctx())
+        assert build.call_count == 1
+
+    assert second["providers"][0]["models"] == ["one"]
+
+    monkeypatch.setattr(inventory, "_MODELS_PAYLOAD_CACHE_TTL_S", -1)
+    with patch("hermes_cli.inventory.build_models_payload", return_value=_cached_payload("two")) as build:
+        expired = build_cached_models_payload(_empty_ctx())
+    assert build.call_count == 1
+    assert expired["provider"] == "two"
+
+
+def test_cached_models_payload_coalesces_inflight_requests(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: ("g1",))
+    started = threading.Event()
+    release = threading.Event()
+    results: list[dict] = []
+
+    def build(*_args, **_kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return _cached_payload("shared")
+
+    with patch("hermes_cli.inventory.build_models_payload", side_effect=build) as mocked:
+        first = threading.Thread(target=lambda: results.append(build_cached_models_payload(_empty_ctx())))
+        second = threading.Thread(target=lambda: results.append(build_cached_models_payload(_empty_ctx())))
+        first.start()
+        assert started.wait(timeout=2)
+        second.start()
+        release.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert mocked.call_count == 1
+    assert [result["provider"] for result in results] == ["shared", "shared"]
+
+
+def test_cached_models_payload_propagates_errors_without_poisoning_next_request(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: ("g1",))
+    with patch(
+        "hermes_cli.inventory.build_models_payload",
+        side_effect=[RuntimeError("temporary failure"), _cached_payload("recovered")],
+    ) as build:
+        try:
+            build_cached_models_payload(_empty_ctx())
+        except RuntimeError as exc:
+            assert str(exc) == "temporary failure"
+        else:
+            raise AssertionError("expected builder exception")
+        recovered = build_cached_models_payload(_empty_ctx())
+
+    assert build.call_count == 2
+    assert recovered["provider"] == "recovered"
+
+
+def test_cached_models_payload_refresh_invalidates_and_warms_normal_key(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: ("g1",))
+    with patch(
+        "hermes_cli.inventory.build_models_payload",
+        side_effect=[_cached_payload("old"), _cached_payload("fresh")],
+    ) as build:
+        assert build_cached_models_payload(_empty_ctx())["provider"] == "old"
+        assert build_cached_models_payload(_empty_ctx(), refresh=True)["provider"] == "fresh"
+        assert build_cached_models_payload(_empty_ctx())["provider"] == "fresh"
+
+    assert build.call_count == 2
+
+
+def test_cached_models_payload_refresh_prevents_older_build_from_repopulating_cache(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: ("g1",))
+    old_started = threading.Event()
+    release_old = threading.Event()
+
+    def build(_ctx, **flags):
+        if not flags["refresh"]:
+            old_started.set()
+            assert release_old.wait(timeout=2)
+            return _cached_payload("old")
+
+        return _cached_payload("fresh")
+
+    results: list[dict] = []
+    with patch("hermes_cli.inventory.build_models_payload", side_effect=build) as mocked:
+        old_request = threading.Thread(
+            target=lambda: results.append(build_cached_models_payload(_empty_ctx()))
+        )
+        old_request.start()
+        assert old_started.wait(timeout=2)
+
+        assert build_cached_models_payload(_empty_ctx(), refresh=True)["provider"] == "fresh"
+        release_old.set()
+        old_request.join(timeout=2)
+
+        assert build_cached_models_payload(_empty_ctx())["provider"] == "fresh"
+
+    assert not old_request.is_alive()
+    assert mocked.call_count == 2
+    assert results[0]["provider"] == "old"
+
+
+def test_cached_models_payload_misses_when_generation_changes(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    generation = ["g1"]
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: tuple(generation))
+    with patch(
+        "hermes_cli.inventory.build_models_payload",
+        side_effect=[_cached_payload("first"), _cached_payload("second")],
+    ) as build:
+        assert build_cached_models_payload(_empty_ctx())["provider"] == "first"
+        assert build_cached_models_payload(_empty_ctx())["provider"] == "first"
+        generation[0] = "g2"
+        assert build_cached_models_payload(_empty_ctx())["provider"] == "second"
+
+    assert build.call_count == 2
+
+
+def test_cached_models_payload_caps_entries_at_64(monkeypatch):
+    from hermes_cli import inventory
+
+    _clear_models_payload_cache()
+    monkeypatch.setattr(inventory, "_models_payload_generation", lambda: ("g1",))
+    with patch("hermes_cli.inventory.build_models_payload", return_value=_cached_payload("row")):
+        for index in range(65):
+            build_cached_models_payload(_empty_ctx(model=f"model-{index}"))
+
+    assert len(inventory._models_payload_cache) == 64

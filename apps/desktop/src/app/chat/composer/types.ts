@@ -11,19 +11,12 @@ export interface ContextSuggestion {
   meta?: string
 }
 
-export interface QuickModelOption {
-  provider: string
-  providerName: string
-  model: string
-}
-
 export interface ChatBarState {
   model: {
     model: string
     provider: string
     canSwitch: boolean
     loading?: boolean
-    quickModels?: QuickModelOption[]
     /** Reused status-bar dropdown (built with gateway + selectModel upstream). */
     modelMenuContent?: ReactNode
   }

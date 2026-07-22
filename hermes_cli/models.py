@@ -8,18 +8,22 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
 import urllib.request
 import urllib.error
 import time
+import threading
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+
+logger = logging.getLogger(__name__)
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -2691,6 +2695,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #     to a live fetch — the picker keeps working.
 
 _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
+_provider_models_cache_lock = threading.RLock()
 
 
 def _provider_models_cache_path() -> Path:
@@ -2804,35 +2809,52 @@ def cached_provider_model_ids(
     Hits the cache when fresh; otherwise calls the live function and
     persists a non-empty result. Always returns a list (never None).
     """
+    started = time.monotonic()
     normalized = normalize_provider(provider) or (provider or "")
+
+    def _finish(status: str, models: list[str]) -> list[str]:
+        logger.info(
+            "model catalog provider=%s cache=%s duration_ms=%.1f models=%d",
+            normalized or "unknown",
+            status,
+            (time.monotonic() - started) * 1000,
+            len(models),
+        )
+        return models
+
     if not normalized:
-        return []
+        return _finish("invalid", [])
 
-    cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
-    entry = cache.get(normalized)
     now = time.time()
+    with _provider_models_cache_lock:
+        cache = _load_provider_models_cache()
+        entry = cache.get(normalized)
 
-    if (
-        not force_refresh
-        and isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-        and (now - float(entry.get("at", 0))) < ttl_seconds
-    ):
-        return list(entry["models"])
+        if (
+            not force_refresh
+            and isinstance(entry, dict)
+            and entry.get("fp") == fp
+            and isinstance(entry.get("models"), list)
+            and entry["models"]
+            and (now - float(entry.get("at", 0))) < ttl_seconds
+        ):
+            return _finish("hit", list(entry["models"]))
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        cache[normalized] = {
-            "fp": fp,
-            "at": now,
-            "models": list(live),
-        }
-        _save_provider_models_cache(cache)
-        return list(live)
+        # Multiple catalog workers can finish together. Reload under the lock
+        # before merging so one provider cannot overwrite another's entry.
+        with _provider_models_cache_lock:
+            latest_cache = _load_provider_models_cache()
+            latest_cache[normalized] = {
+                "fp": fp,
+                "at": now,
+                "models": list(live),
+            }
+            _save_provider_models_cache(latest_cache)
+        return _finish("live", list(live))
 
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
@@ -2843,8 +2865,8 @@ def cached_provider_model_ids(
         and isinstance(entry.get("models"), list)
         and entry["models"]
     ):
-        return list(entry["models"])
-    return list(live or [])
+        return _finish("stale", list(entry["models"]))
+    return _finish("empty", list(live or []))
 
 
 def clear_provider_models_cache(provider: Optional[str] = None) -> None:
@@ -2855,16 +2877,17 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     ``hermes model --refresh``.
     """
     try:
-        if provider is None:
-            path = _provider_models_cache_path()
-            if path.exists():
-                path.unlink()
-            return
-        cache = _load_provider_models_cache()
-        normalized = normalize_provider(provider) or provider or ""
-        if normalized in cache:
-            del cache[normalized]
-            _save_provider_models_cache(cache)
+        with _provider_models_cache_lock:
+            if provider is None:
+                path = _provider_models_cache_path()
+                if path.exists():
+                    path.unlink()
+                return
+            cache = _load_provider_models_cache()
+            normalized = normalize_provider(provider) or provider or ""
+            if normalized in cache:
+                del cache[normalized]
+                _save_provider_models_cache(cache)
     except Exception:
         pass
 

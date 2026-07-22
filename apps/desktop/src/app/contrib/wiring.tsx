@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
+import { ErrorBoundary, ScopedErrorFallback } from '@/components/error-boundary'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -823,8 +824,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The voice cap changes only on config load; the gateway instance + all
   // chat reactivity are subscribed inside ChatRoutesSurface / ChatView.
   const chatRoutesNode = useMemo(
-    () => <ChatRoutesSurface actions={actions} maxVoiceRecordingSeconds={voiceMaxRecordingSeconds} />,
-    [actions, voiceMaxRecordingSeconds]
+    () => (
+      <ErrorBoundary
+        fallback={ScopedErrorFallback}
+        label="chat-routes"
+        recoverClientLookup
+        resetKeys={[profileScope, gatewayState, activeSessionId, routeToken]}
+      >
+        <ChatRoutesSurface actions={actions} maxVoiceRecordingSeconds={voiceMaxRecordingSeconds} />
+      </ErrorBoundary>
+    ),
+    [actions, activeSessionId, gatewayState, profileScope, routeToken, voiceMaxRecordingSeconds]
   )
 
   const api = useMemo<WiringApi>(

@@ -6376,25 +6376,27 @@ def get_model_options(
     Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import build_cached_models_payload, load_picker_context
+        from hermes_cli.perf_diagnostics import track_activity
 
         # Most desktop surfaces should only list providers the user has already
         # configured. Onboarding opts into the full provider universe via
         # include_unconfigured=1 so it can still render setup affordances for
         # providers that are not yet authenticated.
-        with _profile_scope(profile):
-            return build_models_payload(
-                load_picker_context(),
-                explicit_only=bool(explicit_only),
-                include_unconfigured=bool(include_unconfigured),
-                picker_hints=True,
-                canonical_order=True,
-                pricing=True,
-                capabilities=True,
-                refresh=bool(refresh),
-                probe_custom_providers=bool(refresh),
-                probe_current_custom_provider=not bool(refresh),
-            )
+        with track_activity("http", "model.options", refresh=bool(refresh)):
+            with _profile_scope(profile):
+                return build_cached_models_payload(
+                    load_picker_context(),
+                    explicit_only=bool(explicit_only),
+                    include_unconfigured=bool(include_unconfigured),
+                    picker_hints=True,
+                    canonical_order=True,
+                    pricing=True,
+                    capabilities=True,
+                    refresh=bool(refresh),
+                    probe_custom_providers=bool(refresh),
+                    probe_current_custom_provider=not bool(refresh),
+                )
     except HTTPException:
         raise
     except Exception:
@@ -19219,6 +19221,9 @@ def _mount_plugin_api_routes():
     execution vector that bypasses the user's intent. (#46435,
     GHSA-mcfc-hp25-cjv7)
     """
+    mount_started = time.monotonic()
+    mounted_count = 0
+
     # Load the enabled/disabled sets once for the loop.
     try:
         from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
@@ -19284,6 +19289,7 @@ def _mount_plugin_api_routes():
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
+        plugin_started = time.monotonic()
         try:
             module_name = f"hermes_dashboard_plugin_{plugin['name']}"
             spec = importlib.util.spec_from_file_location(module_name, api_path)
@@ -19307,9 +19313,22 @@ def _mount_plugin_api_routes():
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
             app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            mounted_count += 1
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+        finally:
+            _log.info(
+                "plugin api mount name=%s duration_ms=%.1f",
+                plugin_name,
+                (time.monotonic() - plugin_started) * 1000,
+            )
+
+    _log.info(
+        "plugin api mount complete mounted=%d total_ms=%.1f",
+        mounted_count,
+        (time.monotonic() - mount_started) * 1000,
+    )
 
 
 # Mount plugin API routes before the SPA catch-all.
@@ -19627,6 +19646,17 @@ def start_server(
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
 
+            from hermes_cli.perf_diagnostics import diagnostics_snapshot
+
+            _identity = diagnostics_snapshot(active_limit=0, recent_limit=0)
+            _log.info(
+                "gateway diagnostics ready pid=%s profile=%s port=%s headless=%s",
+                _identity["pid"],
+                _identity["profile"],
+                actual_port,
+                headless,
+            )
+
             _write_dashboard_ready_file(actual_port)
             # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
             # plain backend, not a dashboard, so it announces a neutral token;
@@ -19671,9 +19701,15 @@ def start_server(
                 now = _hb_loop.time()
                 drift = now - expected
                 if drift > _hb_stall_threshold:
+                    snapshot = diagnostics_snapshot()
                     _log.warning(
-                        "event loop stalled %.1fs (GIL pressure suspected)",
+                        "event loop stalled %.1fs (GIL pressure suspected) "
+                        "pid=%s profile=%s active=%s recent_slow=%s",
                         drift,
+                        snapshot["pid"],
+                        snapshot["profile"],
+                        snapshot["active"],
+                        snapshot["recent_slow"],
                     )
                 _hb_loop.call_later(
                     _hb_interval, _loop_heartbeat, now + _hb_interval

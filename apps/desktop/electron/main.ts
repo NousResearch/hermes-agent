@@ -131,6 +131,11 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
+import {
+  createProfileBackendStartupQueue,
+  normalizeProfileBackendStartReason,
+  reusePoolConnection
+} from './profile-backend-startup'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
@@ -988,6 +993,10 @@ let softRehomeInProgress = false
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
 const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+// A cold local profile boot performs the same Python import, plugin/MCP setup,
+// and readiness work as the primary backend. Let only one profile do that work
+// at a time; existing pool promises and remote profiles do not wait here.
+const profileBackendStartupQueue = createProfileBackendStartupQueue()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -7471,32 +7480,111 @@ function primaryProfileKey() {
 // profile to startHermes() (the window backend: boot UI, bootstrap, remote
 // mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
 // unknown profile resolves to the primary, so all legacy callers are unchanged.
-async function ensureBackend(profile) {
+async function ensureBackend(profile, requestedReason = 'unknown') {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const reason = normalizeProfileBackendStartReason(requestedReason)
 
   if (key === primaryProfileKey()) {
-    return startHermes()
+    if (backendConnectionState.getPromise()) {
+      return startHermes()
+    }
+
+    const startedAt = Date.now()
+    const primaryReason = reason === 'unknown' ? 'primary_boot' : reason
+    rememberLog(`Starting primary Hermes backend (reason ${primaryReason})`)
+
+    try {
+      const connection = await startHermes()
+      rememberLog(
+        `Primary Hermes backend ready (reason ${primaryReason}, mode ${connection.mode}, duration ${Date.now() - startedAt}ms)`
+      )
+
+      return connection
+    } catch (error) {
+      rememberLog(
+        `Primary Hermes backend failed (reason ${primaryReason}, duration ${Date.now() - startedAt}ms): ${error instanceof Error ? error.message : String(error)}`
+      )
+      throw error
+    }
   }
 
-  const existing = backendPool.get(key)
+  const existingConnection = reusePoolConnection(backendPool.get(key))
 
-  if (existing) {
-    existing.lastActiveAt = Date.now()
-
-    return existing.connectionPromise
+  if (existingConnection) {
+    return existingConnection
   }
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
   const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
-  entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
-    backendPool.delete(key)
+  entry.connectionPromise = startPoolBackend(key, entry, reason).catch(error => {
+    if (backendPool.get(key) === entry) {
+      backendPool.delete(key)
+    }
+
     throw error
   })
   backendPool.set(key, entry)
   startPoolIdleReaper()
 
   return entry.connectionPromise
+}
+
+async function startPoolBackend(profile, entry, reason) {
+  const requestedAt = Date.now()
+  const remote = await resolveRemoteBackend(profile)
+
+  if (remote) {
+    rememberLog(`Connecting to remote Hermes backend for profile "${profile}" (reason ${reason})`)
+
+    try {
+      await waitForHermes(remote.baseUrl, remote.token)
+    } catch (error) {
+      rememberLog(
+        `Remote Hermes backend failed for profile "${profile}" (reason ${reason}, duration ${Date.now() - requestedAt}ms): ${error instanceof Error ? error.message : String(error)}`
+      )
+      throw error
+    }
+
+    rememberLog(
+      `Remote Hermes backend ready for profile "${profile}" (reason ${reason}, duration ${Date.now() - requestedAt}ms)`
+    )
+
+    return {
+      ...remote,
+      profile,
+      logs: hermesLog.slice(-80),
+      ...getWindowState()
+    }
+  }
+
+  rememberLog(`Queueing local Hermes backend for profile "${profile}" (reason ${reason})`)
+
+  return profileBackendStartupQueue.run(async () => {
+    if (backendPool.get(profile) !== entry) {
+      throw new Error(`Hermes backend for profile "${profile}" was removed before startup.`)
+    }
+
+    const spawnStartedAt = Date.now()
+    const queueWaitMs = spawnStartedAt - requestedAt
+    rememberLog(
+      `Starting queued local Hermes backend for profile "${profile}" (reason ${reason}, queue wait ${queueWaitMs}ms)`
+    )
+
+    try {
+      const connection = await spawnPoolBackend(profile, entry, reason)
+      rememberLog(
+        `Local Hermes backend ready for profile "${profile}" (reason ${reason}, queue wait ${queueWaitMs}ms, spawn ${Date.now() - spawnStartedAt}ms, total ${Date.now() - requestedAt}ms)`
+      )
+
+      return connection
+    } catch (error) {
+      rememberLog(
+        `Local Hermes backend failed for profile "${profile}" (reason ${reason}, queue wait ${queueWaitMs}ms, spawn ${Date.now() - spawnStartedAt}ms): ${error instanceof Error ? error.message : String(error)}`
+      )
+      throw error
+    }
+  })
 }
 
 // Mark a pool profile as recently used so the idle reaper spares it. The
@@ -7573,26 +7661,7 @@ function startPoolIdleReaper() {
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
-async function spawnPoolBackend(profile, entry) {
-  // A profile may point at its OWN remote backend (connection.json
-  // `profiles[name]`), or inherit the app-wide remote (env / global settings).
-  // In either case there is no local child to spawn — we just verify the
-  // remote is reachable and hand back its connection descriptor. The pool
-  // entry keeps `entry.process === null`, which stopPoolBackend/evict already
-  // tolerate.
-  const remote = await resolveRemoteBackend(profile)
-
-  if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
-
-    return {
-      ...remote,
-      profile,
-      logs: hermesLog.slice(-80),
-      ...getWindowState()
-    }
-  }
-
+async function spawnPoolBackend(profile, entry, reason) {
   const token = crypto.randomBytes(32).toString('base64url')
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
@@ -7605,7 +7674,7 @@ async function spawnPoolBackend(profile, entry) {
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-  rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
+  rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label} (reason ${reason})`)
 
   const child = spawn(
     backend.command,
@@ -8597,7 +8666,7 @@ function createWindow() {
   // shared (backendConnectionState), so the renderer's getConnection() joins
   // this in-flight boot instead of duplicating it; early boot-progress events
   // the renderer misses are recovered by its getBootProgress() pull on mount.
-  startHermes().catch(error => rememberLog(error.stack || error.message))
+  ensureBackend(null, 'primary_boot').catch(error => rememberLog(error.stack || error.message))
 
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
@@ -8607,7 +8676,7 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+ipcMain.handle('hermes:connection', async (_event, profile, reason) => ensureBackend(profile, reason))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer

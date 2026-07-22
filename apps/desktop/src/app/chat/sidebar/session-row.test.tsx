@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -106,10 +106,6 @@ vi.mock('./session-actions-menu', () => ({
   SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
 }))
 
-vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
-}))
-
 function makeSession(overrides: Partial<SessionInfo> & { title: string }): SessionInfo {
   return {
     handoff_platform: null,
@@ -127,6 +123,30 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 const noop = vi.fn()
 
 describe('SidebarSessionRow', () => {
+  it('does not resume or start a profile backend when the pointer only hovers a cross-profile row', () => {
+    const onResume = vi.fn()
+
+    const { container } = render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={onResume}
+        session={makeSession({ profile: 'coder', title: 'Other profile session' })}
+      />
+    )
+
+    const row = container.querySelector('.row-hover')
+    expect(row).toBeTruthy()
+    fireEvent.pointerEnter(row as HTMLElement)
+    fireEvent.pointerLeave(row as HTMLElement)
+
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
   it('wires the actions kebab tooltip text through to SessionActionsMenu', () => {
     render(
       <SidebarSessionRow

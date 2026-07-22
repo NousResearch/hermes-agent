@@ -33,8 +33,28 @@ Substrate facts (verified May 2026):
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import Future
+import copy
 from dataclasses import dataclass, replace
-from typing import Optional
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+import threading
+import time
+from typing import Any, Optional
+
+
+logger = logging.getLogger(__name__)
+
+_MODELS_PAYLOAD_CACHE_TTL_S = 60.0
+_MODELS_PAYLOAD_CACHE_MAX_ENTRIES = 64
+_models_payload_cache: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
+_models_payload_inflight: dict[tuple, Future] = {}
+_models_payload_cache_lock = threading.RLock()
+_models_payload_refresh_epoch = 0
 
 
 # ─── Public types ───────────────────────────────────────────────────────
@@ -183,6 +203,7 @@ def build_models_payload(
         probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider,
         excluded_providers=ctx.excluded_providers or [],
+        explicit_only=explicit_only,
     )
 
     moa_row = _moa_provider_row(ctx.current_provider)
@@ -261,6 +282,233 @@ def build_models_payload(
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+# ─── Public: short-lived picker payload cache ──────────────────────────
+
+
+def build_cached_models_payload(
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    picker_hints: bool = False,
+    canonical_order: bool = False,
+    pricing: bool = False,
+    capabilities: bool = False,
+    force_fresh_nous_tier: bool = False,
+    refresh: bool = False,
+    probe_custom_providers: bool = True,
+    probe_current_custom_provider: bool = False,
+    max_models: int | None = None,
+) -> dict:
+    """Build a picker payload with a process-local, 60-second response cache.
+
+    ``build_models_payload`` deliberately remains the uncached construction
+    primitive for CLI and tests.  Desktop/TUI picker requests use this wrapper
+    so concurrent opens share one provider discovery run.  Cache keys include
+    the complete context, all builder flags, and file/environment generations
+    that can change authentication or catalog output.
+    """
+    flags = {
+        "explicit_only": explicit_only,
+        "include_unconfigured": include_unconfigured,
+        "picker_hints": picker_hints,
+        "canonical_order": canonical_order,
+        "pricing": pricing,
+        "capabilities": capabilities,
+        "force_fresh_nous_tier": force_fresh_nous_tier,
+        "refresh": refresh,
+        "probe_custom_providers": probe_custom_providers,
+        "probe_current_custom_provider": probe_current_custom_provider,
+        "max_models": max_models,
+    }
+    global _models_payload_refresh_epoch
+
+    started = time.monotonic()
+    generation = _models_payload_generation()
+
+    with _models_payload_cache_lock:
+        if refresh:
+            # An explicit refresh must never return a previous payload.  Clear
+            # every context variant because the provider-model cache is itself
+            # refreshed below and can affect any picker shape.
+            _models_payload_refresh_epoch += 1
+            _models_payload_cache.clear()
+        request_epoch = _models_payload_refresh_epoch
+        key = _models_payload_cache_key(ctx, flags, generation, request_epoch)
+
+        if not refresh:
+            cached = _models_payload_cache.get(key)
+            if cached is not None:
+                cached_at, payload = cached
+                if time.monotonic() - cached_at < _MODELS_PAYLOAD_CACHE_TTL_S:
+                    _models_payload_cache.move_to_end(key)
+                    _log_models_payload_cache("hit", started, payload)
+                    return copy.deepcopy(payload)
+                del _models_payload_cache[key]
+
+        future = _models_payload_inflight.get(key)
+        if future is None:
+            future = Future()
+            _models_payload_inflight[key] = future
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        try:
+            payload = future.result()
+        except BaseException:
+            _log_models_payload_cache("wait", started, None)
+            raise
+        _log_models_payload_cache("wait", started, payload)
+        return copy.deepcopy(payload)
+
+    try:
+        payload = build_models_payload(ctx, **flags)
+        stored_payload = copy.deepcopy(payload)
+        # Provider discovery can atomically rewrite provider/cache files.  Use
+        # the post-build generation when storing so the very next normal open
+        # is a hit instead of being invalidated by this request's own work.
+        final_generation = _models_payload_generation()
+        with _models_payload_cache_lock:
+            # A refresh that started after this request owns the new cache
+            # generation. Do not let an older, slower build overwrite it.
+            if request_epoch == _models_payload_refresh_epoch:
+                final_key = _models_payload_cache_key(
+                    ctx, flags, final_generation, request_epoch
+                )
+                _store_models_payload_cache(final_key, stored_payload)
+                if refresh:
+                    # Refresh is a distinct behavior flag, but its freshly-built
+                    # output is also the correct warm result for the equivalent
+                    # normal request.  Preserve flag-complete keys for both forms.
+                    normal_flags = dict(flags, refresh=False)
+                    _store_models_payload_cache(
+                        _models_payload_cache_key(
+                            ctx, normal_flags, final_generation, request_epoch
+                        ),
+                        stored_payload,
+                    )
+            future.set_result(stored_payload)
+        _log_models_payload_cache("miss", started, stored_payload)
+        return copy.deepcopy(stored_payload)
+    except BaseException as exc:
+        with _models_payload_cache_lock:
+            future.set_exception(exc)
+        _log_models_payload_cache("miss", started, None)
+        raise
+    finally:
+        with _models_payload_cache_lock:
+            if _models_payload_inflight.get(key) is future:
+                del _models_payload_inflight[key]
+
+
+def _store_models_payload_cache(key: tuple, payload: dict) -> None:
+    _models_payload_cache[key] = (time.monotonic(), copy.deepcopy(payload))
+    _models_payload_cache.move_to_end(key)
+    while len(_models_payload_cache) > _MODELS_PAYLOAD_CACHE_MAX_ENTRIES:
+        _models_payload_cache.popitem(last=False)
+
+
+def _models_payload_cache_key(
+    ctx: ConfigContext,
+    flags: dict[str, Any],
+    generation: tuple,
+    refresh_epoch: int,
+) -> tuple:
+    return (
+        _stable_digest({
+            "context": {
+                "current_provider": ctx.current_provider,
+                "current_model": ctx.current_model,
+                "current_base_url": ctx.current_base_url,
+                "user_providers": ctx.user_providers,
+                "custom_providers": ctx.custom_providers,
+                "excluded_providers": ctx.excluded_providers,
+            },
+            "flags": flags,
+        }),
+        generation,
+        refresh_epoch,
+    )
+
+
+def _models_payload_generation() -> tuple:
+    """Return non-secret file/environment generations used by the picker.
+
+    This mirrors the credential/cache inputs used by provider discovery without
+    reading credential contents into logs or cache keys.
+    """
+    from hermes_cli.config import get_config_path, get_env_path, get_hermes_home
+
+    home = get_hermes_home()
+    paths = {
+        "config": get_config_path(),
+        "dotenv": get_env_path(),
+        "auth": home / "auth.json",
+        "credentials": home / "credentials.json",
+        "provider_models": home / "provider_models_cache.json",
+        "models_dev": home / "models_dev_cache.json",
+        "ollama_cloud": home / "ollama_cloud_models_cache.json",
+        "model_catalog": home / "cache" / "model_catalog.json",
+        "nous_recommended": home / "cache" / "nous_recommended_cache.json",
+        "codex_auth": Path(os.path.expanduser("~/.codex/auth.json")),
+        "claude_credentials": Path(os.path.expanduser("~/.claude/.credentials.json")),
+        "copilot_hosts": Path(os.path.expanduser("~/.config/github-copilot/hosts.json")),
+        "minimax_credentials": Path(os.path.expanduser("~/.minimax/credentials.json")),
+    }
+    file_generation = tuple(
+        (name, _path_generation(path)) for name, path in sorted(paths.items())
+    )
+    return file_generation + (("credential_env", _credential_environment_generation()),)
+
+
+def _path_generation(path: Path) -> tuple[int | None, int | None]:
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None, None
+
+
+def _credential_environment_generation() -> str:
+    """Fingerprint provider credential-related environment values privately."""
+    names: set[str] = set()
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for provider in PROVIDER_REGISTRY.values():
+            names.update(getattr(provider, "api_key_env_vars", ()) or ())
+            base_url_env = getattr(provider, "base_url_env_var", "") or ""
+            if base_url_env:
+                names.add(base_url_env)
+    except Exception:
+        pass
+    return _stable_digest({name: os.environ.get(name, "") for name in sorted(names)})
+
+
+def _stable_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=repr,
+    ).encode("utf-8", errors="replace")
+    return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+
+
+def _log_models_payload_cache(
+    cache: str, started: float, payload: dict | None
+) -> None:
+    provider_count = len(payload.get("providers") or []) if payload else 0
+    logger.info(
+        "model_inventory cache=%s total_ms=%.1f provider_count=%d",
+        cache,
+        (time.monotonic() - started) * 1000,
+        provider_count,
+    )
 
 
 def _apply_capabilities(rows: list[dict]) -> None:

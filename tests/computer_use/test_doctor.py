@@ -319,7 +319,242 @@ class TestDriverCmdResolution:
         )
         with patch("shutil.which", return_value="/env/path/cua-driver") as which_mock, \
              patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO):
+             patch("sys.stdout", new_callable=StringIO), \
+             patch("hermes_cli.tools_config._cua_driver_cmd", side_effect=Exception("force env")):
+            # Force env-var resolution path inside run_doctor.
             doctor.run_doctor()
-        # First (and only) which call should have used the env var.
         which_mock.assert_called_with("/env/path/cua-driver")
+
+
+# ── cua-driver 0.10 unclassified health_report fallback ────────────────────
+
+
+def _unclassified_health_result() -> dict:
+    """MCP tools/call result shape from cua-driver 0.10.x denial."""
+    return {
+        "isError": True,
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Permission denied: tool 'health_report' has no "
+                    "reviewed risk classification"
+                ),
+            }
+        ],
+        "structuredContent": {"exit_code": 1},
+    }
+
+
+def _perms_ok_result() -> dict:
+    return {
+        "isError": False,
+        "content": [{"type": "text", "text": "ok"}],
+        "structuredContent": {
+            "accessibility": True,
+            "screen_recording": True,
+            "screen_recording_capturable": True,
+        },
+    }
+
+
+def _list_apps_ok_result() -> dict:
+    return {
+        "isError": False,
+        "content": [{"type": "text", "text": "Found 1 app"}],
+        "structuredContent": {
+            "apps": [{"name": "Finder", "pid": 1, "running": True}],
+        },
+    }
+
+
+class TestHealthReportFallback:
+    """cua-driver 0.10 marks health_report risk-unclassified → isError.
+
+    Doctor must NOT treat structuredContent={exit_code:1} as a real report
+    (that produced '• cua-driver ? on ? — ?'). It synthesizes schema_version=1
+    via check_permissions / list_apps / CLI --version instead.
+    """
+
+    def test_isError_unclassified_uses_fallback_overall_ok(self):
+        from tools.computer_use import doctor
+
+        health_proc = _fake_proc_with_responses(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"serverInfo": {"name": "cua-driver", "version": "0.10.0"}},
+            },
+            {"jsonrpc": "2.0", "id": 2, "result": _unclassified_health_result()},
+        )
+        probe_proc = _fake_proc_with_responses(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"serverInfo": {"name": "cua-driver", "version": "0.10.0"}},
+            },
+            {"jsonrpc": "2.0", "id": 2, "result": _perms_ok_result()},
+            {"jsonrpc": "2.0", "id": 3, "result": _list_apps_ok_result()},
+        )
+        procs = iter([health_proc, probe_proc])
+        run_mock = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
+        )
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
+             patch("subprocess.run", run_mock), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(color=False)
+
+        assert code == 0
+        text = out.getvalue()
+        assert "ok" in text
+        assert "0.10.0" in text
+        # Fallback path must be visible in the check list
+        assert "health_report_path" in text
+        assert "fallback composite" in text
+        assert "tcc_accessibility" in text
+        assert "binary_version" in text
+
+    def test_isError_unclassified_json_payload_has_schema_and_fallback_flag(self):
+        from tools.computer_use import doctor
+
+        health_proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
+            {"jsonrpc": "2.0", "id": 2, "result": _unclassified_health_result()},
+        )
+        probe_proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
+            {"jsonrpc": "2.0", "id": 2, "result": _perms_ok_result()},
+            {"jsonrpc": "2.0", "id": 3, "result": _list_apps_ok_result()},
+        )
+        procs = iter([health_proc, probe_proc])
+        run_mock = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
+        )
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
+             patch("subprocess.run", run_mock), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(json_output=True)
+
+        assert code == 0
+        parsed = json.loads(out.getvalue())
+        assert parsed["schema_version"] == "1"
+        assert parsed["overall"] == "ok"
+        assert parsed.get("fallback") is True
+        names = [c["name"] for c in parsed["checks"]]
+        assert "binary_version" in names
+        assert "tcc_accessibility" in names
+        assert "tcc_screen_recording" in names
+        assert "ax_capability" in names
+        assert "health_report_path" in names
+        # Must not be the raw denial payload
+        assert "exit_code" not in parsed
+
+    def test_structuredContent_exit_code_only_triggers_fallback(self):
+        """Even without isError, bare {exit_code:1} is not a valid report."""
+        from tools.computer_use import doctor
+
+        # Some gateways might drop isError but still ship exit_code-only SC.
+        health_proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "isError": False,
+                    "structuredContent": {"exit_code": 1},
+                    "content": [{"type": "text", "text": "Permission denied"}],
+                },
+            },
+        )
+        probe_proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
+            {"jsonrpc": "2.0", "id": 2, "result": _perms_ok_result()},
+            {"jsonrpc": "2.0", "id": 3, "result": _list_apps_ok_result()},
+        )
+        procs = iter([health_proc, probe_proc])
+        run_mock = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
+        )
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
+             patch("subprocess.run", run_mock), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(json_output=True)
+
+        assert code == 0
+        parsed = json.loads(out.getvalue())
+        assert parsed["schema_version"] == "1"
+        assert parsed.get("fallback") is True
+
+    def test_real_schema_version_1_preferred_over_fallback(self):
+        """When health_report returns a real schema_version=1 payload, use it
+        and never call the composite fallback path."""
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
+        )
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch.object(doctor, "_compose_fallback_report") as fallback_mock, \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(json_output=True)
+
+        assert code == 0
+        fallback_mock.assert_not_called()
+        parsed = json.loads(out.getvalue())
+        assert parsed == _ok_report()
+        assert "fallback" not in parsed
+
+    def test_extract_raises_health_report_unavailable_on_isError(self):
+        from tools.computer_use import doctor
+
+        with __import__("pytest").raises(doctor.HealthReportUnavailable) as ei:
+            doctor._extract_health_report_from_result(_unclassified_health_result())
+        assert "Permission denied" in str(ei.value) or "unclassified" in str(ei.value).lower() or "risk" in str(ei.value).lower()
+
+    def test_fallback_degraded_when_accessibility_denied(self):
+        from tools.computer_use import doctor
+
+        health_proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
+            {"jsonrpc": "2.0", "id": 2, "result": _unclassified_health_result()},
+        )
+        denied_perms = {
+            "isError": False,
+            "structuredContent": {
+                "accessibility": False,
+                "screen_recording": False,
+            },
+        }
+        probe_proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
+            {"jsonrpc": "2.0", "id": 2, "result": denied_perms},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {"isError": True, "content": [{"type": "text", "text": "no ax"}]},
+            },
+        )
+        procs = iter([health_proc, probe_proc])
+        run_mock = MagicMock(
+            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
+        )
+
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
+             patch("subprocess.run", run_mock), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(json_output=True)
+
+        assert code == 1
+        parsed = json.loads(out.getvalue())
+        assert parsed["overall"] == "degraded"
+        assert parsed.get("fallback") is True

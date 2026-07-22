@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -43,6 +44,37 @@ def test_append_event_rejects_schema_invalid_event(tmp_path, ledger_mod):
     )
     assert out["status"] == "rejected"
     assert out["reason"] == "invalid_ledger_event"
+
+
+def test_index_database_is_private_on_create_and_reopen(tmp_path, ledger_mod):
+    original_umask = os.umask(0)
+    try:
+        store = ledger_mod.LedgerStore(tmp_path)
+    finally:
+        os.umask(original_umask)
+
+    assert store.root.stat().st_mode & 0o777 == 0o700
+    assert store.db_path.stat().st_mode & 0o777 == 0o600
+
+    os.chmod(store.root, 0o755)
+    os.chmod(store.db_path, 0o644)
+    ledger_mod.LedgerStore(tmp_path)
+
+    assert store.root.stat().st_mode & 0o777 == 0o700
+    assert store.db_path.stat().st_mode & 0o777 == 0o600
+
+    original_umask = os.umask(0)
+    conn = store._connect()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS permission_probe (id INTEGER)")
+        conn.commit()
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{store.db_path}{suffix}")
+            assert sidecar.exists()
+            assert sidecar.stat().st_mode & 0o777 == 0o600
+    finally:
+        conn.close()
+        os.umask(original_umask)
 
 
 def test_append_event_rejects_non_rfc3339_timestamp_before_partitioning(tmp_path, ledger_mod):

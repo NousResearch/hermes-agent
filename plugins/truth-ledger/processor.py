@@ -126,12 +126,22 @@ async def process_pending(
     ledger = LedgerStore(root)
     history = _ledger_history(root)
     projection_dirty = False
+    transition_failure_reason: str | None = None
+
+    def _transition_succeeded(result: Mapping[str, Any]) -> bool:
+        nonlocal transition_failure_reason
+        if bool(result.get("ok")):
+            return True
+        if transition_failure_reason is None:
+            transition_failure_reason = str(result.get("reason") or "transition_failed")
+        return False
 
     for pending_path in pending_snapshot:
         claim = spool.claim_path(pending_path, owner=f"operator:{os.getpid()}")
         if claim is None:
             continue
         processing_path = Path(claim["path"])
+        claim_token = str(claim["claim_token"])
         raw_record = claim.get("record")
         record: dict[str, Any] = raw_record if isinstance(raw_record, dict) else {}
         counters["claimed"] += 1
@@ -140,25 +150,38 @@ async def process_pending(
         extracted = await extract_candidates(ctx=ctx, envelope=envelope)
         status = str(extracted.get("status") or "")
         if status == "retry":
-            spool.retry_processing(
+            transition = spool.retry_processing(
                 processing_path,
                 error_code=str(extracted.get("reason") or "retry"),
                 delay_ms=int(extracted.get("retry_delay_ms") or 0),
+                claim_token=claim_token,
             )
-            counters["retried"] += 1
+            if _transition_succeeded(transition):
+                counters["retried"] += 1
             continue
         if status == "dead_letter":
-            spool.dead_letter(processing_path, reason=str(extracted.get("reason") or "extraction_failed"))
-            counters["dead_lettered"] += 1
+            transition = spool.dead_letter(
+                processing_path,
+                reason=str(extracted.get("reason") or "extraction_failed"),
+                claim_token=claim_token,
+            )
+            if _transition_succeeded(transition):
+                counters["dead_lettered"] += 1
             continue
         if status == "none":
-            spool.ack_processing(processing_path)
-            counters["none"] += 1
-            counters["acked"] += 1
+            transition = spool.ack_processing(processing_path, claim_token=claim_token)
+            if _transition_succeeded(transition):
+                counters["none"] += 1
+                counters["acked"] += 1
             continue
         if status != "ok":
-            spool.dead_letter(processing_path, reason="invalid_extractor_status")
-            counters["dead_lettered"] += 1
+            transition = spool.dead_letter(
+                processing_path,
+                reason="invalid_extractor_status",
+                claim_token=claim_token,
+            )
+            if _transition_succeeded(transition):
+                counters["dead_lettered"] += 1
             continue
 
         observation = _observation(envelope)
@@ -189,8 +212,13 @@ async def process_pending(
                 continue
             event = decision.get("event")
             if decision_name != "append" or not isinstance(event, dict):
-                spool.dead_letter(processing_path, reason="invalid_reconciliation_decision")
-                counters["dead_lettered"] += 1
+                transition = spool.dead_letter(
+                    processing_path,
+                    reason="invalid_reconciliation_decision",
+                    claim_token=claim_token,
+                )
+                if _transition_succeeded(transition):
+                    counters["dead_lettered"] += 1
                 record_failed = True
                 break
 
@@ -205,19 +233,30 @@ async def process_pending(
                 counters["duplicates"] += 1
                 continue
             if append_status == "retry":
-                spool.retry_processing(processing_path, error_code=str(append_out.get("reason") or "ledger_retry"))
-                counters["retried"] += 1
+                transition = spool.retry_processing(
+                    processing_path,
+                    error_code=str(append_out.get("reason") or "ledger_retry"),
+                    claim_token=claim_token,
+                )
+                if _transition_succeeded(transition):
+                    counters["retried"] += 1
                 record_failed = True
                 break
-            spool.dead_letter(processing_path, reason=str(append_out.get("reason") or "ledger_append_failed"))
-            counters["dead_lettered"] += 1
+            transition = spool.dead_letter(
+                processing_path,
+                reason=str(append_out.get("reason") or "ledger_append_failed"),
+                claim_token=claim_token,
+            )
+            if _transition_succeeded(transition):
+                counters["dead_lettered"] += 1
             record_failed = True
             break
 
         if record_failed:
             continue
-        spool.ack_processing(processing_path)
-        counters["acked"] += 1
+        transition = spool.ack_processing(processing_path, claim_token=claim_token)
+        if _transition_succeeded(transition):
+            counters["acked"] += 1
 
     active_facts = 0
     if projection_dirty:
@@ -229,6 +268,8 @@ async def process_pending(
             active_facts = sum(1 for line in current.read_text(encoding="utf-8").splitlines() if line.strip())
 
     base.update(counters)
+    if transition_failure_reason is not None:
+        base.update({"ok": False, "reason": transition_failure_reason})
     base.update(
         {
             "active_facts": active_facts,

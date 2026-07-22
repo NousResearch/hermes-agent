@@ -39,6 +39,7 @@
       "additionalProperties": false,
       "properties": {
         "processing_owner": {"type": "string", "maxLength": 256},
+        "claim_token": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
         "claimed_at": {"type": "number"},
         "last_error_code": {"type": "string", "maxLength": 256},
         "next_retry_at": {"type": "number"},

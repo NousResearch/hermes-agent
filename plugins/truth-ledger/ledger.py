@@ -101,10 +101,21 @@ class LedgerStore:
         self.append_lock = self.locks_dir / "append.lock"
         self.record_hard_bytes = record_hard_bytes
 
+        _mkdir_private(self.root)
         for d in (self.ledger_dir, self.state_dir, self.locks_dir, self.errors_dir):
             _mkdir_private(d)
         with _FileLock(self.append_lock, timeout_seconds=5.0):
+            self._ensure_private_db_file()
             self._init_db()
+
+    def _ensure_private_db_file(self) -> None:
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(self.db_path), flags, 0o600)
+        try:
+            if os.fstat(fd).st_mode & 0o777 != 0o600:
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5.0)

@@ -542,7 +542,9 @@ def test_realistic_synthetic_credential_never_leaks_across_spool_or_extractor_su
     assert raw_credential not in blocks[0].text
     assert safe_phrase in blocks[0].text
 
-    retry = spool.retry_processing(processing_path, error_code="TEMP")
+    retry = spool.retry_processing(
+        processing_path, error_code="TEMP", claim_token=claim["claim_token"]
+    )
     retry_pending_path = Path(retry["path"])
     retry_pending_record = json.loads(retry_pending_path.read_text(encoding="utf-8"))
     retry_pending_text = json.dumps(retry_pending_record)
@@ -554,7 +556,11 @@ def test_realistic_synthetic_credential_never_leaks_across_spool_or_extractor_su
 
     reclaim = spool.claim_next(owner="worker-2")
     assert reclaim is not None
-    dead = spool.dead_letter(Path(reclaim["path"]), reason="permanent")
+    dead = spool.dead_letter(
+        Path(reclaim["path"]),
+        reason="permanent",
+        claim_token=reclaim["claim_token"],
+    )
     dead_record = json.loads(Path(dead["path"]).read_text(encoding="utf-8"))
     dead_text = json.dumps(dead_record)
     assert raw_credential not in dead_text

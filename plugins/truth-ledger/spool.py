@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import time
 import uuid
 import errno
@@ -120,6 +121,7 @@ class TruthSpool:
         self.payloads_dir = self.spool_dir / "payloads"
         self.errors_dir = self.root / "errors"
         self.lock_path = self.root / "state" / "locks" / "spool.lock"
+        _mkdir_private(self.root)
         for d in (
             self.spool_dir,
             self.pending_dir,
@@ -142,12 +144,32 @@ class TruthSpool:
 
     def _is_owned_payload_path(self, payload_path: Path) -> bool:
         try:
-            payload_real = payload_path.resolve(strict=False)
             root_real = self.payloads_dir.resolve(strict=False)
-            payload_real.relative_to(root_real)
-            return True
+            parent_real = payload_path.parent.resolve(strict=False)
+            return parent_real == root_real and not payload_path.is_symlink()
         except Exception:
             return False
+
+    def _read_owned_payload(self, payload_path: Path) -> bytes:
+        if not self._is_owned_payload_path(payload_path):
+            raise ValueError("payload_path_out_of_root")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(payload_path, flags)
+        except FileNotFoundError as exc:
+            raise ValueError("missing_payload") from exc
+        except OSError as exc:
+            raise ValueError("payload_path_out_of_root") from exc
+        try:
+            mode = os.fstat(fd).st_mode
+            if not stat.S_ISREG(mode):
+                raise ValueError("payload_path_out_of_root")
+            with os.fdopen(fd, "rb", closefd=True) as fh:
+                fd = -1
+                return fh.read(self.envelope_hard_bytes + 1)
+        finally:
+            if fd >= 0:
+                os.close(fd)
 
     def _unlink_payload_if_owned(self, record: Dict[str, Any]) -> None:
         payload_path = self._payload_path_from_record(record)
@@ -292,12 +314,11 @@ class TruthSpool:
         payload_path = self._payload_path_from_record(record)
         if payload_path is None:
             raise ValueError("missing_payload")
-        if not self._is_owned_payload_path(payload_path):
-            raise ValueError("payload_path_out_of_root")
-        if not payload_path.exists():
-            raise ValueError("missing_payload")
         try:
-            envelope = json.loads(payload_path.read_text(encoding="utf-8"))
+            encoded = self._read_owned_payload(payload_path)
+            if len(encoded) > self.envelope_hard_bytes:
+                raise ValueError("invalid_source_envelope")
+            envelope = json.loads(encoded.decode("utf-8"))
             validate_document("source-envelope.v1", envelope)
         except ValueError:
             raise
@@ -409,46 +430,58 @@ class TruthSpool:
         src = Path(pending_path)
         if src.parent != self.pending_dir or src.suffix != ".json":
             return None
-        try:
-            pending_record = self._load_record(src)
-            raw_flow = pending_record.get("flow")
-            flow: Dict[str, Any] = raw_flow if isinstance(raw_flow, dict) else {}
-            next_retry_at = float(flow.get("next_retry_at") or 0.0)
-            if next_retry_at > time.time():
+        with _spool_lock(self.lock_path):
+            try:
+                pending_record = self._load_record(src)
+                raw_flow = pending_record.get("flow")
+                flow: Dict[str, Any] = raw_flow if isinstance(raw_flow, dict) else {}
+                next_retry_at = float(flow.get("next_retry_at") or 0.0)
+                if next_retry_at > time.time():
+                    return None
+            except Exception:
+                self._quarantine_record(src, "invalid_spool_record")
                 return None
-        except Exception:
-            self._quarantine_record(src, "invalid_spool_record")
-            return None
 
-        dst = self.processing_dir / src.name
-        try:
-            os.replace(src, dst)
-        except (FileNotFoundError, OSError):
-            return None
+            dst = self.processing_dir / src.name
+            try:
+                os.replace(src, dst)
+            except (FileNotFoundError, OSError):
+                return None
 
-        try:
-            record = self._load_record(dst)
-            validate_document("spool-record.v1", record)
-        except Exception:
-            self._quarantine_record(dst, "invalid_spool_record")
-            return None
+            try:
+                record = self._load_record(dst)
+                validate_document("spool-record.v1", record)
+            except Exception:
+                self._quarantine_record(dst, "invalid_spool_record")
+                return None
 
-        try:
-            envelope = self._load_envelope_from_record(record)
-        except ValueError as exc:
-            reason = str(exc)
-            if reason not in {"invalid_source_envelope", "missing_payload", "payload_path_out_of_root"}:
-                reason = "invalid_source_envelope"
-            self._quarantine_record(dst, reason)
-            return None
+            try:
+                envelope = self._load_envelope_from_record(record)
+            except ValueError as exc:
+                reason = str(exc)
+                if reason not in {
+                    "invalid_source_envelope",
+                    "missing_payload",
+                    "payload_path_out_of_root",
+                }:
+                    reason = "invalid_source_envelope"
+                self._quarantine_record(dst, reason)
+                return None
 
-        flow = dict(record.get("flow") or {})
-        flow["processing_owner"] = owner
-        flow["claimed_at"] = time.time()
-        record["state"] = "processing"
-        record["flow"] = flow
-        _write_private_json_atomic(dst, record)
-        return {"path": str(dst), "envelope": envelope, "record": record}
+            claim_token = uuid.uuid4().hex
+            flow = dict(record.get("flow") or {})
+            flow["processing_owner"] = owner
+            flow["claim_token"] = claim_token
+            flow["claimed_at"] = time.time()
+            record["state"] = "processing"
+            record["flow"] = flow
+            _write_private_json_atomic(dst, record)
+            return {
+                "path": str(dst),
+                "envelope": envelope,
+                "record": record,
+                "claim_token": claim_token,
+            }
 
     def claim_next(self, owner: str = "") -> Optional[Dict[str, Any]]:
         for src in self.snapshot_pending(self.hard_count):
@@ -457,7 +490,7 @@ class TruthSpool:
                 return claim
         return None
 
-    def ack_processing(self, processing_path: Path) -> Dict[str, Any]:
+    def ack_processing(self, processing_path: Path, *, claim_token: str) -> Dict[str, Any]:
         path = Path(processing_path)
         with _spool_lock(self.lock_path):
             record: Dict[str, Any] = {}
@@ -474,6 +507,8 @@ class TruthSpool:
             if not record:
                 return {"ok": True}
             flow = dict(record.get("flow") or {})
+            if not claim_token or flow.get("claim_token") != claim_token:
+                return {"ok": False, "reason": "stale_claim"}
             flow["acked_at"] = time.time()
             record["state"] = "acked"
             record["flow"] = flow
@@ -522,7 +557,10 @@ class TruthSpool:
                     payload_path.unlink()
                     continue
                 try:
-                    envelope = json.loads(payload_path.read_text(encoding="utf-8"))
+                    encoded = self._read_owned_payload(payload_path)
+                    if len(encoded) > self.envelope_hard_bytes:
+                        raise ValueError("invalid_source_envelope")
+                    envelope = json.loads(encoded.decode("utf-8"))
                     validate_document("source-envelope.v1", envelope)
                     key = self._idempotency_key(envelope)
                     if self._find_idempotency_key(key) is not None:
@@ -533,15 +571,44 @@ class TruthSpool:
                         payload_path=payload_path,
                         state="pending",
                     )
-                    _write_private_json_atomic(self.pending_dir / self._new_record_name(), record)
+                    pending, processing = self._queue_counts()
+                    record_bytes = len(_encode_json(record))
+                    if (
+                        pending + processing >= self.hard_count
+                        or self._queue_bytes() + record_bytes > self.hard_bytes
+                    ):
+                        flow = dict(record.get("flow") or {})
+                        flow["dead_letter_reason"] = "queue_overflow"
+                        flow["dead_letter_at"] = time.time()
+                        record["state"] = "dead_lettered"
+                        record["flow"] = flow
+                        _write_private_json_atomic(
+                            self.dead_letter_dir / self._new_record_name(), record
+                        )
+                        self._unlink_payload_if_owned(record)
+                        self._write_error(
+                            {"code": "queue_hard_cap", "at": time.time()}
+                        )
+                        continue
+                    _write_private_json_atomic(
+                        self.pending_dir / self._new_record_name(), record
+                    )
                     recovered += 1
                 except Exception:
                     self._write_error(
                         {"code": "orphan_payload_invalid", "at": time.time(), "payload": payload_path.name}
                     )
+            self._shed_soft_overflow_if_needed()
         return recovered
 
-    def retry_processing(self, processing_path: Path, error_code: str, delay_ms: int = 0) -> Dict[str, Any]:
+    def retry_processing(
+        self,
+        processing_path: Path,
+        error_code: str,
+        delay_ms: int = 0,
+        *,
+        claim_token: str,
+    ) -> Dict[str, Any]:
         path = Path(processing_path)
         with _spool_lock(self.lock_path):
             src = path
@@ -553,6 +620,8 @@ class TruthSpool:
                 return {"ok": True, "reason": "already_transitioned"}
             record = self._load_record(src)
             flow = dict(record.get("flow") or {})
+            if not claim_token or flow.get("claim_token") != claim_token:
+                return {"ok": False, "reason": "stale_claim"}
             flow["last_error_code"] = str(error_code)
             flow["next_retry_at"] = time.time() + max(0, int(delay_ms)) / 1000.0
             record["attempt_count"] = int(record.get("attempt_count", 0)) + 1
@@ -564,7 +633,9 @@ class TruthSpool:
                 src.unlink()
         return {"ok": True, "path": str(dst)}
 
-    def dead_letter(self, processing_path: Path, reason: str) -> Dict[str, Any]:
+    def dead_letter(
+        self, processing_path: Path, reason: str, *, claim_token: str
+    ) -> Dict[str, Any]:
         path = Path(processing_path)
         with _spool_lock(self.lock_path):
             src = path
@@ -576,6 +647,8 @@ class TruthSpool:
                 return {"ok": True, "reason": "already_transitioned"}
             record = self._load_record(src)
             flow = dict(record.get("flow") or {})
+            if not claim_token or flow.get("claim_token") != claim_token:
+                return {"ok": False, "reason": "stale_claim"}
             flow["dead_letter_reason"] = str(reason)
             flow["dead_letter_at"] = time.time()
             record["state"] = "dead_lettered"

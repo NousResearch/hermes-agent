@@ -78,6 +78,21 @@ def _write_pending_record(spool, *, payload_path: Path, **overrides) -> Path:
     return path
 
 
+def test_spool_root_is_private_on_create_and_reopen(tmp_path, spool_mod):
+    original_umask = os.umask(0)
+    try:
+        spool = spool_mod.TruthSpool(tmp_path / "truth-ledger")
+    finally:
+        os.umask(original_umask)
+
+    assert spool.root.stat().st_mode & 0o777 == 0o700
+
+    os.chmod(spool.root, 0o755)
+    spool_mod.TruthSpool(spool.root)
+
+    assert spool.root.stat().st_mode & 0o777 == 0o700
+
+
 def test_spool_record_representation_is_schema_coherent_across_lifecycle(tmp_path, spool_mod):
     spool = spool_mod.TruthSpool(tmp_path)
     schemas_mod = _load_schemas_module()
@@ -99,7 +114,9 @@ def test_spool_record_representation_is_schema_coherent_across_lifecycle(tmp_pat
     schemas_mod.validate_document("spool-record.v1", processing_record)
     assert processing_record["state"] == "processing"
 
-    retry = spool.retry_processing(processing_path, error_code="SQLITE_BUSY")
+    retry = spool.retry_processing(
+        processing_path, error_code="SQLITE_BUSY", claim_token=claim["claim_token"]
+    )
     assert retry["ok"] is True
     retried_pending_path = Path(retry["path"])
     assert retried_pending_path.parent.name == "pending"
@@ -111,7 +128,9 @@ def test_spool_record_representation_is_schema_coherent_across_lifecycle(tmp_pat
     assert claim2 is not None
     processing_path2 = Path(claim2["path"])
 
-    dead = spool.dead_letter(processing_path2, reason="permanent")
+    dead = spool.dead_letter(
+        processing_path2, reason="permanent", claim_token=claim2["claim_token"]
+    )
     assert dead["ok"] is True
     dead_path = Path(dead["path"])
     assert dead_path.parent.name == "dead-letter"
@@ -219,6 +238,126 @@ def test_concurrent_stale_recovery_is_serialized(tmp_path, spool_mod, monkeypatc
     assert len(list(spool.pending_dir.glob("*.json"))) == 1
 
 
+def test_claim_path_is_serialized_by_lifecycle_lock(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    enqueue = spool.enqueue({**_source_envelope(), "turn_id": "claim-lock"})
+    pending_path = Path(enqueue["path"])
+    started = threading.Event()
+    finished = threading.Event()
+    result = []
+
+    def _claim():
+        started.set()
+        result.append(spool.claim_path(pending_path, owner="worker"))
+        finished.set()
+
+    with spool_mod._spool_lock(spool.lock_path):
+        worker = threading.Thread(target=_claim)
+        worker.start()
+        assert started.wait(timeout=1)
+        assert finished.wait(timeout=0.2) is False
+    worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert result[0] is not None
+
+
+def test_stale_worker_cannot_ack_newer_reclaim_with_same_path(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue({**_source_envelope(), "turn_id": "claim-fence"})["ok"] is True
+    claim_a = spool.claim_next(owner="worker-a")
+    assert claim_a is not None
+    processing_path = Path(claim_a["path"])
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    assert spool.recover_stale_processing(stale_seconds=60) == 1
+    claim_b = spool.claim_next(owner="worker-b")
+    assert claim_b is not None
+    assert claim_a["claim_token"] != claim_b["claim_token"]
+
+    stale = spool.ack_processing(
+        processing_path,
+        claim_token=claim_a["claim_token"],
+    )
+
+    assert stale == {"ok": False, "reason": "stale_claim"}
+    assert processing_path.exists() is True
+    current = _load_json(processing_path)
+    assert current["flow"]["processing_owner"] == "worker-b"
+    closed = spool.ack_processing(
+        processing_path,
+        claim_token=claim_b["claim_token"],
+    )
+    assert closed["ok"] is True
+
+
+def test_stale_worker_cannot_retry_newer_reclaim_with_same_path(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue({**_source_envelope(), "turn_id": "retry-claim-fence"})["ok"] is True
+    claim_a = spool.claim_next(owner="worker-a")
+    assert claim_a is not None
+    processing_path = Path(claim_a["path"])
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    assert spool.recover_stale_processing(stale_seconds=60) == 1
+    claim_b = spool.claim_next(owner="worker-b")
+    assert claim_b is not None
+    assert claim_a["claim_token"] != claim_b["claim_token"]
+
+    stale = spool.retry_processing(
+        processing_path,
+        error_code="extractor_timeout",
+        claim_token=claim_a["claim_token"],
+    )
+
+    assert stale == {"ok": False, "reason": "stale_claim"}
+    assert processing_path.exists() is True
+    current = _load_json(processing_path)
+    assert current["state"] == "processing"
+    assert current["attempt_count"] == 0
+    flow = current["flow"]
+    assert isinstance(flow, dict)
+    assert flow["processing_owner"] == "worker-b"
+    assert "last_error_code" not in flow
+
+
+def test_stale_worker_cannot_dead_letter_newer_reclaim_with_same_path(
+    tmp_path, spool_mod
+):
+    spool = spool_mod.TruthSpool(tmp_path)
+    assert spool.enqueue({**_source_envelope(), "turn_id": "dead-claim-fence"})["ok"] is True
+    claim_a = spool.claim_next(owner="worker-a")
+    assert claim_a is not None
+    processing_path = Path(claim_a["path"])
+    payload_path = Path(str(claim_a["record"]["payload_path"]))
+    old = time.time() - 600
+    os.utime(processing_path, (old, old))
+
+    assert spool.recover_stale_processing(stale_seconds=60) == 1
+    claim_b = spool.claim_next(owner="worker-b")
+    assert claim_b is not None
+    assert claim_a["claim_token"] != claim_b["claim_token"]
+
+    stale = spool.dead_letter(
+        processing_path,
+        reason="permanent_failure",
+        claim_token=claim_a["claim_token"],
+    )
+
+    assert stale == {"ok": False, "reason": "stale_claim"}
+    assert processing_path.exists() is True
+    assert payload_path.exists() is True
+    assert list(spool.dead_letter_dir.glob("*.json")) == []
+    current = _load_json(processing_path)
+    assert current["state"] == "processing"
+    flow = current["flow"]
+    assert isinstance(flow, dict)
+    assert flow["processing_owner"] == "worker-b"
+    assert "dead_letter_reason" not in flow
+
+
 def test_ack_cannot_race_stale_recovery_into_dangling_pending(
     tmp_path, spool_mod, monkeypatch
 ):
@@ -255,7 +394,9 @@ def test_ack_cannot_race_stale_recovery_into_dangling_pending(
 
     def _ack():
         try:
-            spool.ack_processing(processing_path)
+            spool.ack_processing(
+                processing_path, claim_token=claim["claim_token"]
+            )
         except BaseException as exc:  # pragma: no cover - surfaced below
             ack_errors.append(exc)
         finally:
@@ -293,7 +434,12 @@ def test_retry_reconciles_a_stale_claim_already_recovered_to_pending(tmp_path, s
     os.utime(processing_path, (old, old))
 
     assert spool.recover_stale_processing(stale_seconds=60) == 1
-    result = spool.retry_processing(processing_path, "extractor_timeout", delay_ms=50)
+    result = spool.retry_processing(
+        processing_path,
+        "extractor_timeout",
+        delay_ms=50,
+        claim_token=claim["claim_token"],
+    )
 
     assert result["ok"] is True
     assert list(spool.processing_dir.glob("*.json")) == []
@@ -318,7 +464,11 @@ def test_dead_letter_reconciles_a_stale_claim_already_recovered_to_pending(
     os.utime(processing_path, (old, old))
 
     assert spool.recover_stale_processing(stale_seconds=60) == 1
-    result = spool.dead_letter(processing_path, "permanent_failure")
+    result = spool.dead_letter(
+        processing_path,
+        "permanent_failure",
+        claim_token=claim["claim_token"],
+    )
 
     assert result["ok"] is True
     assert list(spool.processing_dir.glob("*.json")) == []
@@ -341,7 +491,9 @@ def test_ack_processing_removes_record_and_only_owned_payloads(tmp_path, spool_m
     owned_payload_path = Path(str(claim["record"]["payload_path"]))
     assert owned_payload_path.exists()
 
-    result = spool.ack_processing(processing_path)
+    result = spool.ack_processing(
+        processing_path, claim_token=claim["claim_token"]
+    )
     assert result["ok"] is True
     assert processing_path.exists() is False
     assert owned_payload_path.exists() is False
@@ -362,13 +514,13 @@ def test_ack_processing_removes_record_and_only_owned_payloads(tmp_path, spool_m
                 "idempotency_key": "automation-operator:sess-1:turn-foreign",
                 "source_ref": {"profile": "automation-operator", "session_id": "sess-1", "turn_id": "turn-foreign"},
                 "payload_path": str(foreign_payload),
-                "flow": {},
+                "flow": {"claim_token": "a" * 32},
             }
         ),
         encoding="utf-8",
     )
 
-    result = spool.ack_processing(record_path)
+    result = spool.ack_processing(record_path, claim_token="a" * 32)
     assert result["ok"] is True
     assert record_path.exists() is False
     assert foreign_payload.exists() is True
@@ -390,7 +542,9 @@ def test_ack_crash_after_processing_removal_does_not_retain_completed_payload(
 
     monkeypatch.setattr(spool, "_unlink_payload_if_owned", _simulate_process_death)
     with pytest.raises(SystemExit, match="synthetic ack process death"):
-        spool.ack_processing(processing_path)
+        spool.ack_processing(
+            processing_path, claim_token=claim["claim_token"]
+        )
 
     assert processing_path.exists() is False
     assert payload_path.exists() is True
@@ -422,7 +576,9 @@ def test_ack_crash_before_processing_removal_does_not_requeue_completed_work(
     with monkeypatch.context() as crash:
         crash.setattr(Path, "unlink", _simulate_process_death)
         with pytest.raises(SystemExit, match="synthetic death before processing unlink"):
-            spool.ack_processing(processing_path)
+            spool.ack_processing(
+                processing_path, claim_token=claim["claim_token"]
+            )
 
     assert processing_path.exists() is True
     assert payload_path.exists() is True
@@ -536,7 +692,11 @@ def test_dead_letter_and_soft_overflow_remove_payload_files(tmp_path, spool_mod)
     payload_path = Path(str(claim["record"]["payload_path"]))
     assert payload_path.exists() is True
 
-    dead = spool.dead_letter(processing_path, reason="permanent")
+    dead = spool.dead_letter(
+        processing_path,
+        reason="permanent",
+        claim_token=claim["claim_token"],
+    )
     assert dead["ok"] is True
     dead_record = _load_json(Path(dead["path"]))
     assert dead_record["state"] == "dead_lettered"
@@ -560,7 +720,9 @@ def test_retry_and_recovery_retain_payload_while_work_is_pending_or_processing(t
     processing_path = Path(claim["path"])
     assert payload_path.exists() is True
 
-    retry = spool.retry_processing(processing_path, error_code="TEMP")
+    retry = spool.retry_processing(
+        processing_path, error_code="TEMP", claim_token=claim["claim_token"]
+    )
     assert retry["ok"] is True
     retry_record = _load_json(Path(retry["path"]))
     assert retry_record["state"] == "pending"
@@ -620,6 +782,60 @@ def test_orphan_recovery_does_not_read_symlinked_payloads(tmp_path, spool_mod):
     assert list(spool.pending_dir.glob("*.json")) == []
     assert external.read_text(encoding="utf-8") == json.dumps(_source_envelope())
     assert symlink_path.is_symlink() is True
+
+
+def test_orphan_recovery_respects_hard_count_cap(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path, soft_count=0, hard_count=0)
+    payload = spool.payloads_dir / "hard-count-orphan.json"
+    payload.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+
+    assert spool.recover_orphan_payloads() == 0
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert payload.exists() is False
+    dead = [_load_json(path) for path in spool.dead_letter_dir.glob("*.json")]
+    assert len(dead) == 1
+    assert dead[0]["flow"]["dead_letter_reason"] == "queue_overflow"
+
+
+def test_orphan_recovery_applies_soft_shedding(tmp_path, spool_mod):
+    spool = spool_mod.TruthSpool(tmp_path, soft_count=0, hard_count=2)
+    payload = spool.payloads_dir / "soft-count-orphan.json"
+    payload.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+
+    assert spool.recover_orphan_payloads() == 1
+    assert list(spool.pending_dir.glob("*.json")) == []
+    assert payload.exists() is False
+    dead = [_load_json(path) for path in spool.dead_letter_dir.glob("*.json")]
+    assert len(dead) == 1
+    assert dead[0]["flow"]["dead_letter_reason"] == "queue_overflow"
+
+
+def test_claim_rejects_payload_swapped_to_symlink_before_no_follow_open(
+    tmp_path, spool_mod, monkeypatch
+):
+    spool = spool_mod.TruthSpool(tmp_path)
+    payload = spool.payloads_dir / "swap-race.json"
+    payload.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+    _write_pending_record(spool, payload_path=payload)
+    external = tmp_path / "external-envelope.json"
+    external.write_text(json.dumps(_source_envelope()), encoding="utf-8")
+    original_open = spool_mod.os.open
+    swapped = False
+
+    def _swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == payload and not swapped:
+            swapped = True
+            payload.unlink()
+            payload.symlink_to(external)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(spool_mod.os, "open", _swap_before_open)
+
+    assert spool.claim_next(owner="worker") is None
+    assert swapped is True
+    assert external.exists() is True
+    assert list(spool.processing_dir.glob("*.json")) == []
 
 
 def test_claim_next_quarantines_malformed_and_schema_invalid_spool_records(tmp_path, spool_mod):
@@ -730,7 +946,9 @@ def test_ack_writes_durable_tombstone_that_suppresses_restart_duplicate(tmp_path
     assert spool.enqueue(_source_envelope())["ok"] is True
     claim = spool.claim_next(owner="worker")
     assert claim is not None
-    assert spool.ack_processing(Path(claim["path"]))["ok"] is True
+    assert spool.ack_processing(
+        Path(claim["path"]), claim_token=claim["claim_token"]
+    )["ok"] is True
 
     restarted = spool_mod.TruthSpool(tmp_path)
     duplicate = restarted.enqueue(_source_envelope())
@@ -771,7 +989,12 @@ def test_claim_next_skips_retry_until_next_retry_at(tmp_path, spool_mod):
     claim = spool.claim_next(owner="worker")
     assert claim is not None
 
-    retry = spool.retry_processing(Path(claim["path"]), error_code="TEMP", delay_ms=60_000)
+    retry = spool.retry_processing(
+        Path(claim["path"]),
+        error_code="TEMP",
+        delay_ms=60_000,
+        claim_token=claim["claim_token"],
+    )
 
     assert retry["ok"] is True
     assert spool.claim_next(owner="too-early") is None

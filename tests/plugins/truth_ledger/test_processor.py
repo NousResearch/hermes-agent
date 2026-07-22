@@ -193,7 +193,11 @@ def test_process_enforces_persisted_retry_budget_across_operator_runs(tmp_path):
     for attempt in range(6):
         claim = spool.claim_next(owner=f"seed-{attempt}")
         assert claim is not None
-        spool.retry_processing(Path(claim["path"]), error_code="upstream_5xx")
+        spool.retry_processing(
+            Path(claim["path"]),
+            error_code="upstream_5xx",
+            claim_token=claim["claim_token"],
+        )
 
     llm = _FakeLlm(error=_UpstreamError("still unavailable"))
     out = asyncio.run(processor.process_pending(root=root, ctx=SimpleNamespace(llm=llm), limit=1, apply=True))
@@ -248,3 +252,111 @@ def test_process_apply_only_claims_pending_snapshot_taken_at_start(tmp_path, mon
 
     assert out["claimed"] == 1
     assert out["pending_after"] == 1
+
+
+def test_process_reports_stale_ack_as_failure_without_incrementing_acked(
+    tmp_path, monkeypatch
+):
+    spool_mod = _load_truth_module("spool")
+    processor = _load_truth_module("processor")
+    root = tmp_path / "truth-ledger"
+    spool = spool_mod.TruthSpool(root)
+    assert spool.enqueue(_envelope())["ok"] is True
+
+    async def _extract_none(**_kwargs):
+        return {"status": "none"}
+
+    monkeypatch.setattr(processor, "extract_candidates", _extract_none)
+    monkeypatch.setattr(
+        processor.TruthSpool,
+        "ack_processing",
+        lambda self, processing_path, *, claim_token: {
+            "ok": False,
+            "reason": "stale_claim",
+        },
+    )
+
+    out = asyncio.run(
+        processor.process_pending(
+            root=root,
+            ctx=SimpleNamespace(llm=object()),
+            limit=1,
+            apply=True,
+        )
+    )
+
+    assert out["ok"] is False, out
+    assert out["reason"] == "stale_claim"
+    assert out["acked"] == 0
+
+
+def test_process_reports_stale_retry_as_failure_without_incrementing_retried(
+    tmp_path, monkeypatch
+):
+    spool_mod = _load_truth_module("spool")
+    processor = _load_truth_module("processor")
+    root = tmp_path / "truth-ledger"
+    spool = spool_mod.TruthSpool(root)
+    assert spool.enqueue(_envelope())["ok"] is True
+
+    async def _extract_retry(**_kwargs):
+        return {"status": "retry", "reason": "timeout", "retry_delay_ms": 10}
+
+    monkeypatch.setattr(processor, "extract_candidates", _extract_retry)
+    monkeypatch.setattr(
+        processor.TruthSpool,
+        "retry_processing",
+        lambda self, processing_path, error_code, delay_ms=0, *, claim_token: {
+            "ok": False,
+            "reason": "stale_claim",
+        },
+    )
+
+    out = asyncio.run(
+        processor.process_pending(
+            root=root,
+            ctx=SimpleNamespace(llm=object()),
+            limit=1,
+            apply=True,
+        )
+    )
+
+    assert out["ok"] is False, out
+    assert out["reason"] == "stale_claim"
+    assert out["retried"] == 0
+
+
+def test_process_reports_stale_dead_letter_as_failure_without_incrementing_dead_lettered(
+    tmp_path, monkeypatch
+):
+    spool_mod = _load_truth_module("spool")
+    processor = _load_truth_module("processor")
+    root = tmp_path / "truth-ledger"
+    spool = spool_mod.TruthSpool(root)
+    assert spool.enqueue(_envelope())["ok"] is True
+
+    async def _extract_dead_letter(**_kwargs):
+        return {"status": "dead_letter", "reason": "schema_mismatch"}
+
+    monkeypatch.setattr(processor, "extract_candidates", _extract_dead_letter)
+    monkeypatch.setattr(
+        processor.TruthSpool,
+        "dead_letter",
+        lambda self, processing_path, reason, *, claim_token: {
+            "ok": False,
+            "reason": "stale_claim",
+        },
+    )
+
+    out = asyncio.run(
+        processor.process_pending(
+            root=root,
+            ctx=SimpleNamespace(llm=object()),
+            limit=1,
+            apply=True,
+        )
+    )
+
+    assert out["ok"] is False, out
+    assert out["reason"] == "stale_claim"
+    assert out["dead_lettered"] == 0

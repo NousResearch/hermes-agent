@@ -327,6 +327,54 @@ async def test_admin_only_plugin_chained_quick_alias_fails_closed(monkeypatch):
     assert "EXECUTED" not in result
 
 
+@pytest.mark.asyncio
+async def test_plugin_metadata_lookup_error_fails_closed_before_dispatch(monkeypatch):
+    runner = _make_runner(platform_extra={})
+    from hermes_cli import commands as cmd_mod
+
+    real_is_known = cmd_mod.is_gateway_known_command
+
+    def _is_known(name):
+        if name == "truth-ledger":
+            return True
+        return real_is_known(name)
+
+    monkeypatch.setattr(cmd_mod, "is_gateway_known_command", _is_known)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: (_ for _ in ()).throw(RuntimeError("transient discovery failure")),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda _args: "EXECUTED_UNAUTHORIZED")
+        if name == "truth-ledger"
+        else None,
+    )
+
+    result = await runner._handle_message(
+        _make_event("/truth-ledger process --apply", _make_source(user_id="anyone"))
+    )
+
+    assert result is not None
+    assert "⛔" in result
+    assert "verify access" in result
+    assert "EXECUTED_UNAUTHORIZED" not in result
+
+
+@pytest.mark.asyncio
+async def test_quick_alias_rejects_slash_only_target():
+    runner = _make_runner(platform_extra={})
+    runner.config.quick_commands = {
+        "empty": {"type": "alias", "target": "/"},
+    }
+
+    result = await runner._handle_message(
+        _make_event("/empty", _make_source(user_id="anyone"))
+    )
+
+    assert result == "Quick command '/empty' has no target defined."
+
+
 # ---------------------------------------------------------------------------
 # Scope isolation — DM vs group
 # ---------------------------------------------------------------------------

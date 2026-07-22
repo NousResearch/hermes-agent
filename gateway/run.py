@@ -11068,6 +11068,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 target = raw_target.strip()
                 target = target if target.startswith("/") else f"/{target}"
                 target_command = target.lstrip("/")
+                if not target_command:
+                    return f"Quick command '/{command}' has no target defined."
                 user_args = event.get_command_args().strip()
                 event.text = f"{target} {user_args}".strip()
                 command = target_command.split()[0] if target_command else target_command
@@ -11500,6 +11502,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         target_command = target.lstrip("/")
+                        if not target_command:
+                            return f"Quick command '/{command}' has no target defined."
                         user_args = event.get_command_args().strip()
                         event.text = f"{target} {user_args}".strip()
                         command = target_command.split()[0] if target_command else target_command
@@ -14139,7 +14143,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 entry = get_plugin_commands().get(canonical_cmd)
                 plugin_admin_only = bool(entry and entry.get("admin_only"))
         except Exception:
-            plugin_admin_only = False
+            logger.warning(
+                "Slash command /%s denied because plugin access metadata "
+                "could not be verified",
+                canonical_cmd,
+                exc_info=True,
+            )
+            return (
+                f"⛔ Unable to verify access for /{canonical_cmd}. "
+                "Please try again after plugin discovery recovers."
+            )
 
         if plugin_admin_only:
             if policy.enabled and policy.is_admin(source.user_id):

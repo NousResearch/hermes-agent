@@ -1486,13 +1486,14 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "all good"
 
-    def test_run_job_delivers_max_iteration_fallback_summary(self, tmp_path):
-        """Cron should deliver a usable max-iteration fallback summary.
+    def test_run_job_marks_max_iteration_fallback_failed_without_discarding_report(
+        self, tmp_path
+    ):
+        """Iteration exhaustion is a failed run even when fallback text is usable.
 
-        A cron run can exhaust the iteration budget, get a final text summary
-        from the no-tools fallback call, and still have ``completed=False`` in
-        the generic agent result. That should not make cron raise the report
-        text as a RuntimeError.
+        Cron must preserve the no-tools fallback report for delivery while
+        returning ``success=False`` so ``last_status`` cannot become a false
+        green.
         """
         job = {
             "id": "summary-job",
@@ -1527,11 +1528,10 @@ class TestRunJobSessionPersistence:
 
             success, output, final_response, error = run_job(job)
 
-        assert success is True
-        assert error is None
+        assert success is False
+        assert error is not None and "iteration limit" in error.lower()
         assert final_response == "final fallback report"
         assert "final fallback report" in output
-        assert "(FAILED)" not in output
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
@@ -2653,13 +2653,61 @@ class TestSilentDelivery:
         assert sil("NO_REPLY")
         assert sil("NO REPLY")
         assert sil("Summary.\nSILENT")
+        assert sil("Gmail: новых действий нет.")
+        assert sil(" gmail: no new actions ")
         # Deliver: real content, mid-sentence quotes, bare words, junk.
         assert not sil("Daily report: 4 PRs merged.")
         assert not sil("I stayed [SILENT] but here is the report: 3 items.")
         assert not sil("Silent retry succeeded after 2 attempts.")
+        assert not sil("Processed 2 emails. Gmail: новых действий нет.")
         assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
         assert not sil("")
         assert not sil("   \n\t ")
+
+    def test_iteration_limit_failure_delivers_fallback_and_marks_failed(self):
+        """Fallback text stays deliverable without turning the run green."""
+        job = self._make_job()
+        fallback = "partial report from the no-tools fallback"
+        error = "Agent reached the iteration limit before task completion"
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(False, "# output", fallback, error),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[0]["id"] == "monitor-job"
+        assert deliver_mock.call_args.args[1] == fallback
+        assert deliver_mock.call_args.kwargs == {"adapters": None, "loop": None}
+        mark_mock.assert_called_once_with(
+            "monitor-job", False, error, delivery_error=deliver_mock.return_value
+        )
+
+    def test_non_iteration_failure_does_not_deliver_raw_final_response(self):
+        """Only the recognized max-iteration fallback bypasses failure summary."""
+        job = self._make_job()
+        raw_response = "raw partial response that must not be delivered"
+        error = "provider request failed"
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(False, "# output", raw_response, error),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert delivered != raw_response
+        assert error in delivered
 
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""

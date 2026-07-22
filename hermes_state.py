@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -2453,6 +2454,146 @@ class SessionDB:
                 (time.time(), end_reason, session_id),
             )
         self._execute_write(_do)
+
+    def create_verified_backup(self, purpose: str = "maintenance") -> Path:
+        """Create and integrity-check a consistent online SQLite backup.
+
+        ``sqlite3.Connection.backup`` includes committed WAL contents and is safe
+        while other readers are connected.  The destination is placed beside the
+        source DB so restore remains a single-file rollback operation.
+        """
+        if self.read_only:
+            raise RuntimeError("cannot back up a read-only SessionDB handle")
+        safe_purpose = re.sub(r"[^a-zA-Z0-9_-]+", "-", purpose).strip("-")
+        safe_purpose = safe_purpose or "maintenance"
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        destination = self.db_path.with_name(
+            f"{self.db_path.name}.backup-{safe_purpose}-{stamp}-{time.time_ns()}"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        source = self._conn
+        if source is None:
+            raise RuntimeError("session database is closed")
+        target = sqlite3.connect(str(destination))
+        try:
+            os.chmod(destination, 0o600)
+            with self._lock:
+                source.backup(target)
+            result = target.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise sqlite3.DatabaseError(
+                    f"backup integrity_check failed: {result[0] if result else 'no result'}"
+                )
+        except BaseException:
+            target.close()
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+            raise
+        else:
+            target.close()
+        return destination
+
+    def reconcile_orphaned_telegram_group_sessions(
+        self,
+        *,
+        protected_session_ids: Any = (),
+        min_age_seconds: float = 3600.0,
+        apply: bool = False,
+    ) -> Dict[str, Any]:
+        """Find or finalize stale Telegram group sessions with no live owner.
+
+        A candidate must be an old, unended Telegram ``group`` row and must be
+        absent from both the transactional ``gateway_routing`` registry and the
+        caller-supplied protected IDs (live process/lease and legacy-route
+        snapshots).  Route JSON is parsed fail-closed: corrupt registry state
+        aborts the operation rather than risking a false orphan classification.
+
+        Apply mode runs discovery and finalization in one ``BEGIN IMMEDIATE``
+        transaction.  Every UPDATE repeats the immutable candidate predicates;
+        any error rolls back the complete batch.
+        """
+        if self.read_only and apply:
+            raise RuntimeError("cannot reconcile sessions through a read-only handle")
+        try:
+            minimum_age = float(min_age_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("min_age_seconds must be a non-negative number") from exc
+        if minimum_age < 0:
+            raise ValueError("min_age_seconds must be a non-negative number")
+
+        protected = {
+            str(session_id)
+            for session_id in (protected_session_ids or ())
+            if str(session_id or "").strip()
+        }
+        cutoff = time.time() - minimum_age
+
+        def _reconcile(conn: sqlite3.Connection) -> Dict[str, Any]:
+            current_protected = set(protected)
+            routing_rows = conn.execute(
+                "SELECT scope, session_key, entry_json FROM gateway_routing"
+            ).fetchall()
+            for route in routing_rows:
+                try:
+                    entry = json.loads(route["entry_json"])
+                    routed_session_id = entry.get("session_id") if isinstance(entry, dict) else None
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        "malformed gateway routing entry; refusing orphan reconciliation"
+                    ) from exc
+                if not routed_session_id:
+                    raise ValueError(
+                        "malformed gateway routing entry; refusing orphan reconciliation"
+                    )
+                current_protected.add(str(routed_session_id))
+
+            rows = conn.execute(
+                """SELECT id
+                     FROM sessions
+                    WHERE source = 'telegram'
+                      AND chat_type = 'group'
+                      AND ended_at IS NULL
+                      AND started_at <= ?
+                    ORDER BY id""",
+                (cutoff,),
+            ).fetchall()
+            candidate_ids = [
+                str(row["id"])
+                for row in rows
+                if str(row["id"]) not in current_protected
+            ]
+            finalized_ids: List[str] = []
+            if apply:
+                ended_at = time.time()
+                for session_id in candidate_ids:
+                    cursor = conn.execute(
+                        """UPDATE sessions
+                              SET ended_at = ?, end_reason = 'orphan_reconcile'
+                            WHERE id = ?
+                              AND source = 'telegram'
+                              AND chat_type = 'group'
+                              AND ended_at IS NULL
+                              AND started_at <= ?""",
+                        (ended_at, session_id, cutoff),
+                    )
+                    if cursor.rowcount == 1:
+                        finalized_ids.append(session_id)
+            return {
+                "candidate_ids": candidate_ids,
+                "finalized_ids": finalized_ids,
+                "dry_run": not apply,
+            }
+
+        if apply:
+            return self._execute_write(_reconcile)
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("session database is closed")
+            return _reconcile(conn)
 
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""

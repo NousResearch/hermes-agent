@@ -1229,6 +1229,30 @@ class TestEnvironmentHints:
         assert "hostname" not in result
         assert "WSL" not in result
 
+    def test_local_hint_distinguishes_sandbox_home_from_hermes_home(
+        self, monkeypatch, tmp_path
+    ):
+        """Account-global paths must not be derived from a profile HOME sandbox."""
+        import agent.prompt_builder as _pb
+        import hermes_constants as _hc
+
+        hermes_home = tmp_path / ".hermes"
+        sandbox_home = hermes_home / "home"
+        real_home = tmp_path / "account"
+        sandbox_home.mkdir(parents=True)
+        real_home.mkdir()
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_hc, "is_container", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(real_home))
+
+        result = _pb.build_environment_hints()
+
+        assert f"Terminal HOME: {sandbox_home}" in result
+        assert f"Hermes state directory: {hermes_home}" in result
+        assert "do not derive it from $HOME or ~/.hermes" in result
+
     def test_build_environment_hints_on_windows_local(self, monkeypatch):
         import agent.prompt_builder as _pb
         import sys

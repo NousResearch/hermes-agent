@@ -236,6 +236,21 @@ class TestMakeRunEnvHomeInjection:
 
         assert result["HOME"] == "/home/user"
 
+    def test_unset_process_env_still_exports_canonical_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        """Children need $HERMES_HOME even when the parent uses the default root."""
+        account_home = tmp_path / "account"
+        account_home.mkdir()
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(account_home))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from tools.environments.local import _make_run_env
+        result = _make_run_env({})
+
+        assert result["HERMES_HOME"] == str(account_home / ".hermes")
+
     def test_context_override_bridges_to_subprocess_env(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
         root = tmp_path / "root"

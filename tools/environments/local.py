@@ -390,11 +390,16 @@ def _is_hermes_internal_secret(key: str) -> bool:
 
 
 def _inject_context_hermes_home(env: dict) -> None:
-    """Bridge the context-local Hermes home override into subprocess env."""
-    try:
-        from hermes_constants import get_hermes_home_override
+    """Expose the canonical active Hermes root to subprocesses.
 
-        value = get_hermes_home_override()
+    Context-local profile overrides win.  Otherwise export the default root as
+    well: a child may legitimately receive a sandboxed ``HOME`` and must not
+    reconstruct account-global state as ``$HOME/.hermes``.
+    """
+    try:
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+
+        value = get_hermes_home_override() or str(get_hermes_home())
         if value:
             env["HERMES_HOME"] = value
     except Exception:

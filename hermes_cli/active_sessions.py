@@ -12,9 +12,10 @@ import logging
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional, Set
 
 from hermes_constants import get_hermes_home
 
@@ -155,6 +156,29 @@ def _read_entries(path: Path) -> list[dict[str, Any]]:
     if not isinstance(entries, list):
         return []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _read_entries_strict(path: Path) -> list[dict[str, Any]]:
+    """Read the live registry, failing closed on corruption.
+
+    Normal lease acquisition remains tolerant of a corrupt diagnostic file so
+    users are not locked out. Destructive maintenance must use this strict
+    variant because silently treating corruption as an empty protection set
+    could finalize an active session.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        raise RuntimeError(f"active session registry is unreadable: {path}") from exc
+    entries = data.get("entries") if isinstance(data, dict) else data
+    if not isinstance(entries, list) or not all(
+        isinstance(entry, dict) for entry in entries
+    ):
+        raise RuntimeError(f"active session registry is malformed: {path}")
+    return entries
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
@@ -355,3 +379,24 @@ def active_session_registry_snapshot() -> list[dict[str, Any]]:
         entries = _prune_dead(_read_entries(state_path))
         _write_entries(state_path, entries)
         return entries
+
+
+@contextmanager
+def locked_active_session_ids() -> Iterator[Set[str]]:
+    """Yield live leased session IDs while holding the cross-process lock.
+
+    Intended for destructive maintenance that must prevent a new lease from
+    appearing between candidate discovery and the database transaction.
+    Registry corruption raises instead of degrading to an empty set.
+    """
+    state_path = _state_path()
+    with _FileLock(_lock_path()):
+        raw_entries = _read_entries_strict(state_path)
+        entries = _prune_dead(raw_entries)
+        if entries != raw_entries:
+            _write_entries(state_path, entries)
+        yield {
+            str(entry.get("session_id"))
+            for entry in entries
+            if str(entry.get("session_id") or "").strip()
+        }

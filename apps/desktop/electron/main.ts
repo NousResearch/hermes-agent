@@ -88,6 +88,11 @@ import {
   tokenNeedsRefresh,
   type NativeTokenSet
 } from './native-oauth'
+import {
+  oauthSessionIsLive,
+  resolveJsonBody,
+  resolveOauthRestAuth
+} from './native-auth-decisions'
 import { scanGitRepos } from './git-repo-scan'
 import {
   fileDiffVsHead,
@@ -5811,7 +5816,12 @@ function hasNativeSession(baseUrl: string): boolean {
 // refresh exchanges, which are cookieless by design. Thin wrapper over
 // fetchJson (no token) so it shares timeout/JSON handling.
 function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
-  return fetchJson(url, null, { method: 'POST', body: JSON.stringify(body), ...opts })
+  // resolveJsonBody passes the object through UNCHANGED — fetchJson owns
+  // JSON.stringify. Pre-stringifying here double-encodes the body (a JSON
+  // string inside a JSON string), which the gateway's Pydantic model rejects
+  // with a 422 "Input should be a valid dictionary" (the native
+  // /auth/native/token + /auth/native/refresh legs both go through here).
+  return fetchJson(url, null, { method: 'POST', body: resolveJsonBody(body), ...opts })
 }
 
 // Return a valid native access token for baseUrl, refreshing via
@@ -6445,9 +6455,14 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     try {
       // Display signal: treat a live RT cookie as "connected" even if the AT
       // cookie has lapsed — the gateway refreshes the AT on the next request,
-      // so the session is still usable. The authoritative liveness check is
-      // the ws-ticket mint in resolveRemoteBackend at actual connect time.
-      remoteOauthConnected = await hasLiveOauthSession(remoteUrl)
+      // so the session is still usable. A stored native bearer token (cookieless
+      // RFC 8252 flow) counts as connected too — otherwise a completed native
+      // sign-in shows "not connected" in Settings. The authoritative liveness
+      // check is the ws-ticket mint in resolveRemoteBackend at actual connect time.
+      remoteOauthConnected = oauthSessionIsLive(
+        hasNativeSession(remoteUrl),
+        await hasLiveOauthSession(remoteUrl)
+      )
     } catch {
       remoteOauthConnected = false
     }
@@ -6639,15 +6654,22 @@ async function buildRemoteConnection(
   const host = remoteHost || hostLabelFromBaseUrl(baseUrl)
 
   if (authMode === 'oauth') {
-    // OAuth gateway: auth comes from the session cookies in the OAuth
-    // partition. Liveness is NOT "is the access-token cookie present?" —
-    // Portal issues a 24h rotating refresh token (hermes #37247), and the
-    // gateway middleware transparently rotates a fresh ~15-min access token
-    // from it on the next authenticated request. So a session with an expired
-    // AT cookie but a live RT cookie is still perfectly connectable. We
-    // early-out only when neither cookie is present, then mint a ws-ticket as
-    // the authoritative liveness check.
-    if (!(await hasLiveOauthSession(baseUrl))) {
+    // OAuth gateway: auth comes from EITHER a native bearer token (cookieless
+    // RFC 8252 flow) OR the session cookies in the OAuth partition. Liveness is
+    // NOT "is the access-token cookie present?" — Portal issues a 24h rotating
+    // refresh token (hermes #37247), and the gateway middleware transparently
+    // rotates a fresh ~15-min access token from it on the next authenticated
+    // request. So a session with an expired AT cookie but a live RT cookie is
+    // still perfectly connectable. We early-out only when NEITHER a native
+    // token NOR any cookie is present, then mint a ws-ticket (which itself
+    // prefers the native bearer) as the authoritative liveness check.
+    //
+    // The native-token check is essential: the native login stores bearer
+    // tokens (no cookie is ever set), so gating solely on hasLiveOauthSession
+    // here would reject a freshly-completed native sign-in and loop the UI back
+    // into "not signed in" even though mintGatewayWsTicket would succeed with
+    // the stored bearer.
+    if (!oauthSessionIsLive(hasNativeSession(baseUrl), await hasLiveOauthSession(baseUrl))) {
       const err = new Error(
         'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
           'Open Settings → Gateway and click "Sign in", or switch back to Local.'
@@ -9325,15 +9347,34 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
   const url = `${connection.baseUrl}${requestPath}`
 
-  // OAuth gateways authenticate REST via the HttpOnly session cookie held in
-  // the OAuth partition — route through Electron's net stack bound to that
-  // session so the cookie attaches automatically. Token/local modes keep using
-  // the static session-token header.
+  // OAuth gateways authenticate REST via EITHER a native bearer token
+  // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
+  // partition. Prefer the native bearer when present (mirroring
+  // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
+  // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
+  // though a valid bearer is held. Cookie mode rides Electron's net stack bound
+  // to the OAuth partition so the cookie attaches automatically. Token/local
+  // modes keep using the static session-token header.
   if (connection.authMode === 'oauth') {
     // The OAuth path rides electron.net with JSON headers; multipart isn't
     // wired there. Fail loudly rather than corrupting the upload.
     if (request?.upload) {
       throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+    }
+
+    // Native bearer first (cookieless). ensureNativeAccessToken transparently
+    // refreshes a near-expiry AT via /auth/native/refresh; a null return means
+    // no native session (resolveOauthRestAuth then selects the cookie path).
+    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
+    const restAuth = resolveOauthRestAuth(nativeAt)
+
+    if (restAuth.kind === 'bearer') {
+      return fetchJson(url, null, {
+        method: request?.method,
+        body: request?.body,
+        timeoutMs,
+        bearer: restAuth.token
+      })
     }
 
     return fetchJsonViaOauthSession(url, {

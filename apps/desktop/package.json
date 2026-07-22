@@ -56,8 +56,8 @@
     "test:e2e:update-snapshots": "WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.14.23",
-    "@assistant-ui/react-streamdown": "^0.3.4",
+    "@assistant-ui/react": "^0.14.24",
+    "@assistant-ui/react-streamdown": "^0.3.5",
     "@audiowave/react": "^0.6.2",
     "@chenglou/pretext": "^0.0.6",
     "@codemirror/commands": "^6.10.4",

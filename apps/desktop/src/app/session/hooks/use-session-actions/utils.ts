@@ -175,6 +175,33 @@ export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]):
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
+export function stripAttachmentNotices(text: string): string {
+  const withoutEmbedded = textWithoutEmbeddedImages(text)
+  return withoutEmbedded
+    .replace(/\n?\[Image attached(?: at)?:[\s\S]*?\]/gi, '')
+    .replace(/\n?\[IMAGE:[\s\S]*?\]/gi, '')
+    .replace(/\n?@image:[^\s]+/gi, '')
+    .replace(/\n?@file:[^\s]+/gi, '')
+    .trim()
+}
+
+export function userTextMatches(textA: string, textB: string): boolean {
+  const cleanA = stripAttachmentNotices(textA)
+  const cleanB = stripAttachmentNotices(textB)
+
+  if (cleanA === cleanB) {
+    return true
+  }
+
+  if (cleanA && cleanB) {
+    if (cleanA.startsWith(cleanB) || cleanB.startsWith(cleanA)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
@@ -206,7 +233,11 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const previousVisibleText = textWithoutEmbeddedImages(previousText)
     let preserved = message
 
-    if (nextText === previousVisibleText || nextText === previousText.trim()) {
+    if (
+      nextText === previousVisibleText ||
+      nextText === previousText.trim() ||
+      userTextMatches(nextText, previousText)
+    ) {
       preserved = preserveReasoningParts(preserved, previous)
     }
 
@@ -245,11 +276,15 @@ export function preserveLocalPendingTurnMessages(
 
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
+  const nextUserMessages: ChatMessage[] = []
 
   for (const message of nextMessages) {
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+    if (message.role === 'user') {
+      nextUserMessages.push(message)
+    }
   }
 
   const nextIds = new Set(nextMessages.map(message => message.id))
@@ -269,14 +304,23 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+    if (isPendingAssistant) {
+      const authoritative = nextByRoleOrdinal.get(`assistant:${ordinal}`)
 
-    if (authoritative) {
-      if (isPendingAssistant) {
+      if (authoritative) {
+        continue
+      }
+    }
+
+    if (isOptimisticUser) {
+      const localText = chatMessageText(message)
+      const authoritative = nextByRoleOrdinal.get(`user:${ordinal}`)
+
+      if (authoritative && userTextMatches(chatMessageText(authoritative), localText)) {
         continue
       }
 
-      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
+      if (nextUserMessages.some(nextMsg => userTextMatches(chatMessageText(nextMsg), localText))) {
         continue
       }
     }

@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -90,6 +90,44 @@ export const resumableHistory = (history: readonly SessionListItem[], live: read
   return history.filter(h => !liveIds.has(h.id))
 }
 
+/** Normalized inline-filter query: trimmed + lowercased. Empty = no filter. */
+export const sessionFilterQuery = (filter: string) => filter.trim().toLowerCase()
+
+const filterHaystackMatch = (parts: ReadonlyArray<string | undefined>, query: string) => {
+  const q = sessionFilterQuery(query)
+
+  return parts.some(part => Boolean(part && part.toLowerCase().includes(q)))
+}
+
+/**
+ * Case-insensitive substring match over a live row's visible fields: title,
+ * preview, session id (or the "current" label shown in its place), model
+ * name (full and short form), and status label.
+ */
+export const liveSessionMatchesFilter = (s: SessionActiveItem, query: string, currentSessionId: null | string) => {
+  const status = s.status ?? 'idle'
+
+  return filterHaystackMatch(
+    [
+      s.title,
+      s.preview,
+      s.id,
+      s.current || (!!currentSessionId && s.id === currentSessionId) ? 'current' : undefined,
+      s.model,
+      shortModel(s.model),
+      STATUS_LABEL[status] ?? status
+    ],
+    query
+  )
+}
+
+/** Same substring match for a resumable-history row's visible fields. */
+export const historySessionMatchesFilter = (h: SessionListItem, query: string) =>
+  filterHaystackMatch([h.title, h.preview, h.id, relativeSessionAge(h.started_at)], query)
+
+/** Replaces the live/resumable count label while a filter is active. */
+export const filteredSessionsCountLabel = (shown: number, total: number) => `${shown} of ${total} rows`
+
 export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
   { role: 'label', text: 'Resumable:' },
   { role: 'text', text: ' ' },
@@ -128,6 +166,8 @@ export const orchestratorContextHintSegments = (newSelected: boolean): Orchestra
 export const orchestratorGlobalHotkeyHintSegments: OrchestratorHintSegment[] = [
   { role: 'hotkey', text: '↑↓' },
   { role: 'text', text: ' move · ' },
+  { role: 'hotkey', text: '/' },
+  { role: 'text', text: ' filter · ' },
   { role: 'hotkey', text: 'Ctrl+N' },
   { role: 'text', text: ' new · ' },
   { role: 'hotkey', text: 'Ctrl+R' },
@@ -311,6 +351,11 @@ export function ActiveSessionSwitcher({
   // different session. Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
+  // Inline text filter (#68381): `/` (or `f`) focuses the filter bar; typing
+  // narrows the live+history rows client-side. The bar renders only while
+  // focused or non-empty, so browsing mode keeps its layout.
+  const [filter, setFilter] = useState('')
+  const [filterFocused, setFilterFocused] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
   // Holds the RAW `session.list` results (pre-dedupe). The quiet 1.5s poll
   // re-derives the resumable list from this against the latest live set, so a
@@ -328,14 +373,39 @@ export function ActiveSessionSwitcher({
   const width = clampOverlayWidth(preferredWidth, maxWidth)
   const promptColumns = Math.max(20, width - 11)
 
+  // Filter derivation: instant, client-side (the arrays are already loaded).
+  // The full `items`/`history` state stays untouched so clearing the filter
+  // restores everything without a reload. The query lives in a ref too so the
+  // async poll's selection re-anchor in load() can see the active filter.
+  const filterQuery = sessionFilterQuery(filter)
+  const filterQueryRef = useRef('')
+  filterQueryRef.current = filterQuery
+
+  const displayItems = useMemo(
+    () => (filterQuery ? items.filter(s => liveSessionMatchesFilter(s, filterQuery, currentSessionId)) : items),
+    [currentSessionId, filterQuery, items]
+  )
+
+  const displayHistory = useMemo(
+    () => (filterQuery ? history.filter(h => historySessionMatchesFilter(h, filterQuery)) : history),
+    [filterQuery, history]
+  )
+
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
   // always rendered) and the live+history list is windowed below it. `total`
-  // is the count of selectable rows (incl. the new row).
-  const liveCount = items.length
-  const histCount = history.length
+  // is the count of selectable rows (incl. the new row). All row indexing is
+  // over the *displayed* (possibly filtered) lists.
+  const liveCount = displayItems.length
+  const histCount = displayHistory.length
   const listLen = liveCount + histCount
   const total = listLen + 1
   const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
+
+  // Keep the selection inside the displayed row range when the filter (or a
+  // poll) shrinks the list under it.
+  useEffect(() => {
+    setSel(s => Math.max(0, Math.min(s, listLen)))
+  }, [listLen])
 
   const load = useCallback(
     // `quiet` skips the loading spinner (used by the live-status poll);
@@ -390,7 +460,12 @@ export function ActiveSessionSwitcher({
         const hist = resumableHistory(rawHistoryRef.current, next)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
-        const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
+        // Selection indexes the *displayed* rows, so re-anchor against the
+        // filtered views of the fresh lists when an inline filter is active.
+        const query = filterQueryRef.current
+        const nextDisplay = query ? next.filter(s => liveSessionMatchesFilter(s, query, currentSessionId)) : next
+        const histDisplay = query ? hist.filter(h => historySessionMatchesFilter(h, query)) : hist
+        const maxSel = nextDisplay.length + histDisplay.length // == total - 1 (new row is index 0)
 
         setItems(next)
         setHistory(hist)
@@ -400,7 +475,9 @@ export function ActiveSessionSwitcher({
           if (initializeSelection) {
             // Land on the current live session (shifted +1 past the pinned new
             // row); with no live sessions, start on the new row itself.
-            return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
+            return nextDisplay.length
+              ? Math.min(currentSessionSelectionIndex(nextDisplay, currentSessionId) + 1, maxSel)
+              : 0
           }
 
           if (s <= 0) {
@@ -413,15 +490,15 @@ export function ActiveSessionSwitcher({
 
           if (s - 1 < prevItems.length) {
             const id = prevItems[s - 1]?.id
-            const i = id ? next.findIndex(x => x.id === id) : -1
+            const i = id ? nextDisplay.findIndex(x => x.id === id) : -1
 
             return i >= 0 ? i + 1 : clamp()
           }
 
           const id = prevHist[s - 1 - prevItems.length]?.id
-          const i = id ? hist.findIndex(x => x.id === id) : -1
+          const i = id ? histDisplay.findIndex(x => x.id === id) : -1
 
-          return i >= 0 ? 1 + next.length + i : clamp()
+          return i >= 0 ? 1 + nextDisplay.length + i : clamp()
         })
         setErr(histError)
         setLoading(false)
@@ -438,9 +515,9 @@ export function ActiveSessionSwitcher({
   )
 
   useEffect(() => {
-    itemsRef.current = items
-    historyDisplayRef.current = history
-  }, [items, history])
+    itemsRef.current = displayItems
+    historyDisplayRef.current = displayHistory
+  }, [displayItems, displayHistory])
 
   useEffect(() => {
     void load()
@@ -464,7 +541,7 @@ export function ActiveSessionSwitcher({
   )
 
   const closeSelected = useCallback(async () => {
-    const target = items[sel - 1]
+    const target = displayItems[sel - 1]
 
     if (!target || rowKind(sel) !== 'live' || closingId) {
       return
@@ -498,7 +575,7 @@ export function ActiveSessionSwitcher({
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+  }, [closingId, currentSessionId, displayItems, history.length, load, onClose, onNew, onSelect, rowKind, sel])
 
   const performDelete = useCallback(
     (id: string) => {
@@ -522,7 +599,7 @@ export function ActiveSessionSwitcher({
 
           rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
           setHistory(prev => prev.filter(h => h.id !== target.id))
-          setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
+          setSel(s => Math.max(0, Math.min(s, itemsRef.current.length + historyDisplayRef.current.length - 1)))
           setErr('')
           setDeleting(false)
         })
@@ -531,7 +608,7 @@ export function ActiveSessionSwitcher({
           setDeleting(false)
         })
     },
-    [deleting, gw, history, items.length]
+    [deleting, gw, history]
   )
 
   const handleRowClick = useCallback(
@@ -542,21 +619,21 @@ export function ActiveSessionSwitcher({
 
       if (kind === 'live') {
         setSel(clamped)
-        onSelect(items[index - 1]!.id)
+        onSelect(displayItems[index - 1]!.id)
 
         return
       }
 
       if (kind === 'history') {
         setSel(clamped)
-        onResume(history[index - 1 - items.length]!.id)
+        onResume(displayHistory[index - 1 - displayItems.length]!.id)
 
         return
       }
 
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [displayHistory, displayItems, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
@@ -582,10 +659,39 @@ export function ActiveSessionSwitcher({
       return
     }
 
+    // Filter-focused scope: printable keys are consumed by the filter bar's
+    // TextInput; the overlay only moves focus. ↓/Enter land on the first
+    // filtered row; Esc clears the filter and returns to browsing.
+    if (filterFocused) {
+      if (key.escape) {
+        setFilter('')
+        setFilterFocused(false)
+
+        return
+      }
+
+      if (key.downArrow || key.return) {
+        setFilterFocused(false)
+        setSel(listLen ? 1 : 0)
+
+        return
+      }
+
+      return
+    }
+
     const lower = ch?.toLowerCase() ?? ''
     const isCtrl = (letter: string) => key.ctrl && (lower === letter || ch === ctrlChar(letter))
 
     if (key.escape) {
+      // With an active filter, Esc first clears it (restoring the full
+      // list); a second Esc closes the overlay as before.
+      if (filterQuery) {
+        setFilter('')
+
+        return
+      }
+
       return onCancel()
     }
 
@@ -618,7 +724,16 @@ export function ActiveSessionSwitcher({
     // `d` arms deletion on a resumable history row. (On the New row `d` is
     // captured by the prompt's TextInput, so it never reaches here.)
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
+      setConfirmDelete(displayHistory[sel - 1 - displayItems.length]?.id ?? null)
+
+      return
+    }
+
+    // `/` (or `f`) focuses the inline filter bar — only while a session row
+    // is selected, so typing a prompt containing these characters on the
+    // "+ new" row never hijacks focus.
+    if ((ch === '/' || lower === 'f') && !key.ctrl && !key.meta && !newSelected) {
+      setFilterFocused(true)
 
       return
     }
@@ -629,6 +744,14 @@ export function ActiveSessionSwitcher({
 
     if (key.upArrow && sel > 0) {
       return setSel(s => Math.max(0, s - 1))
+    }
+
+    // ↑ from the pinned "+ new" row pulls focus back into the filter bar
+    // when a filter is active (the bar sits directly above the rows).
+    if (key.upArrow && sel === 0 && filterQuery) {
+      setFilterFocused(true)
+
+      return
     }
 
     if (key.downArrow && sel < total - 1) {
@@ -644,12 +767,12 @@ export function ActiveSessionSwitcher({
         return
       }
 
-      if (selectedKind === 'live' && items[sel - 1]) {
-        return onSelect(items[sel - 1]!.id)
+      if (selectedKind === 'live' && displayItems[sel - 1]) {
+        return onSelect(displayItems[sel - 1]!.id)
       }
 
-      if (selectedKind === 'history' && history[sel - 1 - items.length]) {
-        return onResume(history[sel - 1 - items.length]!.id)
+      if (selectedKind === 'history' && displayHistory[sel - 1 - displayItems.length]) {
+        return onResume(displayHistory[sel - 1 - displayItems.length]!.id)
       }
     }
   })
@@ -692,9 +815,30 @@ export function ActiveSessionSwitcher({
       <Text bold color={t.color.accent}>
         Sessions
       </Text>
-      <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+      <Text color={t.color.muted}>
+        {filterQuery
+          ? filteredSessionsCountLabel(listLen, items.length + history.length)
+          : sessionsCountLabel(items.length, history.length)}
+      </Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
+
+      {(filterFocused || Boolean(filterQuery)) && (
+        <Box flexDirection="row">
+          <Text color={filterFocused ? t.color.accent : t.color.label}>/ </Text>
+          <TextInput
+            columns={promptColumns}
+            focus={filterFocused}
+            onChange={setFilter}
+            onSubmit={() => {
+              setFilterFocused(false)
+              setSel(listLen ? 1 : 0)
+            }}
+            placeholder="filter sessions…"
+            value={filter}
+          />
+        </Box>
+      )}
 
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
@@ -733,7 +877,12 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
-      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
+      {!listLen &&
+        (filterQuery ? (
+          <Text color={t.color.muted}>no sessions match “{filter.trim()}” — Esc clears the filter</Text>
+        ) : (
+          <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>
+        ))}
 
       {visibleRows.map(i => {
         const selected = sel === i
@@ -742,7 +891,7 @@ export function ActiveSessionSwitcher({
         const kind = rowKind(i)
 
         if (kind === 'history') {
-          const h = history[i - 1 - items.length]!
+          const h = displayHistory[i - 1 - displayItems.length]!
           const pendingDelete = confirmDelete === h.id
 
           const title = pendingDelete
@@ -800,7 +949,7 @@ export function ActiveSessionSwitcher({
           )
         }
 
-        const s = items[i - 1]!
+        const s = displayItems[i - 1]!
         const status = s.status ?? 'idle'
         const current = s.current || s.id === currentSessionId
         const title = closingId === s.id ? 'closing…' : s.title || s.preview || '(untitled)'
@@ -866,7 +1015,13 @@ export function ActiveSessionSwitcher({
         <>
           <Box marginTop={1}>
             <Text color={t.color.label}>prompt › </Text>
-            <TextInput columns={promptColumns} onChange={setDraft} onSubmit={submitDraft} value={draft} />
+            <TextInput
+              columns={promptColumns}
+              focus={!filterFocused}
+              onChange={setDraft}
+              onSubmit={submitDraft}
+              value={draft}
+            />
           </Box>
           <OrchestratorHintText segments={orchestratorContextHintSegments(true)} t={t} />
           <Text color={t.color.muted} wrap="truncate-end">

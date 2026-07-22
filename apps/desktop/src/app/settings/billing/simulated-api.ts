@@ -1,9 +1,5 @@
 import type { BillingApi, BillingResult } from './api'
-import type {
-  BillingStateResponse,
-  SubscriptionPreviewResponse,
-  SubscriptionStateResponse
-} from './types'
+import type { BillingStateResponse, SubscriptionPreviewResponse, SubscriptionStateResponse } from './types'
 
 /** The shape of one `billingDevFixtures` entry — a canned billing + subscription pair. */
 export interface SimulatedFixture {

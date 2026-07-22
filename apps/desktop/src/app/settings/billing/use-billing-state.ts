@@ -5,12 +5,7 @@ import { fmtDate } from '@/lib/time'
 import type { BillingRefusal, BillingResult } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type {
-  BillingStateResponse,
-  SubscriptionStateResponse,
-  SubscriptionTierOption,
-  UsageModelData
-} from './types'
+import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption, UsageModelData } from './types'
 
 export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'

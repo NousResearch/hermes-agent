@@ -304,18 +304,14 @@ describe('BillingSettings', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Downgrade' }))
 
-    await waitFor(() =>
-      expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal')
-    )
+    await waitFor(() => expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal'))
     expect(await screen.findByText(/No charge now/)).toBeTruthy()
     // Credits delta renders as signed dollars, not the raw wire string "-88".
     expect(screen.getByText(/Monthly credits change: −\$88\/mo\./)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm downgrade' }))
 
-    await waitFor(() =>
-      expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal')
-    )
+    await waitFor(() => expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal'))
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
     // Scheduled → back on the overview.
     expect(await screen.findByText('Payment')).toBeTruthy()
@@ -392,10 +388,42 @@ describe('BillingSettings', () => {
         context: 'personal',
         current: { ...todaySubscriptionState.current, tier_id: 't_ultra', tier_name: 'Ultra' },
         tiers: [
-          { dollars_per_month_display: '$0', is_current: false, is_enabled: true, monthly_credits: '0.1', name: 'Free', tier_id: 't_free', tier_order: 0 },
-          { dollars_per_month_display: '$20', is_current: false, is_enabled: true, monthly_credits: '22', name: 'Plus', tier_id: 't_plus', tier_order: 1 },
-          { dollars_per_month_display: '$100', is_current: false, is_enabled: true, monthly_credits: '110', name: 'Super', tier_id: 't_super', tier_order: 2 },
-          { dollars_per_month_display: '$200', is_current: true, is_enabled: true, monthly_credits: '220', name: 'Ultra', tier_id: 't_ultra', tier_order: 3 }
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 't_free',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 't_plus',
+            tier_order: 1
+          },
+          {
+            dollars_per_month_display: '$100',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '110',
+            name: 'Super',
+            tier_id: 't_super',
+            tier_order: 2
+          },
+          {
+            dollars_per_month_display: '$200',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '220',
+            name: 'Ultra',
+            tier_id: 't_ultra',
+            tier_order: 3
+          }
         ]
       })
     )

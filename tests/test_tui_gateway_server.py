@@ -37,6 +37,46 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _join_notification_pollers_started_by_test(monkeypatch):
+    """Keep process-global completion pollers inside their creating test.
+
+    Several session-init tests remove their session from ``server._sessions``
+    during cleanup. The poller still owns the original session dict, so losing
+    that reference before setting its stop event lets a daemon thread consume
+    a later test's replacement completion queue. Track the concrete thread at
+    creation and join it after signalling shutdown.
+    """
+    original_start = server._start_notification_poller
+    started = []
+
+    def _tracked_start(*args, **kwargs):
+        original_thread = server.threading.Thread
+        created = []
+
+        def _capture_thread(*thread_args, **thread_kwargs):
+            thread = original_thread(*thread_args, **thread_kwargs)
+            created.append(thread)
+            return thread
+
+        server.threading.Thread = _capture_thread
+        try:
+            stop = original_start(*args, **kwargs)
+        finally:
+            server.threading.Thread = original_thread
+        started.append((stop, created[-1] if created else None))
+        return stop
+
+    monkeypatch.setattr(server, "_start_notification_poller", _tracked_start)
+    yield
+
+    for stop, _thread in started:
+        stop.set()
+    for _stop, thread in started:
+        if thread is not None and hasattr(thread, "join"):
+            thread.join(timeout=1.0)
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -3426,6 +3466,139 @@ def test_notification_poller_delivers_owned_events(
         assert status_calls[0][2]["kind"] == "process"
         assert len(delivered) == 1
         assert "proc_mine" in delivered[0]
+    finally:
+        server._sessions.pop("sid_a", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_journals_goal_owned_intermediate_without_turn(
+    monkeypatch,
+):
+    """TUI acknowledges an intermediate join event without one turn per child."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = []
+    emitted = []
+    sess = _session(session_key="session-a")
+    server._sessions["sid_a"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.goals.prepare_goal_delegation_delivery",
+        lambda *_args, **_kwargs: {
+            "classification": "current",
+            "prompt": None,
+            "status_message": "waiting for one more delegation",
+        },
+    )
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    isolated_queue.put(
+        {
+            "type": "async_delegation",
+            "delegation_id": "deleg_joining",
+            "session_key": "session-a",
+            "origin_ui_session_id": "sid_a",
+            "goal_id": "goal-1",
+            "requires_goal_join": True,
+            "goal": "child work",
+            "status": "completed",
+            "summary": "child result",
+        }
+    )
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", sess)
+
+        status_calls = [args for args in emitted if args[0] == "status.update"]
+        assert len(status_calls) == 1
+        assert status_calls[0][2]["text"] == "waiting for one more delegation"
+        assert delivered == []
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid_a", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_routes_goal_claim_envelope_through_compute_host(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    stop = threading.Event()
+    stop.set()
+    session = _session(session_key="session-a")
+    session["origin_ui_session_id"] = "sid_a"
+    server._sessions["sid_a"] = session
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_join",
+        "session_key": "session-a",
+        "origin_ui_session_id": "sid_a",
+        "goal_id": "goal-1",
+        "requires_goal_join": True,
+        "goal": "child work",
+        "status": "completed",
+        "summary": "child result",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+    submitted = []
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(
+        server,
+        "_submit_prompt_to_compute_host",
+        lambda _rid, _sid, _session, prompt: (
+            submitted.append(prompt) or {"result": {"status": "streaming"}}
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("isolated reconciliation must not run in-process")
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.goals.prepare_goal_delegation_delivery",
+        lambda *_a, **_k: {
+            "classification": "current",
+            "prompt": "reconcile this batch",
+            "status_message": "",
+            "reconciliation_claim": "recon-1",
+            "reconciliation_attempt": 2,
+            "goal_id": "goal-1",
+            "goal_session_id": "session-a",
+            "delegation_ids": ["deleg_join"],
+        },
+    )
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", session)
+        assert submitted == [{
+            "text": "reconcile this batch",
+            "goal_reconciliation": {
+                "claim_id": "recon-1",
+                "goal_id": "goal-1",
+                "session_id": "session-a",
+                "attempt": 2,
+                "delegation_ids": ["deleg_join"],
+            },
+        }]
     finally:
         server._sessions.pop("sid_a", None)
         while not process_registry.completion_queue.empty():

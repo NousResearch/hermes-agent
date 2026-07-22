@@ -33,6 +33,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -66,6 +67,7 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+DEFAULT_MAX_CONSECUTIVE_RECONCILIATION_FAILURES = 3
 # Transport failures (API auth errors 401, timeouts, DNS, etc.) are also
 # tracked and auto-pause the loop after this many consecutive failures.
 # A broken/invalid API key returns 401 every call — the loop must not
@@ -442,6 +444,12 @@ class GoalState:
     # constraints / boundaries / stop_when). Empty by default; a goal with
     # no contract behaves exactly like the original free-form goal.
     contract: GoalContract = field(default_factory=GoalContract)
+    # Stable identity for the logical goal.  Append-only placement preserves
+    # every positional argument accepted before goal-owned delegation existed.
+    # Session ids rotate during compression, so async work cannot safely use
+    # the persistence key as its owner; ``goal_id`` migrates with the state.
+    goal_id: str = ""
+
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -457,6 +465,7 @@ class GoalState:
             subgoals = [str(s).strip() for s in raw_subgoals if str(s).strip()]
         return cls(
             goal=data.get("goal", ""),
+            goal_id=str(data.get("goal_id") or ""),
             status=data.get("status", "active"),
             turns_used=int(data.get("turns_used", 0) or 0),
             max_turns=int(data.get("max_turns", DEFAULT_MAX_TURNS) or DEFAULT_MAX_TURNS),
@@ -516,7 +525,8 @@ def _get_session_db() -> Optional[Any]:
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
 
-        home = str(get_hermes_home())
+        home_path = get_hermes_home()
+        home = str(home_path)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB bootstrap failed (%s)", exc)
         return None
@@ -525,7 +535,9 @@ def _get_session_db() -> Optional[Any]:
     if cached is not None:
         return cached
     try:
-        db = SessionDB()
+        # Pass the resolved path explicitly.  SessionDB's module-level default
+        # may have been imported under another profile before this call.
+        db = SessionDB(db_path=home_path / "state.db")
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
@@ -548,7 +560,20 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     if not raw:
         return None
     try:
-        return GoalState.from_json(raw)
+        state = GoalState.from_json(raw)
+        if not state.goal_id:
+            # Deterministic backfill prevents two concurrent legacy loads from
+            # minting different owners before either can persist its migration.
+            state.goal_id = "goal_" + uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"hermes-goal:{session_id}:{state.created_at}:{state.goal}",
+            ).hex
+            if not db.compare_and_set_meta(_meta_key(session_id), raw, state.to_json()):
+                # A concurrent clear/replacement won after our read. Reload it
+                # rather than overwriting that lifecycle transition with the
+                # legacy active state merely to persist the ID backfill.
+                return load_goal(session_id)
+        return state
     except Exception as exc:
         logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
         return None
@@ -574,6 +599,8 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+    if state.goal_id:
+        _abandon_goal_work(state.goal_id, "goal cleared")
 
 
 def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
@@ -602,8 +629,11 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
         if load_goal(new_session_id) is not None:
             return False
         save_goal(new_session_id, state)
-        # Archive the parent's row so it isn't double-counted as active.
-        clear_goal(old_session_id)
+        # Archive the parent's row without abandoning required work: this is
+        # the same logical goal moving across a compression boundary.
+        source_marker = GoalState.from_json(state.to_json())
+        source_marker.status = "cleared"
+        save_goal(old_session_id, source_marker)
         logger.debug(
             "GoalManager: migrated goal %s -> %s (%s)",
             old_session_id, new_session_id, reason or "rotation",
@@ -1072,8 +1102,34 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GoalManager — the orchestration surface CLI + gateway talk to
+# Async-delegation join normalization
 # ──────────────────────────────────────────────────────────────────────
+
+
+def get_goal_work_snapshot(goal_id: str) -> Dict[str, Any]:
+    """Read required async work lazily so goals remain usable in light installs."""
+    if not goal_id:
+        return {"available": True}
+    try:
+        from tools.async_delegation import get_goal_work_snapshot
+
+        return get_goal_work_snapshot(goal_id)
+    except Exception as exc:
+        logger.debug("goal work snapshot unavailable for %s: %s", goal_id, exc)
+        return {"goal_id": goal_id, "available": False, "error": str(exc)}
+
+
+def _abandon_goal_work(goal_id: str, reason: str) -> int:
+    if not goal_id:
+        return 0
+    try:
+        from tools.async_delegation import abandon_goal_work
+
+        return abandon_goal_work(goal_id, reason)
+    except Exception as exc:
+        logger.debug("goal work abandon failed for %s: %s", goal_id, exc)
+        return 0
+
 
 
 class GoalManager:
@@ -1120,7 +1176,36 @@ class GoalManager:
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
-        meta = f"{turns}{sub}{con}"
+        snapshot = get_goal_work_snapshot(s.goal_id)
+        running = int(snapshot.get("running_count", 0))
+        ready = int(snapshot.get("terminal_unreconciled_count", 0))
+        claimed = int(snapshot.get("claimed_count", 0))
+        required = int(snapshot.get("required_count", 0))
+        join = ""
+        if snapshot.get("available") is False:
+            join = ", async=unavailable (completion blocked)"
+        elif required:
+            ids = ",".join(str(value) for value in snapshot.get("delegation_ids", [])[:5])
+            raw_tokens = snapshot.get("tokens")
+            tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+            token_total = sum(int(tokens.get(key, 0) or 0) for key in ("input", "output", "reasoning"))
+            last_error = " ".join(str(snapshot.get("last_error") or "").split())[:120]
+            attempt = int(snapshot.get("max_attempt", 0) or 0)
+            join = (
+                f", async={running} running/"
+                f"{int(snapshot.get('completed_count', 0))} completed/"
+                f"{ready} ready/{claimed} claimed/"
+                f"{int(snapshot.get('reconciled_count', 0))} reconciled/"
+                f"{int(snapshot.get('abandoned_count', 0))} abandoned/"
+                f"{int(snapshot.get('failed_count', 0))} failed"
+                f" [{ids}], usage={int(snapshot.get('api_calls', 0))} calls/"
+                f"{token_total} tok/${float(snapshot.get('cost_usd', 0.0) or 0.0):.4f}"
+            )
+            if attempt:
+                join += f", attempt={attempt}"
+            if last_error:
+                join += f", last_error={last_error}"
+        meta = f"{turns}{sub}{con}{join}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 wr = s.waiting_reason or f"session {s.waiting_on_session}"
@@ -1146,8 +1231,10 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        old_goal_id = self._state.goal_id if self._state is not None else ""
         state = GoalState(
             goal=goal,
+            goal_id=f"goal_{uuid.uuid4().hex}",
             status="active",
             turns_used=0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
@@ -1157,6 +1244,11 @@ class GoalManager:
         )
         self._state = state
         save_goal(self.session_id, state)
+        if old_goal_id:
+            # Publish the new owner before abandonment closes the dispatch race:
+            # a concurrent old-goal dispatch either lands before this sweep or
+            # fails its post-persist ownership revalidation.
+            _abandon_goal_work(old_goal_id, "goal replaced")
         return state
 
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
@@ -1203,17 +1295,40 @@ class GoalManager:
     def clear(self) -> None:
         if self._state is None:
             return
+        goal_id = self._state.goal_id
         self._state.status = "cleared"
         save_goal(self.session_id, self._state)
+        if goal_id:
+            _abandon_goal_work(goal_id, "goal cleared")
         self._state = None
 
     def mark_done(self, reason: str) -> None:
         if not self._state:
             return
+        snapshot = get_goal_work_snapshot(self._state.goal_id)
+        outstanding = (
+            int(snapshot.get("running_count", 0))
+            + int(snapshot.get("terminal_unreconciled_count", 0))
+            + int(snapshot.get("claimed_count", 0))
+        )
+        if snapshot.get("available") is False or outstanding:
+            blocked_reason = (
+                "required async mailbox unavailable"
+                if snapshot.get("available") is False
+                else f"waiting for {outstanding} required async delegation result(s)"
+            )
+            self._state.last_verdict = "waiting_for_reconciliation"
+            self._state.last_reason = blocked_reason
+            if self._state.turns_used >= self._state.max_turns:
+                self._state.status = "paused"
+                self._state.paused_reason = f"turn budget exhausted while {blocked_reason}"
+            save_goal(self.session_id, self._state)
+            return
         self._state.status = "done"
         self._state.last_verdict = "done"
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
+
 
     # --- /subgoal user controls ---------------------------------------
 
@@ -1418,6 +1533,7 @@ class GoalManager:
                 "message": "",
             }
 
+
         # Wait barrier: if the loop is parked (on a live process OR a time
         # deadline that hasn't passed), quiesce — do NOT burn a turn or call
         # the judge. Resumes automatically once the barrier clears.
@@ -1497,6 +1613,62 @@ class GoalManager:
             }
 
         if verdict == "done":
+            snapshot = get_goal_work_snapshot(state.goal_id)
+            if snapshot.get("available") is False:
+                state.last_verdict = "waiting_for_reconciliation"
+                state.last_reason = "required async mailbox unavailable; refusing terminal transition"
+                if state.turns_used >= state.max_turns:
+                    state.status = "paused"
+                    state.paused_reason = (
+                        "turn budget exhausted while required async mailbox was unavailable"
+                    )
+                save_goal(self.session_id, state)
+                return {
+                    "status": state.status,
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "waiting_for_reconciliation",
+                    "reason": state.last_reason,
+                    "message": "⏳ Goal completion blocked — async mailbox unavailable.",
+                    "turns_used": state.turns_used,
+                    "max_turns": state.max_turns,
+                }
+            running = int(snapshot.get("running_count", 0))
+            unreconciled = int(snapshot.get("terminal_unreconciled_count", 0))
+            claimed = int(snapshot.get("claimed_count", 0))
+            if running or unreconciled or claimed:
+                ids = [str(value) for value in snapshot.get("delegation_ids", [])[:5]]
+                detail = ", ".join(ids)
+                if running:
+                    waiting_verdict = "waiting_for_required_work"
+                    waiting_reason = f"{running} required async delegation(s) still running"
+                else:
+                    waiting_verdict = "waiting_for_reconciliation"
+                    waiting_reason = (
+                        f"{unreconciled + claimed} required async delegation result(s) "
+                        "await reconciliation"
+                    )
+                if detail:
+                    waiting_reason = f"{waiting_reason}: {detail}"
+                state.last_reason = f"candidate done blocked — {waiting_reason}; judge: {reason}"
+                if state.turns_used >= state.max_turns:
+                    state.status = "paused"
+                    state.paused_reason = f"required work pending at turn budget: {waiting_reason}"
+                    message = (
+                        f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used "
+                        f"with {waiting_reason}. Use /goal resume after the work settles."
+                    )
+                else:
+                    message = f"⏳ Goal candidate complete; {waiting_reason}."
+                save_goal(self.session_id, state)
+                return {
+                    "status": state.status,
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": waiting_verdict,
+                    "reason": waiting_reason,
+                    "message": message,
+                }
             state.status = "done"
             save_goal(self.session_id, state)
             return {
@@ -1628,6 +1800,256 @@ class GoalManager:
         if not self._state.has_contract():
             return "(no completion contract — set one with /goal draft <objective> or inline field: value lines)"
         return self._state.contract.render_block()
+
+
+def _load_goal_owner_strict(session_id: str) -> Optional[GoalState]:
+    """Read goal ownership without conflating storage failure with no goal."""
+    if not session_id:
+        return None
+    db = _get_session_db()
+    if db is None:
+        raise RuntimeError("goal persistence is unavailable")
+    raw = db.get_meta(_meta_key(session_id))
+    if not raw:
+        return None
+    state = GoalState.from_json(raw)
+    if not state.goal_id:
+        state.goal_id = "goal_" + uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"hermes-goal:{session_id}:{state.created_at}:{state.goal}",
+        ).hex
+        if not db.compare_and_set_meta(_meta_key(session_id), raw, state.to_json()):
+            return _load_goal_owner_strict(session_id)
+    return state
+
+
+def capture_goal_delegation_owner(session_id: str) -> Optional[Dict[str, Any]]:
+    """Capture the stable owner, raising when ownership cannot be inspected."""
+    state = _load_goal_owner_strict(session_id)
+    if state is None or state.status != "active" or not state.goal_id:
+        return None
+    return {"goal_id": state.goal_id, "requires_goal_join": True}
+
+
+def goal_owner_is_current(session_id: str, goal_id: str) -> bool:
+    state = _load_goal_owner_strict(session_id)
+    return bool(
+        state is not None
+        and state.status == "active"
+        and state.goal_id == str(goal_id or "")
+    )
+
+
+def _goal_session_candidates(event: Dict[str, Any], current_session_id: str = "") -> List[str]:
+    """Return raw + compression-resolved session ids for completion ownership."""
+    raw_candidates = [
+        current_session_id,
+        str(event.get("goal_owner_session_id") or ""),
+        str(event.get("parent_session_id") or ""),
+        str(event.get("session_key") or ""),
+    ]
+    db = _get_session_db()
+    candidates: List[str] = []
+    for raw in raw_candidates:
+        raw = str(raw or "").strip()
+        if not raw:
+            continue
+        resolved = raw
+        if db is not None:
+            try:
+                resolved = str(db.resolve_resume_session_id(raw) or raw)
+            except Exception:
+                resolved = raw
+        for value in (resolved, raw):
+            if value and value not in candidates:
+                candidates.append(value)
+    return candidates
+
+
+def _claim_reconciliation_for_state(
+    state: GoalState,
+    *,
+    session_id: str,
+    consumer: str,
+) -> Dict[str, Any]:
+    from tools.async_delegation import claim_goal_reconciliation
+    from tools.process_registry import format_goal_reconciliation_claim
+
+    snapshot = get_goal_work_snapshot(state.goal_id)
+    if snapshot.get("overflow"):
+        GoalManager(session_id).pause("required async mailbox exceeded 1000 pending rows")
+        return {
+            "classification": "paused",
+            "prompt": None,
+            "status_message": (
+                "Goal paused: required async mailbox exceeded 1000 pending rows; "
+                "inspect /goal status and resume after reducing the backlog."
+            ),
+        }
+    if state.status != "active":
+        pending = int(snapshot.get("terminal_unreconciled_count", 0))
+        return {
+            "classification": "paused",
+            "prompt": None,
+            "status_message": (
+                f"Goal paused; retained {pending} async delegation result(s) "
+                "for /goal resume."
+            ),
+        }
+    claim = claim_goal_reconciliation(state.goal_id, consumer)
+    if claim is None:
+        return {
+            "classification": "current",
+            "prompt": None,
+            "status_message": "",
+        }
+    prompt = format_goal_reconciliation_claim(claim, goal=state.goal)
+    return {
+        "classification": "current",
+        "prompt": prompt,
+        "status_message": (
+            f"Reconciling {len(claim.get('delegation_ids') or [])} async "
+            "delegation result(s) with the standing goal."
+        ),
+        "reconciliation_claim": claim.get("claim_id"),
+        "goal_id": state.goal_id,
+        "goal_session_id": session_id,
+        "delegation_ids": list(claim.get("delegation_ids") or []),
+        "reconciliation_attempt": int(claim.get("attempt", 1) or 1),
+    }
+
+
+def prepare_goal_delegation_delivery(
+    event: Dict[str, Any],
+    passive_prompt: str,
+    *,
+    current_session_id: str = "",
+    consumer: str = "goal-reconciliation",
+) -> Dict[str, Any]:
+    """Claim a coalesced mailbox batch for a current goal-owned completion."""
+    if (
+        event.get("type") != "async_delegation"
+        or not event.get("goal_id")
+        or not event.get("requires_goal_join")
+    ):
+        return {
+            "classification": "unowned",
+            "prompt": passive_prompt,
+            "status_message": "",
+        }
+
+    event_goal_id = str(event.get("goal_id") or "")
+    for session_id in _goal_session_candidates(event, current_session_id):
+        state = GoalManager(session_id).state
+        if state is None or state.goal_id != event_goal_id:
+            continue
+        return _claim_reconciliation_for_state(
+            state,
+            session_id=session_id,
+            consumer=consumer,
+        )
+
+    return {
+        "classification": "superseded",
+        "prompt": passive_prompt,
+        "status_message": "",
+    }
+
+
+def prepare_goal_resume(session_id: str, *, consumer: str) -> Dict[str, Any]:
+    """Claim retained mailbox work before an ordinary resumed continuation."""
+    manager = GoalManager(session_id)
+    state = manager.state
+    if state is None or state.status != "active":
+        return {"prompt": None}
+    return _claim_reconciliation_for_state(
+        state,
+        session_id=session_id,
+        consumer=consumer,
+    )
+
+def complete_goal_reconciliation_turn(claim_id: str) -> bool:
+    """Acknowledge semantic rows only after the parent turn succeeded."""
+    from tools.async_delegation import (
+        build_goal_reconciliation_followup_event,
+        complete_goal_reconciliation,
+    )
+    from tools.process_registry import process_registry
+
+    completed = complete_goal_reconciliation(claim_id)
+    if completed:
+        followup = build_goal_reconciliation_followup_event(claim_id)
+        if followup:
+            process_registry.completion_queue.put(followup)
+    return completed
+
+
+def reconciliation_turn_succeeded(
+    final_text: Any,
+    *,
+    interrupted: bool = False,
+    failed: bool = False,
+    partial: bool = False,
+    error: bool = False,
+) -> bool:
+    """One success predicate shared by every reconciliation delivery surface."""
+    return bool(
+        isinstance(final_text, str)
+        and final_text.strip()
+        and not interrupted
+        and not failed
+        and not partial
+        and not error
+    )
+
+
+def _queue_goal_reconciliation_retry(goal_id: str, session_id: str) -> None:
+    from tools.async_delegation import build_goal_reconciliation_retry_event
+    from tools.process_registry import process_registry
+
+    retry_event = build_goal_reconciliation_retry_event(goal_id, session_id)
+    if retry_event is not None:
+        process_registry.completion_queue.put(retry_event)
+
+
+def release_goal_reconciliation_turn(
+    claim_id: str,
+    *,
+    session_id: str,
+    goal_id: str,
+    attempt: int,
+    turn_started: bool = True,
+    requeue: bool = True,
+) -> bool:
+    """Release a failed turn and auto-pause after three failed attempts."""
+    from tools.async_delegation import release_goal_reconciliation
+
+    released = release_goal_reconciliation(
+        claim_id,
+        decrement_attempt=not turn_started,
+    )
+    if not turn_started:
+        if released and requeue:
+            try:
+                _queue_goal_reconciliation_retry(goal_id, session_id)
+            except Exception:
+                logger.exception("Failed to queue goal reconciliation retry for %s", goal_id)
+        return released
+    attempt = int(attempt or 0)
+    if released and attempt < DEFAULT_MAX_CONSECUTIVE_RECONCILIATION_FAILURES:
+        try:
+            _queue_goal_reconciliation_retry(goal_id, session_id)
+        except Exception:
+            logger.exception("Failed to queue goal reconciliation retry for %s", goal_id)
+    if released and attempt >= DEFAULT_MAX_CONSECUTIVE_RECONCILIATION_FAILURES:
+        manager = GoalManager(session_id)
+        state = manager.state
+        if state is not None and state.goal_id == goal_id and state.status == "active":
+            manager.pause(
+                "async delegation reconciliation failed "
+                f"{attempt} times; use /goal resume to retry"
+            )
+    return released
 
 
 # ──────────────────────────────────────────────────────────────────────

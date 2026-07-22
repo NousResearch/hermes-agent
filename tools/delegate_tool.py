@@ -2267,6 +2267,10 @@ def _run_single_child(
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
         try:
+            entry["tokens"]["reasoning"] = int(_reasoning_tokens or 0)
+        except (TypeError, ValueError):
+            entry["tokens"]["reasoning"] = 0
+        try:
             _files_read = list(file_state.known_reads(child_task_id))[:40]
         except Exception:
             _files_read = []
@@ -2815,7 +2819,11 @@ def delegate_task(
             child_cost = entry.pop("_child_cost_usd", 0.0)
             try:
                 if child_cost:
-                    _children_cost_total += float(child_cost)
+                    normalized_child_cost = float(child_cost)
+                    _children_cost_total += normalized_child_cost
+                    # Keep the per-child amount in the returned/durable result
+                    # journal as well as rolling it into the parent footer.
+                    entry["cost_usd"] = normalized_child_cost
             except (TypeError, ValueError):
                 pass
             if _invoke_hook is None:
@@ -2967,7 +2975,50 @@ def delegate_task(
             if _agent_session_id:
                 _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
+        _inherited_goal_id = getattr(parent_agent, "_root_goal_id", "")
+        _root_goal_id = _inherited_goal_id if isinstance(_inherited_goal_id, str) else ""
+        _inherited_owner_session_id = getattr(
+            parent_agent, "_root_goal_owner_session_id", ""
+        )
+        _root_goal_owner_session_id = (
+            _inherited_owner_session_id
+            if isinstance(_inherited_owner_session_id, str)
+            else ""
+        )
+        _inherited_parent_id = getattr(parent_agent, "_delegation_id", "")
+        _parent_delegation_id = (
+            _inherited_parent_id if isinstance(_inherited_parent_id, str) else ""
+        )
+        if not _root_goal_id and _parent_session_id:
+            try:
+                from hermes_cli.goals import capture_goal_delegation_owner
+
+                _goal_owner = capture_goal_delegation_owner(str(_parent_session_id))
+                _root_goal_id = str((_goal_owner or {}).get("goal_id") or "")
+                if _root_goal_id:
+                    _root_goal_owner_session_id = str(_parent_session_id)
+            except Exception:
+                logger.warning(
+                    "Could not verify standing-goal ownership; running delegation synchronously",
+                    exc_info=True,
+                )
+                _sync_result = _execute_and_aggregate()
+                if isinstance(_sync_result, dict):
+                    _sync_result["note"] = (
+                        "Background delegation was not started because durable standing-goal "
+                        "ownership could not be verified. The subagent(s) ran synchronously "
+                        "and their result is included above."
+                    )
+                return json.dumps(_sync_result, ensure_ascii=False)
         _child_agents = [c for (_, _, c) in children]
+
+        from tools.async_delegation import new_delegation_id
+
+        _outer_delegation_id = live_deleg_id or new_delegation_id()
+        for _child in _child_agents:
+            _child._root_goal_id = _root_goal_id
+            _child._root_goal_owner_session_id = _root_goal_owner_session_id
+            _child._delegation_id = _outer_delegation_id
 
         # Detach every child from the parent's interrupt-propagation list — the
         # batch's lifecycle is owned by the async registry now, not the parent
@@ -3009,12 +3060,16 @@ def delegate_task(
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             parent_session_id=_parent_session_id,
+            goal_id=_root_goal_id,
+            requires_goal_join=bool(_root_goal_id),
+            parent_delegation_id=_parent_delegation_id,
+            goal_owner_session_id=_root_goal_owner_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
-            delegation_id=live_deleg_id,
+            delegation_id=_outer_delegation_id,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -3039,6 +3094,12 @@ def delegate_task(
                 "goals": _goals,
                 "note": note,
             }
+            if dispatch.get("goal_id"):
+                payload["goal_owner"] = {
+                    "goal_id": dispatch["goal_id"],
+                    "requires_goal_join": True,
+                    "parent_delegation_id": dispatch.get("parent_delegation_id", ""),
+                }
             if live_paths:
                 payload["live_transcripts"] = list(live_paths)
                 payload["live_transcripts_hint"] = (
@@ -3049,23 +3110,30 @@ def delegate_task(
                 )
             return json.dumps(payload, ensure_ascii=False)
 
-        # Pool at capacity / schedule failure — children are still attached
-        # (we detach above only on the parent list, but the async unit was
-        # never accepted, so re-attaching isn't needed: we just run inline).
+        # Rejected persistence/capacity means no detached unit exists. Keep the
+        # established safe fallback: execute inline and return the result.
+        _dispatch_error = str(dispatch.get("error", "rejected"))
         logger.info(
-            "delegate_task: async pool at capacity (%s); running the whole "
+            "delegate_task: background dispatch rejected (%s); running the whole "
             "batch synchronously instead.",
-            dispatch.get("error", "rejected"),
+            _dispatch_error,
         )
         _cap_result = _execute_and_aggregate()
         if isinstance(_cap_result, dict):
-            _cap_result["note"] = (
-                "The background delegation pool was at capacity "
-                "(delegation.max_concurrent_children), so the subagent(s) ran "
-                "SYNCHRONOUSLY and the result is included above. Raise "
-                "delegation.max_concurrent_children in config.yaml to allow "
-                "more concurrent background delegations."
-            )
+            if "goal owner is no longer current" in _dispatch_error:
+                _cap_result["note"] = (
+                    "The standing goal changed while background dispatch was being "
+                    "recorded, so stale required work was not detached. The "
+                    "subagent(s) ran SYNCHRONOUSLY and the result is included above."
+                )
+            else:
+                _cap_result["note"] = (
+                    "The background delegation pool was at capacity or could not "
+                    "durably accept the work, so the subagent(s) ran SYNCHRONOUSLY "
+                    "and the result is included above. Raise "
+                    "delegation.max_concurrent_children in config.yaml if the pool "
+                    "is at capacity."
+                )
         return json.dumps(_cap_result, ensure_ascii=False)
 
     # ----- Synchronous path -----

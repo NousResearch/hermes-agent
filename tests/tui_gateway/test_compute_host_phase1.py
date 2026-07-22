@@ -77,6 +77,153 @@ def test_compute_host_frame_protocol_round_trip():
         host.close()
 
 
+def test_isolated_turn_carries_and_consumes_pending_goal_reconciliation(monkeypatch):
+    from tui_gateway import server
+
+    session = {
+        "session_key": "goal-session",
+        "history": [],
+        "history_lock": threading.RLock(),
+        "history_version": 0,
+        "attached_images": [],
+        "pending_goal_reconciliation": {
+            "claim_id": "recon-1",
+            "goal_id": "goal-1",
+            "session_id": "goal-session",
+            "attempt": 2,
+            "delegation_ids": ["deleg-1"],
+            "_prompt": "reconcile durable results",
+        },
+    }
+    captured = {}
+
+    class _Supervisor:
+        def submit_turn(self, frame, *, on_complete=None):
+            captured["frame"] = frame
+            captured["on_complete"] = on_complete
+            return frame["request_id"]
+
+    completions = []
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg: _Supervisor())
+    monkeypatch.setattr(
+        server,
+        "_on_compute_host_turn_done",
+        lambda _rid, _sid, _session, frame: completions.append(frame),
+    )
+
+    response = server._submit_prompt_to_compute_host(
+        "rid-1", "sid-1", session, "reconcile durable results"
+    )
+
+    assert "error" not in response
+    assert captured["frame"]["text"] == {
+        "text": "reconcile durable results",
+        "goal_reconciliation": {
+            "claim_id": "recon-1",
+            "goal_id": "goal-1",
+            "session_id": "goal-session",
+            "attempt": 2,
+            "delegation_ids": ["deleg-1"],
+        },
+    }
+    assert "pending_goal_reconciliation" not in session
+
+    captured["on_complete"](
+        {
+            "type": "turn.error",
+            "reason": "session_busy",
+            "turn_started": False,
+            "message": "busy",
+        }
+    )
+    assert completions[0]["_goal_reconciliation"]["claim_id"] == "recon-1"
+
+
+def test_isolated_turn_restores_pending_reconciliation_on_send_failure(monkeypatch):
+    from tui_gateway import server
+
+    pending = {
+        "claim_id": "recon-1",
+        "goal_id": "goal-1",
+        "session_id": "goal-session",
+        "attempt": 1,
+        "_prompt": "reconcile durable results",
+    }
+    session = {
+        "session_key": "goal-session",
+        "history": [],
+        "history_lock": threading.RLock(),
+        "history_version": 0,
+        "attached_images": [],
+        "pending_goal_reconciliation": dict(pending),
+    }
+
+    class _BrokenSupervisor:
+        def submit_turn(self, _frame, *, on_complete=None):
+            raise RuntimeError("pipe closed")
+
+    monkeypatch.setattr(
+        server,
+        "_get_compute_host_supervisor",
+        lambda _cfg: _BrokenSupervisor(),
+    )
+
+    response = server._submit_prompt_to_compute_host(
+        "rid-1", "sid-1", session, "reconcile durable results"
+    )
+
+    assert response["error"]["code"] == 5019
+    assert session["pending_goal_reconciliation"] == pending
+
+
+def test_compute_host_error_releases_goal_reconciliation_claim(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import hermes_cli.goals as goals
+    from tui_gateway import server
+
+    session = {
+        "session_key": "goal-session",
+        "history_lock": threading.RLock(),
+        "history_version": 0,
+        "running": True,
+        "agent": None,
+    }
+    release = MagicMock(return_value={"released": True})
+    monkeypatch.setattr(goals, "release_goal_reconciliation_turn", release)
+    monkeypatch.setattr(server, "_clear_inflight_turn", lambda _session: None)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_apply_compute_host_metadata_mirror", lambda *_a: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_a: {})
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_a: False)
+
+    server._on_compute_host_turn_done(
+        "rid-1",
+        "sid-1",
+        session,
+        {
+            "type": "turn.error",
+            "reason": "session_busy",
+            "turn_started": False,
+            "message": "busy",
+            "_goal_reconciliation": {
+                "claim_id": "recon-1",
+                "goal_id": "goal-1",
+                "session_id": "goal-session",
+                "attempt": 2,
+            },
+        },
+    )
+
+    release.assert_called_once_with(
+        "recon-1",
+        session_id="goal-session",
+        goal_id="goal-1",
+        attempt=2,
+        turn_started=False,
+    )
+
+
 def test_compute_host_interrupt_control_is_not_queued_behind_turn():
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
@@ -146,6 +293,29 @@ def test_compute_host_parent_guard_exits_when_parent_pid_changes(monkeypatch):
     assert orphan["old_ppid"] == 111
     assert orphan["ppid"] == 222
     assert isinstance(orphan["host_ns"], int)
+
+
+def test_supervisor_crash_reports_whether_each_turn_started(tmp_path):
+    completions = []
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "compute-host.json",
+        argv=[sys.executable, "-c", ""],
+        rpc_sink=lambda _frame: None,
+        autostart=False,
+    )
+    supervisor._pending_turns = {
+        "before": ("sid", completions.append, False),
+        "during": ("sid", completions.append, False),
+    }
+
+    supervisor._handle_host_frame(
+        {"type": "turn.started", "request_id": "during", "sid": "sid"}
+    )
+    supervisor._fail_pending_turns(reason="crash", message="host exited")
+
+    by_id = {frame["request_id"]: frame for frame in completions}
+    assert by_id["before"]["turn_started"] is False
+    assert by_id["during"]["turn_started"] is True
 
 
 def test_mutator_route_table_matches_prd_inventory():

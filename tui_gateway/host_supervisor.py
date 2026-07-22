@@ -160,7 +160,9 @@ class HostSupervisor:
         self._closing = False
         self._stopped_respawning = False
         self._restart_times: list[float] = []
-        self._pending_turns: dict[str, tuple[str, Callable[[dict], None] | None]] = {}
+        self._pending_turns: dict[
+            str, tuple[str, Callable[[dict], None] | None, bool]
+        ] = {}
         self._pending_controls: dict[str, queue.Queue[dict]] = {}
         self._stderr_tail: list[str] = []
         self._last_progress_counter = 0
@@ -243,7 +245,7 @@ class HostSupervisor:
         payload["type"] = "turn.start"
         payload["request_id"] = request_id
         with self._lock:
-            self._pending_turns[request_id] = (sid, on_complete)
+            self._pending_turns[request_id] = (sid, on_complete, False)
         try:
             self._send_frame(payload)
         except Exception as exc:
@@ -417,6 +419,14 @@ class HostSupervisor:
             if isinstance(message, dict):
                 self.rpc_sink(message)
             return
+        if ftype == "turn.started":
+            request_id = str(frame.get("request_id") or "")
+            with self._lock:
+                pending = self._pending_turns.get(request_id)
+                if pending is not None:
+                    sid, callback, _started = pending
+                    self._pending_turns[request_id] = (sid, callback, True)
+            return
         if ftype in {"turn.end", "turn.error"}:
             self._complete_turn(frame)
             return
@@ -446,7 +456,7 @@ class HostSupervisor:
             pending = self._pending_turns.pop(request_id, None)
         if pending is None:
             return
-        _sid, cb = pending
+        _sid, cb, _started = pending
         if cb is not None:
             try:
                 cb(frame)
@@ -469,12 +479,13 @@ class HostSupervisor:
         with self._lock:
             pending = self._pending_turns
             self._pending_turns = {}
-        for request_id, (sid, cb) in pending.items():
+        for request_id, (sid, cb, turn_started) in pending.items():
             frame = {
                 "type": "turn.error",
                 "sid": sid,
                 "request_id": request_id,
                 "reason": reason,
+                "turn_started": turn_started,
                 "message": message,
             }
             self.rpc_sink(

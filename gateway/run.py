@@ -11755,8 +11755,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        _reconciliation = {}
+        if isinstance(getattr(event, "metadata", None), dict):
+            raw_reconciliation = event.metadata.get("goal_reconciliation")
+            if isinstance(raw_reconciliation, dict):
+                _reconciliation = raw_reconciliation
+        _reconciliation_finalized = False
 
         try:
+            if _reconciliation:
+                _reconciliation["_turn_started"] = True
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
@@ -11770,6 +11778,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
+                if _reconciliation:
+                    claim_id = str(_reconciliation.get("claim_id") or "")
+                    from hermes_cli.goals import reconciliation_turn_succeeded
+
+                    result_meta = _agent_result if isinstance(_agent_result, dict) else {}
+                    turn_succeeded = reconciliation_turn_succeeded(
+                        _final_text,
+                        interrupted=bool(result_meta.get("interrupted")),
+                        failed=bool(result_meta.get("failed")),
+                        partial=bool(result_meta.get("partial")),
+                        error=bool(result_meta.get("error")),
+                    )
+                    if claim_id and turn_succeeded:
+                        from hermes_cli.goals import complete_goal_reconciliation_turn
+
+                        complete_goal_reconciliation_turn(claim_id)
+                        _reconciliation["_completed"] = True
+                        _reconciliation_finalized = True
+                    elif claim_id:
+                        from hermes_cli.goals import release_goal_reconciliation_turn
+
+                        release_goal_reconciliation_turn(
+                            claim_id,
+                            session_id=str(_reconciliation.get("session_id") or ""),
+                            goal_id=str(_reconciliation.get("goal_id") or ""),
+                            attempt=int(_reconciliation.get("attempt", 1) or 1),
+                        )
+                        _reconciliation["_released"] = True
+                        _reconciliation_finalized = True
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
@@ -11788,6 +11825,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
+            if _reconciliation and not _reconciliation_finalized:
+                try:
+                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                    release_goal_reconciliation_turn(
+                        str(_reconciliation.get("claim_id") or ""),
+                        session_id=str(_reconciliation.get("session_id") or ""),
+                        goal_id=str(_reconciliation.get("goal_id") or ""),
+                        attempt=int(_reconciliation.get("attempt", 1) or 1),
+                    )
+                    _reconciliation["_released"] = True
+                except Exception:
+                    logger.debug("goal reconciliation release failed", exc_info=True)
             # MoA one-shot restore must run on EVERY exit path, not just
             # success. The restore data lives on the per-turn event object
             # (_moa_restore_override), which is discarded once the event goes
@@ -17217,7 +17267,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     async def _inject_watch_notification(
-        self, synth_text: str, evt: dict,
+        self, synth_text: str, evt: dict, *, internal_metadata: Optional[dict] = None,
     ) -> Optional[bool]:
         """Inject a watch/completion notification as a synthetic message event.
 
@@ -17244,7 +17294,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return None
         try:
-            metadata = {}
+            metadata = dict(internal_metadata or {})
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
@@ -17356,7 +17406,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         identity = self._completion_delivery_identity(evt)
         durable_claim_id = ""
         durable_delegation_id = ""
-        if evt.get("type") == "async_delegation":
+        if evt.get("type") == "async_delegation" and not evt.get("semantic_recovery"):
             durable_delegation_id = str(evt.get("delegation_id") or "")
             if durable_delegation_id:
                 try:
@@ -17426,10 +17476,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._completion_deliveries_inflight.add(identity)
 
         accepted = False
+        reconciliation = {}
         try:
-            injection_result = await self._inject_watch_notification(synth_text, evt)
-            if injection_result is not True:
-                return injection_result
+            delivery_text = synth_text
+            if evt.get("type") == "async_delegation":
+                # Even a coalesced intermediate completion needs a valid owner
+                # route before its durable result can be acknowledged.
+                source = self._build_process_event_source(evt)
+                if not source:
+                    return None
+                quick_key = self._session_key_for_source(source)
+                if quick_key in getattr(self, "_running_agents", {}):
+                    # Do not mutate join state while the dispatching parent turn
+                    # is still being judged.  The watcher retries once the
+                    # session boundary is idle, matching CLI/TUI ordering.
+                    return False
+                from hermes_cli.goals import prepare_goal_delegation_delivery
+
+                decision = prepare_goal_delegation_delivery(
+                    evt,
+                    synth_text,
+                    consumer="gateway-goal-reconciliation",
+                )
+                delivery_text = decision.get("prompt")
+                status_message = str(decision.get("status_message") or "")
+                if status_message:
+                    logger.info("Goal-owned async join: %s", status_message)
+                    if decision.get("classification") == "paused":
+                        await self._send_goal_status_notice(source, status_message)
+                claim_id = str(decision.get("reconciliation_claim") or "")
+                if claim_id:
+                    reconciliation = {
+                        "claim_id": claim_id,
+                        "goal_id": decision.get("goal_id"),
+                        "session_id": decision.get("goal_session_id"),
+                        "attempt": decision.get("reconciliation_attempt", 1),
+                        "delegation_ids": decision.get("delegation_ids") or [],
+                    }
+
+            if delivery_text:
+                injection_result = await self._inject_watch_notification(
+                    delivery_text,
+                    evt,
+                    internal_metadata=(
+                        {"goal_reconciliation": reconciliation} if reconciliation else None
+                    ),
+                )
+                if injection_result is not True:
+                    return injection_result
+            # No prompt means this transport event found no claimable mailbox
+            # batch (for example a sibling event covered by an in-flight claim)
+            # or the goal is paused. The durable row remains authoritative.
             accepted = True
 
             if identity is not None:
@@ -17471,6 +17568,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 except Exception:
                     logger.debug("Could not release durable completion claim", exc_info=True)
+            if (
+                reconciliation
+                and not accepted
+                and not reconciliation.get("_released")
+                and not reconciliation.get("_completed")
+            ):
+                try:
+                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                    release_goal_reconciliation_turn(
+                        str(reconciliation.get("claim_id") or ""),
+                        session_id=str(reconciliation.get("session_id") or ""),
+                        goal_id=str(reconciliation.get("goal_id") or ""),
+                        attempt=int(reconciliation.get("attempt", 1) or 1),
+                        turn_started=bool(reconciliation.get("_turn_started")),
+                        requeue=False,
+                    )
+                except Exception:
+                    logger.debug("Could not release goal reconciliation claim", exc_info=True)
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -17508,9 +17624,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         handled by ``_run_process_watcher`` / the post-turn drain).
         """
         await asyncio.sleep(3)  # let platforms finish connecting
+        from tools.async_delegation import recover_stale_goal_reconciliation_claims
         from tools.process_registry import process_registry as _pr
+        last_claim_recovery_at = 0.0
         while self._running:
             try:
+                now = time.monotonic()
+                if now - last_claim_recovery_at >= 30.0:
+                    last_claim_recovery_at = now
+                    recover_stale_goal_reconciliation_claims(_pr.completion_queue)
                 # Peek the queue for async-delegation events. We must NOT
                 # consume watch/completion events here (other drains own them),
                 # so requeue anything that isn't ours.

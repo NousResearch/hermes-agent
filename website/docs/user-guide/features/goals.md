@@ -131,6 +131,14 @@ Typical flow: the agent pushes a PR, starts a CI watcher with `terminal(backgrou
 
 ## Behavior details
 
+### Required asynchronous delegation work
+
+When Hermes starts a background `delegate_task` while a standing goal is active, that delegation becomes required work owned by the goal. The goal cannot be marked done until every required delegation has reached a terminal state and its result has been reconciled in the parent conversation. Nested delegations keep the same root goal owner, while each child retains its parent-delegation lineage.
+
+Intermediate completions are recorded without spending another model turn. Once the required work is terminal, Hermes runs an internal reconciliation turn with a bounded batch of durable results, then resumes normal goal evaluation. Each delegation keeps its own call and token limits; goal status aggregates usage and cost for observability but does not reinterpret those child budgets. A restart, session compression, or temporary delivery failure does not drop this barrier: ownership, results, claims, and retry state are persisted and stale claims are recovered automatically. If reconciliation turns repeatedly fail after starting, Hermes pauses the goal after three consecutive failures instead of silently completing or retrying forever.
+
+`/goal status` reports required async work as running, ready for reconciliation, or currently claimed. `/goal resume` reconciles ready work before issuing an ordinary continuation. Replacing or clearing a goal abandons its outstanding required work so late results cannot influence the replacement goal. Ordinary background delegations started outside a standing goal retain their existing delivery behavior and do not create a goal barrier.
+
 ### The judge
 
 After every turn, Hermes calls an auxiliary model with:
@@ -141,9 +149,9 @@ After every turn, Hermes calls an auxiliary model with:
 
 The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced, or when the goal is unachievable/blocked (treated as DONE with a block reason so we don't burn budget on impossible tasks).
 
-### Fail-open semantics
+### Judge fail-open semantics
 
-If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
+If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop. Required-work persistence is intentionally different: if Hermes cannot verify a goal's durable async-work state, completion remains blocked until storage is available again.
 
 ### Turn budget
 

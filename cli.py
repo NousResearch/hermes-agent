@@ -9597,9 +9597,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         from tools.async_delegation import (
             claim_event_delivery,
             complete_event_delivery,
+            recover_stale_goal_reconciliation_claims,
+            release_event_delivery,
         )
 
         session_key = getattr(self, "session_id", "") or ""
+        now = time.monotonic()
+        if now - float(getattr(self, "_last_goal_claim_recovery_at", 0.0) or 0.0) >= 30.0:
+            self._last_goal_claim_recovery_at = now
+            completion_queue = getattr(process_registry, "completion_queue", None)
+            if completion_queue is not None:
+                recover_stale_goal_reconciliation_claims(completion_queue)
         for event, synthetic_message in process_registry.drain_notifications(
             session_key=session_key,
             owns_event=self._owns_process_notification,
@@ -9607,8 +9615,63 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
-            complete_event_delivery(event, claim)
+            decision: Dict[str, Any] = {}
+            try:
+                prompt = synthetic_message
+                if event.get("type") == "async_delegation":
+                    from hermes_cli.goals import prepare_goal_delegation_delivery
+
+                    decision = prepare_goal_delegation_delivery(
+                        event,
+                        synthetic_message,
+                        current_session_id=session_key,
+                        consumer=consumer,
+                    )
+                    prompt = decision.get("prompt")
+                    status_message = str(decision.get("status_message") or "")
+                    if status_message:
+                        _cprint(f"  {_DIM}{status_message}{_RST}")
+                # A goal-owned claim is carried as an internal input envelope;
+                # transport delivery and semantic reconciliation stay separate.
+                if prompt:
+                    claim_id = str(decision.get("reconciliation_claim") or "")
+                    if claim_id:
+                        self._pending_input.put({
+                            "text": prompt,
+                            "goal_reconciliation": {
+                                "claim_id": claim_id,
+                                "goal_id": decision.get("goal_id"),
+                                "session_id": decision.get("goal_session_id"),
+                                "attempt": decision.get("reconciliation_attempt", 1),
+                            },
+                        })
+                    else:
+                        self._pending_input.put(prompt)
+                complete_event_delivery(event, claim)
+            except Exception:
+                claim_id = str(decision.get("reconciliation_claim") or "")
+                if claim_id:
+                    try:
+                        from hermes_cli.goals import release_goal_reconciliation_turn
+
+                        release_goal_reconciliation_turn(
+                            claim_id,
+                            goal_id=str(decision.get("goal_id") or ""),
+                            session_id=str(
+                                decision.get("goal_session_id") or self.session_id
+                            ),
+                            attempt=int(decision.get("reconciliation_attempt", 1) or 1),
+                            turn_started=False,
+                            requeue=False,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to release CLI reconciliation claim after enqueue failure",
+                            exc_info=True,
+                        )
+                release_event_delivery(event, claim)
+                process_registry.completion_queue.put(event)
+                raise
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
@@ -11966,6 +12029,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        self._last_turn_failed = False
+        self._last_turn_partial = False
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -12433,7 +12498,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             sys.stdout.flush()
             time.sleep(0.15)
 
-            # Update history with full conversation
+            # Update history with full conversation. Preserve the structured turn
+            # outcome so internal reconciliation envelopes do not mistake a
+            # non-empty partial/error response for successful consumption.
+            self._last_turn_failed = bool(result and result.get("failed"))
+            self._last_turn_partial = bool(result and result.get("partial"))
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
@@ -15189,6 +15258,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # post-resize transient suppression should end here.
                     self._status_bar_suppressed_after_resize = False
 
+                    reconciliation = {}
+                    if isinstance(user_input, dict) and user_input.get("goal_reconciliation"):
+                        reconciliation = dict(user_input.get("goal_reconciliation") or {})
+                        user_input = str(user_input.get("text") or "")
+
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []
                     if isinstance(user_input, tuple):
@@ -15261,7 +15335,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
                     print()
-                    self._print_user_message_preview(user_input)
+                    if not reconciliation:
+                        self._print_user_message_preview(user_input)
                     
                     # Show image attachment count
                     if submit_images:
@@ -15274,8 +15349,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._pet_reasoning = False
                     app.invalidate()  # Refresh status line
 
+                    turn_response = None
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        turn_response = self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
@@ -15284,6 +15360,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self._last_scrollback_tool = ""
                         self._pet_reasoning = False
                         self._pet_react_turn_end()
+
+                        if reconciliation:
+                            try:
+                                claim_id = str(reconciliation.get("claim_id") or "")
+                                from hermes_cli.goals import reconciliation_turn_succeeded
+
+                                if claim_id and reconciliation_turn_succeeded(
+                                    turn_response,
+                                    interrupted=self._last_turn_interrupted,
+                                    failed=getattr(self, "_last_turn_failed", False),
+                                    partial=getattr(self, "_last_turn_partial", False),
+                                ):
+                                    from hermes_cli.goals import complete_goal_reconciliation_turn
+
+                                    complete_goal_reconciliation_turn(claim_id)
+                                elif claim_id:
+                                    from hermes_cli.goals import release_goal_reconciliation_turn
+
+                                    release_goal_reconciliation_turn(
+                                        claim_id,
+                                        session_id=str(reconciliation.get("session_id") or self.session_id),
+                                        goal_id=str(reconciliation.get("goal_id") or ""),
+                                        attempt=int(reconciliation.get("attempt", 1) or 1),
+                                    )
+                            except Exception:
+                                logging.debug(
+                                    "goal reconciliation finalization failed",
+                                    exc_info=True,
+                                )
 
                         app.invalidate()  # Refresh status line
 

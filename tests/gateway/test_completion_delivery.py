@@ -112,6 +112,82 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     adapter.handle_message.assert_awaited_once()
 
 
+def test_goal_owned_intermediate_completion_commits_without_adapter_turn(monkeypatch):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    event = _async_event("deleg_joining")
+    event.update({"goal_id": "goal-1", "requires_goal_join": True})
+    monkeypatch.setattr(
+        "hermes_cli.goals.prepare_goal_delegation_delivery",
+        lambda *_args, **_kwargs: {
+            "classification": "current",
+            "prompt": None,
+            "status_message": "waiting for one more",
+        },
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("legacy completion", event)
+    ) is True
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_goal_owned_completion_defers_while_parent_turn_is_running(monkeypatch):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    event = _async_event("deleg_busy")
+    event.update({"goal_id": "goal-1", "requires_goal_join": True})
+    source = runner._build_process_event_source(event)
+    assert source is not None
+    quick_key = runner._session_key_for_source(source)
+    runner._running_agents = {quick_key: object()}
+    prepare = MagicMock()
+    monkeypatch.setattr(
+        "hermes_cli.goals.prepare_goal_delegation_delivery",
+        prepare,
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("legacy completion", event)
+    ) is False
+    prepare.assert_not_called()
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_goal_owned_claim_reaches_gateway_as_internal_metadata(monkeypatch):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    event = _async_event("deleg_reconcile")
+    event.update({"goal_id": "goal-1", "requires_goal_join": True})
+    monkeypatch.setattr(
+        "hermes_cli.goals.prepare_goal_delegation_delivery",
+        lambda *_args, **_kwargs: {
+            "classification": "current",
+            "prompt": "reconcile this batch",
+            "status_message": "",
+            "reconciliation_claim": "recon-1",
+            "reconciliation_attempt": 2,
+            "goal_id": "goal-1",
+            "goal_session_id": "gateway-session",
+            "delegation_ids": ["deleg_reconcile"],
+        },
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion", event)
+    ) is True
+
+    injected = adapter.handle_message.await_args.args[0]
+    assert injected.internal is True
+    assert injected.metadata["goal_reconciliation"] == {
+        "claim_id": "recon-1",
+        "goal_id": "goal-1",
+        "session_id": "gateway-session",
+        "attempt": 2,
+        "delegation_ids": ["deleg_reconcile"],
+    }
+
+
 def test_unroutable_async_event_is_not_requeued_forever(
     monkeypatch, isolated_registry,
 ):

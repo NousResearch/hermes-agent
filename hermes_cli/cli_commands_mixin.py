@@ -2093,10 +2093,64 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
                 _cprint(f"  ▶ Goal resumed: {state.goal}")
-                _cprint(
-                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
-                    f"is a no-op; type 'continue' to kick it off).{_RST}"
-                )
+                decision = {}
+                try:
+                    from hermes_cli.goals import prepare_goal_resume, get_goal_work_snapshot
+
+                    pending_input = getattr(self, "_pending_input")
+                    decision = prepare_goal_resume(
+                        self.session_id,
+                        consumer="cli-goal-resume",
+                    )
+                    if decision.get("prompt"):
+                        pending_input.put({
+                            "text": decision["prompt"],
+                            "goal_reconciliation": {
+                                "claim_id": decision.get("reconciliation_claim"),
+                                "goal_id": decision.get("goal_id"),
+                                "session_id": decision.get("goal_session_id"),
+                                "attempt": decision.get("reconciliation_attempt", 1),
+                            },
+                        })
+                    else:
+                        snapshot = get_goal_work_snapshot(state.goal_id)
+                        outstanding = sum(
+                            int(snapshot.get(key, 0))
+                            for key in (
+                                "running_count",
+                                "terminal_unreconciled_count",
+                                "claimed_count",
+                            )
+                        )
+                        if outstanding:
+                            _cprint(
+                                f"  {_DIM}Waiting for required async work; "
+                                "completed results will resume the goal automatically."
+                                f"{_RST}"
+                            )
+                        else:
+                            pending_input.put(mgr.next_continuation_prompt() or state.goal)
+                except Exception:
+                    claim_id = str(decision.get("reconciliation_claim") or "")
+                    if claim_id:
+                        try:
+                            from hermes_cli import goals as goal_module
+
+                            getattr(goal_module, "release_goal_reconciliation_turn")(
+                                claim_id,
+                                session_id=str(
+                                    decision.get("goal_session_id") or self.session_id
+                                ),
+                                goal_id=str(decision.get("goal_id") or ""),
+                                attempt=int(decision.get("reconciliation_attempt", 1) or 1),
+                                turn_started=False,
+                            )
+                        except Exception:
+                            pass
+                    _cprint(
+                        f"  {_DIM}Could not enqueue the resumed goal; send "
+                        f"'continue' to kick it off.{_RST}"
+                    )
             return
 
         if lower in {"clear", "stop", "done"}:

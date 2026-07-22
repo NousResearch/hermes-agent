@@ -2372,7 +2372,7 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, **kwargs):
             from tools.env_passthrough import get_all_passthrough
 
             assert "NOTION_API_KEY" in get_all_passthrough()
@@ -2430,7 +2430,7 @@ class TestRunJobSkillBacked:
             register_credential_file("credentials/google_token.json")
             return json.dumps({"success": True, "content": "# google-workspace\nUse Google."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, **kwargs):
             from tools.credential_files import _get_registered
 
             registered = _get_registered()
@@ -2508,9 +2508,11 @@ class TestRunJobSkillBacked:
         assert "cronjob" in (kwargs["disabled_toolsets"] or [])
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
-        assert "blogwatcher" in prompt_arg
-        assert "Follow this skill" in prompt_arg
-        assert "Check the feeds and summarize anything new." in prompt_arg
+        runtime_context = kwargs["ephemeral_system_prompt"]
+        assert prompt_arg == "Check the feeds and summarize anything new."
+        assert "blogwatcher" in runtime_context
+        assert "Follow this skill." in runtime_context
+        assert "Check the feeds and summarize anything new." in runtime_context
 
     def test_run_job_loads_multiple_skills_in_order(self, tmp_path):
         job = {
@@ -2554,10 +2556,12 @@ class TestRunJobSkillBacked:
         assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "maps"]
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
-        assert prompt_arg.index("blogwatcher") < prompt_arg.index("maps")
-        assert "Instructions for blogwatcher." in prompt_arg
-        assert "Instructions for maps." in prompt_arg
-        assert "Combine the results." in prompt_arg
+        runtime_context = mock_agent_cls.call_args.kwargs["ephemeral_system_prompt"]
+        assert runtime_context.index("blogwatcher") < runtime_context.index("maps")
+        assert "Instructions for blogwatcher." in runtime_context
+        assert "Instructions for maps." in runtime_context
+        assert prompt_arg == "Combine the results."
+        assert "Combine the results." in runtime_context
 
 
 class TestSilentDelivery:
@@ -2910,11 +2914,14 @@ class TestRunJobWakeGate:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
         agent_cls.assert_called_once()
-        # The script output should be visible in the prompt passed to
-        # run_conversation.
+        # Runtime data is model-visible via the API-only user message while the
+        # raw scheduled instruction is persisted through persist_user_message.
         call_kwargs = agent.run_conversation.call_args
         prompt_arg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("user_message", "")
-        assert script_output in prompt_arg
+        assert json.dumps(script_output, ensure_ascii=False) in prompt_arg
+        assert call_kwargs.kwargs.get("persist_user_message") == "Do a thing"
+        runtime_context = agent_cls.call_args.kwargs["ephemeral_system_prompt"]
+        assert "Do a thing" in runtime_context
         assert success is True
         assert err is None
 

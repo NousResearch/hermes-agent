@@ -14,6 +14,7 @@ surfaces a clean "job blocked" delivery instead of running the agent.
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -247,6 +248,44 @@ class TestBuildJobPromptScansSkillContent:
         assert prompt is not None
         assert "\u200b" not in prompt
         assert "clean lookingskill content" in prompt
+
+    def test_skill_backed_raw_prompt_with_invisible_unicode_blocks_before_skill_load(
+        self, cron_env
+    ):
+        """Legacy raw intent is strict-scanned independently of skill content."""
+        _, scheduler = cron_env
+        job = {
+            "id": "job-legacy-zwsp",
+            "name": "legacy zwsp",
+            "prompt": "run\u200bthe digest",
+            "skills": ["otherwise-vetted-skill"],
+        }
+
+        with patch("tools.skills_tool.skill_view") as skill_view_mock:
+            with pytest.raises(scheduler.CronPromptInjectionBlocked) as exc_info:
+                scheduler._build_job_execution(job)
+
+        assert "invisible unicode" in str(exc_info.value)
+        skill_view_mock.assert_not_called()
+
+    def test_raw_prompt_blocks_before_wake_gate_script(self, cron_env):
+        """Invalid durable intent cannot trigger a configured pre-run script."""
+        _, scheduler = cron_env
+        job = {
+            "id": "job-script-legacy-zwsp",
+            "name": "legacy zwsp with script",
+            "prompt": "run\u200bme",
+            "script": "collector.py",
+        }
+
+        with patch.object(scheduler, "_run_job_script") as run_script:
+            success, doc, final, error = scheduler.run_job(job)
+
+        run_script.assert_not_called()
+        assert success is False
+        assert final == ""
+        assert error and "invisible unicode" in error
+        assert "**Status:** BLOCKED" in doc
 
     def test_no_skills_still_scans_user_prompt(self, cron_env):
         """Defense-in-depth: even without skills, assembled-prompt scanning

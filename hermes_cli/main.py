@@ -9225,6 +9225,25 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
+def _cua_driver_installed_for_update_refresh() -> bool:
+    """Return whether ``hermes update`` should refresh an existing CuaDriver.
+
+    Desktop-launched updates can inherit a GUI PATH that omits
+    ``~/.local/bin``. Treat the conventional POSIX install location as an
+    already-installed signal so refresh still runs for existing installs, but
+    keep Windows on PATH-only resolution.
+    """
+    if shutil.which("cua-driver"):
+        return True
+    if sys.platform == "win32":
+        return False
+    try:
+        candidate = Path.home() / ".local" / "bin" / "cua-driver"
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except Exception:
+        return False
+
+
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
@@ -10979,7 +10998,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
-        # binary already being on PATH, so this is a no-op for users who
+        # binary already being installed, so this is a no-op for users who
         # don't have it. Tying the refresh to ``hermes update`` gives users a
         # predictable cadence (matches when they pull new agent code) without
         # adding startup latency or a per-launch GitHub API call.
@@ -10999,7 +11018,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if (
                 refresh_cua_driver
                 and sys.platform in ("darwin", "win32", "linux")
-                and shutil.which("cua-driver")
+                and _cua_driver_installed_for_update_refresh()
             ):
                 from hermes_cli.tools_config import install_cua_driver
 

@@ -1041,6 +1041,78 @@ def test_is_termux_env_false_for_non_termux_prefix():
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
 
 
+class TestCuaDriverUpdateRefreshGate:
+    def test_accepts_path_visible_binary(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(
+            hm.shutil,
+            "which",
+            lambda name: "/usr/local/bin/cua-driver"
+            if name == "cua-driver"
+            else None,
+        )
+
+        assert hm._cua_driver_installed_for_update_refresh() is True
+
+    @pytest.mark.parametrize("platform_name", ["darwin", "linux"])
+    def test_accepts_posix_local_bin_when_gui_path_misses_it(
+        self, tmp_path, monkeypatch, platform_name
+    ):
+        from hermes_cli import main as hm
+
+        local_bin = tmp_path / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        driver = local_bin / "cua-driver"
+        driver.write_text("#!/bin/sh\n")
+        driver.chmod(0o755)
+
+        monkeypatch.setattr(hm.sys, "platform", platform_name)
+        monkeypatch.setattr(hm.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(hm.shutil, "which", lambda _name: None)
+
+        assert hm._cua_driver_installed_for_update_refresh() is True
+
+    def test_skips_when_not_on_path_and_no_local_bin_binary(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm.sys, "platform", "linux")
+        monkeypatch.setattr(hm.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(hm.shutil, "which", lambda _name: None)
+
+        assert hm._cua_driver_installed_for_update_refresh() is False
+
+    def test_skips_non_executable_local_bin_binary(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        local_bin = tmp_path / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        driver = local_bin / "cua-driver"
+        driver.write_text("#!/bin/sh\n")
+        driver.chmod(0o644)
+
+        monkeypatch.setattr(hm.sys, "platform", "linux")
+        monkeypatch.setattr(hm.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(hm.shutil, "which", lambda _name: None)
+
+        assert hm._cua_driver_installed_for_update_refresh() is False
+
+    def test_windows_remains_path_only(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        local_bin = tmp_path / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        driver = local_bin / "cua-driver"
+        driver.write_text("#!/bin/sh\n")
+        driver.chmod(0o755)
+
+        monkeypatch.setattr(hm.sys, "platform", "win32")
+        monkeypatch.setattr(hm.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(hm.shutil, "which", lambda _name: None)
+
+        assert hm._cua_driver_installed_for_update_refresh() is False
+
+
 def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):
     from hermes_cli import main as hm
 

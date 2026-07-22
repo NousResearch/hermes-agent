@@ -186,6 +186,23 @@ class TestBatchWorkerResumeBehavior:
         assert not batch_file.exists() or batch_file.read_text() == ""
 
 
+class TestCombineBatchFiles:
+    def test_ignores_non_matching_batch_jsonl_file(self, tmp_path):
+        runner = BatchRunner.__new__(BatchRunner)
+        runner.output_dir = tmp_path
+
+        valid_entry = {"tool_stats": {}, "conversations": []}
+        (tmp_path / "batch_1.jsonl").write_text(json.dumps(valid_entry) + "\n", encoding="utf-8")
+        (tmp_path / "batch.jsonl").write_text("{not valid json", encoding="utf-8")
+
+        total_entries, filtered_entries, batch_files_found = runner._combine_batch_files()
+
+        assert total_entries == 1
+        assert filtered_entries == 0
+        assert batch_files_found == 1
+        assert json.loads((tmp_path / "trajectories.jsonl").read_text()) == valid_entry
+
+
 class TestFinalCheckpointNoDuplicates:
     """Regression: the final checkpoint must not contain duplicate prompt
     indices.

@@ -2480,6 +2480,42 @@ def run_doctor(args):
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
+    _section("Write Approval")
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        _wa_cfg = load_config() or {}
+        _mem_wa = cfg_get(_wa_cfg, "memory", "write_approval", default=False) or False
+        _sk_wa = cfg_get(_wa_cfg, "skills", "write_approval", default=False) or False
+        if _mem_wa and _sk_wa:
+            check_ok("Both write-approval gates are on",
+                     "(memory.write_approval=on, skills.write_approval=on)")
+        elif not _mem_wa and not _sk_wa:
+            check_info("Both write-approval gates are off (default — writes flow freely)")
+        elif _mem_wa and not _sk_wa:
+            check_warn(
+                "memory.write_approval is on but skills.write_approval is off",
+                "(skills can still be autonomously overwritten)",
+            )
+            issues.append(
+                "memory.write_approval is enabled but skills.write_approval is not. "
+                "The agent can still autonomously rewrite skills (SKILL.md files) via "
+                "background review. Enable skills.write_approval for full protection: "
+                "hermes config set skills.write_approval true"
+            )
+        else:  # skills on, memory off
+            check_warn(
+                "skills.write_approval is on but memory.write_approval is off",
+                "(memory can still be autonomously overwritten)",
+            )
+            issues.append(
+                "skills.write_approval is enabled but memory.write_approval is not. "
+                "The agent can still autonomously write to memory. Enable "
+                "memory.write_approval for full protection: "
+                "hermes config set memory.write_approval true"
+            )
+    except Exception as _wa_e:
+        check_warn("Could not check write-approval configuration", f"({_wa_e})")
+
     try:
         from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
         import re as _re

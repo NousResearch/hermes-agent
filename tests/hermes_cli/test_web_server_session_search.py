@@ -14,6 +14,9 @@ class _FakeSessionDB:
 
     closed = False
 
+    def get_sessions_rich_by_ids(self, session_ids):
+        return {}
+
     def search_sessions_by_id(self, query, limit=20, include_archived=True):
         assert query == "20260603"
         assert include_archived is True
@@ -49,7 +52,7 @@ class _FakeSessionDB:
         ]
 
     def get_session(self, session_id):
-        # No compression chains in this fixture — every session is its own root.
+        # No compression chains in this fixture -- every session is its own root.
         return {"id": session_id, "parent_session_id": None}
 
     def get_compression_tip(self, session_id):

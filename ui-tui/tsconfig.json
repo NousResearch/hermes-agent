@@ -1,20 +1,33 @@
 {
-  "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023"],
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "jsx": "react-jsx",
-    "outDir": "dist",
-    "rootDir": "src",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "declaration": false,
-    "sourceMap": false,
-    "resolveJsonModule": true
-  },
-  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/__tests__", "node_modules", "dist"]
+    "compilerOptions":  {
+                            "target":  "ES2023",
+                            "lib":  [
+                                        "ES2023"
+                                    ],
+                            "module":  "nodenext",
+                            "moduleResolution":  "nodenext",
+                            "jsx":  "react-jsx",
+                            "outDir":  "dist",
+                            "rootDir":  "src",
+                            "strict":  true,
+                            "esModuleInterop":  true,
+                            "skipLibCheck":  true,
+                            "forceConsistentCasingInFileNames":  true,
+                            "declaration":  false,
+                            "sourceMap":  false,
+                            "resolveJsonModule":  true,
+                            "types":  [
+                                          "node"
+                                      ]
+                        },
+    "include":  [
+                    "src/**/*.d.ts",
+                    "src/**/*.ts",
+                    "src/**/*.tsx"
+                ],
+    "exclude":  [
+                    "src/__tests__",
+                    "node_modules",
+                    "dist"
+                ]
 }

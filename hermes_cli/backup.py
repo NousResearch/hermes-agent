@@ -2526,7 +2526,7 @@ def _legacy_quick_snapshot_manifest(snapshot_dir: Path) -> Optional[Dict[str, An
             not isinstance(timestamp, str)
             or re.fullmatch(r"\d{8}-\d{6}", timestamp) is None
             or not (
-                (label is None and snapshot_dir.name == timestamp)
+                (label in (None, "") and snapshot_dir.name == timestamp)
                 or (
                     isinstance(label, str)
                     and label

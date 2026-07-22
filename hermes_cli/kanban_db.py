@@ -3844,13 +3844,87 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
     )
 
 
+def _adopt_legacy_attachment_identity(
+    conn: sqlite3.Connection, attachment: Attachment
+) -> Optional[_FilesystemIdentity]:
+    """Bind a pre-provenance attachment row to its exact canonical blob."""
+    path = Path(attachment.stored_path)
+    try:
+        board = _connection_board(conn)
+        owned_dir = task_attachments_dir(attachment.task_id, board=board)
+        owned_dir_identity = owned_dir.lstat()
+        owned_dir_resolved = owned_dir.resolve(strict=True)
+        if (
+            not path.is_absolute()
+            or not stat.S_ISDIR(owned_dir_identity.st_mode)
+            or _stat_is_reparse(owned_dir_identity)
+            or path.name != attachment.filename
+            or path.parent.resolve(strict=True) != owned_dir_resolved
+        ):
+            return None
+
+        selected = path.lstat()
+        if (
+            not stat.S_ISREG(selected.st_mode)
+            or _stat_is_reparse(selected)
+            or selected.st_nlink != 1
+            or selected.st_size != attachment.size
+        ):
+            return None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            actual_path = _opened_file_actual_path(fd, path)
+            current = path.lstat()
+            current_dir = owned_dir.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _stat_is_reparse(opened)
+                or opened.st_nlink != 1
+                or not os.path.samestat(selected, opened)
+                or not os.path.samestat(opened, current)
+                or not os.path.samestat(owned_dir_identity, current_dir)
+                or not _same_resolved_path(
+                    actual_path, owned_dir_resolved / path.name
+                )
+            ):
+                return None
+        finally:
+            os.close(fd)
+
+        final = path.lstat()
+        current_dir = owned_dir.lstat()
+        if (
+            not stat.S_ISREG(final.st_mode)
+            or _stat_is_reparse(final)
+            or final.st_nlink != 1
+            or not os.path.samestat(selected, final)
+            or not os.path.samestat(owned_dir_identity, current_dir)
+        ):
+            return None
+        identity = _filesystem_identity(final)
+        updated = conn.execute(
+            "UPDATE task_attachments SET filesystem_identity = ? "
+            "WHERE id = ? AND filesystem_identity IS NULL",
+            (_encode_filesystem_identity(identity), attachment.id),
+        )
+        return identity if updated.rowcount == 1 else None
+    except (OSError, ValueError):
+        return None
+
+
 def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
     """Delete an attachment row and its on-disk blob. Returns the removed row.
 
-    Returns ``None`` when no row matched. Raises
-    :class:`AttachmentOwnershipUnknown` for legacy rows that have no bound
-    filesystem identity; those rows and files are preserved for explicit
-    operator recovery. For provenance-bound rows, the blob is removed
+    Returns ``None`` when no row matched. Legacy rows are adopted only when
+    their exact blob still exists in the canonical per-task directory with the
+    recorded size. Otherwise :class:`AttachmentOwnershipUnknown` preserves the
+    row and file for explicit recovery. Provenance-bound blobs are removed
     best-effort (a missing or replaced file is not an error).
     """
     with write_txn(conn):
@@ -3858,11 +3932,18 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if att is None:
             return None
         if att.filesystem_identity is None:
-            raise AttachmentOwnershipUnknown(
-                f"attachment {attachment_id} has no filesystem ownership provenance; "
-                "refusing deletion so its metadata row and file remain available "
-                "for operator recovery"
-            )
+            adopted = _adopt_legacy_attachment_identity(conn, att)
+            if adopted is None:
+                raise AttachmentOwnershipUnknown(
+                    f"attachment {attachment_id} has no safely adoptable filesystem "
+                    "ownership provenance; refusing deletion so its metadata row and "
+                    "file remain available for operator recovery"
+                )
+            att = get_attachment(conn, attachment_id)
+            if att is None or att.filesystem_identity is None:
+                raise AttachmentOwnershipUnknown(
+                    f"attachment {attachment_id} ownership adoption did not persist"
+                )
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
         _append_event(
             conn, att.task_id, "attachment_removed", {"filename": att.filename}

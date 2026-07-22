@@ -1871,6 +1871,28 @@ class TestQuickSnapshot:
         assert snaps[0]["id"] == id2  # most recent first
         assert snaps[1]["id"] == id1
 
+    def test_empty_label_snapshot_remains_listable_and_restorable(self, hermes_home):
+        from hermes_cli.backup import (
+            create_quick_snapshot,
+            list_quick_snapshots,
+            restore_quick_snapshot,
+        )
+
+        snap_id = create_quick_snapshot(label="", hermes_home=hermes_home)
+        assert snap_id is not None
+        assert [
+            snapshot["id"]
+            for snapshot in list_quick_snapshots(hermes_home=hermes_home)
+        ] == [snap_id]
+
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  provider: changed\n", encoding="utf-8"
+        )
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert "openrouter" in (hermes_home / "config.yaml").read_text(
+            encoding="utf-8"
+        )
+
     def test_list_limit(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
         for i in range(5):

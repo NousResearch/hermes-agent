@@ -155,7 +155,7 @@ def _insert_legacy_attachment(conn, task_id: str, blob: Path) -> int:
     return int(cursor.lastrowid)
 
 
-def test_api_delete_legacy_attachment_returns_conflict_and_preserves_data(
+def test_api_delete_legacy_attachment_adopts_canonical_blob(
     client, kanban_home
 ):
     conn = kb.connect()
@@ -171,11 +171,55 @@ def test_api_delete_legacy_attachment_returns_conflict_and_preserves_data(
 
     response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
 
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    with kb.connect() as conn:
+        assert kb.get_attachment(conn, attachment_id) is None
+    assert not blob.exists()
+
+
+def test_api_delete_legacy_attachment_rejects_noncanonical_blob(
+    client, kanban_home, tmp_path
+):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="legacy external attachment")
+        blob = tmp_path / "legacy-external.txt"
+        blob.write_text("keep", encoding="utf-8")
+        attachment_id = _insert_legacy_attachment(conn, task_id, blob)
+    finally:
+        conn.close()
+
+    response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
+
     assert response.status_code == 409
-    assert "no filesystem ownership provenance" in response.json()["detail"]
+    assert "no safely adoptable filesystem ownership provenance" in response.json()[
+        "detail"
+    ]
     with kb.connect() as conn:
         assert kb.get_attachment(conn, attachment_id) is not None
     assert blob.read_text(encoding="utf-8") == "keep"
+
+
+def test_api_delete_legacy_attachment_rejects_size_mismatch(client, kanban_home):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="changed legacy attachment")
+        attachment_dir = kb.task_attachments_dir(task_id)
+        attachment_dir.mkdir(parents=True)
+        blob = attachment_dir / "changed.txt"
+        blob.write_text("original", encoding="utf-8")
+        attachment_id = _insert_legacy_attachment(conn, task_id, blob)
+        blob.write_text("changed after upload", encoding="utf-8")
+    finally:
+        conn.close()
+
+    response = client.delete(f"/api/plugins/kanban/attachments/{attachment_id}")
+
+    assert response.status_code == 409
+    with kb.connect() as conn:
+        assert kb.get_attachment(conn, attachment_id) is not None
+    assert blob.read_text(encoding="utf-8") == "changed after upload"
 
 
 def test_attachments_root_is_per_board(kanban_home, monkeypatch):
@@ -662,7 +706,7 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
         conn.close()
 
 
-def test_cli_attach_rm_refuses_legacy_attachment_and_preserves_data(kanban_home):
+def test_cli_attach_rm_adopts_canonical_legacy_attachment(kanban_home):
     from hermes_cli.kanban import run_slash
 
     with kb.connect() as conn:
@@ -675,11 +719,10 @@ def test_cli_attach_rm_refuses_legacy_attachment_and_preserves_data(kanban_home)
 
     output = run_slash(f"attach-rm {attachment_id}")
 
-    assert "no filesystem ownership provenance" in output
-    assert "refusing deletion" in output
+    assert "Deleted attachment" in output
     with kb.connect() as conn:
-        assert kb.get_attachment(conn, attachment_id) is not None
-    assert blob.read_text(encoding="utf-8") == "keep"
+        assert kb.get_attachment(conn, attachment_id) is None
+    assert not blob.exists()
 
 
 def test_cli_attach_honors_name_override(kanban_home, tmp_path):

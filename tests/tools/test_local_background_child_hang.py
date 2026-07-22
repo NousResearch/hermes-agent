@@ -16,6 +16,7 @@ import time
 import pytest
 
 from tools.environments.local import LocalEnvironment
+from tools.environments.base import _should_close_drained_stdout
 
 
 def _pkill(pattern: str) -> None:
@@ -214,3 +215,29 @@ class TestBackgroundChildDoesNotHang:
         assert "before" in result["output"]
         assert "after" in result["output"]
         assert "binary output detected" not in result["output"]
+
+
+class TestShouldCloseDrainedStdout:
+    """Focused unit coverage for the Windows drain-thread close guard (#67362).
+
+    ``BaseEnvironment.execute()`` must skip ``proc.stdout.close()`` when — and
+    only when — running on native Windows with the drain thread still blocked in
+    ``os.read`` (a backgrounded child holding the write end). Closing there would
+    serialize on the same MSVCRT per-fd lock and stall for the child's whole
+    lifetime. This exercises the exact predicate cross-platform without needing a
+    real Windows pipe.
+    """
+
+    def test_windows_live_drain_thread_skips_close(self):
+        # The guarded case: only here is the close skipped.
+        assert _should_close_drained_stdout("nt", True) is False
+
+    def test_windows_finished_drain_thread_closes(self):
+        # Drain thread already exited on Windows → close is safe.
+        assert _should_close_drained_stdout("nt", False) is True
+
+    def test_posix_always_closes(self):
+        # On POSIX close() is independent of a concurrent read, so it always runs
+        # regardless of drain-thread liveness.
+        assert _should_close_drained_stdout("posix", True) is True
+        assert _should_close_drained_stdout("posix", False) is True

@@ -382,6 +382,21 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+def _should_close_drained_stdout(os_name: str, drain_thread_alive: bool) -> bool:
+    """Decide whether ``proc.stdout.close()`` is safe after the drain join.
+
+    On native Windows, a still-alive drain thread is blocked in ``os.read`` on
+    the stdout fd (no ``select()`` on pipe fds there). ``close()`` would then
+    serialize on the same per-fd MSVCRT lock and block for the whole lifetime of
+    a backgrounded child that inherited the write end, even though bash already
+    exited and the output is fully captured (#67362). In that one case the close
+    must be skipped and the fd left to the daemon drain thread / GC. Everywhere
+    else — POSIX always, and Windows once the drain thread has exited — closing
+    is safe and desirable.
+    """
+    return not (os_name == "nt" and drain_thread_alive)
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -959,10 +974,21 @@ class BaseEnvironment(ABC):
         # it means the non-blocking loop itself stopped cooperating.
         drain_thread.join(timeout=2)
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        # On Windows, if the drain thread is still alive it is blocked in a
+        # ``os.read`` on the stdout fd (no ``select()`` on pipe fds there), which
+        # only unblocks when a backgrounded child that inherited the write end
+        # finally closes it.  ``proc.stdout.close()`` then serializes on the same
+        # per-fd lock via the MSVCRT machinery and blocks for the child's whole
+        # lifetime — even though bash has exited and the output is fully captured
+        # (issue #67362).  Skip the blocking close in that case: the fd is left
+        # to the daemon drain thread, which reaches EOF (or is torn down with the
+        # interpreter) and is reclaimed by GC / ``Popen.__del__``.  On POSIX this
+        # is a no-op — ``close()`` there is independent of a concurrent read.
+        if _should_close_drained_stdout(os.name, drain_thread.is_alive()):
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
 
         if _DEBUG_INTERRUPT:
             logger.info(

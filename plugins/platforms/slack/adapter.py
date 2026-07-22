@@ -1115,6 +1115,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error(
                 "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
             )
+            self._set_fatal_error("missing_dependency", "slack-bolt not installed", retryable=False)
             return False
 
         raw_token = self.config.token

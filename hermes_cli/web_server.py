@@ -1145,11 +1145,14 @@ def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
     disk — never silently vanishes from the dropdown.
     """
     options = _memory_provider_options()
-    current = _normalize_memory_provider_name(
-        cfg.get("memory", {}).get("provider") if isinstance(cfg.get("memory"), dict) else None
-    )
+
+    memory = cfg.get("memory")
+    configured = memory.get("provider") if isinstance(memory, dict) else None
+    current = _normalize_memory_provider_name(configured)
+
     if current and current not in options:
         options = [*options, current]
+
     return options
 
 
@@ -1173,27 +1176,28 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
         cfg = load_config()
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
+
     overlay: Dict[str, Dict[str, Any]] = {}
 
-    def _merge(key: str, merged: List[str]) -> None:
+    def merge(key: str, options: List[str]) -> None:
         entry = CONFIG_SCHEMA.get(key)
-        if not isinstance(entry, dict) or not isinstance(entry.get("options"), list):
-            return
-        if merged != entry["options"]:
-            overlay[key] = {**entry, "options": merged}
+
+        if isinstance(entry, dict) and isinstance(entry.get("options"), list) and options != entry["options"]:
+            overlay[key] = {**entry, "options": options}
 
     for kind in ("tts", "stt"):
         entry = CONFIG_SCHEMA.get(f"{kind}.provider")
-        if isinstance(entry, dict) and isinstance(entry.get("options"), list):
-            _merge(f"{kind}.provider", _custom_provider_options(kind, list(entry["options"]), cfg))
+        existing = entry.get("options") if isinstance(entry, dict) else None
 
-    _merge("memory.provider", _memory_provider_schema_options(cfg))
+        if isinstance(existing, list):
+            merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
+
+    merge("memory.provider", _memory_provider_schema_options(cfg))
 
     if not overlay:
         return CONFIG_SCHEMA
-    fields = dict(CONFIG_SCHEMA)
-    fields.update(overlay)
-    return fields
+
+    return {**CONFIG_SCHEMA, **overlay}
 
 
 class ConfigUpdate(BaseModel):

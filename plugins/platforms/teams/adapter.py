@@ -1417,6 +1417,11 @@ def register(ctx) -> None:
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
+        teardown_env=(
+            "TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID",
+            "TEAMS_ALLOWED_USERS", "TEAMS_ALLOW_ALL_USERS", "TEAMS_HOME_CHANNEL",
+            "TEAMS_HOME_CHANNEL_NAME", "TEAMS_PORT",
+        ),
         install_hint="pip install microsoft-teams-apps aiohttp",
         setup_fn=interactive_setup,
         # Env-driven auto-configuration — seeds PlatformConfig.extra with

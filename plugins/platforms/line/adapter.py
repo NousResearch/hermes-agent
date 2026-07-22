@@ -1629,6 +1629,12 @@ def register(ctx) -> None:
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"],
+        teardown_env=(
+            "LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET",
+            "LINE_PUBLIC_URL", "LINE_ALLOWED_USERS", "LINE_ALLOW_ALL_USERS",
+            "LINE_ALLOWED_GROUPS", "LINE_ALLOWED_ROOMS", "LINE_HOME_CHANNEL",
+            "LINE_HOST", "LINE_PORT", "LINE_SLOW_RESPONSE_THRESHOLD",
+        ),
         install_hint="pip install aiohttp",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,

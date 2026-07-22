@@ -4782,6 +4782,12 @@ def register(ctx) -> None:
         check_fn=check_matrix_requirements,
         is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
+        teardown_env=(
+            "MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID",
+            "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_ALLOWED_USERS",
+            "MATRIX_ALLOW_ALL_USERS", "MATRIX_HOME_ROOM",
+            "MATRIX_HOME_CHANNEL", "MATRIX_HOME_CHANNEL_NAME",
+        ),
         install_hint="pip install 'mautrix[encryption]'",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,

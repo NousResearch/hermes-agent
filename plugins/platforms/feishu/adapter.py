@@ -5713,6 +5713,12 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
+        teardown_env=(
+            "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_DOMAIN",
+            "FEISHU_CONNECTION_MODE", "FEISHU_ALLOWED_USERS",
+            "FEISHU_ALLOW_ALL_USERS", "FEISHU_GROUP_POLICY",
+            "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME",
+        ),
         install_hint="pip install 'hermes-agent[feishu]'",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,

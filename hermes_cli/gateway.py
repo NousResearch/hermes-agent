@@ -1,7 +1,7 @@
 """
 Gateway subcommand for hermes CLI.
 
-Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
+Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup|remove]
 """
 
 import asyncio
@@ -40,11 +40,14 @@ from gateway.restart import (
     parse_restart_drain_timeout,
 )
 from hermes_cli.config import (
+    comment_env_value,
     get_env_value,
     get_hermes_home,
     is_managed,
     managed_error,
     read_raw_config,
+    remove_env_value,
+    save_config,
     save_env_value,
     write_platform_config_field,
 )
@@ -5054,6 +5057,14 @@ _PLATFORMS = [
         "label": "Mattermost",
         "emoji": "💬",
         "token_var": "MATTERMOST_TOKEN",
+        "teardown_env": (
+            "MATTERMOST_URL",
+            "MATTERMOST_TOKEN",
+            "MATTERMOST_ALLOWED_USERS",
+            "MATTERMOST_ALLOW_ALL_USERS",
+            "MATTERMOST_HOME_CHANNEL",
+            "MATTERMOST_REPLY_MODE",
+        ),
         "setup_instructions": [
             "1. In Mattermost: Integrations → Bot Accounts → Add Bot Account",
             "   (System Console → Integrations → Bot Accounts must be enabled)",
@@ -5106,6 +5117,13 @@ _PLATFORMS = [
         "label": "Signal",
         "emoji": "📡",
         "token_var": "SIGNAL_HTTP_URL",
+        "teardown_env": (
+            "SIGNAL_HTTP_URL",
+            "SIGNAL_ACCOUNT",
+            "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_GROUP_ALLOWED_USERS",
+            "SIGNAL_HOME_CHANNEL",
+        ),
     },
     # Email and SMS moved to plugins/platforms/{email,sms}/ — setup metadata
     # discovered dynamically via the platform registry entries registered by
@@ -5115,12 +5133,32 @@ _PLATFORMS = [
         "label": "Weixin / WeChat",
         "emoji": "💬",
         "token_var": "WEIXIN_ACCOUNT_ID",
+        "teardown_env": (
+            "WEIXIN_ACCOUNT_ID",
+            "WEIXIN_TOKEN",
+            "WEIXIN_BASE_URL",
+            "WEIXIN_CDN_BASE_URL",
+            "WEIXIN_DM_POLICY",
+            "WEIXIN_ALLOW_ALL_USERS",
+            "WEIXIN_ALLOWED_USERS",
+            "WEIXIN_GROUP_POLICY",
+            "WEIXIN_GROUP_ALLOWED_USERS",
+            "WEIXIN_HOME_CHANNEL",
+        ),
     },
     {
         "key": "bluebubbles",
         "label": "BlueBubbles (iMessage)",
         "emoji": "💬",
         "token_var": "BLUEBUBBLES_SERVER_URL",
+        "teardown_env": (
+            "BLUEBUBBLES_SERVER_URL",
+            "BLUEBUBBLES_PASSWORD",
+            "BLUEBUBBLES_ALLOWED_USERS",
+            "BLUEBUBBLES_ALLOW_ALL_USERS",
+            "BLUEBUBBLES_HOME_CHANNEL",
+            "BLUEBUBBLES_WEBHOOK_PORT",
+        ),
         "setup_instructions": [
             "1. Install BlueBubbles on a Mac that will act as your iMessage server:",
             "   https://bluebubbles.app/",
@@ -5165,6 +5203,13 @@ _PLATFORMS = [
         "label": "QQ Bot",
         "emoji": "🐧",
         "token_var": "QQ_APP_ID",
+        "teardown_env": (
+            "QQ_APP_ID",
+            "QQ_CLIENT_SECRET",
+            "QQ_ALLOWED_USERS",
+            "QQ_ALLOW_ALL_USERS",
+            "QQBOT_HOME_CHANNEL",
+        ),
         "setup_instructions": [
             "1. Register a QQ Bot application at q.qq.com",
             "2. Note your App ID and App Secret from the application page",
@@ -5204,6 +5249,7 @@ _PLATFORMS = [
         "label": "Yuanbao",
         "emoji": "💎",
         "token_var": "YUANBAO_APP_ID",
+        "teardown_env": ("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"),
         "setup_instructions": [
             "1. Download the Yuanbao app from https://yuanbao.tencent.com/",
             "2. In the app, go to PAI → My Bot and create a new bot",
@@ -6465,6 +6511,236 @@ def gateway_setup():
 
 
 # =============================================================================
+# Gateway Remove (Issue #9842)
+# =============================================================================
+
+def _platform_env_var_names(platform: dict) -> list[str]:
+    """Return the platform-owned teardown inventory.
+
+    ``required_env`` is intentionally not used here: it is setup/status
+    display metadata and omits optional state such as allowlists, policies,
+    and home channels.
+    """
+    entry = platform.get("_registry_entry")
+    if entry is not None:
+        names = getattr(entry, "teardown_env", ()) or ()
+    else:
+        names = platform.get("teardown_env", ()) or ()
+    return list(dict.fromkeys(name for name in names if name))
+
+
+def _resolve_platform_for_removal(name: str) -> dict | None:
+    """Find a platform dict by key (case-insensitive)."""
+    if not name:
+        return None
+    target = name.strip().lower()
+    for p in _all_platforms():
+        if p.get("key", "").lower() == target:
+            return p
+    return None
+
+
+def _platform_config_paths(config: dict, platform_key: str) -> list[str]:
+    """Return all raw config paths owned by a platform."""
+    paths: list[str] = []
+    gateway_cfg = config.get("gateway")
+    gateway_platforms = (
+        gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+    )
+    if isinstance(gateway_platforms, dict) and platform_key in gateway_platforms:
+        paths.append(f"gateway.platforms.{platform_key}")
+
+    platforms = config.get("platforms")
+    if isinstance(platforms, dict) and platform_key in platforms:
+        paths.append(f"platforms.{platform_key}")
+
+    # Platform-specific top-level blocks (e.g. ``telegram:``) are also read
+    # by load_gateway_config() and can explicitly re-enable an adapter.
+    if platform_key in config:
+        paths.append(platform_key)
+
+    for mapping_name in ("platform_toolsets", "known_plugin_toolsets"):
+        mapping = config.get(mapping_name)
+        if isinstance(mapping, dict) and platform_key in mapping:
+            paths.append(f"{mapping_name}.{platform_key}")
+    return paths
+
+
+def _remove_platform_config_yaml_entries(platform_key: str) -> list[str]:
+    """Drop every platform-owned path from the raw config.yaml.
+
+    Operates on the *raw* YAML contents (via ``read_raw_config``) rather
+    than ``load_config``: load_config deep-merges defaults, so saving its
+    result back would persist every default value into the file. The raw
+    view contains only what the user actually wrote, which is what we
+    want to surgically prune.
+
+    Returns the paths removed. The file is saved at most once.
+    """
+    try:
+        config = read_raw_config()
+    except Exception as exc:
+        logger.warning("read_raw_config failed during gateway remove: %s", exc)
+        return []
+    if not isinstance(config, dict):
+        return []
+    removed = _platform_config_paths(config, platform_key)
+    if not removed:
+        return []
+
+    gateway_cfg = config.get("gateway")
+    if isinstance(gateway_cfg, dict):
+        gateway_platforms = gateway_cfg.get("platforms")
+        if isinstance(gateway_platforms, dict):
+            gateway_platforms.pop(platform_key, None)
+            if not gateway_platforms:
+                gateway_cfg.pop("platforms", None)
+        if not gateway_cfg:
+            config.pop("gateway", None)
+
+    for mapping_name in (
+        "platforms",
+        "platform_toolsets",
+        "known_plugin_toolsets",
+    ):
+        mapping = config.get(mapping_name)
+        if not isinstance(mapping, dict):
+            continue
+        mapping.pop(platform_key, None)
+        if not mapping:
+            config.pop(mapping_name, None)
+
+    config.pop(platform_key, None)
+    save_config(config)
+    return removed
+
+
+def _platform_has_removable_state(platform: dict, raw_config: dict) -> bool:
+    """Whether a platform has env or config state that remove can act on."""
+    return any(
+        get_env_value(name) is not None for name in _platform_env_var_names(platform)
+    ) or bool(_platform_config_paths(raw_config, platform["key"]))
+
+
+def _gateway_remove_platform(
+    name: str | None,
+    *,
+    force: bool = False,
+    keep_env: bool = False,
+    no_config: bool = False,
+) -> None:
+    """Remove a configured messaging platform (issue #9842).
+
+    Mirrors ``gateway setup``: walks the same ``_all_platforms()`` registry,
+    consumes each platform's owned teardown inventory, and either deletes its
+    env values or comments them out when ``keep_env`` is set.
+
+    With no positional ``name``, lists configured platforms and prompts the
+    user to pick one. ``force`` skips the confirmation prompt.
+    """
+    if is_managed():
+        managed_error("remove a gateway platform (managed by NixOS)")
+        return
+
+    raw = read_raw_config()
+    if not isinstance(raw, dict):
+        raw = {}
+
+    if not name:
+        platforms = _all_platforms()
+        configured = [p for p in platforms if _platform_has_removable_state(p, raw)]
+        if not configured:
+            print()
+            print_info("No platforms are currently configured.")
+            print_info("Run 'hermes gateway setup' to add one.")
+            return
+        print()
+        print(color("  Configured messaging platforms:", Colors.CYAN))
+        for p in configured:
+            status = _platform_status(p)
+            print_info(f"    • {p.get('emoji', '🔌')} {p['label']} ({p['key']}) — {status}")
+        print()
+        labels = [f"{p.get('emoji', '🔌')} {p['label']} ({p['key']})" for p in configured]
+        labels.append("Cancel")
+        idx = prompt_choice("Pick a platform to remove:", labels, len(labels) - 1)
+        if idx is None or idx == len(labels) - 1:
+            print_info("Cancelled.")
+            return
+        platform = configured[idx]
+    else:
+        platform = _resolve_platform_for_removal(name)
+        if platform is None:
+            valid = ", ".join(sorted(p["key"] for p in _all_platforms()))
+            print_error(f"Unknown platform: {name!r}")
+            print_info(f"Known platforms: {valid}")
+            sys.exit(1)
+
+    key = platform["key"]
+    label = platform.get("label", key)
+    emoji = platform.get("emoji", "🔌")
+
+    env_vars = _platform_env_var_names(platform)
+    active_env = [v for v in env_vars if get_env_value(v) is not None]
+    config_paths = [] if no_config else _platform_config_paths(raw, key)
+
+    if not active_env and not config_paths:
+        print()
+        print_info(f"{emoji} {label} is not currently configured — nothing to remove.")
+        return
+
+    action_word = "Commenting out" if keep_env else "Removing"
+    print()
+    print(color(f"  ─── {emoji} {label}: planned changes ───", Colors.CYAN))
+    if active_env:
+        print_info(f"  {action_word} {len(active_env)} env var(s) from ~/.hermes/.env:")
+        for var in active_env:
+            print_info(f"    • {var}")
+    else:
+        print_info("  No active env vars to clear.")
+    if config_paths:
+        print_info("  Removing config.yaml path(s):")
+        for path in config_paths:
+            print_info(f"    • {path}")
+
+    if not force:
+        print()
+        if not prompt_yes_no(f"  Remove {label}?", False):
+            print_info("Cancelled.")
+            return
+
+    cleared = 0
+    if active_env:
+        op = comment_env_value if keep_env else remove_env_value
+        for var in active_env:
+            try:
+                if op(var):
+                    cleared += 1
+            except Exception as exc:
+                print_warning(f"  Failed to update {var}: {exc}")
+
+    removed_paths: list[str] = []
+    if config_paths and not no_config:
+        try:
+            removed_paths = _remove_platform_config_yaml_entries(key)
+        except Exception as exc:
+            print_warning(f"  Failed to update config.yaml: {exc}")
+
+    print()
+    if cleared or removed_paths:
+        verb = "commented out" if keep_env else "cleared"
+        print_success(f"✓ {label} removed.")
+        if cleared:
+            print_info(f"  {cleared} env var(s) {verb} in ~/.hermes/.env")
+        if removed_paths:
+            print_info(f"  {len(removed_paths)} config path(s) removed")
+        print()
+        print_info("If the gateway is running, restart it to apply:")
+        print_info("  hermes gateway restart")
+    else:
+        print_info(f"{label} was already absent — nothing changed.")
+
+
+# =============================================================================
 # Main Command Handler
 # =============================================================================
 
@@ -6725,6 +7001,15 @@ def _gateway_command_inner(args):
 
     if subcmd == "setup":
         gateway_setup()
+        return
+
+    if subcmd == "remove":
+        _gateway_remove_platform(
+            getattr(args, "platform", None),
+            force=getattr(args, "force", False),
+            keep_env=getattr(args, "keep_env", False),
+            no_config=getattr(args, "no_config", False),
+        )
         return
 
     # Service management commands

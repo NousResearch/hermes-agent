@@ -1782,6 +1782,11 @@ def register(ctx) -> None:
         check_fn=check_whatsapp_requirements,
         is_connected=_is_connected,
         required_env=["WHATSAPP_ENABLED"],
+        teardown_env=(
+            "WHATSAPP_ENABLED", "WHATSAPP_ALLOWED_USERS",
+            "WHATSAPP_ALLOW_ALL_USERS", "WHATSAPP_HOME_CHANNEL",
+            "WHATSAPP_HOME_CHANNEL_NAME",
+        ),
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,

@@ -98,6 +98,19 @@ def test_gateway_run_accepts_external_supervisor_flag():
     assert ns.external_supervisor is True
 
 
+def test_gateway_remove_parser_and_flags():
+    p = _gateway_parser()
+    ns = p.parse_args(
+        ["gateway", "remove", "slack", "--force", "--keep-env", "--no-config"]
+    )
+    assert ns.gateway_command == "remove"
+    assert ns.platform == "slack"
+    assert ns.force is True
+    assert ns.keep_env is True
+    assert ns.no_config is True
+    assert ns.func is _h_gateway
+
+
 def test_gateway_lifecycle_accepts_legacy_platform_flag():
     p = _gateway_parser()
     for action in ("start", "restart", "status"):

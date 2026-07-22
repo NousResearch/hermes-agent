@@ -128,6 +128,7 @@ def test_platform_entry_has_required_fields(platform_name: str, clean_registry):
     assert isinstance(entry.label, str) and entry.label
     assert callable(entry.adapter_factory)
     assert callable(entry.check_fn)
+    assert isinstance(entry.teardown_env, tuple) and entry.teardown_env
 
     # Optional but recommended fields
     if entry.validate_config is not None:

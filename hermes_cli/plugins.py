@@ -946,7 +946,8 @@ class PluginContext:
         ``check_fn()`` before instantiation to verify dependencies.
 
         Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
-        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        ``setup_fn``, ``teardown_env``, ``emoji``, ``allowed_users_env``,
+        ``platform_hint``).
         Unknown keys raise TypeError from the dataclass constructor.
 
         Example::
@@ -958,6 +959,7 @@ class PluginContext:
                 check_fn=lambda: True,
                 emoji="💬",
                 setup_fn=irc_interactive_setup,
+                teardown_env=("IRC_SERVER", "IRC_CHANNEL"),
             )
         """
         from gateway.platform_registry import platform_registry, PlatformEntry

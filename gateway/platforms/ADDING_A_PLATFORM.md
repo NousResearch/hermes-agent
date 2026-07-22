@@ -14,6 +14,12 @@ The plugin system automatically handles: adapter creation, config parsing,
 user authorization, cron delivery, send_message routing, system prompt hints,
 status display, gateway setup, and more.
 
+Platform registrations should also declare a complete `teardown_env` tuple.
+Unlike `required_env` (minimum setup/status display metadata), this tuple
+includes optional policy, allowlist, and home-channel values written by setup;
+`hermes gateway remove` uses it to disconnect the platform without a central
+platform-name switch.
+
 **Optional hooks cover the edges most adapters need:**
 
 - `env_enablement_fn: () -> Optional[dict]` — seeds `PlatformConfig.extra`

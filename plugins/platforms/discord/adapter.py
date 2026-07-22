@@ -9474,6 +9474,11 @@ def register(ctx) -> None:
         check_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
+        teardown_env=(
+            "DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USERS",
+            "DISCORD_ALLOW_ALL_USERS", "DISCORD_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL_NAME",
+        ),
         install_hint="pip install 'hermes-agent[messaging]'",
         # Interactive setup wizard — replaces the central
         # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.

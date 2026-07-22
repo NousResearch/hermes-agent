@@ -1284,6 +1284,11 @@ def register(ctx) -> None:
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["SIMPLEX_WS_URL"],
+        teardown_env=(
+            "SIMPLEX_WS_URL", "SIMPLEX_ALLOWED_USERS", "SIMPLEX_ALLOW_ALL_USERS",
+            "SIMPLEX_GROUP_ALLOWED", "SIMPLEX_AUTO_ACCEPT", "SIMPLEX_HOME_CHANNEL",
+            "SIMPLEX_HOME_CHANNEL_NAME",
+        ),
         install_hint=(
             "pip install websockets   # SimpleX adapter requires the "
             "websockets package"

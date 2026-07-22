@@ -1773,6 +1773,14 @@ def register(ctx) -> None:
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
+        teardown_env=(
+            "PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET", "PHOTON_ALLOWED_USERS",
+            "PHOTON_ALLOW_ALL_USERS", "PHOTON_HOME_CHANNEL",
+            "PHOTON_HOME_CHANNEL_NAME", "PHOTON_DASHBOARD_HOST",
+            "PHOTON_SPECTRUM_HOST", "PHOTON_NODE_BIN", "PHOTON_SIDECAR_PORT",
+            "PHOTON_SIDECAR_AUTOSTART", "PHOTON_TELEMETRY", "PHOTON_MARKDOWN",
+            "PHOTON_REQUIRE_MENTION", "PHOTON_MENTION_PATTERNS", "PHOTON_REACTIONS",
+        ),
         install_hint=(
             "Run: hermes photon setup  (logs in via device flow, creates a "
             "Spectrum project, links your phone number, installs the "

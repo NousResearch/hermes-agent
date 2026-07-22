@@ -562,6 +562,11 @@ def register(ctx) -> None:
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["NTFY_TOPIC"],
+        teardown_env=(
+            "NTFY_TOPIC", "NTFY_PUBLISH_TOPIC", "NTFY_SERVER_URL", "NTFY_TOKEN",
+            "NTFY_ALLOWED_USERS", "NTFY_ALLOW_ALL_USERS", "NTFY_HOME_CHANNEL",
+            "NTFY_HOME_CHANNEL_NAME", "NTFY_MARKDOWN",
+        ),
         install_hint="pip install httpx   # already a Hermes dependency",
         # Env-driven auto-configuration: seeds PlatformConfig.extra so
         # env-only setups show up in `hermes gateway status` without

@@ -1261,6 +1261,11 @@ def register(ctx) -> None:
         check_fn=check_email_requirements,
         is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
+        teardown_env=(
+            "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST",
+            "EMAIL_SMTP_HOST", "EMAIL_SMTP_PORT", "EMAIL_ALLOWED_USERS",
+            "EMAIL_ALLOW_ALL_USERS", "EMAIL_HOME_ADDRESS",
+        ),
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps",
         allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS",

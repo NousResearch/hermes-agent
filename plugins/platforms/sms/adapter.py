@@ -500,6 +500,10 @@ def register(ctx) -> None:
         check_fn=check_sms_requirements,
         is_connected=_is_connected,
         required_env=["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
+        teardown_env=(
+            "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
+            "SMS_ALLOWED_USERS", "SMS_ALLOW_ALL_USERS", "SMS_HOME_CHANNEL",
+        ),
         install_hint="pip install aiohttp",
         allowed_users_env="SMS_ALLOWED_USERS",
         allow_all_env="SMS_ALLOW_ALL_USERS",

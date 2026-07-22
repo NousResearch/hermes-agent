@@ -8270,6 +8270,88 @@ def remove_env_value(key: str) -> bool:
     return found
 
 
+def comment_env_value(key: str) -> bool:
+    """Comment out a key in ~/.hermes/.env instead of deleting it.
+
+    Used by ``hermes gateway remove --keep-env`` so the user can rotate
+    bot tokens back in by hand without re-running setup. Prefixes each
+    matching ``KEY=...`` line with ``# `` (idempotent: already-commented
+    lines are left alone) and drops ``key`` from ``os.environ`` so the
+    current process behaves as if the var were unset on the next reload.
+
+    Returns True if at least one matching active line was commented out.
+    """
+    if is_managed():
+        managed_error(f"comment {key}")
+        return False
+    # Match remove_env_value(): a key pinned by the administrator cannot be
+    # hidden by commenting out the user-scope copy.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_env_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / ".env") if managed_dir else "the managed scope"
+        print(
+            f"Cannot comment {key}: it is managed by your administrator ({src}) "
+            f"and cannot be changed.",
+            file=sys.stderr,
+        )
+        return False
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    env_path = get_env_path()
+    if not env_path.exists():
+        os.environ.pop(key, None)
+        return False
+
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
+
+    with open(env_path, **read_kw) as f:
+        lines = f.readlines()
+    lines = _sanitize_env_lines(lines)
+
+    needle = f"{key}="
+    new_lines = []
+    changed = False
+    for line in lines:
+        if line.strip().startswith(needle):
+            new_lines.append(f"# {line}" if not line.startswith("# ") else line)
+            changed = True
+        else:
+            new_lines.append(line)
+
+    if changed:
+        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        original_mode = None
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
+        try:
+            with os.fdopen(fd, 'w', **write_kw) as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, env_path)
+            if original_mode is not None:
+                try:
+                    os.chmod(env_path, original_mode)
+                except OSError:
+                    pass
+            else:
+                _secure_file(env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    os.environ.pop(key, None)
+    invalidate_env_cache()
+    return changed
+
+
 def save_anthropic_oauth_token(value: str, save_fn=None):
     """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
     writer = save_fn or save_env_value

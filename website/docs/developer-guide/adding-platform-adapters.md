@@ -123,6 +123,15 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
+        # Complete platform-owned env inventory. Unlike required_env, this
+        # includes optional values written by setup so gateway remove can
+        # cleanly disconnect the platform.
+        teardown_env=(
+            "MY_PLATFORM_TOKEN",
+            "MY_PLATFORM_CHANNEL",
+            "MY_PLATFORM_ALLOWED_USERS",
+            "MY_PLATFORM_HOME_CHANNEL",
+        ),
         install_hint="pip install my-platform-sdk",
         # Env-driven auto-configuration — seeds PlatformConfig.extra from
         # env vars before adapter construction. See "Env-Driven Auto-
@@ -194,6 +203,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | PII redaction | `pii_safe` flag |
 | `hermes status` | Shows plugin platforms with `(plugin)` tag |
 | `hermes gateway setup` | Plugin platforms appear in setup menu |
+| `hermes gateway remove` | `teardown_env` declares all platform-owned env values to clear |
 | `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |

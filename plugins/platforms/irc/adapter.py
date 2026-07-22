@@ -936,6 +936,11 @@ def register(ctx):
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
+        teardown_env=(
+            "IRC_SERVER", "IRC_PORT", "IRC_USE_TLS", "IRC_NICKNAME",
+            "IRC_CHANNEL", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
+            "IRC_ALLOWED_USERS", "IRC_ALLOW_ALL_USERS", "IRC_HOME_CHANNEL",
+        ),
         install_hint="No extra packages needed (stdlib only)",
         setup_fn=interactive_setup,
         # Env-driven auto-configuration: seeds PlatformConfig.extra with

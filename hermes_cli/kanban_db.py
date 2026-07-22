@@ -7420,6 +7420,11 @@ def _record_task_failure(
             return False
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
+        if cur_status not in ("ready", "running"):
+            # Another writer won the race after the detector/spawner chose
+            # this task. Never stamp stale failure state or emit gave_up on a
+            # task that has since completed, blocked, or been re-claimed.
+            return False
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.

@@ -1200,6 +1200,35 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.last_failure_error is None
 
 
+@pytest.mark.parametrize("failure_limit", [1, 2])
+def test_stale_failure_record_does_not_mutate_completed_task(
+    kanban_home, failure_limit,
+):
+    """Late crash accounting must be a no-op after another writer completes."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="completed elsewhere", assignee="a")
+        kb.claim_task(conn, task_id)
+        kb.complete_task(conn, task_id, result="done")
+        events_before = len(kb.list_events(conn, task_id))
+
+        tripped = kb._record_task_failure(
+            conn,
+            task_id,
+            error="stale crash detector",
+            outcome="crashed",
+            release_claim=False,
+            end_run=False,
+            failure_limit=failure_limit,
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert tripped is False
+        assert task.status == "done"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert len(kb.list_events(conn, task_id)) == events_before
+
+
 def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
     """recompute_ready must not auto-recover tasks whose consecutive_failures
     has reached the circuit-breaker limit (#35072).

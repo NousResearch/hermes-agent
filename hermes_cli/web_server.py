@@ -7450,6 +7450,13 @@ def delete_custom_endpoint(endpoint_id: str):
         cfg["providers"] = providers
         _detach_main_model_from_provider(cfg, provider_key)
         save_config(cfg)
+        # Bust the per-provider model-id disk cache so the model picker
+        # no longer lists models from the deleted provider (#68943).
+        try:
+            from hermes_cli.models import clear_provider_models_cache
+            clear_provider_models_cache(provider_key)
+        except Exception:
+            _log.debug("Failed to clear model cache for %s", provider_key, exc_info=True)
         response = _custom_endpoint_response(cfg)
         response["ok"] = True
         return response

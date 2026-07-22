@@ -23,9 +23,11 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -120,6 +122,29 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     }
 
 
+_SAFE_KEY_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def safe_user_key(user_id: str, platform=None) -> str:
+    """Collapse a platform-supplied user identifier into a filesystem-safe,
+    platform-qualified directory name.
+
+    Platform IDs that are already safe tokens (Slack ``U03G89W2A10``, Telegram
+    numeric IDs, Discord snowflakes) stay human-readable — qualified as
+    ``<platform>-<id>`` when the platform is known so equal raw IDs from
+    different platforms can never collide. Anything else (emails, unicode
+    display handles, hostile values like ``../../etc``) is reduced to a stable
+    ``h-<sha256[:20]>`` digest, so an attacker-controlled identifier can never
+    contribute raw path components under ``memories/users/``.
+    """
+    uid = str(user_id)
+    plat = str(platform) if platform else None
+    if _SAFE_KEY_RE.fullmatch(uid) and (plat is None or _SAFE_KEY_RE.fullmatch(plat)):
+        return f"{plat}-{uid}" if plat else uid
+    raw = f"{plat or ''}:{uid}"
+    return "h-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -137,11 +162,17 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 user_id=None, platform=None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Per-user USER.md partitioning key. When a platform user identity is
+        # present, USER.md lives at memories/users/<safe_key>/USER.md so each
+        # platform user gets their own preference store. None (TUI, one-shot,
+        # single-user default) keeps the global USER.md — no behavior change.
+        self._user_key = safe_user_key(user_id, platform) if user_id else None
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -195,8 +226,14 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        # Ensure the per-user USER.md directory exists when partitioning is
+        # active (no-op for the global fallback: parent == mem_dir, which
+        # already exists).
+        user_path = self._path_for("user")
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.memory_entries = self._read_file(self._path_for("memory"))
+        self.user_entries = self._read_file(user_path)
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -287,10 +324,14 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         mem_dir = get_memory_dir()
         if target == "user":
+            # Per-user partition when a platform identity is present; global
+            # USER.md for TUI / one-shot / no-identity contexts so existing
+            # single-user deployments see no change.
+            if self._user_key:
+                return mem_dir / "users" / self._user_key / "USER.md"
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
@@ -798,8 +839,13 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
-def load_on_disk_store() -> "MemoryStore":
+def load_on_disk_store(user_id=None, platform=None) -> "MemoryStore":
     """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+
+    Pass the platform user identity (``user_id`` / ``platform``) when the
+    calling context has one — e.g. the gateway ``/memory`` approval handler —
+    so approved ``target="user"`` writes land in the same per-user USER.md
+    partition the live agent uses, not the global fallback.
 
     Use this from any context that has no live agent (the messaging gateway, the
     Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
@@ -825,6 +871,8 @@ def load_on_disk_store() -> "MemoryStore":
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        user_id=user_id,
+        platform=platform,
     )
     store.load_from_disk()
     return store

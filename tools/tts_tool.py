@@ -780,17 +780,13 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
 
     def read_stream(name: str, stream: Any) -> None:
         encoding = getattr(stream, "encoding", None) or "utf-8"
+        read1 = getattr(getattr(stream, "buffer", None), "read1", None)
         try:
             while True:
-                try:
-                    fd = stream.fileno()
-                except (AttributeError, OSError):
-                    fd = None
-
-                if fd is None:
+                if read1 is None:
                     chunk = stream.read(65536)
                 else:
-                    data = os.read(fd, 65536)
+                    data = read1(65536)
                     chunk = data.decode(encoding, errors="replace")
                 if not chunk:
                     break
@@ -830,6 +826,12 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
         chunks[name].append(chunk)
         deadline = time.monotonic() + timeout
 
+    if not timed_out:
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+
     if timed_out:
         _terminate_command_tts_process_tree(proc)
         for reader in readers:
@@ -855,7 +857,6 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
 
     stdout = "".join(chunks["stdout"])
     stderr = "".join(chunks["stderr"])
-    proc.wait()
 
     if proc.returncode:
         raise subprocess.CalledProcessError(

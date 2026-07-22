@@ -396,6 +396,32 @@ class TestRunCommandTts:
         assert read_sizes["stdout"][0] == 65536
         assert read_sizes["stderr"][0] == 65536
 
+    def test_closed_pipes_still_running_honors_idle_timeout(self):
+        class ClosedStream:
+            def read(self, size: int) -> str:
+                return ""
+
+        class FakeProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.returncode = None
+                self.stdout = ClosedStream()
+                self.stderr = ClosedStream()
+
+            def wait(self, timeout=None):
+                if timeout is None:
+                    self.returncode = 0
+                    return self.returncode
+                raise subprocess.TimeoutExpired("fake tts", timeout)
+
+        process = FakeProcess()
+        with (
+            patch("tools.tts_tool.subprocess.Popen", return_value=process),
+            patch("tools.tts_tool._terminate_command_tts_process_tree"),
+        ):
+            with pytest.raises(subprocess.TimeoutExpired):
+                _run_command_tts("fake tts", timeout=0.25)
+
     def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
         script = tmp_path / "progress_then_exit.py"
         script.write_text(

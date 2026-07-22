@@ -1237,19 +1237,143 @@ async def _standalone_send(
 
 
 def _is_connected(config) -> bool:
-    """Email is connected when an address is configured (in PlatformConfig.extra
-    or via EMAIL_ADDRESS). Mirrors the legacy
-    _PLATFORM_CONNECTED_CHECKERS[Platform.EMAIL] = bool(extra.get('address'))."""
-    extra = getattr(config, "extra", {}) or {}
-    if extra.get("address"):
-        return True
+    """Return whether all credentials required by the Email adapter are set."""
     import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
+
+    extra = getattr(config, "extra", {}) or {}
+    address = gateway_mod.get_env_value("EMAIL_ADDRESS") or extra.get("address", "")
+    password = gateway_mod.get_env_value("EMAIL_PASSWORD") or ""
+    imap_host = gateway_mod.get_env_value("EMAIL_IMAP_HOST") or extra.get("imap_host", "")
+    smtp_host = gateway_mod.get_env_value("EMAIL_SMTP_HOST") or extra.get("smtp_host", "")
+    return all(str(value).strip() for value in (address, password, imap_host, smtp_host))
 
 
 def _build_adapter(config):
     """Factory wrapper that constructs EmailAdapter from a PlatformConfig."""
     return EmailAdapter(config)
+
+
+def interactive_setup() -> None:
+    """Guide the user through configuring the Email gateway adapter."""
+    from hermes_cli.cli_output import (
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+        prompt,
+        prompt_yes_no,
+    )
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+
+    print_header("Email")
+
+    existing = {
+        "EMAIL_ADDRESS": get_env_value("EMAIL_ADDRESS") or "",
+        "EMAIL_PASSWORD": get_env_value("EMAIL_PASSWORD") or "",
+        "EMAIL_IMAP_HOST": get_env_value("EMAIL_IMAP_HOST") or "",
+        "EMAIL_SMTP_HOST": get_env_value("EMAIL_SMTP_HOST") or "",
+    }
+    if all(value.strip() for value in existing.values()):
+        print_info("Email: already configured")
+        if not prompt_yes_no("Reconfigure Email?", False):
+            return
+
+    print_info("Use a dedicated mailbox with IMAP enabled.")
+    print_info("Gmail and other 2FA accounts require an app password.")
+    print_info(
+        "Guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/email"
+    )
+    print()
+
+    address = prompt("Email address", default=existing["EMAIL_ADDRESS"] or None)
+    password = prompt("Email password / app password", password=True)
+    if not password:
+        password = existing["EMAIL_PASSWORD"]
+
+    domain = address.rpartition("@")[2].lower()
+    default_imap = existing["EMAIL_IMAP_HOST"]
+    default_smtp = existing["EMAIL_SMTP_HOST"]
+    if not default_imap and domain in {"gmail.com", "googlemail.com"}:
+        default_imap = "imap.gmail.com"
+    if not default_smtp and domain in {"gmail.com", "googlemail.com"}:
+        default_smtp = "smtp.gmail.com"
+    if not default_imap and domain in {"outlook.com", "hotmail.com", "live.com"}:
+        default_imap = "outlook.office365.com"
+    if not default_smtp and domain in {"outlook.com", "hotmail.com", "live.com"}:
+        default_smtp = "smtp.office365.com"
+
+    imap_host = prompt("IMAP host", default=default_imap or None)
+    smtp_host = prompt("SMTP host", default=default_smtp or None)
+
+    required = {
+        "email address": address,
+        "password": password,
+        "IMAP host": imap_host,
+        "SMTP host": smtp_host,
+    }
+    missing = [label for label, value in required.items() if not value.strip()]
+    if missing:
+        print_warning(
+            f"Email setup incomplete (missing {', '.join(missing)}); no changes saved."
+        )
+        return
+
+    save_env_value("EMAIL_ADDRESS", address)
+    save_env_value("EMAIL_PASSWORD", password)
+    save_env_value("EMAIL_IMAP_HOST", imap_host)
+    save_env_value("EMAIL_SMTP_HOST", smtp_host)
+
+    imap_port = prompt(
+        "IMAP port", default=get_env_value("EMAIL_IMAP_PORT") or "993"
+    )
+    smtp_port = prompt(
+        "SMTP port", default=get_env_value("EMAIL_SMTP_PORT") or "587"
+    )
+    if imap_port:
+        save_env_value("EMAIL_IMAP_PORT", imap_port)
+    if smtp_port:
+        save_env_value("EMAIL_SMTP_PORT", smtp_port)
+
+    print()
+    print_info("Restrict senders to avoid processing unrelated inbox mail.")
+    allowed_users = prompt(
+        "Allowed sender addresses (comma-separated)",
+        default=get_env_value("EMAIL_ALLOWED_USERS") or None,
+    )
+    truthy = {"true", "1", "yes"}
+    email_allow_all = (get_env_value("EMAIL_ALLOW_ALL_USERS") or "").strip().lower() in truthy
+    global_allow_all = (get_env_value("GATEWAY_ALLOW_ALL_USERS") or "").strip().lower() in truthy
+    if allowed_users:
+        normalized_users = ",".join(
+            address.strip() for address in allowed_users.split(",") if address.strip()
+        )
+        save_env_value("EMAIL_ALLOWED_USERS", normalized_users)
+        if email_allow_all:
+            remove_env_value("EMAIL_ALLOW_ALL_USERS")
+        print_success("Email sender allowlist configured.")
+    elif email_allow_all:
+        if prompt_yes_no(
+            "Open access is enabled. Keep accepting email from any sender?", False
+        ):
+            print_warning("Email open access remains enabled — any sender can use the bot.")
+        else:
+            remove_env_value("EMAIL_ALLOW_ALL_USERS")
+            print_success("Email open access disabled; unknown senders will be ignored.")
+    elif global_allow_all:
+        print_warning(
+            "Global gateway open access is enabled; any email sender can still use the bot."
+        )
+    else:
+        print_info("No allowlist set; unknown senders will be ignored by default.")
+
+    home_address = prompt(
+        "Home address for cron/notification delivery (optional)",
+        default=get_env_value("EMAIL_HOME_ADDRESS") or None,
+    )
+    if home_address:
+        save_env_value("EMAIL_HOME_ADDRESS", home_address)
+
+    print_success("Email configured!")
 
 
 def register(ctx) -> None:
@@ -1260,8 +1384,14 @@ def register(ctx) -> None:
         adapter_factory=_build_adapter,
         check_fn=check_email_requirements,
         is_connected=_is_connected,
-        required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
+        required_env=[
+            "EMAIL_ADDRESS",
+            "EMAIL_PASSWORD",
+            "EMAIL_IMAP_HOST",
+            "EMAIL_SMTP_HOST",
+        ],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps",
+        setup_fn=interactive_setup,
         allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS",
         cron_deliver_env_var="EMAIL_HOME_ADDRESS",

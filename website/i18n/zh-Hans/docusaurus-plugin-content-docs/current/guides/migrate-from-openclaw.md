@@ -171,7 +171,7 @@ TTS 设置从 OpenClaw 配置的**两个**位置读取，优先级如下：
 | Cron 作业 | `archive/cron-config.json` | 通过 `hermes cron create` 重建 |
 | 插件 | `archive/plugins-config.json` | 参见 [插件指南](/user-guide/features/hooks) |
 | Hooks/webhooks | `archive/hooks-config.json` | 使用 `hermes webhook` 或 gateway hooks |
-| 记忆后端 | `archive/memory-backend-config.json` | 通过 `hermes honcho` 配置 |
+| 记忆后端 | `archive/memory-backend-config.json` | 通过 `hermes memory setup honcho` 配置 |
 | Skills 注册表 | `archive/skills-registry-config.json` | 使用 `hermes skills config` |
 | UI/身份 | `archive/ui-identity-config.json` | 使用 `/skin` 命令 |
 | 日志 | `archive/logging-diagnostics-config.json` | 在 `config.yaml` 日志部分设置 |

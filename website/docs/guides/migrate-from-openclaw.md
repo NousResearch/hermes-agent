@@ -175,7 +175,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 | Cron jobs | `archive/cron-config.json` | Recreate with `hermes cron create` |
 | Plugins | `archive/plugins-config.json` | See [plugins guide](/user-guide/features/hooks) |
 | Hooks/webhooks | `archive/hooks-config.json` | Use `hermes webhook` or gateway hooks |
-| Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho` |
+| Memory backend | `archive/memory-backend-config.json` | Configure via `hermes memory setup honcho` |
 | Skills registry | `archive/skills-registry-config.json` | Use `hermes skills config` |
 | UI/identity | `archive/ui-identity-config.json` | Use `/skin` command |
 | Logging | `archive/logging-diagnostics-config.json` | Set in `config.yaml` logging section |

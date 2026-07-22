@@ -136,6 +136,24 @@ def _quote_bash_path(path: str) -> str:
     return shlex.quote(_bash_safe_path(path))
 
 
+def _sanitize_msys_nul_redirection(cmd: str) -> str:
+    """Normalize Windows CMD-style redirection to 'nul' / 'NUL' in Git Bash / MSYS.
+
+    In Git Bash / MSYS on Windows, writing '2>nul' or '> nul' opens a literal file
+    named './nul' in the process working directory instead of discarding output to
+    the null device. If the working directory lives inside a OneDrive folder, this
+    creates an unsyncable reserved Windows filename ('nul') and triggers OneDrive
+    sync error popups.
+
+    Rewrites redirection tokens '>nul', '2>nul', '> NUL', '2>NUL', '&>nul' to
+    '/dev/null' before handing off to bash.
+    """
+    if not _IS_WINDOWS or not cmd:
+        return cmd
+    pattern = r'([12&]?\s*>\s*)(?:nul|NUL)\b(?!\.)'
+    return re.sub(pattern, r'\1/dev/null', cmd)
+
+
 def _cwd_usable(path: str) -> bool:
     """True when *path* is a directory this process can actually chdir into.
 
@@ -1333,6 +1351,8 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        if _IS_WINDOWS and cmd_string:
+            cmd_string = _sanitize_msys_nul_redirection(cmd_string)
         bash = _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /

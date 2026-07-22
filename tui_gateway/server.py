@@ -1219,6 +1219,66 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
+# Registry of every live client transport (one per connected WS peer). Populated
+# by tui_gateway.ws for the lifetime of each connection. This is the ONLY way a
+# session-less, surface-global announcement can reach WS clients: write_json only
+# routes to a session's transport (by id) or the request's contextvar-bound
+# transport, and a background thread has neither. See _broadcast_global_event.
+_live_transports: set = set()
+_live_transports_lock = threading.Lock()
+
+
+def register_live_transport(transport) -> None:
+    """Track a connected client transport for global broadcasts. Idempotent."""
+    if transport is None:
+        return
+    with _live_transports_lock:
+        _live_transports.add(transport)
+
+
+def unregister_live_transport(transport) -> None:
+    """Stop tracking a transport (call on disconnect). Idempotent."""
+    with _live_transports_lock:
+        _live_transports.discard(transport)
+
+
+def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
+    """Fan a session-less, surface-global event out to EVERY connected client.
+
+    Session-scoped events route to their session's transport, and an in-request
+    emit rides the contextvar-bound transport. A *global* announcement like
+    ``skin.changed`` has no session id, and the emitter (the skin watcher) runs
+    on a background thread with no contextvar binding — so ``write_json`` would
+    fall through to the module stdio transport and never reach the WS clients
+    the desktop app and dashboard chat connect over. Broadcasting to the live
+    transport registry is what makes "Hermes themes itself, live, everywhere"
+    actually repaint the GUI and not just the stdio surfaces.
+
+    When no transports are registered (the stdio TUI path, whose ``_stdio_transport``
+    is tee'd to the dashboard WS publisher, and tests), fall back to ``write_json``
+    so that surface is unchanged.
+    """
+    with _live_transports_lock:
+        targets = list(_live_transports)
+
+    if not targets:
+        _emit(event, "", payload)
+        return
+
+    params: dict = {"type": event, "session_id": ""}
+    if payload is not None:
+        params["payload"] = payload
+    frame = {"jsonrpc": "2.0", "method": "event", "params": params}
+    for transport in targets:
+        try:
+            transport.write(frame)
+        except Exception:
+            # A wedged/closed peer must never stall the others (or the watcher
+            # thread). Disconnect teardown unregisters it; a stale write here is
+            # harmless (WSTransport.write returns False once closed).
+            logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
+
+
 _compute_host_supervisor = None
 _compute_host_supervisor_lock = threading.Lock()
 
@@ -2477,7 +2537,7 @@ def _broadcast_skin_if_changed() -> None:
         return
     _last_skin_sig = sig
     try:
-        _emit("skin.changed", "", resolve_skin())
+        _broadcast_global_event("skin.changed", resolve_skin())
     except Exception:
         pass
 
@@ -12137,9 +12197,12 @@ def _(rid, params: dict) -> dict:
                 _write_config_key(f"display.{key}", value)
                 nv = value
                 if key == "skin":
-                    _emit("skin.changed", "", resolve_skin())
-                    # Keep the reconcile baseline in sync so the per-tool check
-                    # doesn't re-broadcast the skin the /skin RPC just applied.
+                    # Broadcast to EVERY connected surface, not just the client
+                    # that issued the RPC — a `/skin` from the desktop should
+                    # repaint an open dashboard/CLI too. _note_skin_broadcast()
+                    # then syncs the watcher baseline so the poll loop doesn't
+                    # re-broadcast the skin this RPC just applied.
+                    _broadcast_global_event("skin.changed", resolve_skin())
                     _note_skin_broadcast()
             resp = {"key": key, "value": nv}
             if key == "personality":

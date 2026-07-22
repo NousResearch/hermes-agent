@@ -22,6 +22,7 @@ Auth env vars::
     FIRECRAWL_API_KEY=...           # https://firecrawl.dev
     FIRECRAWL_API_URL=...           # optional override (default https://api.firecrawl.dev)
     FIRECRAWL_BROWSER_TTL=...       # optional, default 300 seconds
+    FIRECRAWL_BROWSER_PROFILE=...   # optional, persistent profile name
 """
 
 from __future__ import annotations
@@ -77,6 +78,25 @@ class FirecrawlBrowserProvider(BrowserProvider):
             "Authorization": f"Bearer {api_key}",
         }
 
+    def _resolve_profile(self) -> str | None:
+        """Resolve Firecrawl persistent profile name from env or config."""
+        profile = os.environ.get("FIRECRAWL_BROWSER_PROFILE", "").strip()
+        if profile:
+            return profile
+
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+            profile = (cfg.get("browser", {}).get("firecrawl", {}).get("profile") or 
+                       cfg.get("browser", {}).get("profile") or "")
+            profile = str(profile).strip()
+            if profile:
+                return profile
+        except Exception:
+            pass
+
+        return None
+
     def create_session(self, task_id: str) -> Dict[str, object]:
         try:
             ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
@@ -84,6 +104,13 @@ class FirecrawlBrowserProvider(BrowserProvider):
             ttl = 300
 
         body: Dict[str, object] = {"ttl": ttl}
+
+        profile_name = self._resolve_profile()
+        if profile_name:
+            body["profile"] = {
+                "name": profile_name,
+                "saveChanges": True
+            }
 
         try:
             response = requests.post(
@@ -106,13 +133,16 @@ class FirecrawlBrowserProvider(BrowserProvider):
         data = response.json()
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
 
-        logger.info("Created Firecrawl browser session %s", session_name)
+        if profile_name:
+            logger.info("Created Firecrawl browser session %s with profile %s", session_name, profile_name)
+        else:
+            logger.info("Created Firecrawl browser session %s", session_name)
 
         return {
             "session_name": session_name,
             "bb_session_id": data["id"],
             "cdp_url": data["cdpUrl"],
-            "features": {"firecrawl": True},
+            "features": {"firecrawl": True, "persistent_profile": bool(profile_name)},
         }
 
     def close_session(self, session_id: str) -> bool:

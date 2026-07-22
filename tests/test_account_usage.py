@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
 
 from agent.account_usage import (
+    AccountUsageMetric,
     AccountUsageSnapshot,
     AccountUsageWindow,
     fetch_account_usage,
     render_account_usage_lines,
 )
+from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE
 
 
 class _Response:
@@ -90,9 +92,49 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
     assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].id == "five_hour"
+    assert snapshot.windows[1].id == "weekly"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+    assert snapshot.metrics == (AccountUsageMetric("credit_balance", 12.5),)
+
+
+def test_fetch_account_usage_codex_without_credentials_is_unauthenticated(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: (_ for _ in ()).throw(
+            AuthError("no credentials", provider="openai-codex")
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: type("Pool", (), {"select": lambda self: None})(),
+    )
+
+    assert fetch_account_usage("openai-codex", report_failures=True) is None
+
+
+def test_fetch_account_usage_codex_rate_limit_remains_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: (_ for _ in ()).throw(
+            AuthError(
+                "rate limited",
+                provider="openai-codex",
+                code=CODEX_RATE_LIMITED_CODE,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: type("Pool", (), {"select": lambda self: None})(),
+    )
+
+    snapshot = fetch_account_usage("openai-codex", report_failures=True)
+
+    assert snapshot is not None
+    assert snapshot.unavailable_reason == "Provider usage could not be fetched."
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():
@@ -158,7 +200,15 @@ def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_depreca
             label="API key quota",
             used_percent=30.0,
             detail="$70.00 of $100.00 remaining • resets monthly",
+            id="api_key_quota",
         ),
+    )
+    assert snapshot.metrics == (
+        AccountUsageMetric("credit_balance", 289.08),
+        AccountUsageMetric("api_key_usage_total", 12.5),
+        AccountUsageMetric("api_key_usage_daily", 0.5),
+        AccountUsageMetric("api_key_usage_weekly", 2.0),
+        AccountUsageMetric("api_key_usage_monthly", 8.0),
     )
     assert "Credits balance: $289.08" in snapshot.details
     assert "API key usage: $12.50 total • $0.50 today • $2.00 this week • $8.00 this month" in snapshot.details

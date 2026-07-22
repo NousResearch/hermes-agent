@@ -3348,21 +3348,41 @@ class SessionDB:
         if exact:
             return exact["id"]
 
+        matches = self.find_session_ids_by_prefix(session_id_or_prefix, limit=2)
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def find_session_ids_by_prefix(
+        self, session_id_prefix: str, *, limit: int = 2
+    ) -> List[str]:
+        """Return session IDs matching a literal prefix, newest first."""
         escaped = (
-            session_id_or_prefix
+            session_id_prefix
             .replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
-                (f"{escaped}%",),
-            )
-            matches = [row["id"] for row in cursor.fetchall()]
-        if len(matches) == 1:
-            return matches[0]
-        return None
+            rows = self._conn.execute(
+                "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' "
+                "ORDER BY started_at DESC LIMIT ?",
+                (f"{escaped}%", limit),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def get_latest_main_model_usage(
+        self, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the session's most recently active main-loop model route."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM session_model_usage "
+                "WHERE session_id = ? AND task = '' "
+                "ORDER BY last_seen DESC, first_seen DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     # Maximum length for session titles
     MAX_TITLE_LENGTH = 100

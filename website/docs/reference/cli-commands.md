@@ -83,6 +83,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
+| `hermes usage` | Show standalone local session usage, provider account limits, and Nous Portal credits. |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
@@ -1390,6 +1391,55 @@ hermes insights [--days N] [--source platform]
 |--------|-------------|
 | `--days <n>` | Analyze the last `n` days (default: 30). |
 | `--source <platform>` | Filter by source such as `cli`, `telegram`, or `discord`. |
+
+## `hermes usage`
+
+```bash
+hermes usage [--session ID | --latest-session] [--json]
+```
+
+`hermes usage` is a standalone snapshot, so it does not inherit the active session from another CLI, TUI, desktop, gateway, cron, or delegated process.
+Without a selector, the session section reports `not_requested` and no persisted session is read.
+
+| Option | Description |
+|--------|-------------|
+| `--session <id>` | Include a persisted session selected by exact ID or unique ID prefix. |
+| `--latest-session` | Include the latest visible, non-cron session with at least one message. |
+| `--json` | Emit one schema-versioned JSON document for scripts and automation. |
+
+The human view always contains three sections:
+
+- **Session usage** shows durable persisted counters, timestamps, source, and the latest main-loop model/provider route when a session was explicitly selected.
+- **Provider account** shows live allowance windows for supported configured providers (`openai-codex`, `anthropic`, and `openrouter`).
+- **Nous Portal** shows safe subscription, top-up, and total spendable credit information when a Nous account is connected.
+
+Persisted sessions do not contain a reliable live context-window snapshot.
+Their context status is therefore `not_applicable`, and prompt, completion, and total token fields remain `null` rather than being guessed.
+
+JSON output has top-level fields `schema_version`, `generated_at`, `session`, `accounts`, and `warnings`.
+Unavailable values remain present as `null` or empty arrays so consumers can rely on a stable shape.
+Timestamps are RFC 3339 UTC strings, percentages are numeric values from 0 through 100, and monetary values are numeric USD amounts.
+Provider payloads are allowlisted into normalized windows and metrics; raw payloads, credentials, user or organisation identifiers, email addresses, filesystem paths, and arbitrary exception text are never emitted.
+
+Account failures are partial results and exit successfully with a warning.
+An unreadable local session store exits with status 1, while invalid, unknown, or ambiguous session selectors exit with status 2.
+In JSON mode, handler-level failures still emit one valid JSON document on stdout and leave stderr empty.
+
+Examples:
+
+```bash
+# Account status only; no persisted session is selected
+hermes usage
+
+# Add one persisted session by exact ID or unique prefix
+hermes usage --session 2f7a9c
+
+# Add the latest visible non-cron session
+hermes usage --latest-session
+
+# Stable machine-readable envelope
+hermes usage --latest-session --json
+```
 
 ## `hermes claw`
 

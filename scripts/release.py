@@ -2113,6 +2113,50 @@ def git_result(*args, cwd=None):
     )
 
 
+def push_and_verify_release_tag(tag_name: str) -> bool:
+    """Push release refs and verify the remote tag resolves to the local commit."""
+    push_result = git_result(
+        "push", "origin", "HEAD", f"refs/tags/{tag_name}"
+    )
+    if push_result.returncode != 0:
+        print(f"  ✗ Failed to push to origin: {push_result.stderr.strip()}")
+        print("    Release aborted before building artifacts or creating a GitHub release.")
+        print("    Retry after fixing access:")
+        print(f"    git push origin HEAD refs/tags/{tag_name}")
+        return False
+    print("  ✓ Pushed to origin")
+
+    local_result = git_result("rev-parse", f"{tag_name}^{{commit}}")
+    if local_result.returncode != 0:
+        print(f"  ✗ Failed to resolve local tag commit: {local_result.stderr.strip()}")
+        return False
+
+    peeled_ref = f"refs/tags/{tag_name}^{{}}"
+    remote_result = git_result("ls-remote", "origin", peeled_ref)
+    if remote_result.returncode != 0:
+        print(f"  ✗ Failed to resolve remote tag: {remote_result.stderr.strip()}")
+        return False
+
+    remote_sha = ""
+    for line in remote_result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1] == peeled_ref:
+            remote_sha = fields[0]
+            break
+
+    local_sha = local_result.stdout.strip()
+    if not remote_sha or remote_sha != local_sha:
+        print(
+            f"  ✗ Remote tag {tag_name} does not match local commit "
+            f"({remote_sha or 'missing'} != {local_sha or 'missing'})"
+        )
+        print("    Release aborted before building artifacts or creating a GitHub release.")
+        return False
+
+    print(f"  ✓ Verified remote tag {tag_name} at {local_sha}")
+    return True
+
+
 def get_last_tag():
     """Get the most recent CalVer tag."""
     tags = git("tag", "--list", "v20*", "--sort=-v:refname")
@@ -2631,14 +2675,9 @@ def main():
             return
         print(f"  ✓ Created tag {tag_name}")
 
-        # Push
-        push_result = git_result("push", "origin", "HEAD", "--tags")
-        if push_result.returncode == 0:
-            print("  ✓ Pushed to origin")
-        else:
-            print(f"  ✗ Failed to push to origin: {push_result.stderr.strip()}")
-            print("    Continue manually after fixing access:")
-            print("    git push origin HEAD --tags")
+        # Push and verify the remote's peeled annotated tag before publishing.
+        if not push_and_verify_release_tag(tag_name):
+            return
 
         # Build semver-named Python artifacts so downstream packagers
         # (e.g. Homebrew) can target them without relying on CalVer tag names.
@@ -2654,6 +2693,7 @@ def main():
 
         gh_cmd = [
             "gh", "release", "create", tag_name,
+            "--verify-tag",
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
         ]
@@ -2679,9 +2719,10 @@ def main():
             else:
                 print(f"  ✗ GitHub release failed: {result.stderr.strip()}")
             print(f"    Release notes kept at: {changelog_file}")
-            print("    Tag was created locally. Create the release manually:")
+            print("    Tag was pushed and verified. Create the release manually:")
             print(
-                f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
+                f"    gh release create {tag_name} --verify-tag "
+                f"--title 'Hermes Agent v{new_version} ({calver_date})' "
                 f"--notes-file .release_notes.md {' '.join(str(path) for path in artifacts)}"
             )
             print(f"\n  ✓ Release artifacts prepared for manual publish: v{new_version} ({tag_name})")

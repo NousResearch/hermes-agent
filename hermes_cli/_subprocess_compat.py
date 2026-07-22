@@ -40,6 +40,7 @@ __all__ = [
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
+    "spawn_bash_with_kill_on_exit",
 ]
 
 
@@ -329,3 +330,149 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
             pass
         return ""
     return stdout.strip() if proc.returncode == 0 else ""
+
+
+# -----------------------------------------------------------------------------
+# Kill-on-parent-exit Job Object (terminal shell orphan cleanup, Windows)
+# -----------------------------------------------------------------------------
+#
+# On POSIX, terminal-tool shells are spawned with ``start_new_session=True``
+# (os.setsid), and the existing pgid-kill machinery (see
+# ``LocalEnvironment._kill_process``) reaps the whole process group when the
+# session ends normally. Neither of those covers the parent (Hermes) itself
+# dying ungracefully (crash, force-kill, TUI restart) — but on POSIX, orphaned
+# grandchildren are at least re-parented to init and don't accumulate CPU
+# unless something is still feeding them work.
+#
+# On Windows, ``start_new_session=True`` is a silent no-op (Python's
+# subprocess module maps it to nothing on win32 — the flag only affects
+# ``os.setsid`` on POSIX). That means a terminal-tool shell (bash.exe) spawned
+# by the LOCAL backend, or by the docker/ssh/singularity backends' shared
+# ``_popen_bash``, stays fully attached to nothing in particular: it is not
+# detached (good, we want the pipes), but it is also not tied to the parent's
+# lifetime in any way Windows enforces. If Hermes exits ungracefully, bash.exe
+# and everything it spawned (find, grep, node, …) is simply orphaned and keeps
+# running — this was observed accumulating 20+ stray processes, one consuming
+# ~8 CPU-hours.
+#
+# The Windows primitive for "this process and everything under it dies when I
+# do, even if I'm hard-killed" is a Job Object with
+# ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``. Unlike a job's usual close-on-last-
+# handle-release semantics, this flag makes the OS *kill every process still
+# assigned to the job* the moment the job's last handle closes — including on
+# process termination without any cleanup code running. We keep exactly one
+# handle open (a module-global on the Hermes process), so the job's lifetime
+# is the Hermes process's lifetime, full stop.
+#
+# NOTE: this is the OPPOSITE of ``gateway.py``'s job-object usage, which uses
+# ``CREATE_BREAKAWAY_FROM_JOB`` to *escape* the job so a detached background
+# watcher can outlive Electron/Tauri. Here we deliberately attach the child so
+# it *cannot* outlive Hermes. Do not reuse ``windows_detach_flags()`` for this
+# path — the two are opposite intents for different callers.
+try:
+    if IS_WINDOWS:
+        import win32api  # type: ignore
+        import win32con  # type: ignore
+        import win32job  # type: ignore
+
+        _WIN32_JOB_AVAILABLE = True
+    else:
+        _WIN32_JOB_AVAILABLE = False
+except ImportError:  # pragma: no cover - environment without pywin32
+    _WIN32_JOB_AVAILABLE = False
+
+_kill_on_exit_job = None  # module-global handle; its lifetime == process lifetime
+
+
+def _get_kill_on_exit_job():
+    """Lazily create (once) the process-wide kill-on-close Job Object.
+
+    Returns ``None`` if unavailable (non-Windows, pywin32 missing, or the
+    job could not be created/configured) — every caller must treat ``None``
+    as "skip job assignment, spawn works as today" (fail open).
+    """
+    global _kill_on_exit_job
+    if not _WIN32_JOB_AVAILABLE:
+        return None
+    if _kill_on_exit_job is not None:
+        return _kill_on_exit_job
+    try:
+        job = win32job.CreateJobObject(None, "")
+        info = win32job.QueryInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation
+        )
+        info["BasicLimitInformation"]["LimitFlags"] |= (
+            win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        )
+        win32job.SetInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation, info
+        )
+    except Exception:
+        # Fail open: no job cleanup, but spawning must never be blocked by
+        # this — the pre-existing (leaky) behavior is still better than a
+        # crash in the terminal tool.
+        return None
+    _kill_on_exit_job = job
+    return job
+
+
+def assign_to_kill_job(proc: "subprocess.Popen") -> None:
+    """Assign *proc* to the process-wide kill-on-exit Job Object. No-op and
+    silently fail-open on non-Windows, missing pywin32, or any Win32 error
+    (e.g. the child is already in a job on a pre-Windows-8 system that
+    doesn't support nested jobs, or the job/handle is otherwise unusable).
+
+    Approach: assign using ``proc._handle`` (the process handle
+    ``subprocess.Popen`` already keeps open for ``wait()``/``poll()``) with
+    NO ``CREATE_SUSPENDED``/resume dance. ``subprocess.Popen`` does not
+    expose the child's *thread* handle (only ``CreateProcess`` does, and
+    Popen discards it after wiring stdio), so a suspend-assign-resume
+    sequence would require bypassing ``subprocess.Popen`` entirely via a raw
+    ``win32process.CreateProcess`` call — a much larger surface change
+    across every call site.
+
+    Empirically verified this is safe in practice: a child process that
+    itself spawns a grandchild cannot do so before its own Python/OS loader
+    startup completes, which takes far longer than the handle-only
+    ``AssignProcessToJobObject`` call issued immediately after ``Popen()``
+    returns. A scratch test (parent spawns child; child immediately spawns a
+    grandchild and reports its pid; parent assigns the child to a
+    kill-on-close job right after ``Popen()`` returns, without suspending)
+    showed the grandchild was always inside the job by the time it existed,
+    and closing the job handle reliably killed both child and grandchild
+    across repeated runs. The tiny residual race (a child fast enough to
+    spawn a grandchild before assignment lands) is bounded and fails open —
+    worst case, one grandchild born in that window survives, which is no
+    worse than today's total lack of cleanup.
+    """
+    job = _get_kill_on_exit_job()
+    if job is None:
+        return
+    try:
+        win32job.AssignProcessToJobObject(job, proc._handle)  # noqa: SLF001
+    except Exception:
+        # Fail open: assignment can legitimately fail (process already
+        # exited, already in a non-nesting job on old Windows, access
+        # denied). The process still runs; it just won't be swept.
+        pass
+
+
+def spawn_bash_with_kill_on_exit(
+    popen_fn,
+) -> "subprocess.Popen":
+    """Call *popen_fn* (a zero-arg callable that performs the
+    ``subprocess.Popen(...)`` call) and, on Windows, immediately assign the
+    resulting process to the shared kill-on-exit Job Object before returning
+    it. No-op wrapper on POSIX (returns ``popen_fn()`` unchanged) — the
+    POSIX cleanup story is already correct via ``start_new_session=True``
+    (os.setsid) plus the existing pgid-kill machinery.
+
+    Centralizing this as a wrapper (rather than duplicating the
+    create-job/assign calls at each spawn site) is what keeps the local
+    backend and the shared ``_popen_bash`` (docker/ssh/singularity) from
+    drifting the way the issue warns about.
+    """
+    proc = popen_fn()
+    if IS_WINDOWS:
+        assign_to_kill_job(proc)
+    return proc

@@ -14,7 +14,10 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    spawn_bash_with_kill_on_exit,
+    windows_hide_flags,
+)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -1376,18 +1379,20 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
+        proc = spawn_bash_with_kill_on_exit(
+            lambda: subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
         )
         if not _IS_WINDOWS:
             try:

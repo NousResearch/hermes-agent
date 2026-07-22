@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    spawn_bash_with_kill_on_exit,
+    windows_hide_flags,
+)
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -243,13 +246,15 @@ def _popen_bash(
     this and call :func:`_pipe_stdin` directly.
     """
     kwargs.setdefault("creationflags", windows_hide_flags())
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-        text=True,
-        **kwargs,
+    proc = spawn_bash_with_kill_on_exit(
+        lambda: subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            text=True,
+            **kwargs,
+        )
     )
     if stdin_data is not None:
         _pipe_stdin(proc, stdin_data)

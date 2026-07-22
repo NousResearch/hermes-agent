@@ -1464,6 +1464,124 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_live_visible_history_prefers_db_display_with_candidate():
+    """A warm/live session must serve the persisted DISPLAY lineage, not the
+    collapsed in-memory model history.
+
+    Regression for #65919's cross-session fallout: verification candidates
+    (finish_reason=verification_required) are persisted but collapsed out of the
+    model working history by repair_message_sequence. Building the live-reuse
+    payload from ``display_history_prefix + history`` therefore dropped the
+    substantive answer, while the eager session.resume path still showed it —
+    the two payloads for the same session disagreed. This asserts the live path
+    now matches the eager/REST display projection by construction.
+    """
+    # In-memory model history: the candidate has been collapsed away.
+    in_memory = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+    # Persisted display lineage: the candidate (substantive answer) survives.
+    display_with_candidate = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+
+    class DB:
+        def get_messages_as_conversation(
+            self, key, include_ancestors=False, repair_alternation=False
+        ):
+            assert key == "s1"
+            assert include_ancestors is True
+            return list(display_with_candidate)
+
+    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
+    assert result == display_with_candidate
+
+
+def test_live_visible_history_falls_back_without_db_or_key():
+    in_memory = [{"role": "user", "content": "hi"}]
+    # No DB handle available.
+    assert server._live_visible_history({"session_key": "s"}, None, in_memory) == in_memory
+
+    # DB available but the session has no persist key yet.
+    class DB:
+        def get_messages_as_conversation(self, *a, **k):  # pragma: no cover - not reached
+            raise AssertionError("must not query without a session_key")
+
+    assert server._live_visible_history({}, DB(), in_memory) == in_memory
+
+
+def test_live_visible_history_falls_back_when_db_empty():
+    """A brand-new live session whose first turn hasn't been flushed keeps its
+    in-memory history rather than rendering empty."""
+    in_memory = [{"role": "user", "content": "fresh turn not flushed yet"}]
+
+    class EmptyDB:
+        def get_messages_as_conversation(self, *a, **k):
+            return []
+
+    assert server._live_visible_history({"session_key": "s"}, EmptyDB(), in_memory) == in_memory
+
+
+def test_live_visible_history_falls_back_when_db_raises():
+    in_memory = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+
+    class BrokenDB:
+        def get_messages_as_conversation(self, *a, **k):
+            raise RuntimeError("db exploded")
+
+    assert server._live_visible_history({"session_key": "s"}, BrokenDB(), in_memory) == in_memory
+
+
+def test_live_visible_history_keeps_candidate_and_fresh_tail():
+    """The hard case: the persisted candidate (missing from in-memory) AND a
+    not-yet-flushed live turn (missing from the DB) must BOTH survive."""
+    # Persisted display: has the verification candidate, lags the newest turn.
+    db_display = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+    # In-memory model history: candidate collapsed out, but has a fresh turn 2.
+    in_memory = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "terse verified reply"},
+        {"role": "user", "content": "turn 2 not flushed"},
+        {"role": "assistant", "content": "turn 2 reply not flushed"},
+    ]
+
+    class DB:
+        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False):
+            return list(db_display)
+
+    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
+    assert result == [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+        {"role": "user", "content": "turn 2 not flushed"},
+        {"role": "assistant", "content": "turn 2 reply not flushed"},
+    ]
+
+
+def test_reconcile_display_with_live_trusts_db_when_tail_absent():
+    """If the DB tail isn't in memory (DB ahead / diverged), don't duplicate —
+    serve the persisted display."""
+    db_display = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    in_memory = [{"role": "user", "content": "unrelated"}]
+    assert server._reconcile_display_with_live(db_display, in_memory) == db_display
+    assert server._reconcile_display_with_live([], in_memory) == in_memory
+    assert server._reconcile_display_with_live(db_display, []) == db_display
+
+
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     """Resuming a rotated-out parent id must load the continuation's messages.
 

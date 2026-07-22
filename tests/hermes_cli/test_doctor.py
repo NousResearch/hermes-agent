@@ -126,6 +126,30 @@ class TestDoctorEnvFileEncoding:
             doctor_mod.run_doctor(Namespace(fix=False))
 
 
+
+    def test_doctor_reads_invalid_utf8_env_via_latin1_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        """cp1252/latin-1 .env with ASCII provider hints must not abort doctor."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        env_path = hermes_home / ".env"
+        # 0xff is invalid UTF-8; latin-1 decodes it. Keep an ASCII provider key
+        # so the scan still reports a configured endpoint/key.
+        env_path.write_bytes(b"OPENAI_API_KEY=sk-test\xff\n")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        with pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+
 class TestDoctorToolAvailabilityOverrides:
     def test_marks_honcho_available_when_configured(self, monkeypatch):
         monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)

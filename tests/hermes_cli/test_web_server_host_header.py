@@ -198,17 +198,17 @@ class TestWebSocketHostOriginGuard:
         assert exc.value.code == 4403
 
     @pytest.mark.parametrize(
-        "endpoint",
+        ("endpoint", "expected_reason"),
         [
-            "/api/console",
-            "/api/pty",
-            "/api/ws",
-            "/api/pub?channel=security-test",
-            "/api/events?channel=security-test",
+            ("/api/console", "origin_mismatch"),
+            ("/api/pty", "origin_mismatch"),
+            ("/api/ws", ""),
+            ("/api/pub?channel=security-test", ""),
+            ("/api/events?channel=security-test", ""),
         ],
     )
     def test_rejected_gated_websocket_origin_does_not_consume_ticket(
-        self, monkeypatch, endpoint
+        self, monkeypatch, endpoint, expected_reason
     ):
         from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
@@ -241,6 +241,10 @@ class TestWebSocketHostOriginGuard:
                     pass
 
             assert exc.value.code == 4403
+            if expected_reason:
+                assert exc.value.reason.startswith(expected_reason)
+            else:
+                assert exc.value.reason == ""
             assert consume_ticket(ticket)["user_id"] == "u1"
         finally:
             _reset_for_tests()

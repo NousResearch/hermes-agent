@@ -317,7 +317,7 @@ class TestWsRequestIsAllowedGated:
 
     Regression coverage: every WS endpoint (``/api/pty``, ``/api/console``,
     ``/api/ws``, ``/api/pub``, ``/api/events``) calls
-    ``_ws_request_is_allowed`` after ``_ws_auth_ok``. If the peer-IP check
+    ``_ws_request_is_allowed`` before ``_ws_auth_ok``. If the peer-IP check
     rejects gated mode, the chat
     tab + sidebar tool feed silently fail to connect even after a
     successful OAuth login.
@@ -458,12 +458,13 @@ class TestWsHostOriginGuardOrigins:
     ``app://`` scheme). The DNS-rebinding guard only needs to block cross-site
     http(s) origins — a malicious web page can never forge a non-web origin.
 
-    This guard runs only AFTER ``_ws_auth_ok`` has validated the WS credential
-    (session token on loopback / ``--insecure`` binds, single-use ``?ticket=``
-    on OAuth-gated binds), so a non-web origin is trusted in every mode: the
-    credential is the real gate, and a ``file://`` / ``null`` origin cannot
-    originate a DNS-rebinding browser attack. ``http(s)`` origins are still
-    match-checked against the bound host.
+    This non-consuming guard runs before ``_ws_auth_ok`` so a rejected origin
+    cannot burn a single-use ticket. Authentication still follows on every
+    route (session token on loopback / ``--insecure`` binds, single-use
+    ``?ticket=`` on OAuth-gated binds), so a non-web origin is trusted in every
+    mode: the credential remains the real gate, and a ``file://`` / ``null``
+    origin cannot originate a DNS-rebinding browser attack. ``http(s)``
+    origins are still match-checked against the bound host.
     """
 
     def _ws(self, *, origin, host):
@@ -498,8 +499,8 @@ class TestWsHostOriginGuardOrigins:
         """Packaged Hermes Desktop also uses file:// when connecting to a
         Tailscale/LAN dashboard bind.
 
-        The WebSocket route calls _ws_auth_ok before this guard, so in
-        non-gated mode the legacy session token remains the auth boundary.
+        The WebSocket route calls _ws_auth_ok after this guard, so in non-gated
+        mode the legacy session token remains the auth boundary.
         """
         ws = self._ws(origin="file://", host="100.64.0.10:9119")
         assert web_server._ws_host_origin_is_allowed(ws) is True
@@ -516,12 +517,12 @@ class TestWsHostOriginGuardOrigins:
 
     def test_gated_file_origin_allowed(self, gated_app):
         # The packaged desktop app drives a remote OAuth-GATED gateway over a
-        # file:// renderer origin. The WS route validates the single-use
-        # ?ticket= in _ws_auth_ok before this guard runs, and a file:// origin
-        # can't be a DNS-rebinding browser attack, so the Origin guard must let
-        # it through. This is the regression that broke desktop → hosted
-        # gateway connections — every WS upgrade got HTTP 403 even with a valid
-        # ticket.
+        # file:// renderer origin. The WS route validates this non-consuming
+        # guard before the single-use ?ticket= in _ws_auth_ok, and a file://
+        # origin can't be a DNS-rebinding browser attack, so the Origin guard
+        # must let it through. This is the regression that broke desktop →
+        # hosted gateway connections — every WS upgrade got HTTP 403 even with
+        # a valid ticket.
         ws = self._ws(origin="file://", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is True
 

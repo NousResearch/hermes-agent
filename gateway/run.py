@@ -17201,6 +17201,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return (evt_type, producer_id, started_at)
         return None
 
+    async def _classify_completion_target(self, parent_session_id: str) -> str:
+        """Classify an async-completion delivery target before adapter acceptance.
+
+        Returns one of:
+
+        - ``"deliver"`` — the spawning session is live, or ended by a
+          compression rotation with a verified live continuation. The inner
+          #55578 resolver (:meth:`_resolve_async_delegation_session`) still
+          owns the actual route retarget; this pre-flight only proves the
+          completion is deliverable so the durable ack stays honest.
+        - ``"terminal"`` — the spawning session is gone for good (unknown, or
+          ended at an explicit user boundary such as /new). Delivery can never
+          succeed; the durable row should be terminally dropped rather than
+          falsely acknowledged as delivered or replayed forever as pending.
+        - ``"retry"`` — transient uncertainty (session DB unavailable, lookup
+          error, or a compression rotation caught mid-flight before its
+          continuation exists). The claim should be released so a later
+          consumer can retry; the attempt cap bounds the churn.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return "retry"
+        try:
+            parent = await session_db.get_session(parent_session_id)
+        except Exception:
+            logger.debug(
+                "Async-completion pre-flight parent lookup failed for %s",
+                parent_session_id, exc_info=True,
+            )
+            return "retry"
+        if parent is None:
+            return "terminal"
+        if not parent.get("ended_at"):
+            return "deliver"
+        if parent.get("end_reason") != "compression":
+            return "terminal"
+        try:
+            tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            if not tip_session_id or tip_session_id == parent_session_id:
+                # Rotation caught mid-flight: parent is compression-ended but
+                # its continuation isn't visible yet. Retry, don't drop.
+                return "retry"
+            tip = await session_db.get_session(tip_session_id)
+        except Exception:
+            logger.debug(
+                "Async-completion pre-flight tip lookup failed for %s",
+                parent_session_id, exc_info=True,
+            )
+            return "retry"
+        if tip is None or tip.get("ended_at"):
+            return "retry"
+        return "deliver"
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -17231,6 +17284,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Could not claim durable async completion %s: %s",
                         durable_delegation_id, exc,
                     )
+                    return False
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            if parent_session_id:
+                # Pre-flight (#65838-class): adapter acceptance is NOT proof of
+                # delivery — the inner #55578 resolver can still fail closed
+                # inside the message pipeline AFTER the adapter accepted, which
+                # would falsely acknowledge the durable row as delivered.
+                # Verify the target here, before acceptance, and give drops an
+                # honest durable disposition.
+                verdict = await self._classify_completion_target(parent_session_id)
+                if verdict == "terminal":
+                    logger.warning(
+                        "Async delegation %s targets permanently-gone session %s; "
+                        "terminally dropping delivery (result remains in the "
+                        "delegation records).",
+                        durable_delegation_id or "<legacy>", parent_session_id,
+                    )
+                    if durable_claim_id:
+                        try:
+                            from tools.async_delegation import drop_completion_delivery
+
+                            drop_completion_delivery(
+                                durable_delegation_id, durable_claim_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Could not drop durable completion claim",
+                                exc_info=True,
+                            )
+                    return None
+                if verdict == "retry":
+                    if durable_claim_id:
+                        try:
+                            from tools.async_delegation import release_completion_delivery
+
+                            release_completion_delivery(
+                                durable_delegation_id, durable_claim_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Could not release durable completion claim",
+                                exc_info=True,
+                            )
                     return False
         if identity is not None:
             with self._completion_delivery_lock:

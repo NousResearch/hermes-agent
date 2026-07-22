@@ -1,8 +1,9 @@
+import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { refreshActiveProfile } from '@/store/profile'
-import { $activeSessionId, $currentCwd, setCurrentCwd } from '@/store/session'
+import { $activeSessionId, $connection, $currentCwd, setCurrentCwd } from '@/store/session'
 import {
   $sessionStates,
   publishSessionState,
@@ -18,6 +19,11 @@ import type { GatewayRequester } from '../types'
 const CRON_POLL_INTERVAL_MS = 30_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+const ACTIVE_LOCAL_SESSION_POLL_INTERVAL_MS = 2_000
+// Another Desktop connected to the same remote gateway writes sessions without
+// emitting an event into this renderer's websocket. Reconcile the backend-owned
+// list while visible so cross-device chats appear without a manual reload.
+const LOCAL_SESSION_POLL_INTERVAL_MS = 2_000
 // Match the TUI's live-session refresh cadence. Auto-compression can rotate a
 // stored session id while its turn keeps running; until the next snapshot the
 // sidebar row points at the new id while the renderer still knows the old one.
@@ -35,6 +41,10 @@ interface LiveSessionStatusItem {
 
 interface LiveSessionStatusResponse {
   sessions?: LiveSessionStatusItem[]
+}
+
+function remoteConnectionKey(connection: { baseUrl?: string; mode?: string; profile?: string } | null): null | string {
+  return connection?.mode === 'remote' ? `${connection.baseUrl ?? ''}\0${connection.profile ?? ''}` : null
 }
 
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
@@ -95,12 +105,16 @@ interface BackgroundSyncParams {
   activeSessionId: null | string
   freshDraftReady: boolean
   gatewayState: string
-  refreshActiveMessagingTranscript: () => Promise<unknown> | unknown
+  refreshActiveTranscript: () => Promise<unknown> | unknown
   refreshCronJobs: () => Promise<unknown> | unknown
   refreshCurrentModel: (force?: boolean) => Promise<unknown> | unknown
   refreshHermesConfig: () => Promise<unknown> | unknown
   refreshMessagingSessions: () => Promise<unknown> | unknown
-  refreshSessions: () => Promise<unknown> | unknown
+  refreshSessions: (options?: {
+    refreshCronJobs?: boolean
+    shouldApply?: () => boolean
+    skipIfBusy?: boolean
+  }) => Promise<unknown> | unknown
   requestGateway: GatewayRequester
 }
 
@@ -134,7 +148,7 @@ export function useBackgroundSync({
   activeSessionId,
   freshDraftReady,
   gatewayState,
-  refreshActiveMessagingTranscript,
+  refreshActiveTranscript,
   refreshCronJobs,
   refreshCurrentModel,
   refreshHermesConfig,
@@ -142,6 +156,8 @@ export function useBackgroundSync({
   refreshSessions,
   requestGateway
 }: BackgroundSyncParams): void {
+  const sharedGatewayKey = remoteConnectionKey(useStore($connection))
+
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
@@ -231,8 +247,80 @@ export function useBackgroundSync({
     return visiblePoll(MESSAGING_POLL_INTERVAL_MS, () => void refreshMessagingSessions())
   }, [gatewayState, refreshMessagingSessions])
 
-  // Only the open messaging transcript needs its own poll — local chats are
-  // live over the websocket already.
+  // Keep ordinary Desktop-created chats synchronized across clients sharing a
+  // remote gateway. Same-window turn completions already refresh immediately;
+  // this poll covers writes originating from a different websocket/client.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !sharedGatewayKey) {
+      return
+    }
+
+    let active = true
+
+    const dispose = visiblePoll(LOCAL_SESSION_POLL_INTERVAL_MS, () => {
+      void Promise.resolve(
+        refreshSessions({
+          refreshCronJobs: false,
+          shouldApply: () => active && remoteConnectionKey($connection.get()) === sharedGatewayKey,
+          skipIfBusy: true
+        })
+      ).catch(() => undefined)
+    })
+
+    return () => {
+      active = false
+      dispose()
+    }
+  }, [gatewayState, refreshSessions, sharedGatewayKey])
+
+  // Another Desktop can append to the currently open ordinary chat without
+  // sending message events to this renderer. Reconcile that persisted
+  // transcript while visible; the callback itself skips active local streams.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !activeSessionId || activeIsMessaging || !sharedGatewayKey) {
+      return
+    }
+
+    let active = true
+    let inFlight = false
+
+    const runActiveTranscriptRefresh = async () => {
+      if (inFlight) {
+        return
+      }
+
+      inFlight = true
+
+      try {
+        await refreshActiveTranscript()
+      } catch {
+        // Non-fatal: the next visible tick can reconcile again.
+      } finally {
+        if (active) {
+          inFlight = false
+        }
+      }
+    }
+
+    const dispose = visiblePoll(
+      ACTIVE_LOCAL_SESSION_POLL_INTERVAL_MS,
+      () => void runActiveTranscriptRefresh()
+    )
+
+    return () => {
+      active = false
+      dispose()
+    }
+  }, [
+    activeIsMessaging,
+    activeSessionId,
+    gatewayState,
+    refreshActiveTranscript,
+    sharedGatewayKey
+  ])
+
+  // Messaging transcripts need the same reconciliation on every connection:
+  // inbound platform turns arrive through the background gateway.
   useEffect(() => {
     if (gatewayState !== 'open' || !activeIsMessaging) {
       return
@@ -240,13 +328,13 @@ export function useBackgroundSync({
 
     const dispose = visiblePoll(
       ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
-      () => void refreshActiveMessagingTranscript()
+      () => void refreshActiveTranscript()
     )
 
-    void refreshActiveMessagingTranscript()
+    void refreshActiveTranscript()
 
     return dispose
-  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
+  }, [activeIsMessaging, gatewayState, refreshActiveTranscript])
 
   // A fresh new-session draft (gateway open, no active session) re-pulls the
   // model + config so the composer pill reflects the profile default.

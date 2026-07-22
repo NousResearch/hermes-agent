@@ -28,7 +28,9 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   })
 }
 
-// FNV-1a over role/timestamp/content.
+// FNV-1a over the complete persisted message payload. `toChatMessages()`
+// consumes content plus reasoning, tool-call, context, name, and provider-specific
+// metadata; omitting any of those can hide a visible transcript change.
 function hashString(hash: number, value: string): number {
   let next = hash
 
@@ -44,10 +46,8 @@ function hashString(hash: number, value: string): number {
 export function sessionMessagesSignature(messages: SessionMessage[]): string {
   let hash = 2166136261
 
-  for (const m of messages) {
-    hash = hashString(hash, m.role)
-    hash = hashString(hash, String(m.timestamp ?? ''))
-    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
+  for (const message of messages) {
+    hash = hashString(hash, JSON.stringify(message) ?? '')
   }
 
   return `${messages.length}:${hash}`

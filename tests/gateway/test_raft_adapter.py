@@ -90,13 +90,14 @@ class TestRaftWakePayload:
 
 class TestRaftWakeHttp:
     @pytest.mark.asyncio
-    async def test_send_is_noop_success(self):
+    async def test_send_noop_reports_delivery_as_unconfirmed(self):
         adapter = _make_adapter()
 
         result = await adapter.send("default", "hello")
 
-        assert result.success is True
+        assert result.success is False
         assert result.message_id is None
+        assert result.error == "Outbound delivery is not supported by raft"
 
     @pytest.mark.asyncio
     async def test_rejects_missing_bridge_token(self):

@@ -261,7 +261,7 @@ class IRCAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> SendResult:
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
 

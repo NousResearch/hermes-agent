@@ -4630,18 +4630,43 @@ class TestSlashEphemeralAck:
         adapter._app.client.chat_postMessage.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
-        """_send_slash_ephemeral returns success=True even if POST fails."""
+    async def test_kanban_notification_bypasses_pending_slash_context(self, adapter):
+        """Background Kanban delivery must not consume a slash response URL."""
         import time
 
         adapter._slash_command_contexts[("C1", "U1")] = {
-            "response_url": "https://hooks.slack.com/commands/bad",
+            "response_url": "https://hooks.slack.com/commands/secret",
+            "ts": time.monotonic(),
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "1234.5678", "ok": True}
+        )
+
+        with patch.object(adapter, "_send_slash_ephemeral", new=AsyncMock()) as slash_send:
+            result = await adapter.send(
+                "C1",
+                "Kanban task completed",
+                metadata={"kanban_notification": True},
+            )
+
+        assert result.success is True
+        slash_send.assert_not_awaited()
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        assert ("C1", "U1") in adapter._slash_command_contexts
+
+    @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_reports_non_2xx_as_undelivered(self, adapter, caplog):
+        """A rejected response_url update is not a delivery acknowledgement."""
+        import time
+
+        adapter._slash_command_contexts[("C1", "U1")] = {
+            "response_url": "https://example.invalid/response/sensitive-token",
             "ts": time.monotonic(),
         }
 
         mock_resp = AsyncMock()
         mock_resp.status = 500
-        mock_resp.text = AsyncMock(return_value="Internal Server Error")
+        mock_resp.text = AsyncMock(return_value="sensitive response body")
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -4655,12 +4680,15 @@ class TestSlashEphemeralAck:
         ):
             result = await adapter.send("C1", "Some response")
 
-        # Still success — the user saw the initial ack already
-        assert result.success is True
+        assert result.success is False
+        assert result.error == "Slack ephemeral response delivery failed"
+        assert "sensitive" not in result.error
+        assert "sensitive-token" not in caplog.text
+        assert "sensitive response body" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_send_slash_ephemeral_fallback_on_exception(self, adapter):
-        """_send_slash_ephemeral returns success=True even if aiohttp raises."""
+    async def test_send_slash_ephemeral_reports_transport_failure_as_undelivered(self, adapter, caplog):
+        """A response_url transport error must not be reported as delivered."""
         import time
 
         adapter._slash_command_contexts[("C1", "U1")] = {
@@ -4669,7 +4697,9 @@ class TestSlashEphemeralAck:
         }
 
         mock_session = AsyncMock()
-        mock_session.post = MagicMock(side_effect=Exception("connection timeout"))
+        mock_session.post = MagicMock(
+            side_effect=Exception("https://example.invalid/response/secret")
+        )
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -4678,7 +4708,10 @@ class TestSlashEphemeralAck:
         ):
             result = await adapter.send("C1", "Some response")
 
-        assert result.success is True
+        assert result.success is False
+        assert result.error == "Slack ephemeral response delivery failed"
+        assert "secret" not in result.error
+        assert "https://example.invalid/response/secret" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_native_slash_stashes_context_and_dispatches(self, adapter):

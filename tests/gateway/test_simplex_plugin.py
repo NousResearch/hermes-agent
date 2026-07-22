@@ -259,9 +259,25 @@ async def test_send_when_ws_not_connected_does_not_crash():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
-    # No _ws assigned — _send_ws should drop quietly
+    # No _ws assigned — _send_ws should drop quietly, but cannot acknowledge delivery.
     result = await adapter.send("contact-42", "hi")
-    assert result.success is True  # send() always returns success — fire-and-forget
+    assert result.success is False
+    assert result.error == "SimpleX outbound command was not accepted"
+
+
+@pytest.mark.asyncio
+async def test_send_when_ws_write_fails_reports_delivery_as_unconfirmed():
+    """A local WebSocket write failure cannot acknowledge outbound delivery."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._ws = AsyncMock()
+    adapter._ws.send.side_effect = OSError("write failed")
+
+    result = await adapter.send("contact-42", "hi")
+
+    assert result.success is False
+    assert result.error == "SimpleX outbound command was not accepted"
 
 
 # ---------------------------------------------------------------------------

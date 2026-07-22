@@ -85,6 +85,16 @@ class TestMSGraphWebhookConfig:
         ]
 
 
+class TestMSGraphWebhookOutbound:
+    @pytest.mark.anyio
+    async def test_send_reports_log_only_response_as_unconfirmed(self):
+        """Ingress-only Graph webhooks cannot acknowledge outbound delivery."""
+        result = await _make_adapter().send("notification-1", "response")
+
+        assert result.success is False
+        assert result.error == "Outbound delivery is not supported by msgraph_webhook"
+
+
 class TestMSGraphValidationHandshake:
     @pytest.mark.anyio
     async def test_connect_requires_client_state(self):

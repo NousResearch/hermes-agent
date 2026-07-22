@@ -2376,6 +2376,63 @@ class TestFormatToolsForSystemMessage:
 
 
 class TestExecuteToolCalls:
+    def test_sequential_capability_denial_has_no_executor_side_effects(
+        self, agent, monkeypatch
+    ):
+        tc = _mock_tool_call(name="todo", arguments="{}", call_id="denied-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        effects = []
+        original_current_tool = object()
+        agent._current_tool = original_current_tool
+        agent._touch_activity = lambda desc: effects.append(("activity", desc))
+        agent.tool_progress_callback = lambda *a, **kw: effects.append(("progress", a))
+        agent.tool_start_callback = lambda *a, **kw: effects.append(("start", a))
+        agent.tool_complete_callback = lambda *a, **kw: effects.append(("complete", a))
+        agent._tool_guardrails.before_call = lambda *a, **kw: effects.append(
+            ("guardrail", a)
+        )
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = lambda *a, **kw: effects.append(
+            ("checkpoint", a)
+        )
+        agent._record_file_mutation_result = lambda *a, **kw: effects.append(
+            ("mutation", a)
+        )
+
+        monkeypatch.setattr(
+            "gateway.security_context.enforce_agent_tool_dispatch",
+            lambda _agent, _name: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        monkeypatch.setattr(
+            "agent.tool_executor._apply_tool_request_middleware_for_agent",
+            lambda *a, **kw: effects.append(("request_middleware", kw)) or ({}, []),
+        )
+        monkeypatch.setattr(
+            "agent.tool_executor._run_agent_tool_execution_middleware",
+            lambda *a, **kw: effects.append(("execution_middleware", kw)),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *a, **kw: effects.append(("pre_hook", a)),
+        )
+        monkeypatch.setattr(
+            "model_tools._emit_post_tool_call_hook",
+            lambda **kw: effects.append(("post_hook", kw)),
+        )
+        monkeypatch.setattr(
+            "run_agent.handle_function_call",
+            lambda *a, **kw: effects.append(("dispatch", a)),
+        )
+
+        agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert effects == []
+        assert agent._current_tool is original_current_tool
+        assert json.loads(messages[0]["content"])["error"] == (
+            "tool_denied_by_capability"
+        )
+
     def test_single_tool_executed(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
@@ -2663,6 +2720,115 @@ class TestRetryAfterCap:
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""
+
+    def test_denied_capability_runs_no_concurrent_preflight_or_callbacks(
+        self, agent, monkeypatch
+    ):
+        tc1 = _mock_tool_call("terminal", '{"command":"touch denied"}', "c1")
+        tc2 = _mock_tool_call("web_search", '{"query":"allowed"}', "c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        observed = []
+
+        def enforce(_agent, name):
+            observed.append(("authorize", name))
+            if name == "terminal":
+                raise PermissionError("tool_denied")
+
+        monkeypatch.setattr(
+            "gateway.security_context.enforce_agent_tool_dispatch", enforce
+        )
+        monkeypatch.setattr(
+            "agent.tool_executor._apply_tool_request_middleware_for_agent",
+            lambda *a, **kw: (
+                observed.append(("middleware", kw["function_name"]))
+                or (kw["function_args"], [])
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda name, *a, **kw: observed.append(("hook", name)),
+        )
+        agent._tool_guardrails.before_call = lambda name, args: (
+            observed.append(("guardrail", name))
+            or SimpleNamespace(allows_execution=True)
+        )
+        agent.tool_progress_callback = lambda event, name, *a, **kw: observed.append(("progress", name))
+        agent.tool_start_callback = lambda call_id, name, args: observed.append(("start", name))
+        monkeypatch.setattr(
+            "run_agent.handle_function_call",
+            lambda name, *a, **kw: observed.append(("dispatch", name)) or "ok",
+        )
+
+        agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert ("authorize", "terminal") in observed
+        assert not any(
+            name == "terminal" and stage != "authorize" for stage, name in observed
+        )
+        assert ("dispatch", "web_search") in observed
+
+    def test_denied_only_concurrent_batch_does_not_mutate_activity(
+        self, agent, monkeypatch
+    ):
+        calls = [
+            _mock_tool_call("terminal", "{}", "d1"),
+            _mock_tool_call("write_file", "{}", "d2"),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=calls)
+        messages = []
+        activity = []
+        original_current_tool = object()
+        agent._current_tool = original_current_tool
+        agent._touch_activity = activity.append
+        monkeypatch.setattr(
+            "gateway.security_context.enforce_agent_tool_dispatch",
+            lambda _agent, _name: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+
+        agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert activity == []
+        assert agent._current_tool is original_current_tool
+        assert len(messages) == 2
+
+    def test_mixed_concurrent_activity_names_only_authorized_calls(
+        self, agent, monkeypatch
+    ):
+        calls = [
+            _mock_tool_call("terminal", "{}", "d1"),
+            _mock_tool_call("web_search", '{"query":"ok"}', "a1"),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=calls)
+        messages = []
+        activity = []
+        observed_current_tools = []
+
+        def touch(description):
+            activity.append(description)
+            observed_current_tools.append(agent._current_tool)
+
+        def enforce(_agent, name):
+            if name == "terminal":
+                raise PermissionError("denied")
+
+        agent._touch_activity = touch
+        monkeypatch.setattr(
+            "gateway.security_context.enforce_agent_tool_dispatch", enforce
+        )
+        monkeypatch.setattr(
+            "run_agent.handle_function_call", lambda *a, **kw: "allowed result"
+        )
+
+        agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert activity
+        assert all("terminal" not in description for description in activity)
+        assert all(
+            current is None or "terminal" not in str(current)
+            for current in observed_current_tools
+        )
+        assert any("web_search" in description for description in activity)
 
     def test_single_tool_uses_sequential_path(self, agent):
         """Single tool call should use sequential path, not concurrent."""

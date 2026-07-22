@@ -241,11 +241,12 @@ class TestTitleInHelp:
         assert "/title" in result
 
     def test_title_is_known_command(self):
-        """The /title command is in the _known_commands set."""
-        from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"title"' in source
+        """The registry resolves /title as a gateway-dispatchable command."""
+        from hermes_cli.commands import is_gateway_known_command, resolve_command
+
+        definition = resolve_command("title")
+        assert definition is not None and definition.name == "title"
+        assert is_gateway_known_command(definition.name)
 
 
 # ---------------------------------------------------------------------------

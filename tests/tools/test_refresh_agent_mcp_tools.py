@@ -10,8 +10,10 @@ freezing any particular tool list.
 
 import threading
 import types
+from datetime import datetime, timezone
 
 from tools import mcp_tool
+from gateway.security_context import SecurityContext, apply_security_context_to_agent
 
 
 def _tool(name):
@@ -25,6 +27,24 @@ def _agent(tool_names, *, enabled=None, disabled=None):
     a.enabled_toolsets = enabled
     a.disabled_toolsets = disabled
     return a
+
+
+def _security_context(*tool_names):
+    return SecurityContext(
+        principal_id="security-review-user",
+        tenant_id="security-review-tenant",
+        platform="telegram",
+        authority="tier1_staff",
+        domains=frozenset({"daily"}),
+        capability_bundle="review",
+        allowed_toolsets=frozenset({"coding", "mcp-security-ceiling"}),
+        allowed_tools=frozenset(tool_names),
+        denied_tools=frozenset(),
+        allowed_actions=frozenset({"command.reload-mcp"}),
+        policy_revision="review-1",
+        authenticated_at=datetime.now(timezone.utc),
+        evidence_source="test",
+    )
 
 
 def test_refresh_adds_late_landing_tools(monkeypatch):
@@ -42,6 +62,59 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert added == {"mcp_granola_get_account_info"}
     assert "mcp_granola_get_account_info" in agent.valid_tool_names
     assert len(agent.tools) == 3
+
+
+def test_real_mcp_registration_refresh_cannot_widen_security_scoped_agent():
+    """A live MCP registry mutation cannot exceed the cached agent's ceiling."""
+    from tools.registry import registry
+
+    server_name = "security-ceiling"
+    allowed_late = mcp_tool.mcp_prefixed_tool_name(server_name, "late_allowed")
+    denied_late = mcp_tool.mcp_prefixed_tool_name(server_name, "late_denied")
+    agent = _agent(["read_file"])
+    apply_security_context_to_agent(
+        agent, _security_context("read_file", allowed_late)
+    )
+    server = types.SimpleNamespace(
+        _tools=[
+            types.SimpleNamespace(
+                name="late_allowed",
+                description="late allowed tool",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            types.SimpleNamespace(
+                name="late_denied",
+                description="late denied tool",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+        ],
+        tool_timeout=1,
+        session=object(),
+    )
+
+    try:
+        with mcp_tool._lock:
+            mcp_tool._servers[server_name] = server
+        registered = mcp_tool._register_server_tools(
+            server_name,
+            server,
+            {"tools": {"include": ["late_allowed", "late_denied"]}},
+        )
+        assert set(registered) == {allowed_late, denied_late}
+
+        mcp_tool.refresh_agent_mcp_tools(agent, quiet_mode=True)
+
+        assert agent.valid_tool_names == {"read_file"}
+        assert {tool["function"]["name"] for tool in agent.tools} == {
+            "read_file"
+        }
+        assert agent._capability_allowed_tools == frozenset({"read_file"})
+    finally:
+        with mcp_tool._lock:
+            mcp_tool._servers.pop(server_name, None)
+        for name in (allowed_late, denied_late):
+            registry.deregister(name)
+            mcp_tool._forget_mcp_tool_server(name)
 
 
 def test_refresh_no_change_returns_empty_and_leaves_agent_untouched(monkeypatch):

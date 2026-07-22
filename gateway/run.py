@@ -7762,6 +7762,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning("No adapter available for %s", _pval)
                 continue
             
+            if not self._validate_whatsapp_inbox_sweep_target(adapter):
+                startup_nonretryable_errors.append(f"{platform.value}: invalid inbox sweep delivery target")
+                continue
+
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
@@ -10065,6 +10069,196 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _validate_whatsapp_inbox_sweep_target(self, adapter: Any) -> bool:
+        if not getattr(adapter, "_inbox_sweep_enabled", False):
+            return True
+        target_name = str(getattr(adapter, "_inbox_sweep_delivery_platform", "") or "").strip().lower()
+        try:
+            target_platform = Platform(target_name)
+        except ValueError:
+            logger.error("WhatsApp inbox sweep has invalid delivery platform %r", target_name)
+            return False
+        target_config = self.config.platforms.get(target_platform)
+        target_home = self.config.get_home_channel(target_platform)
+        if (
+            target_platform == Platform.WHATSAPP
+            or not target_config
+            or not target_config.enabled
+            or not target_home
+            or not str(getattr(target_home, "chat_id", "") or "").strip()
+        ):
+            logger.error(
+                "WhatsApp inbox sweep requires an enabled non-WhatsApp delivery platform with a home channel"
+            )
+            return False
+        return True
+
+    def _whatsapp_inbox_sweep_fallback(self, event: MessageEvent) -> str:
+        source = event.source
+        sender = (
+            (source.user_name if source else None)
+            or (source.chat_name if source else None)
+            or (source.user_id if source else None)
+            or "Unknown sender"
+        )
+        body = (event.text or "").strip() or "[non-text message]"
+        attachments = ", ".join(event.media_types or [])
+        attachment_line = f"\n**Attachments:** {attachments}" if attachments else ""
+        return (
+            "## WhatsApp triage\n"
+            f"**From:** {sender}\n"
+            "**Priority:** unknown\n"
+            "**Summary:** New WhatsApp message needs manual review.\n"
+            "**Suggested next step:** Review and decide whether to reply outside Hermes.\n\n"
+            f"**Original message:**\n{body}{attachment_line}"
+        )
+
+    def _whatsapp_inbox_sweep_prompt(self, event: MessageEvent) -> str:
+        source = event.source
+        sender = (
+            (source.user_name if source else None)
+            or (source.chat_name if source else None)
+            or (source.user_id if source else None)
+            or "Unknown sender"
+        )
+        body = (event.text or "").strip() or "[non-text message]"
+        attachments = ", ".join(event.media_types or []) or "none"
+        return (
+            "Triage this inbound WhatsApp message for its owner. Do not reply to the sender, "
+            "do not use tools, and do not claim an action was taken. Return concise Markdown exactly "
+            "with these labels: `## WhatsApp triage`, `**Priority:**` (low, medium, high, or urgent), "
+            "`**Summary:**`, `**Needs action:**`, `**Suggested next step:**`, and `**Draft reply:**`.\n\n"
+            f"Sender: {sender}\n"
+            f"Message:\n{body}\n\n"
+            f"Attachments: {attachments}\n"
+        )
+
+    async def _triage_whatsapp_inbox_sweep_event(self, event: MessageEvent) -> str:
+        """Run an isolated one-turn, tool-free classification for an inbox receipt."""
+        from run_agent import AIAgent
+
+        source = event.source
+        if not source:
+            return self._whatsapp_inbox_sweep_fallback(event)
+        user_config = _load_gateway_config()
+        # Inbox triage is deliberately global and stateless: passing the sender
+        # source here would derive a session key and rehydrate that sender's
+        # persisted /model override.
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=None,
+            session_key=None,
+            user_config=user_config,
+        )
+        if not runtime_kwargs.get("api_key"):
+            return self._whatsapp_inbox_sweep_fallback(event)
+
+        provider_routing = getattr(self, "_provider_routing", self._load_provider_routing())
+        turn_route = self._resolve_turn_agent_config(event.text or "[non-text message]", model, runtime_kwargs)
+        prompt = self._whatsapp_inbox_sweep_prompt(event)
+
+        def run_sync():
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=1,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=[],
+                reasoning_config=getattr(self, "_reasoning_config", self._load_reasoning_config()),
+                service_tier=getattr(self, "_service_tier", self._load_service_tier()),
+                request_overrides=turn_route.get("request_overrides"),
+                providers_allowed=provider_routing.get("only"),
+                providers_ignored=provider_routing.get("ignore"),
+                providers_order=provider_routing.get("order"),
+                provider_sort=provider_routing.get("sort"),
+                provider_require_parameters=provider_routing.get("require_parameters", False),
+                provider_data_collection=provider_routing.get("data_collection"),
+                session_id=f"whatsapp_inbox_{event.message_id or int(time.time())}",
+                platform="whatsapp_inbox",
+                user_id="inbox_sweep",
+                session_db=None,
+                skip_memory=True,
+                skip_context_files=True,
+                fallback_model=getattr(self, "_fallback_model", self._load_fallback_model()),
+            )
+            # `session_db=None` alone does not suppress JSON snapshots. This
+            # receipt can contain untrusted external WhatsApp text, so triage
+            # must never read or write session state on any persistence path.
+            agent._persist_disabled = True
+            agent._session_json_enabled = False
+            try:
+                return agent.run_conversation(
+                    user_message=prompt,
+                    task_id=f"whatsapp_inbox_{event.message_id or int(time.time())}",
+                )
+            finally:
+                self._cleanup_agent_resources(agent)
+
+        try:
+            result = await self._run_in_executor_with_context(run_sync)
+        except Exception as exc:
+            logger.warning("WhatsApp inbox sweep triage failed: %s", exc)
+            return self._whatsapp_inbox_sweep_fallback(event)
+        response = str((result or {}).get("final_response") or "").strip()
+        return response or self._whatsapp_inbox_sweep_fallback(event)
+
+    @staticmethod
+    def _whatsapp_inbox_sweep_priority(triaged_text: str) -> str:
+        match = re.search(r"\*\*Priority:\*\*\s*([A-Za-z]+)", triaged_text or "", re.IGNORECASE)
+        return match.group(1).strip().lower() if match else "unknown"
+
+    async def _forward_whatsapp_inbox_sweep_event(self, event: MessageEvent) -> bool:
+        """Route an inbox-sweep receipt out of band and suppress sender replies."""
+        source = event.source
+        metadata = getattr(event, "metadata", None) or {}
+        if (
+            not source
+            or source.platform != Platform.WHATSAPP
+            or not metadata.get("whatsapp_inbox_sweep")
+        ):
+            return False
+
+        target_name = str(metadata.get("whatsapp_inbox_delivery_platform") or "").strip().lower()
+        try:
+            target_platform = Platform(target_name)
+        except ValueError:
+            logger.error("WhatsApp inbox sweep has invalid delivery platform %r", target_name)
+            return True
+        if target_platform == Platform.WHATSAPP:
+            logger.error("WhatsApp inbox sweep refused a sender-facing delivery target")
+            return True
+
+        target_home = self.config.get_home_channel(target_platform) if self.config else None
+        target_adapter = self.adapters.get(target_platform)
+        if (
+            not target_home
+            or not str(getattr(target_home, "chat_id", "") or "").strip()
+            or not target_adapter
+        ):
+            logger.error(
+                "WhatsApp inbox sweep target %s has no connected home channel; suppressing sender reply",
+                target_name,
+            )
+            return True
+
+        triaged = await self._triage_whatsapp_inbox_sweep_event(event)
+        if self._whatsapp_inbox_sweep_priority(triaged) not in {"high", "urgent"}:
+            return True
+
+        thread_metadata = self._thread_metadata_for_target(
+            target_platform,
+            target_home.chat_id,
+            getattr(target_home, "thread_id", None),
+            adapter=target_adapter,
+        )
+        if thread_metadata:
+            result = await target_adapter.send(target_home.chat_id, triaged, metadata=thread_metadata)
+        else:
+            result = await target_adapter.send(target_home.chat_id, triaged)
+        if result is not None and getattr(result, "success", True) is False:
+            logger.error("WhatsApp inbox sweep triage delivery failed: %s", getattr(result, "error", "unknown"))
+        return True
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -10096,6 +10290,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_session_vars()
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
+
+        if await self._forward_whatsapp_inbox_sweep_event(event):
+            return None
 
         if (
             getattr(self, "_startup_restore_in_progress", False)

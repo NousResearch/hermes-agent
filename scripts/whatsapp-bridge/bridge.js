@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { createInboxReceiptBuffer, createInboxSweepController } from './inbox_sweep.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -108,6 +109,23 @@ const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n──────────
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+
+// Inbox-only sweep mode: capture inbound receipts for a fixed three seconds,
+// then disconnect the WhatsApp companion. Triage and notification occur after
+// disconnect and must never use the sender-facing bridge endpoints.
+const INBOX_SWEEP_ENABLED = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WHATSAPP_INBOX_SWEEP_ENABLED || '').trim().toLowerCase(),
+);
+const INBOX_SWEEP_INTERVAL_MS = Number.parseInt(
+  process.env.WHATSAPP_INBOX_SWEEP_INTERVAL_MS || '0',
+  10,
+);
+const INBOX_SWEEP_WINDOW_MS = 3_000;
+let inboxSweep = null;
+// A locally initiated sweep close can use the interval; a remote 428 must
+// retain normal quick reconnect despite sharing the same status code.
+let intentionalSweepDisconnect = false;
+
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
@@ -261,6 +279,30 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+let inboxSweepReceiptBuffer = null;
+
+function enqueueGatewayEvent(event) {
+  messageQueue.push(event);
+  if (messageQueue.length > MAX_QUEUE_SIZE) {
+    messageQueue.shift();
+  }
+}
+
+function captureInboxReceipt(event) {
+  if (inboxSweepReceiptBuffer) {
+    if (!inboxSweepReceiptBuffer.capture(event)) {
+      console.warn('[bridge] inbox sweep receipt buffer is full; dropped newest receipt');
+    }
+  } else {
+    enqueueGatewayEvent(event);
+  }
+}
+
+function rejectInboxSweepOutbound(res) {
+  if (!INBOX_SWEEP_ENABLED) return false;
+  res.status(403).json({ error: 'WhatsApp inbox sweep mode is receive-only' });
+  return true;
+}
 
 // Track recently sent message IDs.  Two purposes:
 //   1. Prevent echo-back loops with media in self-chat mode.
@@ -366,10 +408,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
     botIds: [],
     timestamp: Math.floor(Date.now() / 1000),
   };
-  messageQueue.push(event);
-  if (messageQueue.length > MAX_QUEUE_SIZE) {
-    messageQueue.shift();
-  }
+  captureInboxReceipt(event);
 }
 
 function rememberSentId(id) {
@@ -378,6 +417,24 @@ function rememberSentId(id) {
 
 let sock = null;
 let connectionState = 'disconnected';
+
+if (INBOX_SWEEP_ENABLED) {
+  if (!Number.isSafeInteger(INBOX_SWEEP_INTERVAL_MS) || INBOX_SWEEP_INTERVAL_MS <= INBOX_SWEEP_WINDOW_MS) {
+    throw new Error('WHATSAPP_INBOX_SWEEP_INTERVAL_MS must exceed the fixed 3000ms inbox sweep window');
+  }
+  inboxSweep = createInboxSweepController({
+    reconnectIntervalMs: INBOX_SWEEP_INTERVAL_MS,
+    windowMs: INBOX_SWEEP_WINDOW_MS,
+    closeSocket: () => {
+      if (sock && connectionState === 'connected') {
+        intentionalSweepDisconnect = true;
+        sock.end(new Boom('Inbox sweep window complete', { statusCode: 428 }));
+      }
+    },
+    reconnect: () => { startSocket(); },
+  });
+  inboxSweepReceiptBuffer = createInboxReceiptBuffer({ deliver: enqueueGatewayEvent });
+}
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -424,7 +481,10 @@ async function startSocket() {
 
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const wasIntentionalSweepDisconnect = intentionalSweepDisconnect;
+      intentionalSweepDisconnect = false;
       connectionState = 'disconnected';
+      if (inboxSweepReceiptBuffer) inboxSweepReceiptBuffer.release();
 
       if (reason === DisconnectReason.loggedOut) {
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
@@ -432,8 +492,15 @@ async function startSocket() {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         }
         process.exit(1);
+      } else if (wasIntentionalSweepDisconnect && inboxSweep) {
+        emitPairEvent({ event: 'disconnected', reason, inboxSweep: true });
+        if (!PAIR_JSON) {
+          console.log('↻ Inbox sweep complete. Next connection attempt remains anchored to the prior open.');
+        }
+        inboxSweep.closed({ intentional: true, reason });
       } else {
-        // 515 = restart requested (common after pairing). Always reconnect.
+        // 515 = restart requested (common after pairing). Remote 428/network
+        // closes retain fast recovery and never complete an inbox sweep.
         emitPairEvent({ event: 'disconnected', reason });
         if (!PAIR_JSON) {
           if (reason === 515) {
@@ -442,7 +509,11 @@ async function startSocket() {
             console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
           }
         }
-        setTimeout(startSocket, reason === 515 ? 1000 : 3000);
+        if (inboxSweep) {
+          inboxSweep.closed({ intentional: false, reason });
+        } else {
+          setTimeout(startSocket, reason === 515 ? 1000 : 3000);
+        }
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
@@ -455,6 +526,9 @@ async function startSocket() {
       emitPairEvent({ event: 'connected', user: connectedUser });
       if (!PAIR_JSON) {
         console.log('✅ WhatsApp connected!');
+      }
+      if (inboxSweep && !PAIR_ONLY) {
+        inboxSweep.connected();
       }
       if (PAIR_ONLY) {
         if (!PAIR_JSON) {
@@ -748,7 +822,8 @@ async function startSocket() {
       }
 
       messageStore.remember(msg);
-      messageQueue.push(event);
+      captureInboxReceipt(event);
+      if (inboxSweep) inboxSweep.receivedInbound();
       emitDebugEvent({
         stage: 'queued',
         chatId: redactWhatsAppId(chatId),
@@ -809,6 +884,7 @@ app.get('/messages', (req, res) => {
 
 // Send a message
 app.post('/send', async (req, res) => {
+  if (rejectInboxSweepOutbound(res)) return;
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -848,6 +924,7 @@ app.post('/send', async (req, res) => {
 
 // Edit a previously sent message
 app.post('/edit', async (req, res) => {
+  if (rejectInboxSweepOutbound(res)) return;
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -882,6 +959,7 @@ app.post('/edit', async (req, res) => {
 
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
+  if (rejectInboxSweepOutbound(res)) return;
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -983,6 +1061,7 @@ app.post('/send-media', async (req, res) => {
 // approvals need text fallback and explicit confirmation semantics above this
 // low-level transport helper.
 app.post('/send-poll', async (req, res) => {
+  if (rejectInboxSweepOutbound(res)) return;
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -1005,6 +1084,7 @@ app.post('/send-poll', async (req, res) => {
 
 // Send native WhatsApp location pin
 app.post('/send-location', async (req, res) => {
+  if (rejectInboxSweepOutbound(res)) return;
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -1027,6 +1107,7 @@ app.post('/send-location', async (req, res) => {
 
 // Typing indicator
 app.post('/typing', async (req, res) => {
+  if (rejectInboxSweepOutbound(res)) return;
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected' });
   }

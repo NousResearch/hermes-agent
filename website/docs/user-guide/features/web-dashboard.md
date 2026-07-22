@@ -41,6 +41,23 @@ hermes dashboard --host 0.0.0.0
 hermes dashboard --no-open
 ```
 
+### Trusted reverse-proxy hostnames
+
+When the dashboard remains bound to loopback behind a trusted reverse proxy
+that preserves the original `Host` header, allow the proxy's exact external
+hostnames with a comma-separated environment variable:
+
+```bash
+HERMES_DASHBOARD_ALLOWED_HOSTS=dashboard.example.test hermes dashboard --no-open
+```
+
+This setting only extends Host-header validation for the listed names. It does
+not bind the dashboard to a public interface or allow other hostnames. A
+loopback dashboard does not add authentication for external clients: the
+reverse proxy must terminate TLS, enforce authentication and access controls,
+and must not expose the loopback upstream directly. Avoid `--insecure` when a
+secured loopback reverse proxy is sufficient.
+
 ## Managing multiple profiles
 
 The dashboard is a **machine-level** management surface: one server manages

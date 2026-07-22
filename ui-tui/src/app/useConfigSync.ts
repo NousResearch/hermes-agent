@@ -129,6 +129,56 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
   }
 }
 
+// ── MCP revision handshake ───────────────────────────────────────────
+//
+// The poll must not ack an MCP config revision until the server confirms it
+// actually LOADED it. Advancing `accepted` before the reload succeeds loses
+// revisions permanently: quietRpc collapses a failed reload to null, the
+// next poll sees the same mcp_rev, and the new config never applies until
+// an unrelated MCP edit. So `accepted` only moves on a confirmed reload —
+// to the server's loaded_rev (what discovery actually read), falling back
+// to the requested rev for older gateways. Retries are decoupled from
+// mtime: every poll re-compares, so a transiently broken server heals on
+// the next tick.
+
+export interface McpRevState {
+  /** Last revision the server CONFIRMED it loaded (or boot baseline). */
+  accepted: string
+  /** A reload RPC is outstanding — don't stack another every poll tick. */
+  inFlight: boolean
+}
+
+export const syncMcpReload = async (
+  gw: GatewayClient,
+  sid: string,
+  nextMcpRev: string,
+  state: McpRevState,
+  onReloaded?: () => void
+): Promise<void> => {
+  if (!nextMcpRev || nextMcpRev === state.accepted || state.inFlight) {
+    return
+  }
+
+  state.inFlight = true
+
+  try {
+    const r = await quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', {
+      confirm: true,
+      rev: nextMcpRev,
+      session_id: sid
+    })
+
+    if (r?.status === 'reloaded') {
+      state.accepted = String(r.loaded_rev || nextMcpRev)
+      onReloaded?.()
+    }
+    // Failure (null) or confirm_required: leave `accepted` unchanged so the
+    // next poll tick retries the same revision.
+  } finally {
+    state.inFlight = false
+  }
+}
+
 const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceRecordKey => {
   const raw = cfg?.config?.voice?.record_key
 
@@ -245,7 +295,7 @@ export function useConfigSync({
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
-  const mcpRevRef = useRef('')
+  const mcpRevRef = useRef<McpRevState>({ accepted: '', inFlight: false })
 
   useEffect(() => {
     if (!sid) {
@@ -261,9 +311,9 @@ export function useConfigSync({
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
-      // unset mcpRevRef would make the FIRST cosmetic write (mtime bump, same
+      // unset baseline would make the FIRST cosmetic write (mtime bump, same
       // mcp_rev) look like an MCP change and fire a needless reload.mcp.
-      mcpRevRef.current = String(r?.mcp_rev ?? '')
+      mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
     })
     void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
   }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
@@ -281,10 +331,22 @@ export function useConfigSync({
         if (!mtimeRef.current) {
           if (next) {
             mtimeRef.current = next
-            mcpRevRef.current = nextMcpRev
+            mcpRevRef.current.accepted = nextMcpRev
           }
 
           return
+        }
+
+        // Reload MCP only when the MCP-relevant config actually changed.
+        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
+        // reconnecting every MCP server for those costs seconds and made
+        // skin switching feel glacial. The handshake runs on EVERY poll tick
+        // (not just mtime changes) so a failed reload retries until the
+        // server confirms the revision was loaded.
+        if (nextMcpRev) {
+          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
+            turnController.pushActivity('MCP reloaded after config change')
+          )
         }
 
         if (!next || next === mtimeRef.current) {
@@ -293,16 +355,9 @@ export function useConfigSync({
 
         mtimeRef.current = next
 
-        // Reload MCP only when the MCP-relevant config actually changed.
-        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
-        // reconnecting every MCP server for those costs seconds and made
-        // skin switching feel glacial. Older gateways don't send mcp_rev —
-        // fall back to reload-on-any-change there.
-        const mcpChanged = !nextMcpRev || nextMcpRev !== mcpRevRef.current
-
-        mcpRevRef.current = nextMcpRev
-
-        if (mcpChanged) {
+        // Older gateways don't send mcp_rev — fall back to
+        // reload-on-any-change there (no ack tracking possible).
+        if (!nextMcpRev) {
           quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
             r => r && turnController.pushActivity('MCP reloaded after config change')
           )

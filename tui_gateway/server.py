@@ -12689,23 +12689,7 @@ def _(rid, params: dict) -> dict:
         # config-change poller uses it to reload MCP servers only when their
         # config actually changed — a /skin or /statusbar write bumps mtime
         # but must not cost a multi-second MCP reconnect.
-        try:
-            cfg = _load_cfg()
-            # mcp_servers holds the server DEFINITIONS the classic CLI watches
-            # for auto-reload (cli.py::_check_config_mcp_changes) — omitting it
-            # meant editing a server bumped mtime but not mcp_rev, so the TUI
-            # skipped reload.mcp and new servers never connected until a manual
-            # /reload-mcp. `mcp` (settings) and `tools` (enable/disable) round
-            # out the MCP-relevant surface.
-            rev_src = json.dumps(
-                {"mcp": cfg.get("mcp"), "mcp_servers": cfg.get("mcp_servers"), "tools": cfg.get("tools")},
-                sort_keys=True,
-                default=str,
-            )
-            mcp_rev = hashlib.sha1(rev_src.encode()).hexdigest()[:12]
-        except Exception:
-            mcp_rev = ""
-        return _ok(rid, {"mtime": mtime, "mcp_rev": mcp_rev})
+        return _ok(rid, {"mtime": mtime, "mcp_rev": _compute_mcp_rev()})
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
@@ -12882,14 +12866,46 @@ def _(rid, params: dict) -> dict:
 # reload.mcp runs on the RPC pool (see _LONG_HANDLERS) so a slow/flapping MCP
 # server can't freeze the reader thread. Serialize reloads: overlapping
 # shutdown+discover pairs from stacked config-change polls would interleave
-# and leave the registry half-built. Piggyback rather than queue — a reload
-# that arrives while one is running would just redo identical work.
+# and leave the registry half-built.
 _mcp_reload_lock = threading.Lock()
 # Bumped once per SUCCESSFUL shutdown+discover. A follower that waited on the
 # lock only skips the redundant reload if this advanced while it waited — i.e.
 # the leader actually completed. If the leader threw (flapping server), the
 # follower sees no advance and re-runs the full reload itself.
 _mcp_reload_gen = 0
+# The mcp_rev hash that the last successful reload actually LOADED (config
+# re-hashed after discovery, so it reflects what discover_mcp_tools read —
+# not what the caller hoped for). A follower coalesces only when the
+# revision it was asked to load matches this; otherwise the config changed
+# under the leader (rev A loaded, rev B requested) and the follower must
+# re-run the full reload itself instead of acking B against A's registry.
+_mcp_reload_loaded_rev = ""
+# Bounded convergence for a config edit racing a slow reload: the leader
+# re-hashes after discovery and repeats until the hash is stable.
+_MCP_RELOAD_MAX_PASSES = 3
+
+
+def _compute_mcp_rev() -> str:
+    """Hash of the MCP-relevant config sections (server definitions,
+    settings, toolset enables). ``config.get mtime`` ships it to the TUI so
+    cosmetic writes don't trigger reloads; ``reload.mcp`` uses it for
+    revision-aware coalescing. Empty string = unknown (fail open)."""
+    try:
+        cfg = _load_cfg()
+        # mcp_servers holds the server DEFINITIONS the classic CLI watches
+        # for auto-reload (cli.py::_check_config_mcp_changes) — omitting it
+        # meant editing a server bumped mtime but not mcp_rev, so the TUI
+        # skipped reload.mcp and new servers never connected until a manual
+        # /reload-mcp. `mcp` (settings) and `tools` (enable/disable) round
+        # out the MCP-relevant surface.
+        rev_src = json.dumps(
+            {"mcp": cfg.get("mcp"), "mcp_servers": cfg.get("mcp_servers"), "tools": cfg.get("tools")},
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
+    except Exception:
+        return ""
 
 
 def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
@@ -12903,7 +12919,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
         except Exception as _exc:
             logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
 
-    payload = {"status": "reloaded"}
+    payload = {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev}
     if coalesced:
         payload["coalesced"] = True
 
@@ -12991,28 +13007,49 @@ def _(rid, params: dict) -> dict:
                 )
             _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
 
-        global _mcp_reload_gen
+        global _mcp_reload_gen, _mcp_reload_loaded_rev
+
+        # The revision the CALLER is asking to load (the mcp_rev its poll
+        # observed). Empty on legacy clients and manual /reload-mcp — those
+        # coalesce on generation alone, as before.
+        req_rev = str(params.get("rev") or "")
 
         def _do_full_reload() -> None:
             """shutdown+discover+refresh under the lock, then mark a completed
             generation. The lock spans the refresh too: releasing after
             discover would let a second reload tear the registry down while
-            this one is still reading it to rebuild the session snapshot."""
-            global _mcp_reload_gen
+            this one is still reading it to rebuild the session snapshot.
 
-            shutdown_mcp_servers()
-            discover_mcp_tools()
+            Config can change WHILE discover is connecting servers (a slow
+            reload racing a config edit): re-hash after discovery and repeat
+            until the hash is stable, so the generation we mark completed
+            always reflects the config that was actually loaded."""
+            global _mcp_reload_gen, _mcp_reload_loaded_rev
+
+            loaded = _compute_mcp_rev()
+            for _ in range(_MCP_RELOAD_MAX_PASSES):
+                shutdown_mcp_servers()
+                discover_mcp_tools()
+                after = _compute_mcp_rev()
+                if after == loaded:
+                    break
+                loaded = after
+
             _refresh_session_agent()
+            _mcp_reload_loaded_rev = loaded
             _mcp_reload_gen += 1
 
         # Serialize reloads. The LEADER (won the non-blocking acquire) runs the
         # full reload. A FOLLOWER (lock busy) snapshots the generation, waits,
-        # then — still holding the lock — checks whether a reload actually
-        # COMPLETED while it waited: if so it just refreshes its own agent
-        # against the fresh registry (coalesced); if the leader threw (flapping
-        # server, no generation advance) it re-runs the full reload itself, so
-        # a failed leader can never leave a follower reporting a bogus success
-        # over an empty/partial registry.
+        # then — still holding the lock — checks whether a reload that
+        # actually COMPLETED while it waited satisfies ITS request: the
+        # generation must have advanced (leader didn't throw) AND the loaded
+        # revision must match the one this follower was asked to apply. Both
+        # true → just refresh its own agent against the fresh registry
+        # (coalesced). Leader threw, or leader loaded an older revision than
+        # this request observed → re-run the full reload, so a failed or
+        # stale leader can never leave a follower acking a revision that was
+        # never loaded.
         if _mcp_reload_lock.acquire(blocking=False):
             try:
                 _do_full_reload()
@@ -13024,7 +13061,10 @@ def _(rid, params: dict) -> dict:
         gen_before = _mcp_reload_gen
 
         with _mcp_reload_lock:
-            if _mcp_reload_gen > gen_before:
+            leader_completed = _mcp_reload_gen > gen_before
+            rev_satisfied = not req_rev or req_rev == _mcp_reload_loaded_rev
+
+            if leader_completed and rev_satisfied:
                 _refresh_session_agent()
                 coalesced = True
             else:

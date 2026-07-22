@@ -1066,6 +1066,102 @@ def test_initialize_does_not_emit_cli_warning_when_callback_absent(monkeypatch):
     assert provider._client is None
 
 
+def test_runtime_api_key_memories_use_authenticated_user_namespace(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
+    monkeypatch.setenv("OPENVIKING_API_KEY", "user-key")
+    monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
+    events = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "https://openviking.example"
+            assert api_key == "user-key"
+            assert account == ""
+            assert user == ""
+            assert agent == "hermes"
+
+        def health_payload(self):
+            events.append("health")
+            return {"healthy": True}
+
+        def authenticated_user_id(self):
+            events.append("auth-user")
+            return "default"
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._memory_user_id == "default"
+    assert provider._build_memory_uri("entities").startswith(
+        "viking://user/default/peers/hermes/memories/entities/mem_"
+    )
+    assert events == ["health", "auth-user"]
+
+
+def test_runtime_api_key_memory_namespace_ignores_configured_user(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
+    monkeypatch.setenv("OPENVIKING_API_KEY", "root-key")
+    monkeypatch.setenv("OPENVIKING_USER", "alice")
+    monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
+    events = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            pass
+
+        def health_payload(self):
+            events.append("health")
+            return {"healthy": True}
+
+        def authenticated_user_id(self):
+            events.append("auth-user")
+            return "default"
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._memory_user_id == "default"
+    assert provider._build_memory_uri("entities").startswith(
+        "viking://user/default/peers/hermes/memories/entities/mem_"
+    )
+    assert events == ["health", "auth-user"]
+
+
+def test_runtime_api_key_memory_namespace_falls_back_when_status_fails(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
+    monkeypatch.setenv("OPENVIKING_API_KEY", "user-key")
+    monkeypatch.setenv("OPENVIKING_USER", "stale-user")
+    monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            pass
+
+        def health_payload(self):
+            return {"healthy": True}
+
+        def authenticated_user_id(self):
+            raise RuntimeError("status unavailable")
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._memory_user_id == ""
+    assert provider._client is not None
+    assert provider._build_memory_uri("entities").startswith(
+        "viking://user/peers/hermes/memories/entities/mem_"
+    )
+
+
 def test_post_setup_local_server_down_can_offer_autostart(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
@@ -2893,6 +2989,7 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     assert not returned_before_worker_finished
     assert worker_finished.is_set()
     assert provider._memory_write_threads == set()
+
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -20,6 +21,7 @@ if not isinstance(getattr(telegram_module, "__file__", None), str):
 from telegram import Chat, Location, Message, Update, User
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -39,6 +41,9 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
     adapter.set_authorization_check(
         lambda _user_id, _chat_type=None, _chat_id=None: True
     )
+    adapter._is_user_authorized_from_message = lambda _message: True
+    adapter._should_process_message = lambda _message, **_kwargs: True
+    adapter._enqueue_text_event = Mock()
 
     class _RecordingApp:
         def __init__(self):
@@ -78,14 +83,12 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
         SimpleNamespace(),
     )
 
-    fixed_payload = json.loads(
-        adapter._background_location_state_path.read_text()
-    )
-    fixed_subject_key = adapter._background_location_subject_key(fixed_message)
-    assert fixed_subject_key is not None
-    fixed_record = fixed_payload["locations"][fixed_subject_key]
-    assert fixed_record["source"] == "location"
-    assert "live_period" not in fixed_record
+    adapter._enqueue_text_event.assert_called_once()
+    fixed_event = adapter._enqueue_text_event.call_args.args[0]
+    assert "[The user shared a one-time location pin.]" in fixed_event.text
+    assert fixed_event.message_type == MessageType.TEXT
+    assert fixed_event.ephemeral_user_context is None
+    assert not adapter._background_location_state_path.exists()
 
     message = Message(
         message_id=50,
@@ -120,3 +123,4 @@ async def test_registered_handler_distinguishes_one_time_and_edited_live_updates
     assert record["longitude"] == -0.1419
     assert record["source"] == "live_location"
     assert record["is_edited_update"] is True
+    adapter._enqueue_text_event.assert_called_once()

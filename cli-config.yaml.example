@@ -863,8 +863,8 @@ platform_toolsets:
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
-#     # Persist location/live-location/venue updates as silent profile-local
-#     # state instead of dispatching an agent turn. Default false.
+#     # Persist active live-location updates as silent profile-local state.
+#     # One-time pins and venues remain normal conversational turns. Default false.
 #     background_locations: false
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

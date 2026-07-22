@@ -688,12 +688,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
-        # Location shares can be passive telemetry rather than conversational
-        # turns.  Keep this opt-in for compatibility: when enabled, accepted
-        # location and venue updates are persisted under the active profile and
-        # never dispatched to the agent loop. The latest value is attached as
-        # API-only per-turn user context to the same sender's later
-        # text/command turns.
+        # Active live-location shares can be passive telemetry rather than
+        # conversational turns. Keep this opt-in for compatibility: accepted
+        # live updates are persisted under the active profile and never
+        # dispatched to the agent loop. Fixed pins and venues remain ordinary
+        # user messages. The latest live snapshot is attached as API-only
+        # per-turn user context to the same sender's later text/command turns.
         self._background_locations_enabled: bool = self._coerce_bool_extra(
             "background_locations", False
         )
@@ -8271,7 +8271,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 valid_records = [
                     (str(key), value)
                     for key, value in raw_records.items()
-                    if str(key).startswith("bot:") and isinstance(value, dict)
+                    if (
+                        str(key).startswith("bot:")
+                        and isinstance(value, dict)
+                        and value.get("source") == "live_location"
+                    )
                 ]
                 valid_records.sort(
                     key=lambda item: str(item[1].get("recorded_at", "")),
@@ -8358,6 +8362,52 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         return number if number >= 0 else None
 
+    def _active_live_location_period(self, location: Any) -> Optional[int]:
+        """Return an active live-share period, excluding fixed location pins."""
+        live_period = self._coerce_nonnegative_int(
+            getattr(location, "live_period", None)
+        )
+        return live_period if live_period not in (None, 0) else None
+
+    def _is_background_live_location_update(
+        self, update: Update, message: Message
+    ) -> bool:
+        """Whether an update belongs to the silent live-location lifecycle.
+
+        Fixed pins and venues are ordinary conversational input. Telegram sends
+        active live locations with ``live_period`` and uses an edited copy
+        without that field to stop a live share, so both shapes must remain on
+        the background path.
+        """
+        if getattr(message, "venue", None) is not None:
+            return False
+        location = getattr(message, "location", None)
+        if location is None:
+            return False
+        if self._active_live_location_period(location) is not None:
+            return True
+        if not (
+            getattr(update, "edited_message", None)
+            or getattr(update, "edited_channel_post", None)
+        ):
+            return False
+
+        # A stop update has no ``live_period`` either, so identify it by the
+        # already-retained live message. This keeps an unexpected edited fixed
+        # pin on the normal conversational route instead of dropping it.
+        subject_key = self._background_location_subject_key(message)
+        existing = (
+            self._load_background_location_records().get(subject_key)
+            if subject_key is not None
+            else None
+        )
+        return (
+            isinstance(existing, dict)
+            and existing.get("source") == "live_location"
+            and str(existing.get("message_id", ""))
+            == str(getattr(message, "message_id", ""))
+        )
+
     @classmethod
     def _background_location_candidate_is_newer(
         cls,
@@ -8392,12 +8442,9 @@ class TelegramAdapter(BasePlatformAdapter):
         coordinates are sensitive data.
         """
         subject_key = self._background_location_subject_key(message)
-        venue = getattr(message, "venue", None)
-        location = (
-            getattr(venue, "location", None)
-            if venue is not None
-            else getattr(message, "location", None)
-        )
+        if getattr(message, "venue", None) is not None:
+            return False
+        location = getattr(message, "location", None)
         if subject_key is None or location is None:
             return False
 
@@ -8411,11 +8458,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[Telegram] Ignoring background location with invalid coordinates")
             return False
 
-        live_period = self._coerce_nonnegative_int(
-            getattr(location, "live_period", None)
-        )
-        if live_period == 0:
-            live_period = None
+        live_period = self._active_live_location_period(location)
         edited = bool(
             getattr(update, "edited_message", None)
             or getattr(update, "edited_channel_post", None)
@@ -8450,19 +8493,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 return self._write_background_location_records(records)
             return True
 
-        # The Bot API uses the same Location object for fixed pins and live
-        # shares. ``live_period`` is present only for an active live location;
-        # a plain Location is a deliberate one-time pin, and a Venue can never
-        # be live.
-        source_kind = "venue" if venue is not None else (
-            "live_location" if live_period is not None else "location"
-        )
+        # Static pins never enter background state. The only non-live update
+        # accepted here is the edited stop record handled above.
+        if live_period is None:
+            return False
+
         now = datetime.now(timezone.utc)
         record: Dict[str, Any] = {
             "latitude": latitude,
             "longitude": longitude,
             "recorded_at": now.isoformat(),
-            "source": source_kind,
+            "source": "live_location",
             "is_edited_update": edited,
             "chat_id": str(getattr(getattr(message, "chat", None), "id", "")),
             "message_id": str(getattr(message, "message_id", "")),
@@ -8489,39 +8530,15 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             if number is not None:
                 record[key] = number
-        if live_period is not None:
-            record["live_period"] = live_period
-            live_started_at = self._parse_background_location_datetime(
-                self._background_location_timestamp(getattr(message, "date", None))
-            ) or now
-            record["live_started_at"] = live_started_at.isoformat()
-            if live_period != self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD:
-                record["live_expires_at"] = (
-                    live_started_at + timedelta(seconds=live_period)
-                ).isoformat()
-
-        if venue is not None:
-            from gateway.session import neutralize_untrusted_inline_text
-
-            venue_data = {}
-            raw_title = getattr(venue, "title", None)
-            raw_address = getattr(venue, "address", None)
-            title = (
-                neutralize_untrusted_inline_text(raw_title, max_chars=240)
-                if raw_title
-                else ""
-            )
-            address = (
-                neutralize_untrusted_inline_text(raw_address, max_chars=240)
-                if raw_address
-                else ""
-            )
-            if title:
-                venue_data["title"] = title
-            if address:
-                venue_data["address"] = address
-            if venue_data:
-                record["venue"] = venue_data
+        record["live_period"] = live_period
+        live_started_at = self._parse_background_location_datetime(
+            self._background_location_timestamp(getattr(message, "date", None))
+        ) or now
+        record["live_started_at"] = live_started_at.isoformat()
+        if live_period != self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD:
+            record["live_expires_at"] = (
+                live_started_at + timedelta(seconds=live_period)
+            ).isoformat()
 
         if not self._background_location_candidate_is_newer(
             records.get(subject_key),
@@ -8701,40 +8718,25 @@ class TelegramAdapter(BasePlatformAdapter):
         if latitude is None or longitude is None:
             return None
 
-        source = record.get("source")
-        if source not in {"location", "live_location", "venue"}:
-            source = "location"
-        if source == "live_location":
-            live_period = self._coerce_nonnegative_int(record.get("live_period"))
-            if live_period is None:
+        if record.get("source") != "live_location":
+            return None
+        live_period = self._coerce_nonnegative_int(record.get("live_period"))
+        if live_period is None:
+            return None
+        if live_period != self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD:
+            expires_at = self._parse_background_location_datetime(
+                record.get("live_expires_at")
+            )
+            if expires_at is None or datetime.now(timezone.utc) >= expires_at:
                 return None
-            if live_period != self._BACKGROUND_LOCATION_INDEFINITE_LIVE_PERIOD:
-                expires_at = self._parse_background_location_datetime(
-                    record.get("live_expires_at")
-                )
-                if expires_at is None or datetime.now(timezone.utc) >= expires_at:
-                    return None
         recorded_at = self._parse_background_location_datetime(
             record.get("telegram_timestamp")
         ) or self._parse_background_location_datetime(record.get("recorded_at"))
-        source_note = {
-            "location": (
-                "This is a deliberate one-time location pin. It is fixed and "
-                "does not update automatically."
-            ),
-            "live_location": (
-                "This is the latest snapshot of an active live location share, "
-                "not a fixed one-time pin."
-            ),
-            "venue": (
-                "This is a deliberate one-time venue pin. It is fixed and does "
-                "not update automatically."
-            ),
-        }[source]
         lines = [
             "[Background Telegram location context]",
-            f"Source: {source}",
-            source_note,
+            "Source: live_location",
+            "This is the latest snapshot of an active live location share, "
+            "not a fixed one-time pin.",
             "The recorded position may be stale; use it only when relevant to "
             "the user's explicit request.",
             "Recorded at (UTC): "
@@ -8826,7 +8828,13 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
-        if getattr(self, "_background_locations_enabled", False):
+        background_locations_enabled = getattr(
+            self, "_background_locations_enabled", False
+        )
+        if (
+            background_locations_enabled
+            and self._is_background_live_location_update(update, msg)
+        ):
             if not self._is_background_location_authorized(msg):
                 logger.warning(
                     "[Telegram] Blocked unauthorized background location in chat %s",
@@ -8865,8 +8873,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if lat is None or lon is None:
             return
 
-        # Build a text message with coordinates and context
-        parts = ["[The user shared a location pin.]"]
+        # Fixed pins and venues are intentional user messages, not ambient
+        # telemetry. They enter the ordinary conversation transcript and can
+        # use the immediately adjacent user text as their instruction.
+        if background_locations_enabled:
+            parts = [
+                "[The user shared a one-time venue location.]"
+                if venue
+                else "[The user shared a one-time location pin.]"
+            ]
+        else:
+            parts = ["[The user shared a location pin.]"]
         if venue:
             title = getattr(venue, "title", None)
             address = getattr(venue, "address", None)
@@ -8877,12 +8894,34 @@ class TelegramAdapter(BasePlatformAdapter):
         parts.append(f"latitude: {lat}")
         parts.append(f"longitude: {lon}")
         parts.append(f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
-        parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
+        if background_locations_enabled:
+            parts.append(
+                "Use this pin to continue any clear request in the recent "
+                "conversation. If no request is clear, acknowledge it briefly "
+                "and ask what the user would like to do with it."
+            )
+        else:
+            parts.append(
+                "Ask what they'd like to find nearby (restaurants, cafes, etc.) "
+                "and any preferences."
+            )
 
-        event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        event = self._build_message_event(
+            msg,
+            # With background live locations enabled, this branch contains
+            # only fixed pins/venues. Treat them as ordinary text turns so
+            # normal batching and busy-input semantics apply in both orders.
+            MessageType.TEXT if background_locations_enabled else MessageType.LOCATION,
+            update_id=update.update_id,
+        )
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
-        await self.handle_message(event)
+        if background_locations_enabled:
+            # Reuse the short, sender-scoped text batch window so a user can
+            # send "find coffee near me" and a pin as one ordinary turn.
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Telegram client-side splits)

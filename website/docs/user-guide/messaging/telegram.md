@@ -104,16 +104,23 @@ platforms:
 
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
 
-### Background locations (Optional)
+### Background live locations (Optional)
 
 Telegram uses a `Location` object for both one-time pins and live shares. A
 one-time pin has coordinates and optional horizontal accuracy but no
 `live_period`; an active live share has a `live_period` and Telegram delivers
-its movement as edited-message updates. A venue contains a fixed, non-live
-location. By default, Hermes keeps its existing conversational behavior for
-location pins. To treat location, live-location, and venue updates as passive
-context instead, enable `background_locations` in
-`~/.hermes/config.yaml`:
+its movement as edited-message updates. A venue is also a fixed, non-live
+location.
+
+Fixed pins and venues are always ordinary conversational input: Hermes stores
+them as normal user content and responds using the current conversation. When
+a user sends nearby text and a fixed pin in quick succession, Hermes batches
+the same sender's updates into one normal turn, so a request such as “find
+coffee near me” can use the pin. Fixed pins and venues never enter the
+background state file or the ephemeral-context path.
+
+To consume only active live-location telemetry silently in the background,
+enable `background_locations` in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -123,26 +130,25 @@ platforms:
 
 With this option enabled:
 
-- accepted location and venue updates never start an agent turn or trigger a
-  reply;
-- only the latest location for each Telegram bot/sender/chat tuple is retained
-  in the profile state file;
+- accepted active live-location updates, plus the matching edited stop update,
+  do not start an agent turn or trigger a reply;
+- only the latest active live location for each Telegram bot/sender/chat tuple
+  is retained in the profile state file;
 - the state is stored profile-locally at
   `$HERMES_HOME/state/telegram_background_locations/<bot-scope>.json` with exact
   coordinates, Telegram sender/chat/message/update/thread identifiers,
-  timestamps, optional accuracy, live-only heading/proximity/live-period
-  metadata, and sanitized venue title/address metadata when present;
-- a later text message or command from the same sender receives the latest
-  location as ephemeral user-side context for that turn, so questions such as
-  "Where am I?" or "What's nearby?" can use it without changing the cached
-  system prompt or cached-agent signature, or writing the injected location to
-  the Hermes conversation transcript or its `api_content` sidecar.
+  timestamps, accuracy, and live-only heading/proximity/live-period metadata;
+- a later text message or command from the same sender receives the latest live
+  snapshot as ephemeral user-side context for that turn. Questions such as
+  "Where am I?" or "What's nearby?" can therefore use it without changing the
+  cached system prompt or cached-agent signature, or writing the injected live
+  context to the Hermes conversation transcript or its `api_content` sidecar.
 
-The location is appended only to the current API-copy user message, after the
+The live snapshot is appended only to the current API-copy user message, after
 normal per-turn user-message composition. It is intentionally not replayed on
-historical API messages: a later Telegram turn gets the then-current location
-from the adapter state instead. This preserves a byte-stable system prompt and
-does not add a cross-process replay store for coordinates.
+historical API messages: a later Telegram turn gets the then-current live
+snapshot from adapter state instead. This preserves a byte-stable system prompt
+and does not add a cross-process replay store for coordinates.
 
 Records are scoped to the configured Telegram bot identity, sender, and chat;
 forum/group topics are isolated from one another, while private-chat topics
@@ -158,12 +164,9 @@ cross-platform identity mapping for gateway users.
 
 Temporary live-location records are attached only until Telegram's
 `live_period` expires. Stopping a live share removes its retained record;
-`0x7FFFFFFF` live shares remain active until explicitly stopped. Static
-one-time location pins and venues are fixed and do not have an automatic
-expiry, so clear the state as described below when you no longer want them
-retained. A newer one-time pin replaces an older live snapshot for the same
-sender scope and is labeled `Source: location`; it does not inherit live-only
-metadata.
+`0x7FFFFFFF` live shares remain active until explicitly stopped. A fixed pin or
+venue does not replace a retained live snapshot because it is its own normal
+conversation turn.
 
 The state file is written with owner-only permissions on POSIX systems because
 it contains exact coordinates. Normal Telegram authorization and chat/topic
@@ -173,17 +176,15 @@ running gateway keeps the latest-location cache in memory, so deleting only the
 live file does not clear the active process and a later update can recreate the
 state.
 
-This option intentionally sends the latest coordinates with each later accepted
-text message or command from that sender, including turns unrelated to
-location. Hermes does not persist that ephemeral user context in its
-conversation transcript, but the coordinates are sent to your configured model
-provider and an agent response may repeat them. Any enabled plugin,
+This option intentionally sends the latest active-live coordinates with each
+later accepted text message or command from that sender, including turns
+unrelated to location. Hermes does not persist that ephemeral user context in
+its conversation transcript, but the coordinates are sent to your configured
+model provider and an agent response may repeat them. Any enabled plugin,
 observability integration, or provider that records raw request payloads can
 therefore retain it; Hermes does not add a special redaction layer for those
-external records.
-The state file itself may also survive in Hermes snapshots or other backups,
-including its Telegram identifiers and sanitized venue metadata, after you
-delete the live copy.
+external records. The state file itself may also survive in Hermes snapshots or
+other backups after you delete the live copy.
 
 The volatile user-side context is currently a local gateway-to-`AIAgent` path.
 Hermes does not forward it through proxy/API-server mode, and the stateful

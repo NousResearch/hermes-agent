@@ -1273,6 +1273,18 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
 
 
+def test_load_enabled_toolsets_folds_project_into_focus_posture_respects_disabled(monkeypatch):
+    """Coding-focus path: disabled_toolsets=[project] should exclude project."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"disabled_toolsets": ["project"]}})
+
+    assert server._load_enabled_toolsets() == ["coding", "figma"]
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
@@ -1317,6 +1329,47 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     )
 
     assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
+    assert "using configured CLI toolsets" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
+    )
+
+    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
+    assert "using configured CLI toolsets" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_falls_back_respects_disabled(monkeypatch, capsys):
+    """Configured fallback path: disabled_toolsets=[project] should exclude project."""
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"platform_toolsets": {"cli": ["memory"]}},
+    )
+    # _load_cfg is called early to populate _disabled; mock it too
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"disabled_toolsets": ["project"]}})
+
+    assert server._load_enabled_toolsets() == ["kanban", "memory"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 

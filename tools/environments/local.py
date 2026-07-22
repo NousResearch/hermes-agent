@@ -136,11 +136,27 @@ def _quote_bash_path(path: str) -> str:
     return shlex.quote(_bash_safe_path(path))
 
 
+def _cwd_usable(path: str) -> bool:
+    """True when *path* is a directory this process can actually chdir into.
+
+    ``os.path.isdir`` alone is not enough: stat() on ``/root`` succeeds for a
+    non-root user (only ``/`` needs search permission), but
+    ``subprocess.Popen(cwd='/root')`` then dies with ``PermissionError:
+    [Errno 13] Permission denied: '/root'``. Seen in the wild when a
+    root-launched CLI session leaks ``/root`` into shared state that a
+    non-root gateway/cron process later reads (#65583) — every cron job's
+    terminal/file tool then fails on every command, forever. Checking
+    X_OK up front lets the caller fall back instead.
+    """
+    return os.path.isdir(path) and os.access(path, os.X_OK)
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
-    """Return ``cwd`` if it exists as a directory, else the nearest existing
-    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
-    path can't find any existing directory (effectively never on a healthy
-    filesystem, but cheap belt-and-braces).
+    """Return ``cwd`` if it exists as a directory this process can enter,
+    else the nearest existing accessible ancestor.  Falls back to
+    ``tempfile.gettempdir()`` only if walking up the path can't find any
+    usable directory (effectively never on a healthy filesystem, but cheap
+    belt-and-braces).
 
     On Windows, also normalizes Git Bash / MSYS-style POSIX paths
     (``/c/Users/x``) to native Windows form before the isdir check so a
@@ -149,16 +165,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
-    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
-    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
-    terminal call until the gateway restarts.
+    (issue #17558) — or inaccessible to this user, e.g. ``/root`` leaking
+    from a root-launched CLI session into a non-root gateway's cron jobs
+    (issue #65583).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError``/``PermissionError`` before bash starts,
+    wedging every subsequent terminal call until the gateway restarts.
     """
     cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
-    if cwd and os.path.isdir(cwd):
+    if cwd and _cwd_usable(cwd):
         return cwd
+    if cwd and os.path.isdir(cwd):
+        logger.warning(
+            "Configured terminal cwd %r exists but is not accessible to "
+            "this user (uid=%s) — falling back to the nearest usable "
+            "directory. If this is a gateway/cron process, check for "
+            "root-owned paths leaking into terminal.cwd / TERMINAL_CWD "
+            "(#65583).",
+            cwd, getattr(os, "getuid", lambda: "?")(),
+        )
     parent = os.path.dirname(cwd) if cwd else ""
     while parent:
-        if os.path.isdir(parent):
+        if _cwd_usable(parent):
             return parent
         next_parent = os.path.dirname(parent)
         if next_parent == parent:

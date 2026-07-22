@@ -65,6 +65,125 @@ import os
 import sys
 
 
+def _exit_after_oneshot(rc: object) -> None:
+    """Exit one-shot mode without letting late native finalizers change rc.
+
+    The SIGABRT this guards against (#30387, #43055) fires in a
+    native-extension finalizer during CPython's ``Py_FinalizeEx``, *after*
+    the response has printed. Flush streams, shut down file logging, then
+    ``os._exit`` past interpreter finalization. The ``atexit`` chain is
+    deliberately skipped — several handlers re-enter native code that may
+    be the abort source. Stateful cleanup is handled in ``_run_agent`` and
+    ``_cleanup_oneshot_runtime``.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    if rc is None:
+        exit_code = 0
+    elif isinstance(rc, int):
+        exit_code = rc
+    else:
+        exit_code = 1
+    os._exit(exit_code)
+
+
+_oneshot_cleanup_done = False
+
+
+def _cleanup_oneshot_runtime() -> None:
+    """Best-effort process-global cleanup before one-shot hard exit.
+
+    ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
+    session_db.close — all in ``_run_agent``'s finally block). This mirrors the
+    process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
+    be skipped by ``os._exit``.
+    """
+    global _oneshot_cleanup_done
+    if _oneshot_cleanup_done:
+        return
+    _oneshot_cleanup_done = True
+    try:
+        from tools.terminal_tool import cleanup_all_environments
+        cleanup_all_environments()
+    except Exception:
+        pass
+    try:
+        from tools.async_delegation import interrupt_all
+        interrupt_all(reason="oneshot shutdown")
+    except Exception:
+        pass
+    try:
+        from tools.browser_tool import _emergency_cleanup_all_sessions
+        _emergency_cleanup_all_sessions()
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except BaseException:
+        pass
+    try:
+        from agent.auxiliary_client import shutdown_cached_clients
+        shutdown_cached_clients()
+    except Exception:
+        pass
+
+
+def _run_and_exit_oneshot(
+    prompt: str,
+    *,
+    model: object = None,
+    provider: object = None,
+    toolsets: object = None,
+    usage_file: object = None,
+) -> None:
+    try:
+        from hermes_cli.oneshot import run_oneshot
+
+        rc = run_oneshot(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            usage_file=usage_file,
+        )
+    except KeyboardInterrupt:
+        rc = 130
+    except SystemExit as exc:
+        if exc.code is not None and not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+            rc = 1
+        else:
+            rc = exc.code
+    except BaseException:
+        # Defense-in-depth. ``run_oneshot`` already converts agent failures
+        # into an int return code and only re-raises KeyboardInterrupt /
+        # SystemExit (handled above). Anything still escaping here means
+        # ``run_oneshot`` itself malfunctioned — surface it on stderr but never
+        # fall through to normal interpreter teardown, which is the exact path
+        # that aborts with SIGABRT on AL2023 (the bug this routine fixes).
+        import traceback
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
+        rc = 1
+    try:
+        _cleanup_oneshot_runtime()
+    finally:
+        # The hard exit is the safety boundary for #43055. Even an interrupt
+        # during best-effort cleanup must not fall back into interpreter
+        # finalization, where the reported native SIGABRT occurs.
+        _exit_after_oneshot(rc)
+
+
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
@@ -272,6 +391,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import re
 import shlex
 import shutil
 import stat
@@ -1766,10 +1886,14 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    if not ext_dir:
-        _ensure_tui_workspace(tui_dir)
-
     # 1. Prebuilt bundle (nix / packaged release): just run it.
+    #
+    # This must run BEFORE _ensure_tui_workspace() below. A pip/pipx install
+    # ships hermes_cli/tui_dist/entry.js in the wheel but never ships ui-tui/
+    # at all (that directory only exists in a git checkout) — so requiring
+    # the workspace to exist first made every pip/pipx dashboard Chat tab
+    # connection hard-exit before it ever got a chance to try the bundled
+    # entry.js it already has. See #56665.
     if not tui_dev:
         if ext_dir:
             p = Path(ext_dir)
@@ -1782,6 +1906,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
+
+    # No prebuilt bundle available (or --dev, which never uses one) — we're
+    # about to npm install/build from source, so the workspace must exist.
+    if not ext_dir:
+        _ensure_tui_workspace(tui_dir)
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
@@ -2003,6 +2132,39 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _safe_tui_cwd(env: Optional[dict] = None) -> str:
+    """Return a stable cwd value for the Node TUI child environment."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        candidate = ((env or {}).get("PWD") or os.environ.get("PWD") or "").strip()
+        if candidate and Path(candidate).is_dir():
+            return candidate
+        return str(PROJECT_ROOT)
+
+
+def _apply_tui_python_env(env: dict) -> None:
+    """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
+    src_root = str(env.get("HERMES_PYTHON_SRC_ROOT") or "").strip()
+    if not src_root or not Path(src_root).is_dir():
+        env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
+
+    cwd = str(env.get("HERMES_CWD") or "").strip()
+    if not cwd or not Path(cwd).is_dir():
+        env["HERMES_CWD"] = _safe_tui_cwd(env)
+
+    python = str(env.get("HERMES_PYTHON") or "").strip()
+    if os.path.dirname(python):
+        python_path = Path(python)
+        if not python_path.is_absolute():
+            python_path = Path(env["HERMES_CWD"]) / python_path
+        python_is_executable = python_path.is_file() and os.access(python_path, os.X_OK)
+    else:
+        python_is_executable = bool(shutil.which(python, path=env.get("PATH")))
+    if not python_is_executable:
+        env["HERMES_PYTHON"] = sys.executable
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -2036,11 +2198,6 @@ def _launch_tui(
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
-        "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
-    )
-    env.setdefault("HERMES_PYTHON", sys.executable)
-    env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
     wt_info = None
@@ -2064,6 +2221,8 @@ def _launch_tui(
             sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+
+    _apply_tui_python_env(env)
 
     if model:
         env["HERMES_MODEL"] = model
@@ -3009,6 +3168,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.models import (
         CANONICAL_PROVIDERS,
         _PROVIDER_LABELS,
+        _PROVIDER_ALIASES,
         group_providers,
         provider_group_for_slug,
     )
@@ -3032,7 +3192,30 @@ def select_provider_and_model(args=None):
     # resolves back to a concrete slug, so the dispatch chain below is
     # unchanged. Custom providers and the trailing actions stay flat.
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
-    grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
+    # Honor ``model_catalog.excluded_providers`` so the CLI ``hermes model``
+    # picker hides the same providers the gateway/TUI pickers do. A canonical
+    # provider is hidden if its slug OR any of its aliases appears in the
+    # exclusion list (case-insensitive), matching list_authenticated_providers'
+    # matching against hermes_id / alias / canonical slug.
+    _cli_excluded = {
+        str(p).strip().lower()
+        for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
+        if p
+    }
+    if _cli_excluded:
+        _alias_to_canon = _PROVIDER_ALIASES
+        _names_for: dict[str, set[str]] = {}
+        for _p in CANONICAL_PROVIDERS:
+            _names_for[_p.slug] = {_p.slug.lower()}
+        for _alias, _canon in _alias_to_canon.items():
+            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
+        _visible_slugs = [
+            p.slug for p in CANONICAL_PROVIDERS
+            if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
+        ]
+    else:
+        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group
     # if it's grouped, otherwise the active slug itself.
@@ -4628,15 +4811,19 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 
 
 def _web_ui_build_needed(web_dir: Path) -> bool:
-    """Return True if the web UI dist is missing or stale.
+    """Return True if the web UI dist is missing or its source content changed.
 
-    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
-    The dashboard source lives under ``web/``, but the Vite build
-    still outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
-    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``, so Python
-    packaging can continue serving the same static asset directory. Uses the
-    Vite manifest as the sentinel because it is written last and therefore
-    has the newest mtime of any build output.
+    Uses a SHA-256 content hash of the web source tree (the same approach
+    ``_desktop_build_needed()`` already uses for the Electron build), NOT
+    mtime comparison. ``git checkout`` / ``git pull`` / ``hermes update``
+    rewrite source mtimes without changing content, which made the old
+    mtime check unreliable in both directions: it could skip a rebuild when
+    source had genuinely changed (serving a stale dashboard) and force a
+    rebuild when nothing had. A content hash is stable across mtime churn.
+
+    The dashboard source lives under ``web/`` but Vite outputs to
+    ``hermes_cli/web_dist/`` (per vite.config.ts outDir), NOT ``web/dist/``,
+    so the dist directory is never part of the hashed source tree.
     """
     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
     dist_dir = project_root / "hermes_cli" / "web_dist"
@@ -4645,29 +4832,98 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         sentinel = dist_dir / "index.html"
     if not sentinel.exists():
         return True
-    dist_mtime = sentinel.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
-    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in skip]
-        for fn in filenames:
-            if fn.endswith((".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")):
-                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_mtime:
-                    return True
-    for meta in (
-        "package.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "vite.config.ts",
-        "vite.config.js",
-    ):
-        mp = web_dir / meta
-        if mp.exists() and mp.stat().st_mtime > dist_mtime:
-            return True
-    # Workspace root lockfile (single package-lock.json covers all workspaces).
-    root_lock = project_root / "package-lock.json"
-    if root_lock.exists() and root_lock.stat().st_mtime > dist_mtime:
+    stamp_file = _web_ui_stamp_path()
+    if not stamp_file.is_file():
         return True
-    return False
+    try:
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(stamp_data, dict):
+        return True
+    saved_hash = stamp_data.get("contentHash")
+    if not saved_hash:
+        return True
+    return _compute_web_ui_content_hash(project_root, web_dir) != saved_hash
+
+
+def _compute_web_ui_content_hash(project_root: Path, web_dir: Path) -> str:
+    """Return a SHA-256 hex digest of the web UI source tree.
+
+    Covers ``web_dir`` (the dashboard frontend source) plus the root
+    ``package.json`` / ``package-lock.json`` (workspace config that
+    determines dependency resolution). Mirrors
+    ``_compute_desktop_content_hash()``: ignored paths (``node_modules/``,
+    ``dist/``, ``*.pyc``, ...) are skipped via the repo-root ``.gitignore``
+    so build output never feeds back into its own staleness check.
+    """
+    h = hashlib.sha256()
+
+    def _hash_file(path: Path) -> None:
+        rel = str(path.relative_to(project_root))
+        h.update(rel.encode())
+        h.update(b"\0")
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+        except OSError:
+            pass
+        h.update(b"\0")
+
+    from pathspec import PathSpec
+
+    gitignore = project_root / ".gitignore"
+    lines: list[str] = []
+    if gitignore.is_file():
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+    spec = PathSpec.from_lines("gitignore", lines)
+
+    # Root workspace config (single package-lock.json covers all workspaces).
+    for name in ("package.json", "package-lock.json"):
+        p = project_root / name
+        if p.is_file():
+            rel = str(p.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(p)
+
+    # Walk the web source tree, pruning ignored directories in-place so we
+    # never descend into node_modules/ or a stray dist/. Sort filenames for
+    # a deterministic, order-independent digest.
+    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
+        dirnames[:] = [
+            d for d in dirnames
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+        ]
+        for fn in sorted(filenames):
+            fp = Path(dirpath) / fn
+            rel = str(fp.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(fp)
+
+    return h.hexdigest()
+
+
+def _web_ui_stamp_path() -> Path:
+    """Return the path to the web UI build stamp file under $HERMES_HOME."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "web-ui-build-stamp.json"
+
+
+def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:
+    """Write the web UI build stamp after a successful build."""
+    stamp_file = _web_ui_stamp_path()
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        stamp_data = {
+            "contentHash": _compute_web_ui_content_hash(project_root, web_dir),
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        # Never let stamp-writing block or fail a build.
+        logger.debug("Failed to write web UI build stamp: %s", exc)
 
 
 def _run_with_idle_timeout(
@@ -4895,6 +5151,49 @@ def _run_npm_install_deterministic(
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+    """Build the web UI frontend if npm is available, serializing across processes.
+
+    Concurrent dashboard boots (e.g. the desktop app's retry loop after a
+    readiness timeout) used to each spawn their own ``npm install`` +
+    ``vite build`` over the same tree; the parallel builds starved each
+    other, none finished, the dist sentinel never advanced, and every new
+    boot re-triggered the build. One process builds under an exclusive
+    flock; the rest serve the existing dist (stale is acceptable) or, when
+    no dist exists yet, block until the builder finishes.
+
+    Staleness is checked once, inside :func:`_do_build_web_ui`, after the
+    lock is held — so a process that queued behind the builder skips the
+    rebuild, and the (os.walk-based) check runs at most once per boot.
+    """
+    if not (web_dir / "package.json").exists():
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        # Windows: no flock — fall through to the unserialized build.
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    dist_index = project_root / "hermes_cli" / "web_dist" / "index.html"
+    try:
+        lock_file = open(project_root / ".web_ui_build.lock", "a", encoding="utf-8")
+    except OSError:
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    try:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if dist_index.exists():
+                # Another process is already building — serve the current
+                # dist instead of piling a second build onto the same tree.
+                return True
+            # No dist at all (first-ever build): wait for the builder.
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    finally:
+        lock_file.close()
+
+
+def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:
@@ -5016,6 +5315,8 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    _write_web_ui_build_stamp(project_root, web_dir)
     return True
 
 
@@ -12318,8 +12619,97 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     print()
 
 
+def _read_ssh_session_token_file(path: str) -> str:
+    """Read and unlink a Desktop SSH token from its private runtime directory."""
+    if sys.platform == "win32":
+        from hermes_cli.windows_ssh_runtime import read_token
+        return read_token(path)
+
+    import stat as _stat
+    from pathlib import Path as _Path
+    from hermes_constants import get_hermes_home as _get_hermes_home
+
+    if not os.path.isabs(path):
+        raise SystemExit("--ssh-session-token-file must be absolute")
+
+    token_path = _Path(path)
+    token_root = _get_hermes_home() / "desktop-ssh"
+    try:
+        relative = token_path.relative_to(token_root)
+    except ValueError as exc:
+        raise SystemExit("--ssh-session-token-file must be under the desktop-ssh directory") from exc
+    if len(relative.parts) != 2 or not re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]):
+        raise SystemExit("--ssh-session-token-file has an invalid runtime path")
+    if not re.fullmatch(r"[0-9a-f]{16}\.token", relative.parts[1]):
+        raise SystemExit("--ssh-session-token-file has an invalid filename")
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = -1
+    directory_fd = -1
+    file_fd = -1
+    try:
+        try:
+            root_fd = os.open(token_root, directory_flags)
+            root_stat = os.fstat(root_fd)
+            if not _stat.S_ISDIR(root_stat.st_mode):
+                raise SystemExit("--ssh-session-token-file has an unsafe runtime root")
+            if hasattr(os, "getuid") and root_stat.st_uid != os.getuid():
+                raise SystemExit("--ssh-session-token-file runtime root has the wrong owner")
+            directory_fd = os.open(relative.parts[0], directory_flags, dir_fd=root_fd)
+            directory_stat = os.fstat(directory_fd)
+            if not _stat.S_ISDIR(directory_stat.st_mode):
+                raise SystemExit("--ssh-session-token-file has an unsafe parent directory")
+            if hasattr(os, "getuid") and directory_stat.st_uid != os.getuid():
+                raise SystemExit("--ssh-session-token-file parent has the wrong owner")
+            if (directory_stat.st_mode & 0o777) != 0o700:
+                raise SystemExit("--ssh-session-token-file parent has unsafe permissions")
+            file_fd = os.open(relative.parts[1], file_flags, dir_fd=directory_fd)
+        except SystemExit:
+            raise
+        except OSError as exc:
+            if exc.errno == getattr(__import__("errno"), "ELOOP", -1):
+                raise SystemExit("--ssh-session-token-file is a symlink") from exc
+            raise SystemExit("--ssh-session-token-file is not accessible") from exc
+
+        file_stat = os.fstat(file_fd)
+        if not _stat.S_ISREG(file_stat.st_mode):
+            raise SystemExit("--ssh-session-token-file is not a regular file")
+        if file_stat.st_size != 64:
+            raise SystemExit("--ssh-session-token-file contains an invalid token")
+        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
+            raise SystemExit("--ssh-session-token-file has the wrong owner")
+        if hasattr(os, "getuid") and (file_stat.st_mode & 0o777) & ~0o600:
+            raise SystemExit("--ssh-session-token-file has unsafe permissions")
+
+        with os.fdopen(file_fd, "r") as token_stream:
+            file_fd = -1
+            token = token_stream.read(65)
+
+        if not re.fullmatch(r"[0-9a-f]{64}", token):
+            raise SystemExit("--ssh-session-token-file contains an invalid token")
+        return token
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if directory_fd >= 0:
+            try:
+                os.unlink(relative.parts[1], dir_fd=directory_fd)
+            except OSError:
+                pass
+            os.close(directory_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    _token_file = getattr(args, "ssh_session_token_file", None)
+    if _token_file and (
+        getattr(args, "status", False) or getattr(args, "stop", False)
+    ):
+        raise SystemExit("--ssh-session-token-file cannot be used with --status or --stop")
+
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
         count = _report_dashboard_status()
@@ -12342,6 +12732,12 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    _ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
+    if _ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", _ssh_owner_nonce):
+        raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
+    _ssh_session_token = None
+    if _token_file and not _headless_backend:
+        raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
 
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
@@ -12395,6 +12791,10 @@ def cmd_dashboard(args):
             "--host", args.host,
             "--open-profile", _launch_profile,
         ]
+        if _ssh_owner_nonce:
+            reexec_argv.extend(["--ssh-owner-nonce", _ssh_owner_nonce])
+        if _token_file:
+            reexec_argv.extend(["--ssh-session-token-file", _token_file])
         if args.no_open:
             reexec_argv.append("--no-open")
         if getattr(args, "insecure", False):
@@ -12430,6 +12830,9 @@ def cmd_dashboard(args):
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)
+
+    if _token_file:
+        _ssh_session_token = _read_ssh_session_token_file(_token_file)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
@@ -12493,10 +12896,25 @@ def cmd_dashboard(args):
             else PROJECT_ROOT / "hermes_cli" / "web_dist"
         )
         if not (_dist_root / "index.html").exists():
-            print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  npm install --workspace web && npm run build -w web")
-            print("  Or drop --skip-build to build automatically.")
-            sys.exit(1)
+            # The caller promised a pre-built dist but there isn't one.
+            # Instead of hard-failing (issue #59288 — desktop launches with
+            # --build-mode skip after a wipe of web_dist), warn and attempt
+            # ONE recovery build through the normal build path. Only the
+            # default dist location is recoverable: a custom HERMES_WEB_DIST
+            # points at a caller-managed directory the build cannot populate.
+            _recoverable = "HERMES_WEB_DIST" not in os.environ
+            if _recoverable:
+                print(f"⚠ --skip-build was passed but no web dist found at: {_dist_root}")
+                print("  Attempting one recovery build of the web UI...")
+                _build_web_ui(PROJECT_ROOT / "web", fatal=True)
+            if not (_dist_root / "index.html").exists():
+                print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
+                if _recoverable:
+                    print("  The recovery build did not produce a usable dist.")
+                print("  Pre-build first:  npm install --workspace web && npm run build -w web")
+                print("  Or drop --skip-build to build automatically.")
+                sys.exit(1)
+            print("  ✓ Recovery build produced a web dist")
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
     else:
         # HERMES_WEB_DIST is set without --skip-build: the build is skipped
@@ -12571,6 +12989,8 @@ def cmd_dashboard(args):
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
         headless=_headless_backend,
+        ssh_session_token=_ssh_session_token,
+        ssh_owner_nonce=_ssh_owner_nonce,
     )
 
 
@@ -12934,16 +13354,12 @@ def _try_termux_fast_cli_launch() -> bool:
 
     if getattr(args, "oneshot", None):
         _prepare_agent_startup(args)
-        from hermes_cli.oneshot import run_oneshot
-
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-                usage_file=getattr(args, "usage_file", None),
-            )
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -15091,16 +15507,12 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
-        from hermes_cli.oneshot import run_oneshot
-
-        sys.exit(
-            run_oneshot(
-                args.oneshot,
-                model=getattr(args, "model", None),
-                provider=getattr(args, "provider", None),
-                toolsets=getattr(args, "toolsets", None),
-                usage_file=getattr(args, "usage_file", None),
-            )
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

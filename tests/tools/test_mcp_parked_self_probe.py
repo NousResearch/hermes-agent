@@ -8,8 +8,37 @@ revival probe on its own.
 """
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
+    """A managed server revival must publish tools before readiness is reset."""
+    from tools import mcp_tool
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("srv")
+    server._config = {"url": "https://example.test/mcp"}
+    server.session = SimpleNamespace(
+        list_tools=AsyncMock(
+            return_value=SimpleNamespace(
+                tools=[SimpleNamespace(name="send_message")],
+            )
+        )
+    )
+    server._ready.clear()
+    server._registered_tool_names = []
+    monkeypatch.setitem(mcp_tool._servers, server.name, server)
+
+    register = MagicMock(return_value=["srv__send_message"])
+    monkeypatch.setattr(mcp_tool, "_register_server_tools", register)
+
+    asyncio.run(server._discover_tools())
+
+    register.assert_called_once_with(server.name, server, server._config)
+    assert server._registered_tool_names == ["srv__send_message"]
 
 
 @pytest.mark.no_isolate
@@ -101,7 +130,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 

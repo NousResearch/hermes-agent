@@ -43,11 +43,19 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
-    try:
-        from hermes_cli.config import load_config
+    """Load config.yaml read-only, returning None on any error.
 
-        return load_config()
+    Uses ``load_config_readonly()``: every consumer in this module only reads
+    (``get_pool_strategy``, ``_iter_custom_providers``, the model-config seed),
+    and the deepcopy that ``load_config()`` pays per call is what made
+    credential-pool checks the dominant cost of ``model.options`` — the picker
+    calls ``load_pool()`` once per provider row, each of which loaded (and
+    deep-copied) the full config again.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return load_config_readonly()
     except Exception:
         return None
 
@@ -113,6 +121,20 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+
+# Throttle window for the "no available entries" INFO line. Credential
+# selection runs on a hot path (every model call, plus auxiliary tasks like
+# compression/moa/titles), so when a pool is empty or fully exhausted the
+# un-throttled log fires on *every* selection. On Windows several Hermes
+# processes share one rotating log guarded by concurrent-log-handler's
+# cross-process lock; that per-selection volume storms the lock
+# (``RuntimeError: Cannot acquire lock after 20 attempts``), pegs a core, and
+# stalls the asyncio event loop long enough to fail the Desktop backend
+# readiness handshake ("Timed out connecting to Hermes backend after
+# 15000ms"). Logging the condition at most once per window preserves the
+# signal while removing the storm — same class of fix as the warn-once
+# dedup in #58265.
+NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS = 60.0
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -566,6 +588,12 @@ class CredentialPool:
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        # Monotonic timestamp of the last "no available entries" log, used to
+        # throttle that message so an empty/exhausted pool cannot storm the
+        # shared rotating log (see NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS).
+        # Re-armed to None on every successful selection so a recover→re-exhaust
+        # transition logs promptly instead of being swallowed by a stale window.
+        self._last_no_entries_log_at: Optional[float] = None
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
@@ -1604,12 +1632,31 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
+    def _log_no_available_entries(self) -> None:
+        """Emit the empty-pool INFO line at most once per throttle window.
+
+        Called on every selection while the pool is empty/exhausted. Without
+        throttling this storms the Windows cross-process log lock and stalls the
+        event loop (see NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS).
+        """
+        now = time.monotonic()
+        last = self._last_no_entries_log_at
+        if last is not None and (now - last) < NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS:
+            return
+        self._last_no_entries_log_at = now
+        logger.info("credential pool: no available entries (all exhausted or empty)")
+
     def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
         available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
-            logger.info("credential pool: no available entries (all exhausted or empty)")
+            self._log_no_available_entries()
             return None
+
+        # A successful selection means the pool recovered; re-arm the throttle
+        # so a later re-exhaustion logs immediately rather than being silenced
+        # by a window opened during the previous empty stretch.
+        self._last_no_entries_log_at = None
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)

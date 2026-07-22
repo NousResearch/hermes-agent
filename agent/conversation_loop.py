@@ -3276,8 +3276,11 @@ def run_conversation(
                 ):
                     _retry.llama_cpp_grammar_retry_attempted = True
                     try:
+                        import copy as _copy
                         from tools.schema_sanitizer import strip_pattern_and_format
-                        _, _stripped = strip_pattern_and_format(agent.tools)
+                        _tools_copy = _copy.deepcopy(agent.tools)
+                        _, _stripped = strip_pattern_and_format(_tools_copy)
+                        agent.tools = _tools_copy
                     except Exception as _strip_exc:  # pragma: no cover — defensive
                         logger.warning(
                             "%sllama.cpp grammar recovery: strip helper failed: %s",

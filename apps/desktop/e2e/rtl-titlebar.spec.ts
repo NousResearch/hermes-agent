@@ -22,7 +22,7 @@ test('titlebar edge controls follow the physical RTL pane positions before and a
   const leftEdge = page.getByRole('button', { name: /الشريط الجانبي الأيسر/ })
   const rightEdge = page.getByRole('button', { name: /الشريط الجانبي الأيمن/ })
   const flip = page.getByRole('button', { name: 'تبديل جانبي الشريطين' })
-  const sessionSearch = page.getByRole('textbox', { name: 'البحث في الجلسات' })
+  const newSession = page.getByRole('button', { name: /جلسة جديدة/ }).first()
 
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl')
 
@@ -39,24 +39,24 @@ test('titlebar edge controls follow the physical RTL pane positions before and a
 
   await rightEdge.click()
   await expect(rightEdge).toHaveAttribute('aria-label', 'إخفاء الشريط الجانبي الأيمن')
-  await expect(sessionSearch).toBeVisible()
+  await expect(newSession).toBeVisible()
 
-  const initialSearchBox = await sessionSearch.boundingBox()
-  expect(initialSearchBox).not.toBeNull()
-  expect(initialSearchBox!.x).toBeGreaterThan((await page.evaluate(() => window.innerWidth)) / 2)
+  const initialSidebarBox = await newSession.boundingBox()
+  expect(initialSidebarBox).not.toBeNull()
+  expect(initialSidebarBox!.x).toBeGreaterThan((await page.evaluate(() => window.innerWidth)) / 2)
 
   await flip.click()
   await expect(leftEdge).toHaveAttribute('aria-label', 'إخفاء الشريط الجانبي الأيسر')
   await expect(rightEdge).toHaveAttribute('aria-label', 'إظهار الشريط الجانبي الأيمن')
 
-  const flippedSearchBox = await sessionSearch.boundingBox()
-  expect(flippedSearchBox).not.toBeNull()
-  expect(flippedSearchBox!.x + flippedSearchBox!.width).toBeLessThan(
+  const flippedSidebarBox = await newSession.boundingBox()
+  expect(flippedSidebarBox).not.toBeNull()
+  expect(flippedSidebarBox!.x + flippedSidebarBox!.width).toBeLessThan(
     (await page.evaluate(() => window.innerWidth)) / 2,
   )
 
   await leftEdge.click()
-  await expect(sessionSearch).toBeHidden()
+  await expect(newSession).toBeHidden()
   await expect(leftEdge).toHaveAttribute('aria-label', 'إظهار الشريط الجانبي الأيسر')
 })
 

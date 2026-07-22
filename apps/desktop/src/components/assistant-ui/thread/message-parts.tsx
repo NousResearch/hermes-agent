@@ -4,6 +4,7 @@ import {
   useAuiState,
   useMessagePartReasoning
 } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
@@ -16,6 +17,7 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { useI18n } from '@/i18n'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
@@ -51,18 +53,17 @@ const ThinkingDisclosure: FC<{
   timerKey?: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
   const { t } = useI18n()
-  // `null` = no explicit user toggle yet, defer to the streaming default.
-  // The default is "auto-open while streaming, auto-collapse when done" so
-  // reasoning surfaces a live preview without manual interaction. The first
-  // explicit toggle wins from then on.
+  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  // `null` = no explicit user toggle yet. Live reasoning remains visible by
+  // default, unless the user opts into the low-jitter collapsed presentation.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
 
-  const open = userOpen ?? pending
-  const isPreview = pending && userOpen === null
+  const open = userOpen ?? (pending && !reasoningCollapsedByDefault)
+  const isPreview = pending && userOpen === null && !reasoningCollapsedByDefault
 
   // While the preview is live, pin the scroll container to the bottom on
   // every content growth so the latest tokens are always visible. Combined

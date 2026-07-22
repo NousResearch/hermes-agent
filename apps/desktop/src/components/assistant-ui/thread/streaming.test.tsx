@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -415,6 +417,7 @@ function DismissibleErrorHarness({ onDismissError }: { onDismissError: (messageI
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
+    $reasoningCollapsedByDefault.set(false)
   })
 
   it('renders assistant text incrementally before completion', async () => {
@@ -512,6 +515,21 @@ describe('assistant-ui streaming renderer', () => {
       expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     })
     expect(container.textContent).not.toContain('```ts')
+  })
+
+  it('keeps streaming reasoning collapsed by default when the preference is enabled', () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container } = render(<RunningReasoningHarness />)
+    const thinkingToggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(thinkingToggle.getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+
+    fireEvent.click(thinkingToggle)
+
+    expect(thinkingToggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
   })
 
   it('renders reasoning text without a leading token space', () => {

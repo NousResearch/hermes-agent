@@ -667,6 +667,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
+        # Bot identity per workspace, used to ground the agent ("you are @X on
+        # Slack") so it never mistakes a human's mention for a self-mention.
+        self._bot_display_name: Optional[str] = None  # primary workspace bot name
+        self._team_bot_names: Dict[str, str] = {}  # team_id → bot display name
         # Slack user IDs are workspace-local. Cache names by workspace as well
         # so a multi-workspace Socket Mode process never reuses another
         # tenant's display name.
@@ -1418,6 +1422,8 @@ class SlackAdapter(BasePlatformAdapter):
             self._bot_user_id = None
             self._team_clients = {}
             self._team_bot_user_ids = {}
+            self._bot_display_name = None
+            self._team_bot_names = {}
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
@@ -1436,12 +1442,15 @@ class SlackAdapter(BasePlatformAdapter):
 
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
+                self._team_bot_names[team_id] = bot_name
 
                 # First token always wins as the primary bot user id; we
                 # cleared ``_bot_user_id`` above so this picks up the current
                 # token's identity even on reconnect.
                 if self._bot_user_id is None:
                     self._bot_user_id = bot_user_id
+                if self._bot_display_name is None:
+                    self._bot_display_name = bot_name
 
                 logger.info(
                     "[Slack] Authenticated as @%s in workspace %s (team: %s)",
@@ -2729,6 +2738,71 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
             self._user_name_cache[cache_key] = user_id
             return user_id
+
+    async def _humanize_user_mentions(
+        self, text: str, chat_id: str = "", team_id: str = ""
+    ) -> str:
+        """Replace raw ``<@UID>`` user-mention tokens with ``@DisplayName``.
+
+        Slack delivers mentions as opaque IDs (``<@U123>``). Without this, the
+        agent sees ``<@U123>`` and has no way to tell one participant from
+        another — or from itself — which makes it misread a mention of a human
+        as a mention of the bot and reply to messages addressed to that person
+        (the "bot thinks it's @someone-else" bug). Discord avoids this entirely
+        by feeding the agent ``message.clean_content`` (IDs already rendered as
+        names); this is the Slack equivalent.
+
+        The bot's own mention is stripped separately before this runs, so any
+        tokens left here are other participants. Names are resolved via the
+        cached :meth:`_resolve_user_name`, so repeated tokens cost one
+        ``users.info`` lookup per distinct user per process.
+        """
+        if not text or "<@" not in text:
+            return text
+        # Capture the bare user ID inside <@...>; Slack IDs are alnum (U…/W…),
+        # optionally carrying a label like <@U123|alice> — keep only the ID.
+        ids = set(re.findall(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", text))
+        if not ids:
+            return text
+        for uid in ids:
+            name = await self._resolve_user_name(
+                uid, chat_id=chat_id, team_id=team_id
+            )
+            # Fall back to the raw ID if resolution yields nothing usable
+            # (keeps the message intact rather than emptying a mention).
+            display = (name or uid).strip() or uid
+            # Replace both the bare and labelled forms of this exact ID.
+            text = re.sub(rf"<@{uid}(?:\|[^>]*)?>", f"@{display}", text)
+        return text
+
+    def _build_identity_prompt(self, team_id: str = "") -> str:
+        """Return an ephemeral system-prompt line grounding the bot's identity.
+
+        Injected via the per-turn ``channel_prompt`` seam (applied at API-call
+        time, never persisted to history — so it does NOT break per-conversation
+        prompt caching). Tells the agent its own Slack handle so it can
+        distinguish a mention OF ITSELF from a mention of another participant
+        whose name happens to resemble its own — the failure in the reported
+        bug, where the bot saw a human's mention and claimed it was the one
+        being addressed. Inbound mentions are rendered as ``@DisplayName``
+        (see :meth:`_humanize_user_mentions`), so naming the bot's own display
+        name here gives the agent a positive anchor for "that's me."
+        """
+        name = (
+            (team_id and self._team_bot_names.get(team_id))
+            or self._bot_display_name
+            or ""
+        ).strip()
+        if not name:
+            return ""
+        return (
+            f"You are connected to this Slack workspace as the bot "
+            f'"@{name}". In messages, each line is prefixed with the sender\'s '
+            f"name, and mentions are shown as @DisplayName. Only treat a "
+            f'message as directed at you when it mentions "@{name}" '
+            f"specifically; a mention of any other participant is not a "
+            f"mention of you, even if their name is similar."
+        )
 
     async def send_image_file(
         self,
@@ -4388,6 +4462,17 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id,
             None,
         )
+        # Prepend the bot's Slack identity (ephemeral — applied at API-call
+        # time, never persisted, so prompt caching is preserved) so the agent
+        # knows its own handle and won't read a human's mention as a self-
+        # mention. Combine with any per-channel prompt rather than overwriting.
+        _identity_prompt = self._build_identity_prompt(team_id)
+        if _identity_prompt:
+            _channel_prompt = (
+                f"{_identity_prompt}\n\n{_channel_prompt}".strip()
+                if _channel_prompt
+                else _identity_prompt
+            )
         _auto_skill = resolve_channel_skills(
             self.config.extra,
             channel_id,
@@ -4410,8 +4495,23 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                     or None
                 )
+                if reply_to_text:
+                    reply_to_text = await self._humanize_user_mentions(
+                        reply_to_text, chat_id=channel_id, team_id=team_id
+                    )
             except Exception:  # pragma: no cover - defensive
                 reply_to_text = None
+
+        # Humanize remaining user mentions: the bot's own mention was already
+        # stripped above, so any ``<@UID>`` left in the trigger text refers to
+        # OTHER participants. Render them as ``@DisplayName`` so the agent can
+        # tell who is being addressed and never mistakes a human's mention for
+        # a mention of itself (the "bot thinks it's @someone-else" bug).
+        # Mirrors Discord's clean_content. channel_context (thread backfill)
+        # already renders senders by display name via _format_thread_context.
+        text = await self._humanize_user_mentions(
+            text, chat_id=channel_id, team_id=team_id
+        )
 
         msg_event = MessageEvent(
             text=text,

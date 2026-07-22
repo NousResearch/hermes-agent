@@ -1,8 +1,7 @@
 import { atom } from 'nanostores'
 
-import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
+import { persistString, storedString } from '@/lib/storage'
 
-const POPOUT_ENABLED_STORAGE_KEY = 'hermes.desktop.composerPopout.enabled'
 const POPOUT_POSITION_STORAGE_KEY = 'hermes.desktop.composerPopout.position'
 
 /** Where the floating composer's bottom-right corner sits, measured as an inset
@@ -110,12 +109,11 @@ function clampPosition({ bottom, right }: PopoutPosition, size?: PopoutSize, are
   }
 }
 
-export const $composerPoppedOut = atom(storedBoolean(POPOUT_ENABLED_STORAGE_KEY, false))
+export const $composerPoppedOut = atom(false)
 export const $composerPopoutPosition = atom<PopoutPosition>(readPosition())
 
 export function setComposerPoppedOut(value: boolean) {
   $composerPoppedOut.set(value)
-  persistBoolean(POPOUT_ENABLED_STORAGE_KEY, value)
 }
 
 /** Move the box (state only by default). Used per-frame during a drag — no IO

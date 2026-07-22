@@ -382,6 +382,41 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
 
+    # --- PR #18938: banks.hermes.retain_every_n_turns fallback ---
+
+    def test_retain_every_n_turns_read_from_banks_hermes(self, provider_with_config):
+        """When only banks.hermes.retain_every_n_turns is set, it must be used.
+
+        Regression guard for #18938: before the fix the nested value was ignored
+        and the provider silently fell back to the default of 1.
+        """
+        p = provider_with_config(
+            banks={"hermes": {"bankId": "test-bank", "retain_every_n_turns": 10}},
+        )
+        assert p._retain_every_n_turns == 10
+
+    def test_retain_every_n_turns_top_level_overrides_banks_hermes(self, provider_with_config):
+        """Top-level retain_every_n_turns must take precedence over banks.hermes."""
+        p = provider_with_config(
+            retain_every_n_turns=5,
+            banks={"hermes": {"bankId": "test-bank", "retain_every_n_turns": 10}},
+        )
+        assert p._retain_every_n_turns == 5
+
+    def test_retain_every_n_turns_banks_hermes_overrides_default(self, provider_with_config):
+        """banks.hermes value must win over the hardcoded default of 1 (no top-level set)."""
+        p = provider_with_config(
+            banks={"hermes": {"bankId": "test-bank", "retain_every_n_turns": 7}},
+        )
+        assert p._retain_every_n_turns == 7
+
+    def test_retain_every_n_turns_default_when_neither_set(self, provider_with_config):
+        """With neither top-level nor banks.hermes set, the default of 1 applies."""
+        p = provider_with_config(
+            banks={"hermes": {"bankId": "test-bank"}},
+        )
+        assert p._retain_every_n_turns == 1
+
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""
         monkeypatch.setattr(

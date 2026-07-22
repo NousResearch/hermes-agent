@@ -627,6 +627,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Promote even if parent dependencies are not yet done/archived",
     )
     p_promote.add_argument(
+        "--from-triage",
+        action="store_true",
+        help="Recover a triage task after manual review (requires an audit reason)",
+    )
+    p_promote.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate the promotion without mutating state",
@@ -2192,6 +2197,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     as_json = getattr(args, "json", False)
+    from_triage = bool(getattr(args, "from_triage", False))
     extra_ids = list(getattr(args, "ids", None) or [])
     # Dedupe while preserving order; positional task_id always first.
     ids: list[str] = []
@@ -2211,12 +2217,14 @@ def _cmd_promote(args: argparse.Namespace) -> int:
                 reason=reason,
                 force=bool(args.force),
                 dry_run=bool(args.dry_run),
+                from_triage=from_triage,
             )
             results.append({
                 "task_id": tid,
                 "promoted": ok,
                 "dry_run": bool(args.dry_run),
                 "forced": bool(args.force),
+                "from_triage": from_triage,
                 "reason": reason,
                 "error": err,
             })

@@ -166,15 +166,183 @@ def test_promote_blocked_task_works(conn):
 
 
 def _promote_ns(task_id, *, ids=None, reason=None, force=False,
-                dry_run=False, as_json=False):
+                dry_run=False, as_json=False, from_triage=False):
     return argparse.Namespace(
         task_id=task_id,
         reason=list(reason or []),
         ids=list(ids or []) or None,
         force=force,
+        from_triage=from_triage,
         dry_run=dry_run,
         json=as_json,
     )
+
+
+def _triage_task(conn, *, parent_status="done"):
+    parent = kb.create_task(conn, title="parent", assignee="setup")
+    task = kb.create_task(
+        conn,
+        title="triaged",
+        body="already specified",
+        parents=[parent],
+        assignee="owner",
+        workspace_kind="dir",
+        workspace_path="/tmp/hermes-triage-recovery",
+        triage=True,
+    )
+    if parent_status is not None:
+        conn.execute(
+            "UPDATE tasks SET status=? WHERE id=?", (parent_status, parent)
+        )
+    run_id = conn.execute(
+        "INSERT INTO task_runs "
+        "(task_id, profile, status, claim_lock, claim_expires, started_at) "
+        "VALUES (?, 'owner', 'blocked', 'run-lease', 2000000000, 1)",
+        (task,),
+    ).lastrowid
+    conn.execute(
+        "UPDATE tasks SET claim_lock='task-lease', claim_expires=2000000000, "
+        "current_run_id=?, block_kind='transient', block_recurrences=3, "
+        "consecutive_failures=4, last_failure_error='kept' WHERE id=?",
+        (run_id, task),
+    )
+    return task, parent, run_id
+
+
+def test_triage_promote_requires_explicit_flag(conn):
+    task, _, _ = _triage_task(conn)
+    ok, err = kb.promote_task(conn, task, actor="tester", reason="audited")
+    assert ok is False and "--from-triage" in err
+    assert kb.get_task(conn, task).status == "triage"
+
+
+@pytest.mark.parametrize("reason", [None, "", "   "])
+def test_triage_promote_requires_nonempty_reason(conn, reason):
+    task, _, _ = _triage_task(conn)
+    ok, err = kb.promote_task(
+        conn, task, actor="tester", reason=reason, from_triage=True
+    )
+    assert ok is False and "audit reason" in err
+    assert kb.get_task(conn, task).status == "triage"
+
+
+def test_triage_promote_rejects_force(conn):
+    task, _, _ = _triage_task(conn)
+    ok, err = kb.promote_task(
+        conn,
+        task,
+        actor="tester",
+        reason="audited",
+        force=True,
+        from_triage=True,
+    )
+    assert ok is False and "cannot be combined" in err
+    assert kb.get_task(conn, task).status == "triage"
+
+
+def test_triage_promote_enforces_parent_gate(conn):
+    task, parent, _ = _triage_task(conn, parent_status=None)
+    ok, err = kb.promote_task(
+        conn, task, actor="tester", reason="audited", from_triage=True
+    )
+    assert ok is False and parent in err
+    assert kb.get_task(conn, task).status == "triage"
+
+
+@pytest.mark.parametrize("parent_status", ["done", "archived"])
+def test_triage_promote_preserves_task_workspace_and_leases(
+    conn, parent_status
+):
+    task, _, run_id = _triage_task(conn, parent_status=parent_status)
+    before = kb.get_task(conn, task)
+    run_before = dict(conn.execute(
+        "SELECT * FROM task_runs WHERE id=?", (run_id,)
+    ).fetchone())
+
+    ok, err = kb.promote_task(
+        conn,
+        task,
+        actor="tester",
+        reason="operator reviewed recurrence",
+        from_triage=True,
+    )
+
+    assert ok and err is None
+    after = kb.get_task(conn, task)
+    assert after.status == "ready"
+    preserved = (
+        "title", "body", "assignee", "workspace_kind", "workspace_path",
+        "claim_lock", "claim_expires", "current_run_id", "block_kind",
+        "block_recurrences", "consecutive_failures", "last_failure_error",
+    )
+    assert {name: getattr(after, name) for name in preserved} == {
+        name: getattr(before, name) for name in preserved
+    }
+    assert dict(conn.execute(
+        "SELECT * FROM task_runs WHERE id=?", (run_id,)
+    ).fetchone()) == run_before
+
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='triage_recovered_manual'",
+        (task,),
+    ).fetchone()
+    assert event is not None
+    assert json.loads(event["payload"]) == {
+        "actor": "tester",
+        "reason": "operator reviewed recurrence",
+        "prior_status": "triage",
+        "parent_gate": "satisfied",
+        "block_kind": "transient",
+        "block_recurrences": 3,
+        "consecutive_failures": 4,
+    }
+
+
+def test_triage_promote_dry_run_has_no_mutation_or_event(conn):
+    task, _, _ = _triage_task(conn)
+    ok, err = kb.promote_task(
+        conn,
+        task,
+        actor="tester",
+        reason="audited",
+        from_triage=True,
+        dry_run=True,
+    )
+    assert ok and err is None
+    assert kb.get_task(conn, task).status == "triage"
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='triage_recovered_manual'",
+        (task,),
+    ).fetchone()["n"] == 0
+
+
+def test_cli_parser_accepts_from_triage_before_task():
+    parser = argparse.ArgumentParser()
+    kb_cli.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "promote", "--from-triage", "t_example", "operator", "reviewed",
+    ])
+    assert args.from_triage is True
+    assert args.task_id == "t_example"
+    assert args.reason == ["operator", "reviewed"]
+
+
+def test_cli_triage_promote_json(kanban_home, capsys):
+    with kb.connect() as conn:
+        task, _, _ = _triage_task(conn)
+    rc = kb_cli._cmd_promote(_promote_ns(
+        task,
+        reason=["operator", "reviewed"],
+        from_triage=True,
+        as_json=True,
+    ))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["task_id"] == task
+    assert payload["from_triage"] is True
+    assert payload["promoted"] is True
 
 
 def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):

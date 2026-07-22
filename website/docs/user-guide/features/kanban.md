@@ -676,6 +676,7 @@ hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
+        [--from-triage] [<audit reason>...]            # audited triage recovery; incompatible with --force
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
@@ -944,6 +945,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `dependency_wait` | `{reason, kind}` | Worker blocked with `kind=dependency` — the task is only waiting on another task, so it routes to `todo` (parent-gated, auto-promoted) instead of `blocked`. No human needed. |
 | `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
 | `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. |
+| `triage_recovered_manual` | `{actor, reason, prior_status, parent_gate, block_kind, block_recurrences, consecutive_failures}` | An operator ran `kanban promote <id> --from-triage <reason>` after reviewing a triaged task. The reason must be nonempty, `--force` is rejected, and every parent must already be `done` or `archived`. The transition changes only `triage → ready`: it does not call an LLM, rewrite the task, change its assignee/workspace, alter leases, or clear failure/recurrence evidence. Dry runs emit no event. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
 
 **Edits** (human-driven changes that aren't transitions):

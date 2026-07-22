@@ -9422,6 +9422,82 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
         return False
 
 
+def _run_update_systemctl(
+    command: list[str],
+    *,
+    scope: str,
+    unit: str,
+    timeout: float,
+    failures: dict[tuple[str, str], str],
+) -> subprocess.CompletedProcess | None:
+    """Run one per-unit systemctl command without aborting the fleet loop."""
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        failures[(scope, unit)] = f"systemctl timed out ({exc.cmd or command})"
+        print(
+            f"  ⚠ systemctl timed out for {scope}-scope {unit} "
+            f"({exc.cmd or command}); continuing with remaining gateways"
+        )
+        return None
+
+
+def _reconcile_updated_systemd_gateways(
+    discovered: dict[tuple[str, str], tuple[list[str], int]],
+    failures: dict[tuple[str, str], str],
+) -> None:
+    """Replace attempt failures with the final active/PID state of each unit."""
+    for (scope, unit), (scope_cmd, previous_pid) in discovered.items():
+        result = _run_update_systemctl(
+            scope_cmd
+            + [
+                "show",
+                unit,
+                "--property=ActiveState,MainPID",
+                "--no-pager",
+            ],
+            scope=scope,
+            unit=unit,
+            timeout=5,
+            failures=failures,
+        )
+        if result is None:
+            continue
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown error").strip()
+            failures[(scope, unit)] = f"could not verify final state: {detail}"
+            continue
+
+        properties = {}
+        for line in (result.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                properties[key] = value.strip()
+        try:
+            current_pid = int(properties.get("MainPID", "0") or 0)
+        except ValueError:
+            current_pid = 0
+
+        if properties.get("ActiveState") != "active":
+            failures[(scope, unit)] = "service is not active after the update"
+        elif previous_pid > 0 and current_pid == previous_pid:
+            failures[(scope, unit)] = (
+                f"still running pre-update PID {previous_pid}"
+            )
+        elif previous_pid > 0 and current_pid <= 0:
+            failures[(scope, unit)] = "active service has no verifiable MainPID"
+        elif previous_pid > 0 or (scope, unit) not in failures:
+            # A changed PID proves that even a timed-out restart completed.
+            # With no initial PID, keep any earlier failure because there is
+            # no evidence that the active process was replaced.
+            failures.pop((scope, unit), None)
+
+
 def _wait_for_windows_update_gateway_exit(
     pids: list[int], *, timeout: float
 ) -> set[int]:
@@ -10895,7 +10971,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
         else:
-            print("✓ Update complete!")
+            print("✓ Code and dependencies updated.")
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -10977,6 +11053,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _exit_code_path.write_text("0")
             except OSError:
                 pass
+
+        gateway_restart_failures: dict[tuple[str, str], str] = {}
+        gateway_restart_scope_failures: list[str] = []
+        gateway_restart_phase_error: Exception | None = None
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -11171,6 +11251,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             killed_pids = set()
             relaunched_profiles = []
             externally_supervised_profiles = []
+            discovered_systemd_units: dict[
+                tuple[str, str], tuple[list[str], int]
+            ] = {}
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -11208,14 +11291,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             if not unit.endswith(".service"):
                                 continue
                             svc_name = unit.removesuffix(".service")
+                            unit_key = (scope, svc_name)
+                            discovered_systemd_units[unit_key] = (scope_cmd, 0)
                             # Check if active
-                            check = subprocess.run(
+                            check = _run_update_systemctl(
                                 scope_cmd + ["is-active", svc_name],
-                                capture_output=True,
-                                text=True,
+                                scope=scope,
+                                unit=svc_name,
                                 timeout=5,
+                                failures=gateway_restart_failures,
                             )
+                            if check is None:
+                                continue
                             if check.stdout.strip() != "active":
+                                discovered_systemd_units.pop(unit_key, None)
                                 continue
 
                             # Resolve how we may run manage-units verbs
@@ -11255,6 +11344,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 FileNotFoundError,
                             ):
                                 _main_pid = 0
+                            discovered_systemd_units[unit_key] = (
+                                scope_cmd,
+                                _main_pid,
+                            )
 
                             _graceful_ok = False
                             if _main_pid > 0:
@@ -11295,18 +11388,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # auto-restart still relaunches the unit after
                                 # RestartSec, no privileges required.
                                 if _manage_cmd is not None:
-                                    subprocess.run(
+                                    if _run_update_systemctl(
                                         _manage_cmd + ["reset-failed", svc_name],
-                                        capture_output=True,
-                                        text=True,
+                                        scope=scope,
+                                        unit=svc_name,
                                         timeout=10,
-                                    )
-                                    subprocess.run(
+                                        failures=gateway_restart_failures,
+                                    ) is None:
+                                        continue
+                                    if _run_update_systemctl(
                                         _manage_cmd + ["start", svc_name],
-                                        capture_output=True,
-                                        text=True,
+                                        scope=scope,
+                                        unit=svc_name,
                                         timeout=15,
-                                    )
+                                        failures=gateway_restart_failures,
+                                    ) is None:
+                                        continue
                                     # Short poll: the gateway should be up
                                     # within a few seconds now that we
                                     # bypassed RestartSec.
@@ -11359,6 +11456,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # — it flashes and dies before the user can
                             # answer.  Skip with clear instructions instead.
                             if _manage_cmd is None:
+                                gateway_restart_failures[unit_key] = (
+                                    "restart requires non-interactive root access"
+                                )
                                 print(
                                     f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
                                     f"    Restart it manually to load the new version:\n"
@@ -11384,18 +11484,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # the restart idempotent.  Mirrors the recovery
                             # path in `hermes gateway restart`
                             # (`systemd_restart()`) as of PR #20949.
-                            subprocess.run(
+                            if _run_update_systemctl(
                                 _manage_cmd + ["reset-failed", svc_name],
-                                capture_output=True,
-                                text=True,
+                                scope=scope,
+                                unit=svc_name,
                                 timeout=10,
-                            )
-                            restart = subprocess.run(
+                                failures=gateway_restart_failures,
+                            ) is None:
+                                continue
+                            restart = _run_update_systemctl(
                                 _manage_cmd + ["restart", svc_name],
-                                capture_output=True,
-                                text=True,
+                                scope=scope,
+                                unit=svc_name,
                                 timeout=15,
+                                failures=gateway_restart_failures,
                             )
+                            if restart is None:
+                                continue
                             if restart.returncode == 0:
                                 # Verify the service actually survived the
                                 # restart.  systemctl restart returns 0 even
@@ -11416,18 +11521,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     print(
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
-                                    subprocess.run(
+                                    if _run_update_systemctl(
                                         _manage_cmd + ["reset-failed", svc_name],
-                                        capture_output=True,
-                                        text=True,
+                                        scope=scope,
+                                        unit=svc_name,
                                         timeout=10,
-                                    )
-                                    subprocess.run(
+                                        failures=gateway_restart_failures,
+                                    ) is None:
+                                        continue
+                                    if _run_update_systemctl(
                                         _manage_cmd + ["restart", svc_name],
-                                        capture_output=True,
-                                        text=True,
+                                        scope=scope,
+                                        unit=svc_name,
                                         timeout=15,
-                                    )
+                                        failures=gateway_restart_failures,
+                                    ) is None:
+                                        continue
                                     if _wait_for_service_active(
                                         scope_cmd,
                                         svc_name,
@@ -11436,6 +11545,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         restarted_services.append(svc_name)
                                         print(f"  ✓ {svc_name} recovered on retry")
                                     else:
+                                        gateway_restart_failures[unit_key] = (
+                                            "service failed to stay active after restart"
+                                        )
                                         _scope_flag = "--user " if scope == "user" else ""
                                         _sudo_hint = "sudo " if scope == "system" else ""
                                         print(
@@ -11446,20 +11558,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                             f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
                                         )
                             else:
+                                gateway_restart_failures[unit_key] = (
+                                    (restart.stderr or "systemctl restart failed").strip()
+                                )
                                 print(
                                     f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
                                 )
                     except FileNotFoundError:
                         pass
                     except subprocess.TimeoutExpired as exc:
-                        # Don't swallow this silently — a wedged systemctl
-                        # call here used to make the whole restart phase
-                        # vanish with no output (June 2026 report).
+                        # Per-unit calls are isolated by
+                        # _run_update_systemctl. Reaching this handler means
+                        # discovery itself timed out, so this scope cannot be
+                        # reconciled exactly.
+                        gateway_restart_scope_failures.append(scope)
                         print(
-                            f"  ⚠ systemctl timed out during the {scope}-scope "
-                            f"gateway restart ({exc.cmd if exc.cmd else 'unknown command'}). "
-                            f"Check the gateway with: hermes gateway status"
+                            f"  ⚠ systemctl timed out listing {scope}-scope gateway units "
+                            f"({exc.cmd if exc.cmd else 'unknown command'})"
                         )
+
+                _reconcile_updated_systemd_gateways(
+                    discovered_systemd_units,
+                    gateway_restart_failures,
+                )
 
             # --- Launchd services (macOS) ---
             if is_macos():
@@ -11632,7 +11753,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 logger.debug("Post-restart survivor sweep failed: %s", _sweep_exc)
 
         except Exception as e:
+            gateway_restart_phase_error = e
             logger.debug("Gateway restart during update failed: %s", e)
+
+        gateway_restart_incomplete = bool(
+            gateway_restart_failures
+            or gateway_restart_scope_failures
+            or gateway_restart_phase_error
+        )
+        if gateway_restart_incomplete:
+            print()
+            print("⚠ Update incomplete — some gateways may still run old code:")
+            for (scope, unit), reason in gateway_restart_failures.items():
+                print(f"    - {scope}/{unit}: {reason}")
+            for scope in gateway_restart_scope_failures:
+                print(f"    - {scope} scope: unit discovery timed out")
+            if gateway_restart_phase_error is not None:
+                print(f"    - restart phase: {gateway_restart_phase_error}")
+            print("  Restart the listed units before continuing to use the fleet.")
+            if gateway_mode:
+                try:
+                    (get_hermes_home() / ".update_exit_code").write_text("1")
+                except OSError:
+                    pass
 
         _resume_windows_gateways_after_update(_windows_gateway_resume)
 
@@ -11681,6 +11824,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("    Node.js dependency refresh did not complete.")
         else:
             _kill_stale_dashboard_processes()
+
+        if gateway_restart_incomplete:
+            sys.exit(1)
+        if not node_failures:
+            print()
+            print("✓ Update complete!")
 
         print()
         print("Tip: You can now select a provider and model:")

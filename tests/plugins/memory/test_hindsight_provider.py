@@ -382,6 +382,34 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
 
+    def test_recall_tags_csv_string_is_normalized(self, provider_with_config):
+        p = provider_with_config(recall_tags="recall-tag, project:x, recall-tag")
+        assert p._recall_tags == ["recall-tag", "project:x"]
+
+    def test_invalid_recall_tags_match_falls_back_to_any(self, provider_with_config):
+        p = provider_with_config(recall_tags=["tag1"], recall_tags_match="definitely-not-valid")
+        assert p._recall_tags_match == "any"
+
+    def test_invalid_numeric_config_values_fall_back_safely(self, provider_with_config):
+        p = provider_with_config(
+            retain_every_n_turns="not-an-int",
+            recall_max_tokens="nope",
+            recall_max_input_chars="bad",
+        )
+        assert p._retain_every_n_turns == 1
+        assert p._recall_max_tokens == 4096
+        assert p._recall_max_input_chars == 800
+
+    def test_numeric_config_values_enforce_minimums(self, provider_with_config):
+        p = provider_with_config(
+            retain_every_n_turns=0,
+            recall_max_tokens=-10,
+            recall_max_input_chars=-1,
+        )
+        assert p._retain_every_n_turns == 1
+        assert p._recall_max_tokens == 1
+        assert p._recall_max_input_chars == 0
+
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""
         monkeypatch.setattr(

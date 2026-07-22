@@ -76,15 +76,34 @@ _PROVIDER_DEFAULT_MODELS = {
 }
 
 
-def _parse_int_setting(value: Any, default: int) -> int:
-    """Parse an integer config/env value, falling back on invalid input."""
+def _parse_int_setting(
+    value: Any,
+    default: int,
+    *,
+    min_value: int | None = None,
+) -> int:
+    """Parse an integer config/env value, falling back on invalid input.
+
+    ``min_value`` lets call sites keep unsafe user-edited values from
+    disabling required limits (for example retain_every_n_turns must be >= 1).
+    """
     if value is None or value == "":
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
-        return default
+        parsed = default
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
+            parsed = default
+    if min_value is not None and parsed < min_value:
+        logger.warning(
+            "Hindsight integer setting %r is below minimum %s; using %s",
+            value,
+            min_value,
+            min_value,
+        )
+        return min_value
+    return parsed
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -365,7 +384,7 @@ def _load_config() -> dict:
             pass
 
     # Legacy shared path (backward compat)
-    legacy_path = Path.home() / ".hindsight" / "config.json"
+    legacy_path = _user_home_path() / ".hindsight" / "config.json"
     if legacy_path.exists():
         try:
             return json.loads(legacy_path.read_text(encoding="utf-8"))
@@ -484,6 +503,20 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _user_home_path():
+    """Return the user home path Hindsight's standalone tooling should use.
+
+    On Windows, ``Path.home()`` prefers USERPROFILE and ignores a test- or
+    process-scoped HOME override. Hindsight's embedded sidecar consumes files
+    under the HOME-scoped ``.hindsight`` directory, so honor HOME when present
+    and fall back to pathlib's platform default otherwise.
+    """
+    from pathlib import Path
+
+    home = os.environ.get("HOME")
+    return Path(home).expanduser() if home else Path.home()
+
+
 def _embedded_profile_name(config: dict[str, Any]) -> str:
     """Return the Hindsight embedded profile name for this Hermes config."""
     profile = config.get("profile", "hermes")
@@ -545,7 +578,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 def _embedded_profile_env_path(config: dict[str, Any]):
     from pathlib import Path
 
-    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+    return _user_home_path() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
@@ -626,7 +659,7 @@ class HindsightMemoryProvider(MemoryProvider):
         files live under ~/.hindsight (see _load_config / line ~509)."""
         try:
             from pathlib import Path
-            legacy_dir = Path.home() / ".hindsight"
+            legacy_dir = _user_home_path() / ".hindsight"
             return [str(legacy_dir)]
         except Exception:
             return []
@@ -1318,8 +1351,9 @@ class HindsightMemoryProvider(MemoryProvider):
             self._config.get("observation_scopes")
             or os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", "")
         )
-        self._recall_tags = self._config.get("recall_tags") or None
-        self._recall_tags_match = self._config.get("recall_tags_match", "any")
+        self._recall_tags = _normalize_retain_tags(self._config.get("recall_tags")) or None
+        recall_tags_match = str(self._config.get("recall_tags_match", "any") or "any").strip()
+        self._recall_tags_match = recall_tags_match if recall_tags_match in {"any", "all", "any_strict", "all_strict"} else "any"
         self._retain_source = str(
             self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
         ).strip()
@@ -1332,12 +1366,20 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Retain controls
         self._auto_retain = self._config.get("auto_retain", True)
-        self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
+        self._retain_every_n_turns = _parse_int_setting(
+            self._config.get("retain_every_n_turns", 1),
+            1,
+            min_value=1,
+        )
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
 
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
-        self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
+        self._recall_max_tokens = _parse_int_setting(
+            self._config.get("recall_max_tokens", 4096),
+            4096,
+            min_value=1,
+        )
         # Default narrows recall to observation-only; pass an explicit
         # `recall_types` list in config.json to broaden (e.g. include
         # "world" / "experience") or to disable the filter entirely.
@@ -1350,7 +1392,11 @@ class HindsightMemoryProvider(MemoryProvider):
         else:
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
-        self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        self._recall_max_input_chars = _parse_int_setting(
+            self._config.get("recall_max_input_chars", 800),
+            800,
+            min_value=0,
+        )
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"

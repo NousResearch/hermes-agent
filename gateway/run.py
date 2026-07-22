@@ -721,6 +721,7 @@ def build_resume_recovery_note(
     message: str = "",
     *,
     interactive: bool = True,
+    durable_resume: bool = False,
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
@@ -730,7 +731,11 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
+    ``durable_resume`` means the triggering user request is already present in
+    the transcript and the empty event is only a crash-recovery control turn.
+    It must continue that recorded task instead of asking the user what to do.
+
+    ``interactive`` selects the remaining empty-message guidance: on interactive
     platforms a human is present, so "report the restore and ask what next"
     is right.  On non-interactive event platforms (webhook, API server —
     adapters with ``interactive_resume = False``) nobody can answer; the
@@ -753,6 +758,18 @@ def build_resume_recovery_note(
         tail_guidance = (
             "Do NOT re-execute old tool calls — skip any "
             "unfinished work from the conversation history."
+        )
+    elif durable_resume:
+        resume_guidance = (
+            "The triggering user request is already recorded in the conversation "
+            "history. This empty event is an internal recovery signal, NOT an "
+            "empty user message. Review the history and CONTINUE the interrupted "
+            "task to completion; do NOT ask the user to resend, restate, or clarify "
+            "the request merely because this recovery event has no text."
+        )
+        tail_guidance = (
+            "Do NOT re-run tool calls whose results already appear in the history "
+            "— resume from the first step that has no recorded result."
         )
     elif interactive:
         resume_guidance = (
@@ -14653,6 +14670,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                durable_inbox_resume=bool(
+                    (_inbox_marker or {}).get("resume_only")
+                ),
             )
 
             # Stop persistent typing indicator now that the agent is done.
@@ -20604,6 +20624,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        durable_inbox_resume: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -20622,6 +20643,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                durable_inbox_resume=durable_inbox_resume,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -20633,6 +20655,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                durable_inbox_resume=durable_inbox_resume,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -20754,6 +20777,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        durable_inbox_resume: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -22665,7 +22689,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and _interruption_is_fresh
             )
 
-            if _is_resume_pending:
+            if _is_resume_pending or durable_inbox_resume:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _persist_user_message_override = message
                 # The empty-message case is the auto-resume startup turn
@@ -22681,7 +22705,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     getattr(_resume_adapter, "interactive_resume", True)
                 )
                 message = build_resume_recovery_note(
-                    _reason, message, interactive=_interactive_resume,
+                    _reason,
+                    message,
+                    interactive=_interactive_resume,
+                    durable_resume=durable_inbox_resume,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -22716,8 +22743,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 isinstance(message, str)
                 and not message.strip()
-                and _resume_entry is not None
-                and getattr(_resume_entry, "resume_pending", False)
+                and (
+                    durable_inbox_resume
+                    or (
+                        _resume_entry is not None
+                        and getattr(_resume_entry, "resume_pending", False)
+                    )
+                )
             ):
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
@@ -22729,6 +22761,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     interactive=bool(
                         getattr(_sn_adapter, "interactive_resume", True)
                     ),
+                    durable_resume=durable_inbox_resume,
                 )
 
             _approval_session_key = session_key or ""

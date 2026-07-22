@@ -126,3 +126,38 @@ def test_dispatcher_leaves_rows_queued_at_global_session_capacity(tmp_path):
     queue_id = event.metadata[INBOX_METADATA_KEY]["queue_id"]
     assert runner._inbox_store.get(queue_id).state == "queued"
     assert runner.adapters[Platform.DISCORD].started == []
+
+
+def test_dispatcher_preserves_durable_resume_control_marker(tmp_path):
+    """A durable trigger is resumed without replaying its text, but the
+    claimed control event must retain the typed resume marker so the agent
+    continues the recorded task rather than treating it as an empty request.
+    """
+    runner = _runner(tmp_path)
+    runner.session_store = MagicMock()
+    runner.session_store.mark_resume_pending.return_value = True
+    event = _event("durable-resume", "chat-resume")
+
+    async def exercise() -> None:
+        await runner._inbox_enqueue_event(event, "session-resume", origin="direct")
+        claimed = await runner._inbox_claim_event(event)
+        assert claimed is not None
+        assert await runner._inbox_retry_event(
+            event,
+            "gateway stopped after trigger persistence",
+            resume_only=True,
+        )
+        assert await runner._dispatch_one_inbox_event() is True
+
+    asyncio.run(exercise())
+
+    adapter = runner.adapters[Platform.DISCORD]
+    assert len(adapter.started) == 1
+    session_key, resumed_event = adapter.started[0]
+    assert session_key == "session-resume"
+    assert resumed_event.text == ""
+    assert resumed_event.internal is True
+    assert resumed_event.metadata[INBOX_METADATA_KEY]["resume_only"] is True
+    runner.session_store.mark_resume_pending.assert_called_once_with(
+        "session-resume", "restart_interrupted"
+    )

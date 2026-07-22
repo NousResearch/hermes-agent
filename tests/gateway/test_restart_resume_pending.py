@@ -504,6 +504,24 @@ class TestResumePendingSystemNote:
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
 
+    def test_empty_durable_inbox_resume_continues_recorded_task(self):
+        """A resume-only inbox row represents a request that is already in
+        the transcript, so its empty control event must continue the work even
+        on an interactive platform instead of opening a clarify wait."""
+        note = build_resume_recovery_note(
+            "restart_interrupted",
+            "",
+            interactive=True,
+            durable_resume=True,
+        )
+
+        assert "triggering user request is already recorded" in note
+        assert "CONTINUE the interrupted task" in note
+        assert "internal recovery signal" in note
+        assert "ask what they would like to do next" not in note
+        assert "do NOT ask the user to resend, restate, or clarify" in note
+        assert "already appear in the history" in note
+
     def test_new_message_guidance_identical_regardless_of_interactivity(self):
         """A real NEW user message always wins — same guidance either way."""
         a = build_resume_recovery_note("restart_timeout", "do the thing", interactive=True)

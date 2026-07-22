@@ -162,6 +162,18 @@ def _finalize_response(response: Dict[str, Any]) -> str:
     return json.dumps(compacted, ensure_ascii=False)
 
 
+def _error_response(message: Any) -> str:
+    """Return a diagnostic error through the same bounded model-facing path."""
+    error = str(message)
+    response: Dict[str, Any] = {"error": error, "success": False}
+    if len(error) > 1_000:
+        marker = f"… [error truncated; full error is {len(error):,} chars]"
+        response["error"] = error[:max(0, 1_000 - len(marker))] + marker
+        response["error_truncated"] = True
+        response["error_full_chars"] = len(error)
+    return _finalize_response(response)
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -437,13 +449,13 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         logging.debug("get_session failed for %s: %s", session_id, e, exc_info=True)
         meta = {}
     if not meta:
-        return tool_error(f"session_id not found: {session_id}", success=False)
+        return _error_response(f"session_id not found: {session_id}")
 
     try:
         rows = db.get_messages(session_id)
     except Exception as e:
         logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
-        return tool_error(f"failed to load session: {e}", success=False)
+        return _error_response(f"failed to load session: {e}")
 
     shaped = [_shape_message(m) for m in rows]
     total = len(shaped)
@@ -512,7 +524,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         })
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
-        return tool_error(f"Failed to list recent sessions: {e}", success=False)
+        return _error_response(f"Failed to list recent sessions: {e}")
 
 
 def _scroll(
@@ -529,13 +541,13 @@ def _scroll(
     but does live in a child session in the same lineage, rebind silently.
     """
     if not isinstance(session_id, str) or not session_id.strip():
-        return tool_error("scroll requires session_id", success=False)
+        return _error_response("scroll requires session_id")
     session_id = session_id.strip()
 
     try:
         around_message_id = int(around_message_id)
     except (TypeError, ValueError):
-        return tool_error("scroll requires integer around_message_id", success=False)
+        return _error_response("scroll requires integer around_message_id")
 
     # Window clamp [1, 20]
     if not isinstance(window, int):
@@ -551,9 +563,9 @@ def _scroll(
         a_root = _resolve_lineage(db, session_id)
         c_root = _resolve_lineage(db, current_session_id)
         if a_root and c_root and a_root == c_root:
-            return tool_error(
-                "scroll rejected: anchor lives in the current session lineage (already in your active context)",
-                success=False,
+            return _error_response(
+                "scroll rejected: anchor lives in the current session lineage "
+                "(already in your active context)"
             )
 
     # Session existence check
@@ -563,14 +575,14 @@ def _scroll(
         logging.debug("get_session failed for %s: %s", session_id, e, exc_info=True)
         session_meta = {}
     if not session_meta:
-        return tool_error(f"session_id not found: {session_id}", success=False)
+        return _error_response(f"session_id not found: {session_id}")
 
     # Fetch the window
     try:
         view = db.get_messages_around(session_id, around_message_id, window=window)
     except Exception as e:
         logging.error("get_messages_around failed: %s", e, exc_info=True)
-        return tool_error(f"failed to load messages: {e}", success=False)
+        return _error_response(f"failed to load messages: {e}")
 
     messages = view.get("window") or []
 
@@ -613,9 +625,8 @@ def _scroll(
                     logging.debug("rebind get_messages_around failed: %s", e, exc_info=True)
 
     if not messages:
-        return tool_error(
-            f"around_message_id {around_message_id} not in session_id {session_id}",
-            success=False,
+        return _error_response(
+            f"around_message_id {around_message_id} not in session_id {session_id}"
         )
 
     response = {
@@ -737,7 +748,7 @@ def _discover(
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
-        return tool_error(f"Search failed: {e}", success=False)
+        return _error_response(f"Search failed: {e}")
 
     # Demote automation (cron) rows below interactive ones before dedup, so a
     # high-volume cron corpus can't starve the user's own sessions out of the
@@ -897,7 +908,7 @@ def session_search(
         except Exception:
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
             from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
+            return _error_response(format_session_db_unavailable())
 
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
@@ -918,7 +929,7 @@ def session_search(
         try:
             profile_db = _resolve_profile_db(profile)
         except Exception as e:
-            return tool_error(f"profile '{profile}': {e}", success=False)
+            return _error_response(f"profile '{profile}': {e}")
         if profile_db is not None:
             db = profile_db
             current_session_id = None
@@ -1148,7 +1159,7 @@ SESSION_SEARCH_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry
 
 registry.register(
     name="session_search",

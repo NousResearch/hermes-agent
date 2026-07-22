@@ -271,6 +271,63 @@ def test_show_bounds_recoverable_orientation_and_preserves_current_task_fields(
         }
 
 
+def test_show_bounds_parent_titles_and_graph_lists_without_hiding_counts(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    parent_ids = []
+    child_ids = []
+    with kb.connect() as conn:
+        for index in range(10):
+            parent_id = kb.create_task(
+                conn,
+                title=f"parent-{index} " + ("P" * 50_000),
+                assignee="peer",
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+                (index + 1, parent_id),
+            )
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (parent_id, worker_env),
+            )
+            parent_ids.append(parent_id)
+        for index in range(10, 120):
+            parent_id = kb.create_task(
+                conn, title=f"pending-parent-{index}", assignee="peer"
+            )
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (parent_id, worker_env),
+            )
+            parent_ids.append(parent_id)
+        for index in range(120):
+            child_id = kb.create_task(conn, title=f"child-{index}", assignee="peer")
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (worker_env, child_id),
+            )
+            child_ids.append(child_id)
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": worker_env})
+    shown = json.loads(raw)
+
+    assert len(raw) < 30_000
+    assert shown["totals"]["parents"] == len(parent_ids)
+    assert shown["totals"]["children"] == len(child_ids)
+    assert shown["omitted"]["parents"] == len(parent_ids) - len(shown["parents"])
+    assert shown["omitted"]["children"] == len(child_ids) - len(shown["children"])
+    assert shown["omitted"]["parents"] > 0
+    assert shown["omitted"]["children"] > 0
+    assert set(shown["parents"]) <= set(parent_ids)
+    assert set(shown["children"]) <= set(child_ids)
+    assert all(handoff["title_truncated"] is True for handoff in shown["parent_handoffs"])
+    assert all(handoff["title_full_chars"] > 50_000 for handoff in shown["parent_handoffs"])
+    assert "complete data" in shown["recovery"]
+
+
 def test_repeated_recoverable_outputs_stay_below_incident_scale(worker_env, tmp_path):
     from hermes_cli import kanban_db as kb
     from hermes_state import SessionDB
@@ -316,6 +373,20 @@ def test_show_explicit_task_id(worker_env):
     out = kt._handle_show({"task_id": other})
     d = json.loads(out)
     assert d["task"]["id"] == other
+
+
+def test_show_adversarial_error_output_is_bounded(worker_env):
+    from tools import kanban_tools as kt
+
+    task_id = "missing-" + ("T" * 200_000)
+    raw = kt._handle_show({"task_id": task_id})
+    shown = json.loads(raw)
+
+    assert len(raw) < 30_000
+    assert shown["error"].startswith("task missing-")
+    assert shown["error_truncated"] is True
+    assert shown["error_full_chars"] == len("task  not found") + len(task_id)
+    assert "recovery" in shown
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

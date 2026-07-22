@@ -6645,7 +6645,7 @@ def _terminate_reclaimed_worker(
             info["termination_blocked"] = "unexpected_pgid"
             return info
         try:
-            os.killpg(int(pid), 0)
+            os.killpg(int(pid), 0)  # windows-footgun: ok — POSIX-only branch
         except ProcessLookupError:
             info["terminated"] = True
             return info
@@ -6657,11 +6657,11 @@ def _terminate_reclaimed_worker(
         info["process_group"] = True
 
         def kill(_pid, sig):
-            os.killpg(int(pid), sig)
+            os.killpg(int(pid), sig)  # windows-footgun: ok — POSIX-only branch
 
         def alive(_pid):
             try:
-                os.killpg(int(pid), 0)
+                os.killpg(int(pid), 0)  # windows-footgun: ok — POSIX-only branch
                 return True
             except ProcessLookupError:
                 return False

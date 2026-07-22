@@ -6301,6 +6301,76 @@ class SessionDB:
         sort: str = None,
         include_inactive: bool = False,
     ) -> List[Dict[str, Any]]:
+        """Instrumented wrapper around :meth:`_search_messages_impl`.
+
+        Logs one line per slow search with the routing path taken, so
+        production latency stays attributable per query shape (the 2026-07
+        session_search investigation needed trace archaeology to discover
+        the LIKE full scans; this makes the next regression a grep).
+        Threshold: HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call).
+        """
+        started = time.time()
+        rows = None
+        try:
+            rows = self._search_messages_impl(
+                query,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+                limit=limit,
+                offset=offset,
+                sort=sort,
+                include_inactive=include_inactive,
+            )
+            return rows
+        finally:
+            try:
+                threshold = float(os.getenv("HERMES_SEARCH_SLOW_MS", "1000"))
+            except (TypeError, ValueError):
+                threshold = 1000.0
+            elapsed_ms = (time.time() - started) * 1000.0
+            if elapsed_ms >= threshold:
+                logger.info(
+                    "slow session search: path=%s elapsed=%.0fms rows=%s query=%r",
+                    self._describe_search_path(query),
+                    elapsed_ms,
+                    len(rows) if rows is not None else "err",
+                    query[:200],
+                )
+
+    def _describe_search_path(self, query: str) -> str:
+        """Best-effort name of the routing path a query takes (log-only)."""
+        try:
+            sanitized = self._sanitize_fts5_query(query or "")
+            if not sanitized:
+                return "empty"
+            if self._fts_v2_query_allowed(sanitized):
+                return "fts_v2"
+            if not self._contains_cjk(sanitized):
+                return "fts5"
+            raw = sanitized.strip('"').strip()
+            tokens = [
+                t for t in raw.split()
+                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
+            ]
+            short = any(self._count_cjk(t) < 3 for t in tokens)
+            if self._count_cjk(raw) >= 3 and not short and self._trigram_available:
+                return "trigram"
+            return "like_scan"
+        except Exception:
+            return "unknown"
+
+    def _search_messages_impl(
+        self,
+        query: str,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+        sort: str = None,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
 

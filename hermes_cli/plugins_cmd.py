@@ -446,18 +446,60 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
+def _raise_removed(removed) -> None:
+    """Raise PluginOperationError describing a blocklisted plugin."""
+    detail = removed.reason or "no reason recorded"
+    if removed.date:
+        detail += f" (removed {removed.date})"
+    raise PluginOperationError(
+        f"Plugin '{removed.name}' was removed from the Hermes plugin "
+        f"catalog and is blocked from installation: {detail}"
+    )
+
+
+def _install_plugin_core(
+    identifier: str,
+    *,
+    force: bool,
+    ref: Optional[str] = None,
+    skip_removed_check: bool = False,
+) -> tuple[Path, dict, str]:
     """Clone Git plugin into ``~/.hermes/plugins``.
+
+    ``ref`` — optional git commit SHA (or tag) checked out after clone.
+    When given, the clone is full-depth (no ``--depth 1``) so any commit is
+    reachable.
+
+    Unless ``skip_removed_check`` is set, the identifier and the resolved
+    repo URL are checked against the plugin catalog's removed blocklist
+    (``plugin-catalog/removed.yaml``); a hit raises ``PluginOperationError``
+    with the recorded reason and date.
 
     Returns ``(target_dir, installed_manifest, canonical_name)``.
     Raises ``PluginOperationError`` on failure.
     """
     import tempfile
 
+    if not skip_removed_check:
+        from hermes_cli.plugin_catalog import find_removed
+
+        # Check the raw identifier first (catches catalog names before URL
+        # resolution), then the resolved repo URL below.
+        removed = find_removed(identifier)
+        if removed is not None:
+            _raise_removed(removed)
+
     try:
         git_url, subdir = _resolve_git_url(identifier)
     except ValueError as e:
         raise PluginOperationError(str(e)) from e
+
+    if not skip_removed_check:
+        from hermes_cli.plugin_catalog import find_removed
+
+        removed = find_removed(git_url)
+        if removed is not None:
+            _raise_removed(removed)
 
     plugins_dir = _plugins_dir()
 
@@ -468,9 +510,15 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         if not git_exe:
             raise PluginOperationError("git is not installed or not in PATH.")
 
+        clone_cmd = [git_exe, "clone"]
+        if ref is None:
+            # Fast path — only the tip is needed.
+            clone_cmd += ["--depth", "1"]
+        clone_cmd += [git_url, str(tmp_clone)]
+
         try:
             result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
+                clone_cmd,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -487,6 +535,24 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "").strip()
             raise PluginOperationError(f"Git clone failed:\n{err}")
+
+        if ref is not None:
+            try:
+                checkout = subprocess.run(
+                    [git_exe, "-C", str(tmp_clone), "checkout", ref],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired as e:
+                raise PluginOperationError(
+                    f"Git checkout of ref '{ref}' timed out after 60 seconds.",
+                ) from e
+            if checkout.returncode != 0:
+                err = (checkout.stderr or checkout.stdout or "").strip()
+                raise PluginOperationError(
+                    f"Git checkout of ref '{ref}' failed:\n{err}"
+                )
 
         # Resolve the directory within the clone that holds the plugin.
         if subdir:

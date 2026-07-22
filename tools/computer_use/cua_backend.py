@@ -1769,6 +1769,35 @@ class CuaDriverBackend(ComputerUseBackend):
                 _, tr = _split_tree_text(txt or "")
                 return not (tr and tr.strip())
 
+            def _gws_error_text(out: Dict[str, Any]) -> str:
+                data = out.get("data")
+                if isinstance(data, str):
+                    return data
+                if isinstance(data, list):
+                    return " ".join(
+                        str(chunk.get("text", ""))
+                        for chunk in data
+                        if isinstance(chunk, dict)
+                    )
+                if isinstance(data, dict):
+                    return str(data.get("message") or data.get("error") or data)
+                return ""
+
+            gws_error_text = _gws_error_text(gws_out).strip()
+            gws_error_text_lower = gws_error_text.lower()
+            if gws_out.get("isError") or any(
+                marker in gws_error_text_lower
+                for marker in ("timed out", "uia provider unresponsive")
+            ):
+                if not gws_error_text:
+                    gws_error_text = "unknown get_window_state error"
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app=app or "",
+                    window_title=f"<cua-driver error: {gws_error_text}>",
+                    png_bytes_len=0,
+                )
+
             if _gws_is_empty(gws_out):
                 logger.warning(
                     "cua-driver get_window_state returned an empty result over MCP "

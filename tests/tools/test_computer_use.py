@@ -1638,8 +1638,11 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
-            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+            stdout = json.dumps({
+                "element_count": 7,
+                "tree_markdown": "- [0] AXButton",
+                "screenshot_file_path": str(shot),
+            })
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -1777,6 +1780,47 @@ class TestCaptureEmptyResultClipFallback:
         # CLI recovered the window list; capture resolved the Finder window.
         assert "list_windows" in cli_calls
         assert cap.app == "Finder"
+
+
+class TestCaptureUiaTimeoutSurface:
+    """Bug B: UIA timeout errors from cua-driver must be surfaced immediately
+    instead of being treated as empty transport results and retried."""
+
+    def _backend_with_windows(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        windows = [{
+            "app_name": "Warp", "pid": 4242, "window_id": 77,
+            "is_on_screen": True, "z_index": 0, "title": "Warp",
+        }]
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+        backend._session = cast(Any, sess)
+        return backend, sess, windows
+
+    def test_capture_surfaces_uia_timeout_without_cli_retry(self):
+        backend, sess, windows = self._backend_with_windows()
+
+        err_text = ("get_window_state timed out after 4s (UIA provider "
+                    "unresponsive on hwnd 0x1234, class 'Window Class').")
+
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            if name == "get_window_state":
+                return {"data": err_text, "images": [], "isError": True,
+                        "structuredContent": None}
+            return {"data": "", "images": [], "isError": False,
+                    "structuredContent": None}
+        sess.call_tool.side_effect = mcp_call
+
+        cap = backend.capture(mode="som", app="Warp")
+
+        assert "cua-driver error" in cap.window_title
+        assert "timed out" in cap.window_title
+        assert cap.png_b64 is None
+        sess._call_tool_via_cli.assert_not_called()
 
 
 class TestCaptureAppFilterNoMatch:

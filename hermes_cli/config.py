@@ -2755,6 +2755,21 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
+    # Profile-scoped filesystem allowlist (hard rule, enforced in
+    # tools/profile_fs_guard.py before any file I/O). Each key is a profile
+    # name; its value is the list of directory roots that profile may
+    # read/write/search. A profile listed here is refused access to anything
+    # outside its roots (symlink escapes resolved via realpath). Profiles NOT
+    # listed here — including the default profile — are unrestricted, so an
+    # empty map (the default) changes no behavior. Useful for confining a
+    # client-facing profile away from the operator's private files.
+    # Example:
+    #   profile_fs_allowlist:
+    #     clientbot:
+    #       - /srv/projects/client-a
+    #       - /tmp
+    "profile_fs_allowlist": {},
+
     # Pre-exec security scanning via tirith
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)

@@ -101,7 +101,11 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     )
     try:
         stream = relay_llm.stream(
-            {"model": "test-model", "messages": []},
+            {
+                "model": "test-model",
+                "messages": [],
+                "extra_headers": {"authorization": "Bearer provider-token"},
+            },
             raw_stream,
             session_id="session-1",
             name="test-provider",
@@ -127,6 +131,9 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
         relay.intercepts.deregister_llm_request("hermes-test-request")
 
     assert captured_requests[0]["temperature"] == 0.25
+    assert captured_requests[0]["extra_headers"] == {
+        "authorization": "Bearer provider-token"
+    }
     assert chunks[0].choices[0].delta.content == "HELLO"
     assert stream.output_modified is True
     assert turn.logical_llm_calls == {}
@@ -219,6 +226,28 @@ def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     )
 
     assert result is raw_response
+
+
+def test_non_stream_does_not_forward_relay_session_headers(relay_turn):
+    _relay, _turn = relay_turn
+    captured_requests = []
+
+    relay_llm.execute(
+        {
+            "model": "test-model",
+            "messages": [],
+            "extra_headers": {"x-provider-header": "provider-value"},
+        },
+        lambda request: captured_requests.append(request) or {"content": "ok"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-headers"},
+    )
+
+    assert captured_requests[0]["extra_headers"] == {
+        "x-provider-header": "provider-value"
+    }
 
 
 def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn):

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -27,9 +27,15 @@ import {
   $sessions,
   $sessionStartedAt,
   $turnStartedAt,
-  sessionMatchesStoredId
+  sessionMatchesStoredId,
+  setCurrentUsage
 } from '@/store/session'
-import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  sessionTileDelegate
+} from '@/store/session-states'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
 import {
@@ -44,6 +50,11 @@ import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
+
+import {
+  reconcileFocusedContextUsage,
+  useContextUsageReconciliation
+} from './use-context-usage-reconciliation'
 
 const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
 
@@ -123,6 +134,36 @@ export function useStatusbarItems({
 
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
   const busy = primaryFocused ? primaryBusy : Boolean(focusedState?.busy)
+
+  const reconcileUsage = useCallback(
+    (usage: typeof primaryUsage) => {
+      if (!activeSessionId) {
+        return
+      }
+
+      reconcileFocusedContextUsage({
+        primaryFocused,
+        updateCachedUsage: nextUsage => {
+          sessionTileDelegate()?.updateSession(activeSessionId, state => ({
+            ...state,
+            usage: { ...state.usage, ...nextUsage }
+          }))
+        },
+        updatePrimaryUsage: nextUsage => {
+          setCurrentUsage(current => ({ ...current, ...nextUsage }))
+        },
+        usage
+      })
+    },
+    [activeSessionId, primaryFocused]
+  )
+
+  useContextUsageReconciliation({
+    gatewayState,
+    onUsage: reconcileUsage,
+    requestGateway,
+    sessionId: activeSessionId
+  })
 
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
   // a fresh `{...}` each render would bust the usage-label memos below.

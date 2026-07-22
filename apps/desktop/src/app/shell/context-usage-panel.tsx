@@ -11,32 +11,46 @@ interface ContextUsagePanelProps {
   sessionId: string | null
 }
 
+interface ContextBreakdownSnapshot {
+  data: ContextBreakdown
+  sessionId: string
+  usageRevision: string
+}
+
 export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
-  const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)
+  const [breakdownSnapshot, setBreakdownSnapshot] = useState<ContextBreakdownSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
+
+  const usageRevision = [currentUsage.context_used, currentUsage.context_max, currentUsage.context_percent].join(':')
+
+  const breakdown =
+    breakdownSnapshot?.sessionId === sessionId && breakdownSnapshot.usageRevision === usageRevision
+      ? breakdownSnapshot.data
+      : null
 
   useEffect(() => {
     if (!sessionId) {
-      setBreakdown(null)
+      setBreakdownSnapshot(null)
       setLoading(false)
 
       return
     }
 
     let cancelled = false
+
     setLoading(true)
 
     void requestGateway<ContextBreakdown>('session.context_breakdown', { session_id: sessionId })
       .then(data => {
         if (!cancelled) {
-          setBreakdown(data)
+          setBreakdownSnapshot({ data, sessionId, usageRevision })
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setBreakdown(null)
+          setBreakdownSnapshot(null)
         }
       })
       .finally(() => {
@@ -48,7 +62,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
     return () => {
       cancelled = true
     }
-  }, [requestGateway, sessionId])
+  }, [requestGateway, sessionId, usageRevision])
 
   const contextMax = breakdown?.context_max ?? currentUsage.context_max ?? 0
   const contextUsed = breakdown?.context_used ?? currentUsage.context_used ?? 0

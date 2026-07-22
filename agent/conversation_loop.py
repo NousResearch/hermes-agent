@@ -103,6 +103,18 @@ _API_CALL_MODULES = frozenset({
 })
 
 
+def _clip_context_field(value, limit: int = 120) -> str:
+    """Bound a provider/model/endpoint field in terminal failure messages.
+
+    The fields come from user configuration and are unbounded; the gateway
+    sanitizer strips the exact "(provider: …)" line shape before its length
+    heuristic (gateway/run.py), and clipping here keeps the line tidy on
+    raw-text surfaces too.
+    """
+    value = str(value or "unknown")
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -4173,7 +4185,12 @@ def run_conversation(
                             error_detail=_nonretryable_summary,
                         )
                     return {
-                        "final_response": _nonretryable_summary,
+                        "final_response": (
+                            f"{_nonretryable_summary}\n"
+                            f"(provider: {_clip_context_field(_provider)}, "
+                            f"model: {_clip_context_field(_model)}, "
+                            f"endpoint: {_clip_context_field(_base)})"
+                        ),
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
@@ -4337,7 +4354,12 @@ def run_conversation(
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"
                     else:
-                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                        _final_response = (
+                            f"API call failed after {max_retries} retries: {_final_summary}\n"
+                            f"(provider: {_clip_context_field(_provider)}, "
+                            f"model: {_clip_context_field(_model)}, "
+                            f"endpoint: {_clip_context_field(_base)})"
+                        )
                     if _is_thinking_timeout:
                         # Thinking-timeout guidance overrides the generic
                         # stream-drop guidance — the latter is wrong for

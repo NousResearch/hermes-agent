@@ -417,6 +417,16 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
 )
 
 
+# The provider/model/endpoint context line appended to terminal API failures
+# (agent/conversation_loop.py). Stripped before the length heuristic below:
+# its fields come from user configuration (custom base URLs, model names) and
+# are unbounded, so counting them toward the cap would let a long endpoint
+# push a previously-sanitized envelope past the guard and leak it raw.
+_GATEWAY_PROVIDER_CONTEXT_LINE_RE = re.compile(
+    r"\n\(provider: [^\n]*, model: [^\n]*, endpoint: [^\n]*\)\s*$"
+)
+
+
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
 
@@ -433,6 +443,9 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     if not text:
         return False
     body = str(text).strip()
+    # Measure without the appended context line — only the original error
+    # envelope counts toward the cap, so config-sized fields can't defeat it.
+    body = _GATEWAY_PROVIDER_CONTEXT_LINE_RE.sub("", body)
     # Provider failure envelopes are short. Assistant answers that happen
     # to mention HTTP status codes ("HTTP 404 means...") tend to be longer.
     if len(body) > 400 or body.count("\n") > 4:

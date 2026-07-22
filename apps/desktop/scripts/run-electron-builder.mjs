@@ -8,6 +8,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
+import { pathToFileURL } from "node:url"
+
+import { computeElectronBuilderArgs, shouldUseLocalElectronDist } from './run-electron-builder-lib.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -37,22 +40,37 @@ function electronBuilderCli() {
 }
 
 const dist = electronDistDir()
-const args = []
-if (dist && fs.existsSync(distBinary(dist))) {
-  args.push(`-c.electronDist=${dist}`)
-} else {
+const argv = process.argv.slice(2)
+const hasBinary = dist ? fs.existsSync(distBinary(dist)) : false
+const args = computeElectronBuilderArgs({
+  argv,
+  dist,
+  hasBinary,
+  hostPlatform: process.platform,
+})
+if (dist && !hasBinary) {
   console.warn(
     "[run-electron-builder] no local electron dist; electron-builder will fetch " +
       "via @electron/get (electronVersion + ELECTRON_MIRROR)."
   )
+} else if (dist && !shouldUseLocalElectronDist({ argv, hostPlatform: process.platform })) {
+  console.warn(
+    "[run-electron-builder] cross-target build requested; skipping host electronDist " +
+      "so electron-builder can fetch the target platform via @electron/get."
+  )
 }
-args.push(...process.argv.slice(2))
 
-const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
-  stdio: "inherit",
-})
-if (result.error) {
-  console.error(`[run-electron-builder] spawn failed: ${result.error.message}`)
-  process.exit(1)
+function main() {
+  const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
+    stdio: "inherit",
+  })
+  if (result.error) {
+    console.error(`[run-electron-builder] spawn failed: ${result.error.message}`)
+    process.exit(1)
+  }
+  process.exit(result.status == null ? 1 : result.status)
 }
-process.exit(result.status == null ? 1 : result.status)
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
+}

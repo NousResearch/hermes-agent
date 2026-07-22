@@ -353,6 +353,10 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
+        "failure_fingerprint": task.failure_fingerprint,
+        "failure_recurrences": task.failure_recurrences,
+        "failure_frozen_at": task.failure_frozen_at,
+        "failure_frozen": task.failure_frozen_at is not None,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -398,6 +402,10 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "failure_fingerprint": t.failure_fingerprint,
+                    "failure_recurrences": t.failure_recurrences,
+                    "failure_frozen_at": t.failure_frozen_at,
+                    "failure_frozen": t.failure_frozen_at is not None,
                 }
 
             def _run_dict(r):
@@ -1295,7 +1303,12 @@ def _handle_unblock(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok = kb.unblock_task(
+                conn,
+                str(tid),
+                actor=os.environ.get("HERMES_PROFILE") or "orchestrator",
+                reason=(str(args.get("reason")).strip() if args.get("reason") else None),
+            )
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             task = kb.get_task(conn, str(tid))
@@ -1891,6 +1904,13 @@ KANBAN_UNBLOCK_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": "Blocked task id to move to ready or parent-gated todo.",
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Audited rearm reason. Required when the task was frozen "
+                    "after three materially identical outcomes."
+                ),
             },
             "board": _board_schema_prop(),
         },

@@ -799,6 +799,40 @@ def test_triage_task_not_promoted_to_ready(client):
     assert len(ready["tasks"]) == 0
 
 
+def test_dashboard_ready_rearms_frozen_triage_with_unblocked_event(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "frozen loop", "triage": True, "assignee": "worker"},
+    ).json()
+    task_id = created["task"]["id"]
+    import hermes_cli.kanban_db as _kb
+    with _kb.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (task_id,),
+        )
+
+    refused = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"status": "ready"},
+    )
+    assert refused.status_code == 409
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "ready", "block_reason": "root cause was corrected"},
+    )
+    assert response.status_code == 200
+    with _kb.connect() as conn:
+        assert _kb.get_task(conn, task_id).status == "ready"
+        assert _kb.is_block_loop_frozen(conn, task_id) is False
+        latest = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        assert latest["kind"] == "unblocked"
+
+
 def test_patch_status_triage_works(client):
     """A user (or specifier) can push a task back into triage, and out of it."""
     t = client.post(
@@ -1137,6 +1171,40 @@ def test_bulk_status_ready(client):
     ready = next(col for col in board["columns"] if col["name"] == "ready")
     ids = {t["id"] for t in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
+
+
+def test_bulk_ready_requires_reason_to_rearm_frozen_task(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "frozen", "triage": True},
+    ).json()["task"]
+    import hermes_cli.kanban_db as _kb
+    with _kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET failure_fingerprint = 'same-root-cause', "
+            "failure_recurrences = 3, failure_frozen_at = 100 WHERE id = ?",
+            (task["id"],),
+        )
+
+    refused = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [task["id"]], "status": "ready"},
+    ).json()["results"][0]
+    assert refused["ok"] is False
+
+    rearmed = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [task["id"]],
+            "status": "ready",
+            "block_reason": "operator corrected the task input",
+        },
+    ).json()["results"][0]
+    assert rearmed["ok"] is True
+    with _kb.connect() as conn:
+        current = _kb.get_task(conn, task["id"])
+        assert current.status == "ready"
+        assert current.failure_frozen_at is None
 
 
 def test_bulk_status_done_forwards_completion_summary(client):

@@ -180,6 +180,10 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "task" in d
     assert d["task"]["id"] == worker_env
     assert d["task"]["status"] == "running"
+    assert d["task"]["failure_frozen"] is False
+    assert d["task"]["failure_recurrences"] == 0
+    assert "failure_fingerprint" in d["task"]
+    assert "failure_frozen_at" in d["task"]
     assert "worker_context" in d
     assert "runs" in d
 

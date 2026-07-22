@@ -607,6 +607,24 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
+    # GNU rm permutes options, so a recursive flag group may legally FOLLOW
+    # the operands: `rm build/ -rf`, `rm build/ -r -f`, and `rm build/
+    # --recursive --force` are all equivalent to the flags-first spellings the
+    # two patterns above catch — without this rule they run with no approval
+    # prompt at all. The operand run is tempered: it cannot cross a command
+    # separator (`;`, `|`, `&`, newline — so a later pipeline segment's flags,
+    # e.g. `rm foo | grep -r bar`, are not attributed to `rm`), cannot cross a
+    # quote (so `git commit -m "rm x" --amend` style data can't bridge an `rm`
+    # word to an unrelated dash token), and cannot cross a bare ` -- `
+    # end-of-options separator (after `--`, POSIX rm treats `-rf` as a literal
+    # filename, not flags; guarded both leading and mid-run). The flag token
+    # itself must start right after whitespace so the `r` inside long options
+    # like `--registry` (preceded by `-`, not whitespace) does not count.
+    # Port of openai/codex#33464 ("recognize force options when they follow
+    # operands").
+    (r'\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s'
+     r'(?:-[a-z]*r[a-z]*\b|--recursive\b)',
+     "recursive delete (flags after operands)"),
     # Windows shell front-ends have destructive built-ins that do not look like
     # Unix `rm`. Gate only when they are executed through cmd/powershell so
     # ordinary prose or filenames containing "del"/"rd" do not trip the guard.

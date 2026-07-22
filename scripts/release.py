@@ -350,6 +350,8 @@ LEGACY_AUTHOR_MAP = {
     "ondrej.drapalik@gmail.com": "OndrejDrapalik",
     "tomasz.panek@gmail.com": "tomekpanek",
     "philipadsouza@gmail.com": "PhilipAD",
+    "taylor.d.obrian@gmail.com": "punchtaylor",
+    "punchtaylor@users.noreply.github.com": "punchtaylor",
     "zhuhaoyu0909@icloud.com": "underthestars-zhy",
     "raysun12142006@gmail.com": "yanxue06",
     "alberto.regalado@ymail.com": "ARegalado1",

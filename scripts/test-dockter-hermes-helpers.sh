@@ -356,6 +356,9 @@ run_logged_case health "$(command_line docker exec hermes hermes gateway status 
 
 run_logged_case rebuild "$(compose_line build gateway)
 $(compose_line up -d --force-recreate gateway dashboard)" dockter-hermes-rebuild
+run_logged_case rebuild-no-cache-service-first "$(compose_line build --no-cache gateway)
+$(compose_line up -d --force-recreate gateway dashboard)" dockter-hermes-rebuild all --no-cache
+run_failure_case rebuild-options-before-service dockter-hermes-rebuild --no-cache all
 update_log="$(command_line git -C "$TMP_DIR/hermes-agent" pull)
 $(compose_line build gateway)
 $(compose_line up -d gateway dashboard)"

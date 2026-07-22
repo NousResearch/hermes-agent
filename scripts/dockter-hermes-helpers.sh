@@ -578,7 +578,14 @@ dockter-hermes-health() {
 dockter-hermes-rebuild() {
   local service
   service=$(_dockter_hermes_default_service "${1:-all}") || return 1
-  _dockter_hermes_compose build gateway || return 1
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  if [[ $# -gt 0 ]]; then
+    _dockter_hermes_compose build "$@" gateway || return 1
+  else
+    _dockter_hermes_compose build gateway || return 1
+  fi
   if [[ "$service" == "all" ]]; then
     _dockter_hermes_compose up -d --force-recreate gateway dashboard
   else
@@ -668,7 +675,7 @@ dockter-hermes-help() {
 
   echo -e "${_HD_CLR_BOLD}${_HD_CLR_MAGENTA}Maintenance${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-update)                       ${_HD_CLR_DIM}Pull, rebuild, and recreate containers${_HD_CLR_RESET}"
-  echo -e "  $(_hd_cmd dockter-hermes-rebuild) ${_HD_CLR_CYAN}[gateway|dashboard|all]${_HD_CLR_RESET}   ${_HD_CLR_DIM}Rebuild image and recreate containers (default: all)${_HD_CLR_RESET}"
+  echo -e "  $(_hd_cmd dockter-hermes-rebuild) ${_HD_CLR_CYAN}[service] [build options]${_HD_CLR_RESET}     ${_HD_CLR_DIM}Service must come first; defaults to all${_HD_CLR_RESET}"
   echo -e "  $(_hd_cmd dockter-hermes-clean)                        ${_HD_CLR_RED}Remove compose containers and volumes${_HD_CLR_RESET}"
   echo ""
 

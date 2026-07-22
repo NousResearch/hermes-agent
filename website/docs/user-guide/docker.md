@@ -129,9 +129,15 @@ Common commands:
 | `dockter-hermes-dashboard` | Start and open the dashboard. |
 | `dockter-hermes-health` | Run gateway health checks. |
 | `dockter-hermes-config` | Print helper configuration and Compose file paths. |
-| `dockter-hermes-rebuild [gateway|dashboard|all]` | Rebuild and recreate services. |
+| `dockter-hermes-rebuild [gateway|dashboard|all] [build options]` | Rebuild and recreate services. The service must come before build options. |
 | `dockter-hermes-update` | Pull, rebuild, and recreate services. |
 | `dockter-hermes-clean` | Remove Compose containers and volumes after confirmation. |
+
+To force a clean image build, put the service first:
+
+```sh
+dockter-hermes-rebuild all --no-cache
+```
 
 ## Running in gateway mode
 

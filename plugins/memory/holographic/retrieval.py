@@ -30,6 +30,7 @@ class FactRetriever:
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
         hrr_dim: int = 1024,
+        min_hrr_score: float = 0.35,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
@@ -44,6 +45,7 @@ class FactRetriever:
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
+        self.min_hrr_score = min_hrr_score
 
     def search(
         self,
@@ -66,7 +68,9 @@ class FactRetriever:
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
         if not candidates:
-            return []
+            candidates = self._fallback_candidates(query, category, min_trust, limit * 5)
+            if not candidates:
+                return []
 
         # Stage 2: Rerank with Jaccard + trust + optional decay
         query_tokens = self._tokenize(query)
@@ -187,7 +191,7 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return [fact for fact in scored if fact["score"] >= self.min_hrr_score][:limit]
 
     def related(
         self,
@@ -333,7 +337,7 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return [fact for fact in scored if fact["score"] >= self.min_hrr_score][:limit]
 
     def contradict(
         self,
@@ -476,7 +480,60 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return [fact for fact in scored if fact["score"] >= self.min_hrr_score][:limit]
+
+    def _fallback_candidates(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """Return candidates when strict FTS5 AND matching finds nothing.
+
+        FTS5 MATCH uses AND semantics for multi-token queries. Operational
+        recall queries often combine related terms that are split across a fact
+        (for example, "Matrix E2EE device session recovery" vs a fact tagged
+        "matrix,e2ee,room-key,recovery"). This fallback stays local and
+        deterministic: it scans trusted facts, keeps rows with token overlap in
+        content/tags, and sorts by overlap plus trust before the main reranker
+        adds Jaccard/HRR scoring.
+        """
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
+
+        where = ["trust_score >= ?"]
+        params: list = [min_trust]
+        if category:
+            where.append("category = ?")
+            params.append(category)
+
+        rows = self.store._conn.execute(
+            f"""
+            SELECT fact_id, content, category, tags, trust_score,
+                   retrieval_count, helpful_count, created_at, updated_at,
+                   hrr_vector
+            FROM facts
+            WHERE {' AND '.join(where)}
+            ORDER BY trust_score DESC, updated_at DESC
+            LIMIT 1000
+            """,
+            params,
+        ).fetchall()
+
+        candidates = []
+        for row in rows:
+            fact = dict(row)
+            fact_tokens = self._tokenize(fact.get("content", "")) | self._tokenize(fact.get("tags", ""))
+            overlap = query_tokens & fact_tokens
+            if not overlap:
+                continue
+            fact["fts_rank"] = len(overlap) / len(query_tokens)
+            candidates.append(fact)
+
+        candidates.sort(key=lambda f: (f["fts_rank"], f["trust_score"]), reverse=True)
+        return candidates[:limit]
 
     def _fts_candidates(
         self,

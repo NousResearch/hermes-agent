@@ -2364,9 +2364,18 @@ class CLICommandsMixin:
             try:
                 subprocess.call([*shlex.split(editor), path])
             except Exception:
-                # Fall back to a bare invocation (editor value may not be a
-                # simple argv-splittable string on some platforms).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+                # The list-form invocation failed (editor value isn't
+                # argv-splittable on this platform). Fall back to the shell,
+                # quoting the path for the platform's shell. ``shlex.quote`` is
+                # POSIX-only: cmd.exe treats its single quotes literally, so a
+                # temp path containing spaces or ``&`` (e.g. a Windows profile
+                # dir like ``C:\Users\A & B\...``) would be split or start a
+                # second command. cmd.exe treats a double-quoted string's
+                # contents literally, so quote with ``"..."`` on Windows.
+                if os.name == "nt":
+                    subprocess.call(f'{editor} "{path}"', shell=True)
+                else:
+                    subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
         finally:

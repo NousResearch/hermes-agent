@@ -74,3 +74,47 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_editor_fallback_quotes_windows_path_for_cmd(monkeypatch, tmp_path):
+    """On Windows the shell=True editor fallback must double-quote the temp path.
+
+    ``shlex.quote`` is POSIX-only — cmd.exe treats its single quotes as literal
+    characters, so a temp path with spaces or ``&`` (e.g. a Windows profile dir
+    ``C:\\Users\\A & B\\...``) would be split into arguments or start a second
+    command. The fallback runs only when the primary list-form invocation
+    raises, so this simulates that.
+    """
+    import subprocess
+
+    spaced_dir = tmp_path / "A & B"
+    spaced_dir.mkdir()
+    fake_path = str(spaced_dir / "hermes_prompt_test.md")
+
+    def fake_mkstemp(*_a, **_k):
+        fd = os.open(fake_path, os.O_CREAT | os.O_WRONLY, 0o600)
+        return fd, fake_path
+
+    monkeypatch.setattr(tempfile, "mkstemp", fake_mkstemp)
+
+    captured = {}
+
+    def fake_call(cmd, *_a, **_k):
+        if isinstance(cmd, list):
+            # Force the primary list-form invocation to fall through.
+            raise FileNotFoundError("simulate non-argv-splittable editor")
+        captured["shell"] = cmd
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+    monkeypatch.setattr(os, "name", "nt")  # exercise the Windows branch anywhere
+    monkeypatch.setenv("EDITOR", "notepad")
+
+    _Stub()._compose_in_editor("")
+
+    assert "shell" in captured, "the shell=True fallback should have run"
+    shell_cmd = captured["shell"]
+    # cmd.exe-safe: the path is double-quoted, so spaces / '&' stay literal ...
+    assert f'"{fake_path}"' in shell_cmd
+    # ... and NOT wrapped in shlex.quote's POSIX single quotes.
+    assert "'" not in shell_cmd

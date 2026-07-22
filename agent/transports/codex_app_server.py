@@ -30,6 +30,7 @@ from tools.environments.local import hermes_subprocess_env
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+CODEX_HOME_ENV = "CODEX_HOME"
 
 
 @dataclass
@@ -90,8 +91,15 @@ class CodexAppServerClient:
         spawn_env = hermes_subprocess_env(inherit_credentials=True)
         if env:
             spawn_env.update(env)
-        if codex_home:
-            spawn_env["CODEX_HOME"] = codex_home
+        effective_codex_home = str(codex_home or "").strip() or spawn_env.get(
+            CODEX_HOME_ENV
+        )
+        self._codex_home = resolve_codex_home(effective_codex_home)
+        # Pin the resolved state directory explicitly so app-server loads the
+        # same config, auth, plugins, and MCP servers as a direct Codex launch.
+        # Do not depend on incidental inheritance through the subprocess
+        # sanitizer.
+        spawn_env[CODEX_HOME_ENV] = self._codex_home
 
         app_server_args = list(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to
@@ -149,6 +157,11 @@ class CodexAppServerClient:
         self._reader.start()
         self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self._stderr_reader.start()
+
+    @property
+    def codex_home(self) -> str:
+        """Resolved Codex state directory supplied to app-server."""
+        return self._codex_home
 
     # ---------- lifecycle ----------
 
@@ -377,6 +390,16 @@ def parse_codex_version(output: str) -> Optional[tuple[int, int, int]]:
     if not match:
         return None
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def resolve_codex_home(codex_home: Optional[str] = None) -> str:
+    """Resolve Codex state from an explicit value, environment, or default."""
+    configured = str(codex_home or "").strip()
+    if not configured:
+        configured = os.getenv(CODEX_HOME_ENV, "").strip()
+    if not configured:
+        configured = os.path.join(os.path.expanduser("~"), ".codex")
+    return os.path.abspath(os.path.expanduser(configured))
 
 
 def check_codex_binary(

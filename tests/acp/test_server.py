@@ -1551,6 +1551,20 @@ class TestPrompt:
         assert info_updates[0].session_update == "session_info_update"
         assert info_updates[0].title == "Fix Zed titles"
 
+    def test_title_update_does_not_create_coroutine_after_loop_closes(self, agent):
+        class ClosedLoop:
+            def call_soon_threadsafe(self, _callback):
+                raise RuntimeError("event loop is closed")
+
+        agent._send_session_info_update = MagicMock()
+
+        agent._schedule_session_info_update_from_thread(
+            ClosedLoop(),
+            "closed-session",
+        )
+
+        agent._send_session_info_update.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
         """ACP should map top-level token fields into PromptResponse.usage."""

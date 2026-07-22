@@ -894,6 +894,30 @@ class HermesACPAgent(acp.Agent):
         except Exception:
             logger.debug("Could not send ACP session info update for %s", session_id, exc_info=True)
 
+    def _schedule_session_info_update_from_thread(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        session_id: str,
+    ) -> None:
+        """Schedule a title/provenance update without creating an orphan coroutine.
+
+        Auto-title callbacks run on a worker thread. Constructing the coroutine
+        before ``call_soon_threadsafe`` leaks it when the owning ACP event loop
+        has already closed. Defer construction until the callback executes on
+        that loop instead.
+        """
+
+        def _schedule_on_loop() -> None:
+            asyncio.create_task(self._send_session_info_update(session_id))
+
+        try:
+            loop.call_soon_threadsafe(_schedule_on_loop)
+        except RuntimeError:
+            logger.debug(
+                "ACP event loop closed before title update for %s",
+                session_id,
+            )
+
     def _schedule_usage_update(self, state: SessionState) -> None:
         """Schedule native context indicator refresh after ACP responses."""
         if not self._conn:
@@ -1730,10 +1754,7 @@ class HermesACPAgent(acp.Agent):
 
                 def _notify_title_update(_title: str) -> None:
                     if conn:
-                        loop.call_soon_threadsafe(
-                            asyncio.create_task,
-                            self._send_session_info_update(session_id),
-                        )
+                        self._schedule_session_info_update_from_thread(loop, session_id)
 
                 # Snapshot the runtime identity; the validator lets the
                 # background titler skip its LLM call if the session's model

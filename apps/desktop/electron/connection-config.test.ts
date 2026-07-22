@@ -19,6 +19,8 @@ import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildLoopbackRedirectUri,
+  buildNativeStartBody,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
@@ -28,14 +30,17 @@ import {
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
+  nativeLoopbackSupported,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
   normAuthMode,
+  parseLoopbackCallback,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveLoopbackCallback,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
@@ -583,3 +588,125 @@ test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
     /mintTicket function is required/
   )
 })
+
+// --- nativeLoopbackSupported (RFC 8252 capability detect) ---
+
+test('nativeLoopbackSupported reads the /api/status flag', () => {
+  assert.equal(nativeLoopbackSupported({ native_loopback_auth: true }), true)
+  assert.equal(nativeLoopbackSupported({ native_loopback_auth: false }), false)
+})
+
+test('nativeLoopbackSupported is false when the field is absent (older gateway)', () => {
+  // Capability detection, not version sniffing: an older gateway that predates
+  // the feature simply omits the field, and the desktop falls back to the
+  // embedded-webview cookie flow.
+  assert.equal(nativeLoopbackSupported({ auth_required: true }), false)
+  assert.equal(nativeLoopbackSupported({}), false)
+  assert.equal(nativeLoopbackSupported(null), false)
+  assert.equal(nativeLoopbackSupported(undefined), false)
+})
+
+// --- buildLoopbackRedirectUri ---
+
+test('buildLoopbackRedirectUri binds 127.0.0.1 with the ephemeral port', () => {
+  assert.equal(buildLoopbackRedirectUri(54123), 'http://127.0.0.1:54123/callback')
+})
+
+test('buildLoopbackRedirectUri rejects invalid ports', () => {
+  assert.throws(() => buildLoopbackRedirectUri(0), /Invalid loopback port/)
+  assert.throws(() => buildLoopbackRedirectUri(70000), /Invalid loopback port/)
+  assert.throws(() => buildLoopbackRedirectUri('nope'), /Invalid loopback port/)
+})
+
+// --- buildNativeStartBody ---
+
+test('buildNativeStartBody assembles the /auth/native/start payload', () => {
+  const body = buildNativeStartBody({
+    provider: 'nous',
+    port: 54123,
+    codeChallenge: 'chal-abc',
+    state: 'st-xyz'
+  })
+
+  assert.deepEqual(body, {
+    provider: 'nous',
+    redirect_uri: 'http://127.0.0.1:54123/callback',
+    code_challenge: 'chal-abc',
+    code_challenge_method: 'S256',
+    state: 'st-xyz'
+  })
+})
+
+// --- parseLoopbackCallback ---
+
+test('parseLoopbackCallback extracts code + state on success', () => {
+  const parsed = parseLoopbackCallback('/callback?code=abc123&state=st-1')
+  assert.equal(parsed.code, 'abc123')
+  assert.equal(parsed.state, 'st-1')
+  assert.equal(parsed.error, '')
+})
+
+test('parseLoopbackCallback extracts error + description on failure', () => {
+  const parsed = parseLoopbackCallback(
+    '/callback?error=access_denied&error_description=nope&state=st-1'
+  )
+  assert.equal(parsed.error, 'access_denied')
+  assert.equal(parsed.errorDescription, 'nope')
+  assert.equal(parsed.state, 'st-1')
+  assert.equal(parsed.code, '')
+})
+
+test('parseLoopbackCallback never throws on garbage', () => {
+  const parsed = parseLoopbackCallback('%%%not a url%%%')
+  assert.equal(typeof parsed.code, 'string')
+  assert.equal(typeof parsed.state, 'string')
+})
+
+// --- resolveLoopbackCallback (state check + outcome) ---
+
+test('resolveLoopbackCallback returns the code when state matches', () => {
+  const out = resolveLoopbackCallback(
+    { code: 'abc', state: 'st-1', error: '', errorDescription: '' },
+    'st-1'
+  )
+  assert.deepEqual(out, { ok: true, code: 'abc' })
+})
+
+test('resolveLoopbackCallback rejects a mismatched state FIRST (CSRF)', () => {
+  // Even a "successful"-looking callback with a code is dropped if the state
+  // doesn't match what we generated — the state check must precede everything.
+  const out = resolveLoopbackCallback(
+    { code: 'attacker-code', state: 'forged', error: '', errorDescription: '' },
+    'st-1'
+  )
+  assert.deepEqual(out, { ok: false, reason: 'state_mismatch' })
+})
+
+test('resolveLoopbackCallback rejects a spoofed error under a mismatched state', () => {
+  const out = resolveLoopbackCallback(
+    { code: '', state: 'forged', error: 'access_denied', errorDescription: '' },
+    'st-1'
+  )
+  assert.equal(out.ok, false)
+  assert.equal(out.reason, 'state_mismatch')
+})
+
+test('resolveLoopbackCallback surfaces an IDP error when state matches', () => {
+  const out = resolveLoopbackCallback(
+    { code: '', state: 'st-1', error: 'access_denied', errorDescription: 'user said no' },
+    'st-1'
+  )
+  assert.equal(out.ok, false)
+  assert.equal(out.reason, 'idp_error')
+  assert.equal(out.error, 'access_denied')
+  assert.equal(out.errorDescription, 'user said no')
+})
+
+test('resolveLoopbackCallback flags a state-valid but code-less callback', () => {
+  const out = resolveLoopbackCallback(
+    { code: '', state: 'st-1', error: '', errorDescription: '' },
+    'st-1'
+  )
+  assert.deepEqual(out, { ok: false, reason: 'no_code' })
+})
+

@@ -44,6 +44,7 @@ import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildNativeStartBody,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
@@ -53,14 +54,17 @@ import {
   hostLabelFromBaseUrl,
   localProfileEntry,
   modeIsRemoteLike,
+  nativeLoopbackSupported,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
   normAuthMode,
+  parseLoopbackCallback,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveLoopbackCallback,
   resolveTestWsUrl,
   savedProfileSsh,
   tokenPreview
@@ -5693,14 +5697,76 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
   })
 }
 
+// JSON request authenticated with a native (RFC 8252) bearer access token
+// instead of the OAuth session cookie. Attaches ``Authorization: Bearer`` and,
+// on a 401, transparently rotates the stored refresh token via
+// ``POST /api/auth/refresh`` (cookieless) and retries ONCE — mirroring the
+// gateway middleware's server-side cookie refresh, but desktop-driven because
+// the desktop, not a cookie jar, holds the tokens. Throws with statusCode 401
+// only when the refresh also fails, which callers treat as "needs re-login".
+async function fetchJsonViaNativeBearer(baseUrl, path, session, options: any = {}) {
+  const url = `${baseUrl}${path}`
+
+  const attempt = accessToken =>
+    fetchPublicJson(url, {
+      ...options,
+      headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` }
+    })
+
+  try {
+    return await attempt(session.accessToken)
+  } catch (error: any) {
+    const status = parseInt(String(error?.message || '').split(':')[0], 10)
+    if (status !== 401 || !session.refreshToken) {
+      throw error
+    }
+  }
+
+  // Access token rejected — rotate via the cookieless refresh endpoint.
+  let rotated: any
+  try {
+    rotated = await fetchPublicJson(`${baseUrl}/api/auth/refresh`, {
+      method: 'POST',
+      timeoutMs: 8_000,
+      body: { refresh_token: session.refreshToken, provider: session.provider || '' }
+    })
+  } catch (refreshErr: any) {
+    const err = new Error(
+      'Your session has expired. Open Settings → Gateway and sign in again.'
+    ) as any
+    err.statusCode = 401
+    err.needsOauthLogin = true
+    err.cause = refreshErr
+    throw err
+  }
+
+  // Persist the rotated tokens (RT rotation is mandatory — a stale RT would be
+  // reuse-detected and revoke the whole session on the next refresh).
+  persistNativeSession(baseUrl, rotated)
+
+  return attempt(rotated.access_token)
+}
+
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
-// Throws (with statusCode 401) if the session cookie is missing/expired —
-// callers treat that as "needs re-login".
+// Throws (with statusCode 401) if the session is missing/expired — callers
+// treat that as "needs re-login".
+//
+// Prefers a native (RFC 8252) bearer session when one exists for this gateway
+// (the desktop holds the tokens itself); otherwise falls back to the OAuth
+// session-cookie partition. Both mint the SAME ticket server-side — the gateway
+// accepts either a verified cookie session or a verified bearer.
 async function mintGatewayWsTicket(baseUrl) {
-  const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
-    method: 'POST',
-    timeoutMs: 8_000
-  })) as any
+  const native = getNativeSession(baseUrl)
+
+  const body = native
+    ? ((await fetchJsonViaNativeBearer(baseUrl, '/api/auth/ws-ticket', native, {
+        method: 'POST',
+        timeoutMs: 8_000
+      })) as any)
+    : ((await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
+        method: 'POST',
+        timeoutMs: 8_000
+      })) as any)
 
   const ticket = body?.ticket
 
@@ -6016,6 +6082,175 @@ function trimCloudAgents(body) {
     }))
 }
 
+// ---------------------------------------------------------------------------
+// RFC 8252 native-app (system browser + loopback) gateway login.
+//
+// The system-browser flow that REPLACES the embedded-webview cookie flow when
+// the gateway advertises it (``/api/status`` ``native_loopback_auth: true``).
+// Instead of driving the OAuth round trip inside a BrowserWindow and scraping
+// the HttpOnly cookie out of a session partition, we:
+//
+//   1. bind a transient loopback listener on 127.0.0.1:<ephemeral>,
+//   2. generate a desktop-side PKCE pair + state,
+//   3. POST /auth/native/start (public) to register the broker + get the
+//      upstream authorize URL,
+//   4. open that URL in the user's REAL browser (shell.openExternal),
+//   5. capture the broker's 302 back to the loopback listener (?code&state),
+//   6. POST /auth/native/token to redeem the code for JSON tokens.
+//
+// The returned tokens are held by the desktop (encrypted via safeStorage by the
+// caller) and sent as ``Authorization: Bearer`` — no cookie jar, no webview.
+// Pure URL/PKCE/callback logic lives in connection-config.ts (unit-tested);
+// this function owns only the electron-coupled I/O (listener, openExternal).
+// ---------------------------------------------------------------------------
+
+// How long to wait for the user to complete sign-in in their browser before
+// giving up and tearing down the listener. Matches the broker record TTL
+// (native_auth.BROKER_TTL_SECONDS = 10 min) so the two sides expire together.
+const NATIVE_LOGIN_TIMEOUT_MS = 10 * 60 * 1000
+
+function _b64urlNoPad(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+// Generate an RFC 7636 S256 PKCE pair + a CSRF state, all from crypto rng.
+function generateNativePkce() {
+  const verifier = _b64urlNoPad(crypto.randomBytes(64))
+  const challenge = _b64urlNoPad(crypto.createHash('sha256').update(verifier).digest())
+  const state = _b64urlNoPad(crypto.randomBytes(24))
+
+  return { verifier, challenge, state }
+}
+
+// Run the full native loopback login against ``baseUrl`` for ``provider``.
+// Resolves with the token JSON /auth/native/token returned; rejects on user
+// cancel (browser closed / timeout), state mismatch, or an IDP error.
+//
+// ``deps`` is injected so this is exercisable without real electron/network in
+// integration tests: { fetchPublicJson, openExternal, createServer }.
+function runNativeLoopbackLogin(baseUrl, provider, deps: any = {}) {
+  const doFetch = deps.fetchPublicJson || fetchPublicJson
+  const openUrl = deps.openExternal || (url => shell.openExternal(url))
+  const makeServer = deps.createServer || http.createServer
+
+  return new Promise((resolve, reject) => {
+    const { verifier, challenge, state } = generateNativePkce()
+    let settled = false
+    let server: any = null
+    let timeoutTimer: any = null
+    let redirectUri = ''
+
+    const cleanup = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer)
+        timeoutTimer = null
+      }
+      try {
+        if (server) {
+          server.close()
+        }
+      } catch {
+        // listener already torn down
+      }
+    }
+
+    const finish = (err, value?) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      if (err) {
+        reject(err)
+      } else {
+        resolve(value)
+      }
+    }
+
+    // A tiny loopback listener. It answers exactly one meaningful request — the
+    // broker's 302 to /callback?code&state — then hands control back. Any other
+    // path gets a 404 so a stray probe can't be mistaken for the callback.
+    server = makeServer((req, res) => {
+      const parsed = parseLoopbackCallback(req.url || '')
+      const outcome = resolveLoopbackCallback(parsed, state)
+
+      const reply = (status, message) => {
+        res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(
+          `<!doctype html><meta charset="utf-8"><title>Hermes</title>` +
+            `<body style="font:14px system-ui;padding:2rem;color:#111">${message}</body>`
+        )
+      }
+
+      if (!outcome.ok && outcome.reason === 'state_mismatch') {
+        // Could be a stray request that isn't our callback at all — don't tear
+        // the flow down, just 404 and keep waiting for the real one.
+        reply(404, 'Not found.')
+
+        return
+      }
+
+      if (!outcome.ok) {
+        reply(400, 'Sign-in failed. You can close this tab and return to Hermes.')
+        const detail =
+          outcome.reason === 'idp_error'
+            ? `${outcome.error}${outcome.errorDescription ? `: ${outcome.errorDescription}` : ''}`
+            : 'no authorization code returned'
+        finish(new Error(`Native login failed (${detail})`))
+
+        return
+      }
+
+      reply(200, 'Signed in. You can close this tab and return to Hermes.')
+
+      // Redeem the single-use code + our PKCE verifier for JSON tokens.
+      doFetch(`${baseUrl}/auth/native/token`, {
+        method: 'POST',
+        timeoutMs: 30_000,
+        body: { code: outcome.code, code_verifier: verifier, redirect_uri: redirectUri }
+      })
+        .then(tokens => finish(null, tokens))
+        .catch(err => finish(err instanceof Error ? err : new Error(String(err))))
+    })
+
+    server.on('error', err => finish(err instanceof Error ? err : new Error(String(err))))
+
+    // Bind an ephemeral port on the loopback interface ONLY (never 0.0.0.0).
+    server.listen(0, '127.0.0.1', async () => {
+      try {
+        const port = server.address().port
+        redirectUri = `http://127.0.0.1:${port}/callback`
+
+        const startBody = buildNativeStartBody({ provider, port, codeChallenge: challenge, state })
+        const started: any = await doFetch(`${baseUrl}/auth/native/start`, {
+          method: 'POST',
+          timeoutMs: 30_000,
+          body: startBody
+        })
+
+        const authorizationUrl = started && started.authorization_url
+
+        if (!authorizationUrl) {
+          finish(new Error('Gateway did not return an authorization URL for native login.'))
+
+          return
+        }
+
+        // Arm the overall timeout only once we're actually waiting on the user.
+        timeoutTimer = setTimeout(
+          () => finish(new Error('Native login timed out. Please try signing in again.')),
+          NATIVE_LOGIN_TIMEOUT_MS
+        )
+
+        await openUrl(authorizationUrl)
+      } catch (err) {
+        finish(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+  })
+}
+
+
 // Silent per-agent sign-in: open the selected agent dashboard's /login in the
 // SAME OAuth partition. Because the user already holds a live portal session
 // there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
@@ -6067,6 +6302,116 @@ function decryptDesktopSecret(secret) {
 
   return value
 }
+
+// ---------------------------------------------------------------------------
+// Native-app (RFC 8252) session token store.
+//
+// Tokens obtained via runNativeLoopbackLogin are held BY THE DESKTOP (not in a
+// cookie jar) and sent as ``Authorization: Bearer``. We persist them encrypted
+// via safeStorage (the OS keychain-backed encryption already used for the
+// remote session token) keyed by the gateway base URL, so a restart doesn't
+// force a re-login. Kept in a dedicated file so it never entangles with the
+// connection.json config schema.
+//
+// Security note: safeStorage encryption is only real when the OS provides a
+// backend (Keychain on macOS, DPAPI on Windows, gnome-keyring/kwallet on
+// Linux). When it isn't available we DO NOT persist the tokens to disk in
+// plaintext — they live only in memory for the session and the user re-logs in
+// next launch. A long-lived bearer token in a plaintext file would be a
+// downgrade from the HttpOnly-cookie flow it replaces.
+const DESKTOP_NATIVE_SESSION_PATH = path.join(app.getPath('userData'), 'native-session.json')
+
+// In-memory cache of decrypted native sessions, keyed by normalized base URL.
+const _nativeSessions = new Map<string, any>()
+let _nativeSessionsLoaded = false
+
+function _loadNativeSessions() {
+  if (_nativeSessionsLoaded) {
+    return
+  }
+  _nativeSessionsLoaded = true
+  try {
+    const raw = fs.readFileSync(DESKTOP_NATIVE_SESSION_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    for (const [key, secret] of Object.entries(parsed?.sessions || {})) {
+      const json = decryptDesktopSecret(secret)
+      if (json) {
+        try {
+          _nativeSessions.set(key, JSON.parse(json))
+        } catch {
+          // corrupt entry — skip
+        }
+      }
+    }
+  } catch {
+    // No file yet / unreadable — start empty.
+  }
+}
+
+function _writeNativeSessions() {
+  // Only persist when encryption is genuinely available (see security note).
+  if (!safeStorage.isEncryptionAvailable()) {
+    return
+  }
+  const sessions: Record<string, any> = {}
+  for (const [key, value] of _nativeSessions.entries()) {
+    sessions[key] = encryptDesktopSecret(JSON.stringify(value))
+  }
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_NATIVE_SESSION_PATH), { recursive: true })
+    fs.writeFileSync(
+      DESKTOP_NATIVE_SESSION_PATH,
+      JSON.stringify({ version: 1, sessions }, null, 2),
+      { mode: 0o600 }
+    )
+  } catch {
+    // Best-effort persistence; the in-memory copy still authenticates this run.
+  }
+}
+
+// Store the tokens the broker returned for ``baseUrl``. Persists to the
+// encrypted store when safeStorage is available; always caches in memory.
+function persistNativeSession(baseUrl, tokens) {
+  if (!tokens || !tokens.access_token) {
+    return
+  }
+  _loadNativeSessions()
+  _nativeSessions.set(baseUrl, {
+    accessToken: String(tokens.access_token),
+    refreshToken: String(tokens.refresh_token || ''),
+    expiresAt: Number(tokens.expires_at || 0),
+    provider: String(tokens.provider || ''),
+    userId: String(tokens.user_id || '')
+  })
+  _writeNativeSessions()
+}
+
+// Return the stored native session for ``baseUrl``, or null.
+function getNativeSession(baseUrl) {
+  _loadNativeSessions()
+  return _nativeSessions.get(baseUrl) || null
+}
+
+// True when we hold ANY native session credential for ``baseUrl`` (access or
+// refresh token). Like cookiesHaveLiveSession, this answers "is the user signed
+// in at all?" — an expired access token with a live refresh token is still a
+// connectable session (the desktop rotates via POST /api/auth/refresh).
+function hasNativeSession(baseUrl) {
+  const s = getNativeSession(baseUrl)
+  return Boolean(s && (s.accessToken || s.refreshToken))
+}
+
+// Drop the stored native session for ``baseUrl`` (logout).
+function clearNativeSession(baseUrl) {
+  _loadNativeSessions()
+  if (baseUrl) {
+    _nativeSessions.delete(baseUrl)
+  } else {
+    _nativeSessions.clear()
+  }
+  _writeNativeSessions()
+}
+
 
 // Validate + normalize the per-profile remote overrides map read from disk.
 // Drops malformed names/entries and keeps only the recognized fields so a
@@ -8708,11 +9053,51 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
-  // Open the gateway's OAuth login window and wait for the session cookie to
-  // land in the OAuth partition. The caller (settings UI) typically saves the
-  // remote config with authMode='oauth' first, then calls this. We normalize
-  // the URL defensively so a login can be driven from a raw URL too.
+  // Open the gateway's OAuth login and wait until we hold a live session. The
+  // caller (settings UI) typically saves the remote config with
+  // authMode='oauth' first, then calls this. We normalize the URL defensively
+  // so a login can be driven from a raw URL too.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+
+  // Capability-gated flow selection (RFC 8252). Probe the gateway's public
+  // /api/status: a gateway that advertises ``native_loopback_auth`` supports
+  // the system-browser + loopback flow, which needs no embedded webview and no
+  // cookie jar. An older gateway omits the flag, so we fall back to the
+  // embedded-webview cookie flow unchanged. Capability detection, not version
+  // sniffing — see connection-config.nativeLoopbackSupported.
+  let status: any = null
+  try {
+    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+  } catch {
+    // Unreachable/parse failure → treat as no native support and let the
+    // webview flow surface the real connection error interactively.
+    status = null
+  }
+
+  if (nativeLoopbackSupported(status)) {
+    // Pick the interactive OAuth provider to broker. The status probe already
+    // knows the gate is engaged with ≥1 non-password provider; read the name
+    // from /api/auth/providers (first OAuth-redirect provider).
+    let provider = ''
+    try {
+      const body: any = await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })
+      const first = (Array.isArray(body?.providers) ? body.providers : []).find(
+        p => p && typeof p === 'object' && p.name && !p.supports_password
+      )
+      provider = first ? String(first.name) : ''
+    } catch {
+      provider = ''
+    }
+
+    if (provider) {
+      const tokens: any = await runNativeLoopbackLogin(baseUrl, provider)
+      persistNativeSession(baseUrl, tokens)
+
+      return { ok: true, baseUrl, connected: hasNativeSession(baseUrl) }
+    }
+    // No brokerable provider name resolved — fall through to the webview flow.
+  }
+
   await openOauthLoginWindow(baseUrl)
 
   return { ok: true, baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
@@ -8720,11 +9105,15 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
   await clearOauthSession(baseUrl || undefined)
+  // Also drop any native (RFC 8252) bearer session we hold for this gateway,
+  // so a logout signs the user out of BOTH transports regardless of which flow
+  // established the session.
+  clearNativeSession(baseUrl || undefined)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT) so a logout that left any session cookie behind is reflected
   // as still-connected rather than silently signed-out.
-  return { ok: true, connected: baseUrl ? await hasLiveOauthSession(baseUrl) : false }
+  return { ok: true, connected: baseUrl ? (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) : false }
 })
 
 // --- Hermes Cloud (cloud-auto-discovery Phase 3) ---

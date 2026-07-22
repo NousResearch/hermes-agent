@@ -51,6 +51,9 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/callback",
     "/auth/password-login",
     "/auth/logout",
+    "/auth/native/start",
+    "/auth/native/token",
+    "/api/auth/refresh",
     "/login",
     "/api/auth/providers",
     "/api/mcp/oauth/callback/",
@@ -275,6 +278,54 @@ def _safe_next_target(request: Request) -> str:
     return quote(target, safe="")
 
 
+def _extract_bearer(request: Request) -> str:
+    """Return the ``Authorization: Bearer`` token, or "" when absent/malformed.
+
+    Accepts ``<scheme> <token>`` where scheme is "bearer" (case-insensitive).
+    Mirrors ``token_auth.extract_bearer_token`` — kept local so the gate has no
+    import dependency on the token-auth seam (a different, service-caller path).
+    """
+    auth = request.headers.get("authorization", "")
+    parts = auth.split(" ", 1)
+    if len(parts) == 2 and parts[0].strip().lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+def _verify_bearer(
+    access_token: str, *, provider_hint: str | None = None
+):
+    """Verify a native-app bearer access token through the session-provider stack.
+
+    Returns ``(session, unreachable_provider_name)``:
+      * ``(Session, None)`` — a provider recognised and accepted the token.
+      * ``(None, None)`` — no provider recognised it (reject 401).
+      * ``(None, name)`` — no provider accepted it AND at least one provider's
+        IDP/JWKS was unreachable (the caller surfaces 503, not 401, so a
+        transient outage doesn't read as "expired session").
+
+    This is the bearer analogue of the cookie path's verify loop: it runs the
+    IDENTICAL ``verify_session`` stack with the identical stacking/unreachable
+    semantics, so a token minted for the cookie flow verifies here unchanged.
+    Never raises — a provider ``ProviderError`` is caught and remembered.
+    """
+    unreachable_provider: str | None = None
+    for provider in _ordered_session_providers(provider_hint):
+        try:
+            session = provider.verify_session(access_token=access_token)
+        except ProviderError as e:
+            _log.warning(
+                "dashboard-auth: provider %r unreachable during bearer verify: %s",
+                provider.name, e,
+            )
+            if unreachable_provider is None:
+                unreachable_provider = provider.name
+            continue
+        if session is not None:
+            return session, None
+    return None, unreachable_provider
+
+
 async def gated_auth_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
@@ -297,6 +348,35 @@ async def gated_auth_middleware(
     path = request.url.path
     if _path_is_public(path):
         return await call_next(request)
+
+    # RFC 8252 native-app bearer auth. The desktop app holds its access token
+    # itself (obtained via the loopback broker) and presents it as
+    # ``Authorization: Bearer`` instead of a session cookie. Verify it
+    # through the SAME provider ``verify_session`` stack the cookie path uses,
+    # then attach the session and pass through — so every gated route
+    # (``/api/auth/me``, ``/api/auth/ws-ticket``, …) works identically whether
+    # the caller authenticated by cookie or by bearer. Only consulted when a
+    # bearer header is actually present, so the cookie flow is untouched. A
+    # present-but-invalid bearer yields 401 (no cookie fallback for an explicit
+    # bearer caller); the desktop rotates via ``/api/auth/refresh`` and retries.
+    bearer = _extract_bearer(request)
+    if bearer:
+        bearer_session, unreachable = _verify_bearer(
+            bearer, provider_hint=read_session_provider(request)
+        )
+        if bearer_session is not None:
+            request.state.session = bearer_session
+            return await call_next(request)
+        if unreachable is not None:
+            return JSONResponse(
+                {"detail": f"Auth provider {unreachable!r} unreachable"},
+                status_code=503,
+            )
+        return JSONResponse(
+            {"error": "session_expired", "detail": "Unauthorized",
+             "reason": "invalid_or_expired_bearer"},
+            status_code=401,
+        )
 
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)

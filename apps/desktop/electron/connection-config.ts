@@ -406,6 +406,111 @@ function authModeFromStatus(statusBody) {
 }
 
 /**
+ * True when the gateway advertises RFC 8252 native-app (system-browser +
+ * loopback) login on its public /api/status. The desktop uses this to choose
+ * the system-browser flow over the legacy embedded-webview cookie flow.
+ *
+ * Capability detection, not version sniffing: an older gateway simply omits the
+ * field (=> false) and the caller falls back to openOauthLoginWindow. The flag
+ * only lights up when the gate is engaged AND a non-password OAuth provider is
+ * registered (see web_server.py), so a true here means "the three /auth/native
+ * seams are live and there is a provider to broker."
+ */
+function nativeLoopbackSupported(statusBody) {
+  return Boolean(statusBody && statusBody.native_loopback_auth)
+}
+
+/**
+ * Build the loopback redirect URI the desktop's transient listener serves and
+ * registers with the broker. RFC 8252 §7.3: http + a loopback IP literal +
+ * an ephemeral port. We use 127.0.0.1 (not `localhost`) so the value never
+ * depends on the host's name resolution, and a fixed `/callback` path.
+ */
+function buildLoopbackRedirectUri(port) {
+  const p = Number(port)
+
+  if (!Number.isInteger(p) || p <= 0 || p > 65535) {
+    throw new Error(`Invalid loopback port: ${port}`)
+  }
+
+  return `http://127.0.0.1:${p}/callback`
+}
+
+/**
+ * Build the POST /auth/native/start request body from a PKCE pair + loopback
+ * port + provider. Pure so the flow logic is unit-testable without a live
+ * listener; main.ts supplies the real PKCE + port.
+ */
+function buildNativeStartBody({ provider, port, codeChallenge, state }) {
+  return {
+    provider: String(provider || ''),
+    redirect_uri: buildLoopbackRedirectUri(port),
+    code_challenge: String(codeChallenge || ''),
+    code_challenge_method: 'S256',
+    state: String(state || '')
+  }
+}
+
+/**
+ * Parse the query the broker's 302 lands on the loopback listener with. The
+ * IDP round trip returns EITHER `?code=…&state=…` (success) or
+ * `?error=…&state=…` (failure). Returns a normalized
+ * `{ code, state, error, errorDescription }` — never throws.
+ */
+function parseLoopbackCallback(rawUrl) {
+  let parsed
+
+  try {
+    // The listener sees a path+query (no authority); give URL a base to parse.
+    parsed = new URL(String(rawUrl || ''), 'http://127.0.0.1')
+  } catch {
+    return { code: '', state: '', error: 'invalid_request', errorDescription: '' }
+  }
+
+  const q = parsed.searchParams
+
+  return {
+    code: q.get('code') || '',
+    state: q.get('state') || '',
+    error: q.get('error') || '',
+    errorDescription: q.get('error_description') || ''
+  }
+}
+
+/**
+ * Validate the loopback callback against the state we generated (RFC 8252 CSRF
+ * defense) and surface a normalized outcome. Returns:
+ *   - { ok: true, code }                      → redeem this code
+ *   - { ok: false, reason: 'state_mismatch' } → drop (possible CSRF)
+ *   - { ok: false, reason: 'idp_error', error, errorDescription }
+ *   - { ok: false, reason: 'no_code' }        → malformed callback
+ *
+ * The state check is FIRST and unconditional: an attacker who reaches the
+ * loopback listener must not be able to inject a foreign code or a spoofed
+ * error, so a mismatched state is rejected before anything else is read.
+ */
+function resolveLoopbackCallback(parsed, expectedState) {
+  if (!parsed || parsed.state !== expectedState) {
+    return { ok: false, reason: 'state_mismatch' }
+  }
+
+  if (parsed.error) {
+    return {
+      ok: false,
+      reason: 'idp_error',
+      error: parsed.error,
+      errorDescription: parsed.errorDescription || ''
+    }
+  }
+
+  if (!parsed.code) {
+    return { ok: false, reason: 'no_code' }
+  }
+
+  return { ok: true, code: parsed.code }
+}
+
+/**
  * Resolve the effective auth mode for a coerce/save operation.
  * Explicit input wins; otherwise inherit the saved value; default 'token'.
  * Returns 'oauth' | 'token'.
@@ -487,6 +592,8 @@ export {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildLoopbackRedirectUri,
+  buildNativeStartBody,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
@@ -497,15 +604,18 @@ export {
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
+  nativeLoopbackSupported,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
   normAuthMode,
+  parseLoopbackCallback,
   pathWithGlobalRemoteProfile,
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveLoopbackCallback,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,

@@ -3090,9 +3090,25 @@ async def get_status(profile: Optional[str] = None):
         # "loopback only — no auth gate" with no extra round trips.
         auth_required = bool(getattr(app.state, "auth_required", False))
         auth_providers: list[str] = []
+        native_loopback_auth = False
         try:
-            from hermes_cli.dashboard_auth import list_providers as _list_providers
+            from hermes_cli.dashboard_auth import (
+                list_providers as _list_providers,
+                list_session_providers as _list_session_providers,
+            )
             auth_providers = [p.name for p in _list_providers()]
+            # RFC 8252 native-app loopback login is offered only when the gate
+            # is engaged AND at least one interactive OAuth (non-password)
+            # session provider is registered — the broker drives that
+            # provider's ``start_login`` redirect. The desktop reads this flag
+            # to choose the system-browser flow vs. the embedded-webview
+            # fallback. Password-only providers have no browser redirect to
+            # broker, so they don't light this up.
+            if auth_required:
+                native_loopback_auth = any(
+                    not getattr(p, "supports_password", False)
+                    for p in _list_session_providers()
+                )
         except Exception:
             # Module not importable yet (early startup) — leave as [].
             pass
@@ -3134,6 +3150,7 @@ async def get_status(profile: Optional[str] = None):
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
+            "native_loopback_auth": native_loopback_auth,
             "nous_session_valid": nous_session_valid,
         }
 

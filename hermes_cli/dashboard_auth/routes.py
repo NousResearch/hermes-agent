@@ -35,6 +35,7 @@ from hermes_cli.dashboard_auth.base import (
     InvalidCodeError,
     InvalidCredentialsError,
     ProviderError,
+    RefreshExpiredError,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
@@ -253,6 +254,21 @@ async def auth_callback(
     error: str = "",
     error_description: str = "",
 ):
+    # RFC 8252 native-app (desktop loopback) branch. The system browser reaches
+    # this callback with NO PKCE cookie (the desktop drove /auth/native/start
+    # over its own HTTP client), so a native login is recognised purely by the
+    # echoed upstream ``state`` matching a live broker record. When it does, the
+    # broker owns the exchange: complete the upstream login with the
+    # server-stored verifier and 302 the browser to the desktop's loopback
+    # listener carrying a single-use code — never setting a session cookie.
+    if state:
+        native_resp = await _maybe_handle_native_callback(
+            request, code=code, state=state, error=error,
+            error_description=error_description,
+        )
+        if native_resp is not None:
+            return native_resp
+
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
         audit_log(
@@ -372,6 +388,310 @@ async def auth_callback(
     # so it never lingers to suppress a future silent attempt after logout.
     clear_sso_attempt_cookie(resp, prefix=_prefix(request))
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Public: RFC 8252 native-app (desktop loopback + PKCE) login broker
+# ---------------------------------------------------------------------------
+#
+# These three seams let the desktop app authenticate via the user's SYSTEM
+# browser and hold the resulting tokens itself (Authorization: Bearer) instead
+# of the embedded-webview + HttpOnly-cookie flow. The gateway brokers to its
+# existing upstream IDP unchanged; see ``native_auth`` for the full contract.
+
+
+def _parse_pkce_payload(payload: str) -> Dict[str, str]:
+    """Parse a provider ``hermes_session_pkce`` payload into a flat dict.
+
+    Shape is ``key=value;key=value`` (e.g. ``state=…;verifier=…``). Mirrors the
+    callback's own parse so the native ``start`` extracts the SAME upstream
+    ``state`` + ``verifier`` the cookie flow would have stashed.
+    """
+    return dict(
+        seg.split("=", 1) for seg in payload.split(";") if "=" in seg
+    )
+
+
+class _NativeStartBody(BaseModel):
+    provider: str
+    redirect_uri: str
+    code_challenge: str
+    code_challenge_method: str = "S256"
+    state: str
+
+
+class _NativeTokenBody(BaseModel):
+    code: str
+    code_verifier: str
+    redirect_uri: str
+
+
+class _RefreshBody(BaseModel):
+    refresh_token: str
+    provider: str = ""
+
+
+def _native_error(error: str, detail: str, status_code: int = 400) -> JSONResponse:
+    """OAuth-shaped error envelope for the native endpoints."""
+    return JSONResponse({"error": error, "detail": detail}, status_code=status_code)
+
+
+@router.post("/auth/native/start", name="auth_native_start")
+async def auth_native_start(request: Request, body: _NativeStartBody):
+    """Begin an RFC 8252 loopback login; return the upstream authorize URL.
+
+    The desktop supplies its loopback ``redirect_uri`` + its OWN PKCE
+    ``code_challenge`` + ``state``. We run the provider's ordinary
+    ``start_login`` (gateway↔IDP PKCE) against the gateway's own
+    ``/auth/callback``, register a broker record keyed by the upstream
+    ``state``, and hand back the upstream ``authorization_url`` for the desktop
+    to open in the system browser.
+    """
+    from hermes_cli.dashboard_auth import native_auth
+
+    p = get_provider(body.provider)
+    if p is None or not getattr(p, "supports_session", True):
+        return _native_error(
+            "invalid_request", f"Unknown provider: {body.provider!r}", 404
+        )
+    if getattr(p, "supports_password", False):
+        # Password providers have no browser redirect to broker.
+        return _native_error(
+            "invalid_request",
+            f"Provider does not support browser login: {body.provider!r}",
+            400,
+        )
+    if not native_auth.is_loopback_redirect_uri(body.redirect_uri):
+        return _native_error(
+            "invalid_request", "redirect_uri must be an http loopback URL"
+        )
+
+    try:
+        ls = p.start_login(redirect_uri=_redirect_uri(request))
+    except ProviderError as e:
+        audit_log(
+            AuditEvent.NATIVE_LOGIN_FAILURE,
+            provider=body.provider,
+            reason="provider_unreachable",
+            ip=_client_ip(request),
+        )
+        return _native_error("server_error", f"Provider unreachable: {e}", 503)
+
+    pkce = _parse_pkce_payload(
+        ls.cookie_payload.get("hermes_session_pkce", "")
+    )
+    upstream_state = pkce.get("state", "")
+    upstream_verifier = pkce.get("verifier", "")
+    if not upstream_state:
+        # A provider that doesn't use the state/verifier cookie shape can't be
+        # brokered by state-matching; fail loudly rather than silently.
+        return _native_error(
+            "server_error",
+            "Provider is not compatible with native loopback login",
+            400,
+        )
+
+    try:
+        native_auth.start_broker(
+            upstream_state=upstream_state,
+            upstream_verifier=upstream_verifier,
+            provider=body.provider,
+            code_challenge=body.code_challenge,
+            code_challenge_method=body.code_challenge_method,
+            redirect_uri=body.redirect_uri,
+            desktop_state=body.state,
+        )
+    except native_auth.BrokerError as e:
+        return _native_error(e.error, str(e), 400)
+
+    audit_log(
+        AuditEvent.NATIVE_LOGIN_START,
+        provider=body.provider,
+        ip=_client_ip(request),
+    )
+    return JSONResponse({"authorization_url": ls.redirect_url})
+
+
+async def _maybe_handle_native_callback(
+    request: Request,
+    *,
+    code: str,
+    state: str,
+    error: str,
+    error_description: str,
+):
+    """Handle ``/auth/callback`` for a native login, or return None.
+
+    Returns None when ``state`` matches no live broker record (the ordinary
+    cookie flow then proceeds). Otherwise completes the upstream login with the
+    server-stored verifier and 302s the browser to the desktop's loopback
+    ``redirect_uri`` with a single-use ``code``.
+    """
+    from urllib.parse import urlencode
+
+    from hermes_cli.dashboard_auth import native_auth
+
+    rec = native_auth.get_broker(state)
+    if rec is None:
+        return None
+
+    def _to_desktop(params: dict) -> RedirectResponse:
+        sep = "&" if "?" in rec.redirect_uri else "?"
+        return RedirectResponse(
+            url=f"{rec.redirect_uri}{sep}{urlencode(params)}", status_code=302
+        )
+
+    if error:
+        audit_log(
+            AuditEvent.NATIVE_LOGIN_FAILURE,
+            provider=rec.provider,
+            reason="idp_error",
+            error=error,
+            ip=_client_ip(request),
+        )
+        return _to_desktop(
+            {"error": error, "error_description": error_description,
+             "state": rec.desktop_state}
+        )
+
+    p = get_provider(rec.provider)
+    if p is None:
+        return _to_desktop(
+            {"error": "invalid_request", "state": rec.desktop_state}
+        )
+
+    try:
+        session = p.complete_login(
+            code=code,
+            state=state,
+            code_verifier=rec.upstream_verifier,
+            redirect_uri=_redirect_uri(request),
+        )
+    except InvalidCodeError:
+        audit_log(
+            AuditEvent.NATIVE_LOGIN_FAILURE,
+            provider=rec.provider,
+            reason="invalid_code",
+            ip=_client_ip(request),
+        )
+        return _to_desktop(
+            {"error": "invalid_grant", "state": rec.desktop_state}
+        )
+    except ProviderError:
+        audit_log(
+            AuditEvent.NATIVE_LOGIN_FAILURE,
+            provider=rec.provider,
+            reason="provider_unreachable",
+            ip=_client_ip(request),
+        )
+        return _to_desktop(
+            {"error": "server_error", "state": rec.desktop_state}
+        )
+
+    one_time_code = native_auth.complete_broker(state, session)
+    audit_log(
+        AuditEvent.NATIVE_LOGIN_SUCCESS,
+        provider=rec.provider,
+        user_id=session.user_id,
+        email=session.email,
+        org_id=session.org_id,
+        ip=_client_ip(request),
+    )
+    return _to_desktop({"code": one_time_code, "state": rec.desktop_state})
+
+
+@router.post("/auth/native/token", name="auth_native_token")
+async def auth_native_token(request: Request, body: _NativeTokenBody):
+    """Redeem a single-use loopback ``code`` + PKCE verifier for session tokens.
+
+    Returns the provider-issued tokens as JSON (NO cookies). The desktop stores
+    them and sends ``Authorization: Bearer`` on subsequent
+    requests; ``expires_at`` lets it schedule a refresh.
+    """
+    from hermes_cli.dashboard_auth import native_auth
+
+    try:
+        session = native_auth.redeem_code(
+            code=body.code,
+            code_verifier=body.code_verifier,
+            redirect_uri=body.redirect_uri,
+        )
+    except native_auth.BrokerError as e:
+        audit_log(
+            AuditEvent.NATIVE_LOGIN_FAILURE,
+            reason="token_redeem_failed",
+            error=e.error,
+            ip=_client_ip(request),
+        )
+        return _native_error(e.error, str(e), 400)
+
+    return JSONResponse(
+        {
+            "access_token": session.access_token,
+            "refresh_token": session.refresh_token,
+            "token_type": "Bearer",
+            "expires_at": session.expires_at,
+            "user_id": session.user_id,
+            "email": session.email,
+            "display_name": session.display_name,
+            "org_id": session.org_id,
+            "provider": session.provider,
+        }
+    )
+
+
+@router.post("/api/auth/refresh", name="auth_native_refresh")
+async def auth_native_refresh(request: Request, body: _RefreshBody):
+    """Rotate a native session's tokens without a cookie.
+
+    Runs the same ``refresh_session`` provider stack the cookie middleware uses.
+    The ``provider`` hint only reorders candidates (an opaque foreign refresh
+    token is indistinguishable from an expired one), mirroring
+    ``middleware._attempt_refresh``. Returns rotated tokens as JSON, or 401 when
+    every provider rejects the token.
+    """
+    providers = list_session_providers()
+    if body.provider:
+        providers = sorted(providers, key=lambda pr: pr.name != body.provider)
+
+    unavailable = None
+    for provider in providers:
+        try:
+            session = provider.refresh_session(refresh_token=body.refresh_token)
+        except RefreshExpiredError:
+            continue
+        except ProviderError as e:
+            unavailable = str(e)
+            continue
+        audit_log(
+            AuditEvent.REFRESH_SUCCESS,
+            provider=session.provider,
+            user_id=session.user_id,
+            ip=_client_ip(request),
+        )
+        return JSONResponse(
+            {
+                "access_token": session.access_token,
+                "refresh_token": session.refresh_token,
+                "token_type": "Bearer",
+                "expires_at": session.expires_at,
+                "user_id": session.user_id,
+                "email": session.email,
+                "display_name": session.display_name,
+                "org_id": session.org_id,
+                "provider": session.provider,
+            }
+        )
+
+    if unavailable is not None:
+        return _native_error(
+            "server_error", f"Auth provider unreachable: {unavailable}", 503
+        )
+    audit_log(
+        AuditEvent.REFRESH_FAILURE, reason="no_provider_recognises",
+        ip=_client_ip(request),
+    )
+    return _native_error("invalid_grant", "Refresh token rejected", 401)
 
 
 def _validate_post_login_target(raw: str) -> str:

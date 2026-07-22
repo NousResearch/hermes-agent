@@ -49,6 +49,10 @@ class AuditEvent(enum.Enum):
     WS_TICKET_REJECTED = "ws_ticket_rejected"
     TOKEN_AUTH_SUCCESS = "token_auth_success"
     TOKEN_AUTH_FAILURE = "token_auth_failure"
+    # RFC 8252 native-app loopback login (desktop system-browser flow).
+    NATIVE_LOGIN_START = "native_login_start"
+    NATIVE_LOGIN_SUCCESS = "native_login_success"
+    NATIVE_LOGIN_FAILURE = "native_login_failure"
 
 
 def _resolve_log_path() -> Path:

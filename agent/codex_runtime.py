@@ -973,14 +973,76 @@ def _consume_codex_event_stream(
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
-    active_message_phase: str | None = None
-    commentary_text_deltas: List[str] = []
+    active_message_state: Dict[str, Any] | None = None
+    message_states: List[Dict[str, Any]] = []
+    message_states_by_alias: Dict[tuple[str, Any], Dict[str, Any]] = {}
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+
+    def _message_aliases(event: Any, item: Any = None) -> List[tuple[str, Any]]:
+        aliases: List[tuple[str, Any]] = []
+        item_id = _event_field(event, "item_id", None)
+        if item_id is None and item is not None:
+            item_id = _item_field(item, "id", None)
+        if item_id is not None:
+            aliases.append(("item_id", item_id))
+        output_index = _event_field(event, "output_index", None)
+        if output_index is not None:
+            aliases.append(("output_index", output_index))
+        return aliases
+
+    def _message_state(
+        event: Any,
+        *,
+        item: Any = None,
+        phase: str | None = None,
+        create: bool = False,
+    ) -> Dict[str, Any] | None:
+        aliases = _message_aliases(event, item)
+        state = next(
+            (message_states_by_alias[alias] for alias in aliases if alias in message_states_by_alias),
+            None,
+        )
+        if state is None and not aliases:
+            state = active_message_state
+        if state is None and create:
+            state = {"phase": phase, "deltas": [], "aliases": set()}
+            message_states.append(state)
+        if state is not None:
+            if phase:
+                state["phase"] = phase
+            for alias in aliases:
+                state["aliases"].add(alias)
+                message_states_by_alias[alias] = state
+        return state
+
+    def _completed_message_text(item: Any) -> str:
+        content_parts = _item_field(item, "content", [])
+        if not isinstance(content_parts, list):
+            return ""
+        return "".join(
+            str(_item_field(part, "text", "") or "")
+            for part in content_parts
+            if _item_field(part, "type", "") == "output_text"
+        ).strip()
+
+    def _flush_commentary_state(state: Dict[str, Any] | None, item: Any = None) -> None:
+        if state is None or state.get("phase") != "commentary":
+            return
+        text = "".join(state.get("deltas") or []).strip()
+        if not text and item is not None:
+            text = _completed_message_text(item)
+        if text and on_commentary_message is not None:
+            try:
+                on_commentary_message(text)
+            except Exception:
+                logger.debug("Codex stream on_commentary_message raised", exc_info=True)
+        state["deltas"] = []
+        state["phase"] = "delivered"
 
     for event in event_iter:
         if on_event is not None:
@@ -1018,19 +1080,30 @@ def _consume_codex_event_stream(
             item_type = _item_field(item, "type", "")
             if item_type == "message":
                 phase = _item_field(item, "phase", None)
-                active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
-                if active_message_phase == "commentary":
-                    commentary_text_deltas = []
+                phase = phase.strip().lower() if isinstance(phase, str) else None
+                if not _message_aliases(event, item):
+                    _flush_commentary_state(active_message_state)
+                active_message_state = _message_state(
+                    event, item=item, phase=phase, create=True
+                )
             else:
-                active_message_phase = None
+                if not _message_aliases(event, item):
+                    _flush_commentary_state(active_message_state)
+                    if not (
+                        active_message_state is not None
+                        and active_message_state.get("phase") == "analysis"
+                    ):
+                        active_message_state = None
             if "function_call" in str(item_type):
                 has_tool_calls = True
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
-            if delta_text and active_message_phase == "commentary":
-                commentary_text_deltas.append(delta_text)
+            state = _message_state(event)
+            phase = state.get("phase") if state is not None else None
+            if delta_text and state is not None and phase == "commentary":
+                state["deltas"].append(delta_text)
                 # Preserve CLI/backward compatibility when no first-class
                 # commentary consumer is installed.
                 if on_commentary_message is None and on_reasoning_delta is not None:
@@ -1038,7 +1111,7 @@ def _consume_codex_event_stream(
                         on_reasoning_delta(delta_text)
                     except Exception:
                         logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
-            elif delta_text and active_message_phase == "analysis":
+            elif delta_text and phase == "analysis":
                 if on_reasoning_delta is not None:
                     try:
                         on_reasoning_delta(delta_text)
@@ -1080,25 +1153,11 @@ def _consume_codex_event_stream(
                 collected_output_items.append(done_item)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
-                if done_phase == "commentary" and on_commentary_message is not None:
-                    commentary_text = "".join(commentary_text_deltas).strip()
-                    if not commentary_text:
-                        content_parts = _item_field(done_item, "content", [])
-                        if isinstance(content_parts, list):
-                            commentary_text = "".join(
-                                str(_item_field(part, "text", "") or "")
-                                for part in content_parts
-                                if _item_field(part, "type", "") == "output_text"
-                            ).strip()
-                    if commentary_text:
-                        try:
-                            on_commentary_message(commentary_text)
-                        except Exception:
-                            logger.debug(
-                                "Codex stream on_commentary_message raised",
-                                exc_info=True,
-                            )
-                    commentary_text_deltas = []
+                state = _message_state(
+                    event, item=done_item, phase=done_phase, create=done_phase == "commentary"
+                )
+                if done_phase == "commentary":
+                    _flush_commentary_state(state, done_item)
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
@@ -1249,8 +1308,27 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
         try:
             # Compatibility: some mocks/providers return a concrete response
-            # instead of an iterable.  Pass it straight through.
+            # instead of an iterable. Preserve completed commentary delivery
+            # before passing the provider response through unchanged.
             if hasattr(event_stream, "output") and not hasattr(event_stream, "__iter__"):
+                if (
+                    getattr(agent, "interim_assistant_callback", None) is not None
+                    and getattr(agent, "show_commentary", True)
+                ):
+                    for item in getattr(event_stream, "output", None) or []:
+                        phase = _item_field(item, "phase", None)
+                        if not isinstance(phase, str) or phase.strip().lower() != "commentary":
+                            continue
+                        content = _item_field(item, "content", [])
+                        if not isinstance(content, list):
+                            continue
+                        text = "".join(
+                            str(_item_field(part, "text", "") or "")
+                            for part in content
+                            if _item_field(part, "type", "") == "output_text"
+                        ).strip()
+                        if text:
+                            _on_commentary_message(text)
                 return event_stream
 
             try:

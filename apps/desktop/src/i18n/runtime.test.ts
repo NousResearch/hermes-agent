@@ -44,6 +44,12 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+
+    setRuntimeI18nLocale('ko')
+    expect(translateNow('common.save')).toBe('저장')
+    expect(translateNow('language.label')).toBe('언어')
+    expect(translateNow('settings.appearance.title')).toBe('화면 표시')
+    expect(translateNow('composer.placeholderFollowUp')).toBe('후속 메시지 보내기')
   })
 
   it('keeps translated settings field copy addressable from schema keys', () => {

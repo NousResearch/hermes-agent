@@ -84,6 +84,12 @@ class _ThreadContextCache:
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+    # The Slack user_id of the thread parent message author. Used by
+    # _bot_authored_thread_root (#63530) to detect threads whose root was
+    # posted by the bot via direct chat.postMessage (outside the gateway's
+    # send() path). Empty string when the parent could not be fetched or
+    # did not have a user_id field.
+    parent_user_id: str = ""
     # Raw Slack reply payloads from conversations.replies. Kept so context can
     # be re-formatted with a different watermark (``after_ts``) without an
     # extra API call (#23918).
@@ -3526,6 +3532,103 @@ class SlackAdapter(BasePlatformAdapter):
             fallback_event["thread_ts"] = thread_ts
         await self._handle_slack_message(fallback_event)
 
+    async def _bot_authored_thread_root(
+        self, channel_id: str, thread_ts: str, team_id: str = ""
+    ) -> bool:
+        """Return True when the thread root was authored by this bot.
+
+        Used by the wake-decision to detect threads where the bot posted
+        the root via direct chat.postMessage (outside the gateway's
+        send() path) — see #63530. Without this, human replies in
+        bot-initiated threads were silently dropped when there was no
+        active session and no @mention. Root-authorship is derived from
+        the Slack API, so unlike the in-memory _bot_message_ts set it
+        also survives gateway restarts.
+
+        Implementation: check the in-memory _thread_context_cache first
+        (cheap; populated whenever thread context is fetched). On a miss,
+        fetch thread context — the fetch is bounded by the TTL cache in
+        _fetch_thread_context, so the API-call overhead is paid only on
+        the miss path.
+        """
+        if not thread_ts:
+            return False
+
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id) or ""
+        if not bot_uid:
+            return False
+
+        def _cached_parent_matches() -> Optional[bool]:
+            # Cache keys are "{channel_id}:{thread_ts}:{team_id}"; team_id may
+            # be empty at some call sites, so match on the channel+thread
+            # prefix rather than guessing the exact key.
+            for cached_key, cached_entry in self._thread_context_cache.items():
+                if cached_key.startswith(f"{channel_id}:{thread_ts}:"):
+                    return bool(
+                        cached_entry.parent_user_id
+                        and cached_entry.parent_user_id == bot_uid
+                    )
+            return None
+
+        cached = _cached_parent_matches()
+        if cached is not None:
+            return cached
+
+        # Miss path: fetch thread context (its own TTL cache applies) and
+        # re-check — a successful fetch populates parent_user_id.
+        await self._fetch_thread_context(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            current_ts="",
+            team_id=team_id,
+        )
+        cached = _cached_parent_matches()
+        return bool(cached)
+
+    async def _should_wake_on_unmentioned_message(
+        self,
+        event_thread_ts,
+        channel_id: str,
+        user_id: str,
+        is_thread_reply: bool,
+        team_id: str = "",
+    ) -> bool:
+        """Return True if the bot should wake on an un-mentioned message.
+
+        Combines the four wake checks:
+          1. _bot_message_ts           (thread root was sent by us via send())
+          2. _mentioned_threads        (someone @-mentioned us earlier)
+          3. _has_active_session...    (there's already an agent session)
+          4. _bot_authored_thread_root (#63530: the bot posted the thread root
+             via direct chat.postMessage, outside the gateway send() path —
+             derived from the Slack API, so it also survives restarts).
+
+        Extracted from the inline branch in _handle_slack_message so it
+        can be unit-tested without spinning up Slack or a real adapter
+        lifecycle.
+        """
+        if not event_thread_ts:
+            return False
+        if is_thread_reply and event_thread_ts in self._bot_message_ts:
+            return True
+        if event_thread_ts in self._mentioned_threads:
+            return True
+        if is_thread_reply and self._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            user_id=user_id,
+            team_id=team_id,
+        ):
+            return True
+        # 4th check: bot-initiated thread via direct chat.postMessage.
+        if is_thread_reply and await self._bot_authored_thread_root(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            team_id=team_id,
+        ):
+            return True
+        return False
+
     async def _handle_slack_message(
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
@@ -3799,23 +3902,12 @@ class SlackAdapter(BasePlatformAdapter):
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
-                reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
-                )
-                in_mentioned_thread = (
-                    event_thread_ts is not None
-                    and event_thread_ts in self._mentioned_threads
-                )
-                has_session = is_thread_reply and self._has_active_session_for_thread(
+                if not await self._should_wake_on_unmentioned_message(
+                    event_thread_ts=event_thread_ts,
                     channel_id=channel_id,
-                    thread_ts=event_thread_ts,
                     user_id=user_id,
                     team_id=team_id,
-                )
-                if (
-                    not reply_to_bot_thread
-                    and not in_mentioned_thread
-                    and not has_session
+                    is_thread_reply=is_thread_reply,
                 ):
                     return
 
@@ -5220,11 +5312,26 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id=team_id,
                 channel_id=channel_id,
             )
+            # Capture the parent message's user_id so _bot_authored_thread_root
+            # can detect threads whose root was posted by us via direct
+            # chat.postMessage (outside the gateway's send() path). #63530:
+            # bot-initiated threads with no active session were silently
+            # dropping human replies because _bot_message_ts only records
+            # gateway-routed sends.
+            parent_user_id = next(
+                (
+                    m.get("user", "") or ""
+                    for m in messages
+                    if m.get("ts", "") == thread_ts
+                ),
+                "",
+            )
             self._thread_context_cache[cache_key] = _ThreadContextCache(
                 content=content,
                 fetched_at=now,
                 message_count=len(messages),
                 parent_text=parent_text,
+                parent_user_id=parent_user_id,
                 messages=list(messages),
             )
             if after_ts:

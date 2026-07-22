@@ -288,11 +288,12 @@ def test_vertex_normalization_agrees_with_anthropic_detection():
         assert is_anthropic_vertex_model(normalized)
 
 
-@pytest.mark.parametrize("short_alias", ["sonnet", "fable", "claude"])
+@pytest.mark.parametrize("short_alias", ["sonnet", "fable", "opus", "claude"])
 def test_short_claude_aliases_resolve_on_vertex(short_alias):
     """Short Claude aliases for models actually in Vertex's curated catalog
-    (_PROVIDER_MODELS["vertex"]: claude-fable-5, claude-sonnet-5) must resolve
-    to a bare, is_anthropic_vertex_model-recognized ID.
+    (_PROVIDER_MODELS["vertex"]: claude-fable-5, claude-opus-4-8,
+    claude-sonnet-5) must resolve to a bare, is_anthropic_vertex_model-
+    recognized ID.
 
     A missing MODEL_ALIASES entry (e.g. "fable" was absent) makes
     resolve_alias() return None, so switch_model() falls through and passes
@@ -301,9 +302,9 @@ def test_short_claude_aliases_resolve_on_vertex(short_alias):
     'fable')" because the bare short name was never routed through the
     AnthropicVertex SDK path in the first place.
 
-    Note: "opus"/"haiku" are deliberately excluded — Vertex's curated catalog
-    doesn't currently list an opus/haiku model, so those aliases legitimately
-    fail to resolve there (a separate, pre-existing gap).
+    Note: "haiku" is deliberately excluded — Vertex's curated catalog
+    doesn't currently list a haiku model, so that alias legitimately
+    fails to resolve there.
     """
     from agent.vertex_adapter import is_anthropic_vertex_model
     from hermes_cli.model_switch import resolve_alias

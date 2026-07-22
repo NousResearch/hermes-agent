@@ -380,6 +380,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # only: bare aliases 404 on the Vertex surface.
     "vertex": [
         "claude-fable-5",
+        "claude-opus-4-8",
         "claude-sonnet-5",
         "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",

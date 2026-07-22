@@ -129,10 +129,15 @@ class TestDisplayResumedHistory:
     def test_simple_history_shows_user_and_assistant(self):
         cli = _make_cli()
         cli.conversation_history = _simple_history()
-        output = self._capture_display(cli)
+
+        skin = MagicMock()
+        skin.get_branding.return_value = "Test Agent"
+        skin.get_color.side_effect = lambda _name, default: default
+        with patch("hermes_cli.skin_engine.get_active_skin", return_value=skin):
+            output = self._capture_display(cli)
 
         assert "You:" in output
-        assert "Hermes:" in output
+        assert output.count("◆ Test Agent:") == 2
         assert "What is Python?" in output
         assert "Python is a high-level programming language." in output
         assert "How do I install it?" in output
@@ -333,7 +338,7 @@ class TestDisplayResumedHistory:
 
         # The assistant entry should be skipped, only the user message shown
         assert "You:" in output
-        assert "Hermes:" not in output
+        assert "◆" not in output  # no assistant entries to show
 
     def test_only_system_messages_no_output(self):
         cli = _make_cli()

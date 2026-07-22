@@ -539,6 +539,22 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Embeddings model config
+    if config.get("embeddings_model"):
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"] = str(
+            config["embeddings_model"]
+        )
+    if config.get("embeddings_local_force_cpu"):
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] = "1"
+
+    # Reranker model config
+    if config.get("reranker_model"):
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_MODEL"] = str(
+            config["reranker_model"]
+        )
+    if config.get("reranker_local_force_cpu"):
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = "1"
     return env_values
 
 
@@ -553,10 +569,8 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
-        encoding="utf-8",
-    )
+    content = "".join(f"{key}={value}\n" for key, value in env_values.items())
+    profile_env.write_text(content, encoding="utf-8")
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:
@@ -1028,6 +1042,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     raise ImportError(str(_e))
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
+
+                # Ensure profile .env includes embeddings/reranker config
+                _materialize_embedded_profile_env(self._config)
+
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
@@ -1822,6 +1840,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._session_turns:
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
+            old_document_id = self._document_id
             old_parent_session_id = self._parent_session_id
             old_turn_index = self._turn_index
             old_metadata = self._build_metadata(

@@ -696,13 +696,16 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
 def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
     Strategy 9: Line-by-line similarity with 50% threshold.
-    
+
     Finds blocks where at least 50% of lines have high similarity.
+    Single-line patterns are excluded: earlier normalization strategies cover
+    safe formatting drift, while approximate one-line matches provide too
+    little context to authorize a replacement.
     """
     pattern_lines = pattern.split('\n')
     content_lines = content.split('\n')
-    
-    if not pattern_lines:
+
+    if len(pattern_lines) < 2:
         return []
     
     matches = []

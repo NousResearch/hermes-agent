@@ -1056,6 +1056,44 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
+  it('flags prompt.submit with interrupted:true after a voice-playback barge', async () => {
+    const { markVoicePlaybackInterrupted } = await import('@/lib/voice-playback')
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    markVoicePlaybackInterrupted()
+    await handle!.submitText('stop! rude interruption')
+
+    // The latch is one-shot: the flag rides this submit, the next is clean.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'stop! rude interruption',
+        interrupted: true
+      },
+      1_800_000
+    )
+
+    await handle!.submitText('follow-up without a barge')
+    expect(requestGateway).toHaveBeenLastCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'follow-up without a barge'
+      },
+      1_800_000
+    )
+  })
+
   it('a fromQueue drain sends even when busyRef is still true on the settle edge', async () => {
     // busyRef lags $busy by one effect tick on the busy→false settle edge, so a
     // drained queue send would otherwise hit the busy guard and silently no-op.

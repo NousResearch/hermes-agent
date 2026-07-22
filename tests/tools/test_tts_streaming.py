@@ -53,6 +53,26 @@ class TestSentenceChunker:
         ]
 
 
+# ── Interruption latch ───────────────────────────────────────────────────
+
+
+class TestSpeechInterruptedLatch:
+    def test_take_pops_and_reports_recent_barge(self):
+        ts.mark_speech_interrupted()
+        assert ts.take_speech_interrupted() is True
+        assert ts.take_speech_interrupted() is False  # one-shot
+
+    def test_untouched_latch_is_false(self):
+        ts._interrupted_at = None
+        assert ts.take_speech_interrupted() is False
+
+    def test_stale_barge_expires(self, monkeypatch):
+        ts.mark_speech_interrupted()
+        at = ts._interrupted_at
+        monkeypatch.setattr(ts.time, "monotonic", lambda: at + ts._INTERRUPT_TTL_S + 1)
+        assert ts.take_speech_interrupted() is False
+
+
 # ── Registry + resolver ──────────────────────────────────────────────────
 
 

@@ -174,6 +174,8 @@ You can interrupt the agent mid-speech:
 - **Talk over it** — in continuous voice mode, a voice-activity monitor listens while the agent speaks and cuts playback the moment you start talking, then goes straight back to recording. The detector calibrates its noise floor against the playback itself, so speaker bleed doesn't self-trigger. Disable with `voice.barge_in: false` in `config.yaml`.
 - **Type or press the record key** — sending a new message or hitting the push-to-talk key stops playback instantly on every surface.
 
+The agent **knows** it was interrupted: the next message carries a short note telling the model its spoken reply was cut off, so it can react naturally ("rude!") or pick up where it left off instead of being oblivious.
+
 ### Hallucination Filter
 
 Whisper sometimes generates phantom text from silence or background noise ("Thank you for watching", "Subscribe", etc.). The agent filters these out using a set of 26 known hallucination phrases across multiple languages, plus a regex pattern that catches repetitive variations.

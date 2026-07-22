@@ -433,3 +433,24 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
 export function isVoicePlaybackActive() {
   return $voicePlayback.get().status !== 'idle'
 }
+
+// ---------------------------------------------------------------------------
+// Interruption latch — the next prompt.submit carries `interrupted: true` so
+// the model knows its spoken reply was cut off (it can react: "rude!").
+// Marked by the barge-in paths (VAD, typing over playback); TTL'd so a stale
+// barge never annotates an unrelated message minutes later.
+// ---------------------------------------------------------------------------
+
+const INTERRUPT_TTL_MS = 120_000
+let interruptedAt: null | number = null
+
+export function markVoicePlaybackInterrupted() {
+  interruptedAt = Date.now()
+}
+
+export function takeVoicePlaybackInterrupted(): boolean {
+  const at = interruptedAt
+  interruptedAt = null
+
+  return at !== null && Date.now() - at < INTERRUPT_TTL_MS
+}

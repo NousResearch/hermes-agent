@@ -5,10 +5,10 @@ Verifies:
   * the underscored alias ``/reload_skills`` is not flagged as unknown
   * the handler invokes ``agent.skill_commands.reload_skills`` and renders a
     human-readable diff
-  * when any skills changed, a one-shot note is queued on
-    ``runner._pending_skills_reload_notes[session_key]`` (the agent loop
-    consumes and clears it on the next user turn — see ``gateway/run.py``
-    near the ``_has_fresh_tool_tail`` block)
+  * when any fingerprint component changed, the response contains the exact
+    marker ``SESSION_REFRESH_REQUIRED``
+  * changed reloads do not clear the current agent cache or queue a next-turn
+    reload note
   * the handler does NOT append to the session transcript out-of-band —
     message alternation must not be broken by a phantom user turn
 """
@@ -70,6 +70,7 @@ def _make_runner():
     runner.session_store.append_to_transcript = MagicMock()
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
+    runner._agent_cache = {"sentinel": object()}
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
@@ -89,8 +90,8 @@ def _make_runner():
 
 
 @pytest.mark.asyncio
-async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
-    """Diff non-empty → handler queues a one-shot note and does NOT touch transcript."""
+async def test_reload_skills_handler_requires_new_session_on_diff(monkeypatch):
+    """Diff non-empty → require /new without touching cache or transcript."""
     fake_result = {
         "added": [
             {"name": "alpha", "description": "Run alpha to do xyz"},
@@ -102,12 +103,15 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
         "unchanged": ["delta"],
         "total": 3,
         "commands": 3,
+        "changed": True,
+        "changed_components": ["enabled_skill_ids", "skill_contents"],
     }
 
     import agent.skill_commands as skill_commands_mod
     monkeypatch.setattr(skill_commands_mod, "reload_skills", lambda: fake_result)
 
     runner = _make_runner()
+    agent_cache = runner._agent_cache
     event = _make_event("/reload-skills")
     out = await runner._handle_reload_skills_command(event)
 
@@ -119,23 +123,45 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     assert "Removed Skills:" in out
     assert "- gamma: Old removed skill" in out
     assert "3 skill(s) available" in out
+    assert "SESSION_REFRESH_REQUIRED" in out
 
     # MUST NOT write to the session transcript — that would break alternation.
     runner.session_store.append_to_transcript.assert_not_called()
 
-    # MUST have queued a one-shot note keyed on the session.
+    # MUST NOT queue a synthetic next-turn note or clear the current agent cache.
     pending = getattr(runner, "_pending_skills_reload_notes", None)
-    assert pending is not None
-    session_key = runner._session_key_for_source(event.source)
-    assert session_key in pending
-    note = pending[session_key]
-    assert note.startswith("[USER INITIATED SKILLS RELOAD:")
-    assert note.endswith("Use skills_list to see the updated catalog.]")
-    assert "Added Skills:" in note
-    assert "    - alpha: Run alpha to do xyz" in note
-    assert "    - beta: Run beta to do abc" in note
-    assert "Removed Skills:" in note
-    assert "    - gamma: Old removed skill" in note
+    assert not pending
+    assert runner._agent_cache is agent_cache
+
+
+@pytest.mark.asyncio
+async def test_reload_skills_handler_marks_content_only_change(monkeypatch):
+    """Content/schema-only changes still require a new session."""
+    import agent.skill_commands as skill_commands_mod
+
+    monkeypatch.setattr(
+        skill_commands_mod,
+        "reload_skills",
+        lambda: {
+            "added": [],
+            "removed": [],
+            "unchanged": ["alpha"],
+            "total": 1,
+            "commands": 1,
+            "changed": True,
+            "changed_components": ["skill_contents"],
+        },
+    )
+
+    runner = _make_runner()
+    out = await runner._handle_reload_skills_command(
+        _make_event("/reload-skills")
+    )
+
+    assert "SESSION_REFRESH_REQUIRED" in out
+    assert "No new skills detected" not in out
+    assert not getattr(runner, "_pending_skills_reload_notes", None)
+    runner.session_store.append_to_transcript.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -152,6 +178,8 @@ async def test_reload_skills_handler_reports_no_changes(monkeypatch):
             "unchanged": ["alpha"],
             "total": 1,
             "commands": 1,
+            "changed": False,
+            "changed_components": [],
         },
     )
 
@@ -160,6 +188,7 @@ async def test_reload_skills_handler_reports_no_changes(monkeypatch):
 
     assert "No new skills detected" in out
     assert "1 skill(s) available" in out
+    assert "SESSION_REFRESH_REQUIRED" not in out
     runner.session_store.append_to_transcript.assert_not_called()
     # No queued note when nothing changed.
     pending = getattr(runner, "_pending_skills_reload_notes", None)

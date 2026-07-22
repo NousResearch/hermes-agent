@@ -4,6 +4,7 @@ Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
 can invoke skills via /skill-name commands.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -22,9 +23,15 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_refresh_fingerprint: Optional[Dict[str, str]] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SKILL_REFRESH_COMPONENTS = (
+    "enabled_skill_ids",
+    "skill_contents",
+    "tool_schema",
+)
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -405,6 +412,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "_skill_content_sha256": hashlib.sha256(
+                            content.encode("utf-8")
+                        ).hexdigest(),
                     }
                 except Exception:
                     continue
@@ -420,12 +430,82 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     process serving Telegram and Discord concurrently) so each platform
     sees its own ``skills.platform_disabled`` view (#14536).
     """
+    global _skill_refresh_fingerprint
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
     ):
         scan_skill_commands()
+    if _skill_refresh_fingerprint is None:
+        _skill_refresh_fingerprint = _build_skill_refresh_fingerprint(
+            _skill_commands
+        )
     return _skill_commands
+
+
+def _canonical_tool_schema_json() -> str:
+    """Return the current tool schema as stable canonical JSON."""
+    from model_tools import get_tool_definitions
+
+    schemas = get_tool_definitions(quiet_mode=True)
+    ordered = sorted(
+        schemas,
+        key=lambda schema: (
+            str((schema.get("function") or {}).get("name") or ""),
+            json.dumps(
+                schema,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+    )
+    return json.dumps(
+        ordered,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _build_skill_refresh_fingerprint(
+    commands: Dict[str, Dict[str, Any]],
+) -> Dict[str, str]:
+    """Hash every prompt-affecting skill/tool component independently."""
+    enabled_skill_ids = sorted(
+        str((info or {}).get("name") or slash_key.lstrip("/"))
+        for slash_key, info in commands.items()
+    )
+    skill_contents = []
+    for slash_key, info in sorted(commands.items()):
+        info = info or {}
+        skill_id = str(info.get("name") or slash_key.lstrip("/"))
+        content_sha256 = str(info.get("_skill_content_sha256") or "")
+        if not content_sha256:
+            try:
+                content_sha256 = hashlib.sha256(
+                    Path(str(info.get("skill_md_path") or "")).read_bytes()
+                ).hexdigest()
+            except OSError:
+                content_sha256 = ""
+        skill_contents.append({"id": skill_id, "sha256": content_sha256})
+
+    def _digest(value: Any) -> str:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    return {
+        "enabled_skill_ids": _digest(enabled_skill_ids),
+        "skill_contents": _digest(skill_contents),
+        "tool_schema": hashlib.sha256(
+            _canonical_tool_schema_json().encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def reload_skills() -> Dict[str, Any]:
@@ -441,6 +521,12 @@ def reload_skills() -> Dict[str, Any]:
     Keeping the prompt cache intact preserves prefix caching across the
     reload, so a user invoking ``/reload-skills`` pays no cache-reset cost.
 
+    The refresh fingerprint covers three independently reported components:
+    sorted enabled skill IDs, each enabled skill's complete ``SKILL.md``
+    content, and the canonical JSON tool schema. Content-only and schema-only
+    changes therefore require a fresh session even when the slash-command set
+    is unchanged.
+
     Returns:
         Dict with keys::
 
@@ -450,6 +536,8 @@ def reload_skills() -> Dict[str, Any]:
               "unchanged":  [skill names present before and after],
               "total":      total skill count after rescan,
               "commands":   total /slash-skill count after rescan,
+              "changed":    whether any fingerprint component changed,
+              "changed_components": [changed component names],
             }
 
         ``description`` is the skill's full SKILL.md frontmatter
@@ -467,13 +555,27 @@ def reload_skills() -> Dict[str, Any]:
             out[bare] = (info or {}).get("description") or ""
         return out
 
+    global _skill_refresh_fingerprint
+
     before = _snapshot(_skill_commands)
+    before_fingerprint = (
+        dict(_skill_refresh_fingerprint)
+        if _skill_refresh_fingerprint is not None
+        else _build_skill_refresh_fingerprint(_skill_commands)
+    )
 
     # Rescan the skills dir. ``scan_skill_commands`` resets
     # ``_skill_commands = {}`` internally and repopulates it.
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)
+    after_fingerprint = _build_skill_refresh_fingerprint(new_commands)
+    changed_components = [
+        component
+        for component in _SKILL_REFRESH_COMPONENTS
+        if before_fingerprint.get(component) != after_fingerprint.get(component)
+    ]
+    _skill_refresh_fingerprint = after_fingerprint
 
     added_names = sorted(set(after) - set(before))
     removed_names = sorted(set(before) - set(after))
@@ -490,6 +592,8 @@ def reload_skills() -> Dict[str, Any]:
         "unchanged": unchanged,
         "total": len(after),
         "commands": len(new_commands),
+        "changed": bool(changed_components),
+        "changed_components": changed_components,
     }
 
 

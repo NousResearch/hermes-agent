@@ -922,10 +922,9 @@ class TestUpdateInHelp:
         assert "/update" in result
 
     def test_update_is_known_command(self):
-        """The /update command is in the help text (proxy for _known_commands)."""
-        # _known_commands is local to _handle_message, so we verify by
-        # checking the help output includes it.
-        from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"update"' in source
+        """The registry resolves /update as a gateway-dispatchable command."""
+        from hermes_cli.commands import is_gateway_known_command, resolve_command
+
+        definition = resolve_command("update")
+        assert definition is not None and definition.name == "update"
+        assert is_gateway_known_command(definition.name)

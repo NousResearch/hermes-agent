@@ -962,7 +962,9 @@ class PluginContext:
         """
         from gateway.platform_registry import platform_registry, PlatformEntry
 
-        entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        # Registration metadata is host-owned. A plugin must not impersonate a
+        # different manifest identity through forwarded PlatformEntry kwargs.
+        entry_kwargs["plugin_name"] = self.manifest.name
         entry = PlatformEntry(
             name=name,
             label=label,

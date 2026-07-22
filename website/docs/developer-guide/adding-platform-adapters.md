@@ -458,6 +458,79 @@ See `plugins/platforms/irc/` in the repo for a complete working example — a fu
 
 ---
 
+## Security-context trust grants
+
+Adapters that originate `SecurityContext` objects require an explicit,
+host-owned trust grant. A plugin's registration metadata (including the legacy
+`trusted_security_context` flag) is not authority by itself. Without an exact
+host grant, the gateway treats the adapter as untrusted and rejects security
+contexts from it.
+
+Configure grants under `gateway.security_context_trust_grants` in
+`~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  security_context_trust_grants:
+    - platform: my-platform
+      adapter_module: my_plugin.adapter
+      adapter_class: MyPlatformAdapter
+      plugin_name: my-plugin
+```
+
+Each list item has this schema:
+
+| Field | Required | Meaning |
+|---|---:|---|
+| `platform` | yes | Exact platform registry name and `adapter.platform.value`. |
+| `adapter_module` | yes | Importable Python module containing the adapter class. |
+| `adapter_class` | yes | Exact class qualified name within that module. Nested classes use their dotted `__qualname__`; local classes are rejected. |
+| `plugin_name` | no | Exact owning `PlatformEntry.plugin_name`. Omit it only for entries whose plugin name is empty. |
+
+Validation is fail-closed at two stages. Configuration parsing drops entries
+that are not mappings or that omit a required field. At runtime Hermes imports
+`adapter_module`, resolves every component of `adapter_class`, and requires the
+resolved object to be the adapter's exact type (subclasses do not match). It
+also requires an exact platform, plugin name, current registry entry, and
+host-recorded factory provenance match. Replacing or re-registering the entry
+revokes the match. Restart the gateway after changing a grant, then verify that
+trusted traffic succeeds and a deliberately mismatched grant is denied.
+
+To discover values rather than guessing them:
+
+1. Run `hermes plugins list --plain` to find the enabled plugin's canonical
+   name; use that as `plugin_name`.
+2. Open the plugin's platform-registration call and note its `PlatformEntry`
+   `name` and the concrete class returned by `adapter_factory`.
+3. In Python, the exact values are `type(adapter).__module__` and
+   `type(adapter).__qualname__` for the factory-created adapter instance. These
+   become `adapter_module` and `adapter_class` respectively.
+4. Compare the configured round trip without printing credentials:
+
+   ```bash
+   uv run python - <<'PY'
+   from gateway.config import load_gateway_config
+   for grant in load_gateway_config().security_context_trust_grants:
+       print(grant.to_dict())
+   PY
+   ```
+
+A trusted adapter must attach a context to every event. Its context should use
+neutral, explicit exposure capabilities: `expose_private_context`,
+`expose_memory`, and `expose_identity`. These booleans are included in the
+canonical capability hash. The secure defaults are `false`, `false`, and
+`true`; adapters must opt in explicitly before exposing private context files
+or memory. Authority and capability-bundle labels are descriptive and do not
+implicitly grant any of these exposures.
+
+Every trusted context is also subject to the gateway's shared freshness contract.
+`authenticated_at` must be timezone-aware, no more than five minutes old, and
+no more than 30 seconds in the future. Hermes enforces this at adapter admission
+and again before capability revalidation/tool dispatch. Adapter-specific live
+revalidation remains mandatory; it does not extend or replace the generic age
+limit. Refreshing authentication evidence may update `authenticated_at` without
+changing the canonical capability hash.
+
 ## Step-by-Step Checklist (Built-in Path)
 
 :::note

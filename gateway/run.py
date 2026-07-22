@@ -5930,18 +5930,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _approval_handler = self._handle_approve_command
                     _normalized_args = "session"
                 if _approval_handler is not None:
-                    # Synthesize the canonical "/approve [args]" / "/deny"
-                    # command text so the slash handlers parse modifiers via
-                    # event.get_command_args().  Always use a literal "/" —
-                    # MessageEvent.is_command()/get_command_args() only
-                    # recognize the "/" prefix, not the per-platform display
-                    # prefix ("!" on Slack/Matrix).
                     _verb = "approve" if _approval_handler is self._handle_approve_command else "deny"
+                    _approval_denied = await self._authorize_security_action(
+                        event, self._command_security_action(_verb)
+                    )
+                    # Synthesize only after authorization so a denial cannot
+                    # mutate event state or signal the waiting approval.
                     _synth = f"/{_verb}"
                     if _normalized_args:
                         _synth = f"{_synth} {_normalized_args}"
-                    event.text = _synth
-                    _reply = await _approval_handler(event)
+                    if _approval_denied is None:
+                        event.text = _synth
+                        _reply = await _approval_handler(event)
+                    else:
+                        _reply = _approval_denied
                     logger.info(
                         "Approval response via plain text: session=%s verb=%s args=%r",
                         session_key, _verb, _normalized_args,
@@ -7783,7 +7785,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             
             # Set up message + fatal error handlers
-            adapter.set_message_handler(self._handle_message)
+            self._install_adapter_security_preflight(adapter)
+            adapter.set_message_handler(self._make_adapter_message_handler(adapter))
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8348,6 +8351,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"platform '{platform_name}' is not active in this gateway"
             )
 
+        # Trusted adapters require an adapter-bound context at intake. A CLI
+        # handoff has no such live inbound context, so fail closed before thread
+        # creation, session lookup/switch, cache eviction, or worker release.
+        # A future internal handoff capability must be explicit rather than
+        # silently manufacturing provenance here.
+        if (
+            getattr(adapter, "_host_security_context_trusted_instance", False)
+            or self._adapter_has_live_security_trust(adapter)
+        ):
+            from gateway.security_context import SecurityContextError
+
+            raise SecurityContextError("handoff_security_context_missing")
+
         # Home channel must be configured
         home = self.config.get_home_channel(platform)
         if not home or not home.chat_id:
@@ -8762,7 +8778,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         del self._failed_platforms[platform]
                         continue
 
-                    adapter.set_message_handler(self._handle_message)
+                    self._install_adapter_security_preflight(adapter)
+                    adapter.set_message_handler(self._make_adapter_message_handler(adapter))
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -9634,7 +9651,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
-        adapter.set_message_handler(self._make_profile_message_handler(profile_name))
+        self._install_adapter_security_preflight(adapter)
+        adapter.set_message_handler(
+            self._make_profile_message_handler(profile_name, adapter)
+        )
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)
         )
@@ -9813,7 +9833,174 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Reconnect is scoped to the profile's own config and secret mapping;
         # never rebuild a secondary adapter with the default profile's credentials.
 
-    def _make_profile_message_handler(self, profile_name: str):
+    async def _authorize_security_action(self, event, action: str) -> Optional[str]:
+        """Fail closed for secure contexts; preserve legacy command behaviour."""
+        from gateway.security_context import require_action_for_context
+
+        context = getattr(event, "security_context", None)
+        if context is None:
+            context = getattr(getattr(event, "source", None), "security_context", None)
+        try:
+            await require_action_for_context(context, action)
+        except PermissionError as exc:
+            logger.warning("Secure gateway action denied: action=%s reason=%s", action, exc)
+            return f"Action denied by capability: `{action}`."
+        return None
+
+    @staticmethod
+    def _command_security_action(command_name: str) -> str:
+        # /new and /reset share one destructive session-boundary capability.
+        canonical = str(command_name or "").strip().lower()
+        if canonical == "new":
+            canonical = "reset"
+        return f"command.{canonical}" if canonical else "command.unknown"
+
+    def _adapter_has_live_security_trust(self, adapter) -> bool:
+        """Check exact adapter provenance against current registry and grants."""
+        from gateway.platform_registry import platform_registry
+
+        platform_name = str(getattr(getattr(adapter, "platform", None), "value", ""))
+        entry = platform_registry.adapter_matches_current_entry(adapter, platform_name)
+        if entry is None:
+            return False
+        grants = tuple(
+            getattr(self.config, "security_context_trust_grants", ()) or ()
+        )
+        return any(grant.matches(adapter, entry) for grant in grants)
+
+    def _issue_live_adapter_security_capability(self, adapter):
+        """Issue a capability whose callback consults live host state."""
+        from gateway.security_context import (
+            SecurityContextError,
+            issue_adapter_security_capability,
+        )
+
+        if not self._adapter_has_live_security_trust(adapter):
+            raise SecurityContextError("security_adapter_not_trusted")
+
+        async def _live_revalidate(context, dispatch_name):
+            if not self._adapter_has_live_security_trust(adapter):
+                raise SecurityContextError("security_adapter_trust_revoked")
+            if context.platform != adapter.platform.value:
+                raise SecurityContextError("security_platform_drift")
+            await adapter.revalidate_security_context(context, dispatch_name)
+
+        return issue_adapter_security_capability(
+            adapter,
+            asyncio.get_running_loop(),
+            _live_revalidate,
+        )
+
+    @staticmethod
+    def _preflight_command_name(event) -> str | None:
+        """Resolve command authority without mutating the inbound event."""
+        from gateway.platforms.base import coerce_plaintext_gateway_command
+        from hermes_cli.commands import resolve_command
+
+        probe = dataclasses.replace(event)
+        coerce_plaintext_gateway_command(probe)
+        command = probe.get_command()
+        definition = resolve_command(command) if command else None
+        return definition.name if definition is not None else command
+
+    def _install_adapter_security_preflight(self, adapter) -> None:
+        """Install the earliest intake gate only on this exact trusted instance."""
+        from gateway.security_context import (
+            AdapterSecurityCapability,
+            SecurityContext,
+            SecurityContextError,
+            bind_context_to_adapter,
+            require_action_for_context,
+        )
+
+        try:
+            capability = self._issue_live_adapter_security_capability(adapter)
+        except PermissionError:
+            setter = getattr(adapter, "set_security_preflight", None)
+            if callable(setter):
+                setter(None)
+            return
+
+        # Permanent for this adapter object: later grant removal or registry
+        # replacement must revoke trust, not downgrade the instance into the
+        # legacy context-free handoff path.
+        adapter._host_security_context_trusted_instance = True
+
+        async def _preflight(event):
+            if not self._adapter_has_live_security_trust(adapter):
+                capability.revoke()
+                raise SecurityContextError("security_adapter_trust_revoked")
+            context = getattr(event, "security_context", None)
+            if not isinstance(context, SecurityContext) or not isinstance(
+                capability, AdapterSecurityCapability
+            ):
+                raise SecurityContextError("security_context_missing")
+            if not capability.belongs_to_adapter_source(event.source):
+                raise SecurityContextError("security_adapter_source_mismatch")
+
+            context = bind_context_to_adapter(context, capability)
+            context.verify()
+            await capability.revalidate_async(context, "intake")
+            if context.platform != event.source.platform.value:
+                raise SecurityContextError("security_platform_drift")
+            if context.principal_id != str(event.source.user_id or ""):
+                raise SecurityContextError("security_principal_drift")
+            if context.denied:
+                raise SecurityContextError("security_context_denied")
+
+            command = self._preflight_command_name(event)
+            if command:
+                await require_action_for_context(
+                    context, self._command_security_action(command)
+                )
+
+            source = dataclasses.replace(event.source, security_context=context)
+            return dataclasses.replace(
+                event,
+                source=source,
+                security_context=context,
+                _adapter_security_capability=capability,
+            )
+
+        setter = getattr(adapter, "set_security_preflight", None)
+        if not callable(setter):
+            raise PermissionError("trusted adapter lacks security preflight boundary")
+        setter(_preflight)
+
+    def _make_adapter_message_handler(
+        self, adapter, profile_name: str | None = None
+    ):
+        """Bind inbound events to one exact adapter instance."""
+        try:
+            capability = self._issue_live_adapter_security_capability(adapter)
+        except PermissionError:
+            capability = None
+
+        async def _handler(event):
+            stamped_capability = getattr(
+                event, "_adapter_security_capability", None
+            ) or capability
+            if stamped_capability is not None and not self._adapter_has_live_security_trust(adapter):
+                stamped_capability.revoke()
+                stamped_capability = None
+            # Always overwrite provenance; event kwargs are not authority.
+            event = dataclasses.replace(
+                event, _adapter_security_capability=stamped_capability
+            )
+            try:
+                if (
+                    profile_name
+                    and getattr(event, "source", None) is not None
+                    and not event.source.profile
+                ):
+                    event.source.profile = profile_name
+            except Exception:
+                pass
+            return await self._handle_message(event)
+
+        return _handler
+
+    def _make_profile_message_handler(self, profile_name: str, adapter=None):
         """Return a message handler that stamps source.profile then delegates.
 
         Auth runs inside ``_handle_message`` *before* the agent-turn scope is
@@ -9827,6 +10014,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_home = get_profile_dir(profile_name)
         except Exception:
             profile_home = None
+        secured_handler = (
+            self._make_adapter_message_handler(adapter, profile_name=profile_name)
+            if adapter is not None
+            else self._handle_message
+        )
 
         async def _handler(event):
             try:
@@ -9836,8 +10028,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
             if profile_home is not None:
                 with _profile_runtime_scope(profile_home):
-                    return await self._handle_message(event)
-            return await self._handle_message(event)
+                    return await secured_handler(event)
+            return await secured_handler(event)
 
         return _handler
 
@@ -10236,18 +10428,71 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return switched
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
-        """
-        Handle an incoming message from any platform.
-        
-        This is the core message processing pipeline:
-        1. Check user authorization
-        2. Check for commands (/new, /reset, etc.)
-        3. Check for running agent and interrupt if needed
-        4. Get or create session
-        5. Build context for agent
-        6. Run agent conversation
-        7. Return response
-        """
+        """Validate provenance, bind security context, then enter the pipeline."""
+        from gateway.security_context import (
+            AdapterSecurityCapability,
+            SecurityContext,
+            bind_context_to_adapter,
+            bind_security_context,
+            reset_security_context,
+        )
+
+        source = event.source
+        context = getattr(event, "security_context", None)
+        capability = getattr(event, "_adapter_security_capability", None)
+        if context is not None:
+            if not isinstance(context, SecurityContext) or not isinstance(
+                capability, AdapterSecurityCapability
+            ):
+                logger.error("Unprovenanced security context; message denied")
+                return None
+            if not capability.belongs_to_adapter_source(source):
+                logger.error("Security adapter/source mismatch; message denied")
+                return None
+            try:
+                context = bind_context_to_adapter(context, capability)
+                context.verify()
+                # Re-entered queued/steered/retried/goal events carry the
+                # original opaque capability. Revalidate it against live host
+                # registry/config state before any command or session effect.
+                await capability.revalidate_async(context, "intake")
+            except PermissionError:
+                logger.error("Invalid security context; message denied", exc_info=True)
+                return None
+            if context.platform != source.platform.value:
+                logger.error("Security platform/source mismatch; message denied")
+                return None
+            if context.principal_id != str(source.user_id or ""):
+                logger.error("Security principal/source mismatch; message denied")
+                return None
+            if context.denied:
+                # Must stop before slash-command handling or session creation.
+                logger.info("Denied security context stopped at gateway intake")
+                return None
+            source = dataclasses.replace(source, security_context=context)
+            event = dataclasses.replace(event, source=source, security_context=context)
+        elif capability is not None:
+            # A trusted adapter must produce a context for every inbound event.
+            logger.error("Trusted security adapter omitted context; message denied")
+            return None
+        else:
+            # Direct synthetic callers (handoff, startup resume, completion and
+            # other internal paths) do not pass through the per-adapter handler.
+            # They must not turn omission of both envelope fields into a legacy
+            # downgrade for a platform currently registered as trusted.
+            adapter = self._adapter_for_source(source)
+            if adapter is not None and self._adapter_has_live_security_trust(adapter):
+                logger.error("Trusted platform event omitted security context; message denied")
+                return None
+
+        token = bind_security_context(context)
+        try:
+            return await self._handle_message_impl(event)
+        finally:
+            reset_security_context(token)
+
+    async def _handle_message_impl(self, event: MessageEvent) -> Optional[str]:
+        """Core message processing pipeline after security intake."""
         source = event.source
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
@@ -10329,6 +10574,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
 
         if is_internal:
+            pass
+        elif getattr(source, "security_context", None) is not None:
+            # Authentication and authorization were completed by the trusted
+            # adapter and bound into the immutable security context.
             pass
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,
@@ -10617,9 +10866,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
-                return await self._handle_status_command(event)
-
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
                 ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
@@ -10627,6 +10873,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            if _evt_cmd:
+                _security_command = (
+                    _cmd_def_inner.name if _cmd_def_inner is not None else _evt_cmd
+                )
+                _security_denied = await self._authorize_security_action(
+                    event, self._command_security_action(_security_command)
+                )
+                if _security_denied is not None:
+                    return _security_denied
+
+            if _cmd_def_inner and _cmd_def_inner.name == "status":
+                return await self._handle_status_command(event)
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -10713,6 +10972,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_is_own_message=event.reply_to_is_own_message,
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
+                        security_context=getattr(event, "security_context", None),
+                        _adapter_security_capability=getattr(
+                            event, "_adapter_security_capability", None
+                        ),
                         internal=event.internal,
                         timestamp=event.timestamp,
                     )
@@ -10742,6 +11005,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            security_context=getattr(event, "security_context", None),
+                            _adapter_security_capability=getattr(
+                                event, "_adapter_security_capability", None
+                            ),
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -10764,6 +11031,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        security_context=getattr(event, "security_context", None),
+                        _adapter_security_capability=getattr(
+                            event, "_adapter_security_capability", None
+                        ),
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -11051,6 +11322,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
 
+        # Secure contexts require one exact action grant before command hooks,
+        # built-ins, plugin handlers, quick-command exec, or skill expansion.
+        if command:
+            _security_denied = await self._authorize_security_action(
+                event, self._command_security_action(canonical or command or "")
+            )
+            if _security_denied is not None:
+                return _security_denied
+
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
         # vs group). When unset → backward-compat: every allowed user can
@@ -11115,6 +11395,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     command = event.get_command()
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
+                    _rewrite_denied = await self._authorize_security_action(
+                        event, self._command_security_action(canonical or command or "")
+                    )
+                    if _rewrite_denied is not None:
+                        return _rewrite_denied
                     break
 
         if canonical == "new":
@@ -12413,6 +12698,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
+        from gateway.security_context import bind_security_context
+        _security_context_token = bind_security_context(
+            getattr(source, "security_context", None)
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -13933,7 +14222,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Try again or use /reset to start a fresh session."
             )
         finally:
-            # Restore session context variables to their pre-handler state
+            # Restore session context variables to their pre-handler state.
+            from gateway.security_context import reset_security_context
+            reset_security_context(_security_context_token)
             self._clear_session_env(_session_env_tokens)
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
@@ -14501,12 +14792,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter = self._adapter_for_source(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
+                _security_context = getattr(source, "security_context", None)
                 cont_event = MessageEvent(
                     text=prompt,
                     message_type=MessageType.TEXT,
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    security_context=_security_context,
+                    _adapter_security_capability=getattr(
+                        _security_context, "_adapter_capability", None
+                    ),
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
@@ -15988,8 +16284,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         confirm_id = f"{next(counter)}"
 
         # Register the pending confirm FIRST so a super-fast button click
-        # cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        # cannot race the send_slash_confirm return. Re-check the exact command
+        # action when the callback actually dispatches; a grant or registry
+        # entry may have been revoked while the prompt was waiting.
+        async def _authorized_handler(choice: str):
+            denied = await self._authorize_security_action(
+                event, self._command_security_action(command)
+            )
+            if denied is not None:
+                return denied
+            return await handler(choice)
+
+        _slash_confirm_mod.register(
+            session_key, confirm_id, command, _authorized_handler
+        )
 
         adapter = self._adapter_for_source(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -20355,6 +20663,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # channel_overrides system_prompt (or global ephemeral), and gateway
             # ephemeral prompt from _get_system_prompt_for_channel.
             combined_ephemeral = context_prompt or ""
+            _security_context = getattr(source, "security_context", None)
+            from gateway.security_context import agent_context_options
+            _agent_context_options = agent_context_options(_security_context)
+            if _security_context is not None:
+                from gateway.security_context import build_security_context_prompt
+                combined_ephemeral = (
+                    combined_ephemeral
+                    + "\n\n"
+                    + build_security_context_prompt(_security_context)
+                ).strip()
             event_channel_prompt = (channel_prompt or "").strip()
             if event_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
@@ -20756,10 +21074,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    skip_context_files=_agent_context_options["skip_context_files"],
+                    load_soul_identity=_agent_context_options["load_soul_identity"],
+                    skip_memory=_agent_context_options["skip_memory"],
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                if _security_context is not None:
+                    from gateway.security_context import apply_security_context_to_agent
+                    apply_security_context_to_agent(agent, _security_context)
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         # Record the session_id the snapshot was taken for
@@ -20772,6 +21096,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # Bind and verify the exact authority envelope on every turn,
+            # including cached-agent reuse. Hash or provenance drift fails closed.
+            if _security_context is not None:
+                from gateway.security_context import apply_security_context_to_agent
+                apply_security_context_to_agent(agent, _security_context)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

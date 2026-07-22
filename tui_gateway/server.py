@@ -1431,6 +1431,7 @@ def _send_compute_host_control(
     command: str = "",
     payload: dict | None = None,
     wait: bool = True,
+    timeout: float = 30.0,
 ) -> dict:
     frame = dict(payload or {})
     frame.setdefault("type", "control")
@@ -1440,6 +1441,7 @@ def _send_compute_host_control(
         route_name=route_name,
         payload=frame,
         wait=wait,
+        timeout=timeout,
     )
 
 
@@ -9091,6 +9093,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         focus_topic = str(params.get("focus_topic", "") or "").strip()
@@ -9101,13 +9104,38 @@ def _(rid, params: dict) -> dict:
                 route_name="session.compress",
                 command=command,
                 wait=True,
+                timeout=120.0,
             )
         except Exception as exc:
             return _err(rid, 5019, f"compute-host compress failed: {exc}")
         if ack.get("type") in {"control.error", "error"}:
             return _err(rid, 4009, str(ack.get("message") or "compute-host compress failed"))
         _apply_compute_host_metadata_mirror(session, ack)
-        return _ok(rid, {"status": "compressed", "turn_isolation": True, "host_ack": ack})
+        host_result = ack.get("result")
+        if isinstance(host_result, dict):
+            # The host owns the isolated session's agent/history, so preserve
+            # its structured compression result verbatim. In particular this
+            # carries `status: aborted` and `summary.aborted`; flattening the
+            # old text-only acknowledgement made Desktop show aborted work as a
+            # success toast.
+            return _ok(rid, {**host_result, "turn_isolation": True})
+        host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
+        host_messages = _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else []
+        # `messages` is returned at top level for the desktop transcript
+        # replacement. Keep the host acknowledgement metadata, but do not send
+        # the same (potentially large) transcript a second time inside it.
+        host_ack = {key: value for key, value in ack.items() if key != "messages"}
+        return _ok(
+            rid,
+            {
+                "status": "compressed",
+                "turn_isolation": True,
+                "host_ack": host_ack,
+                "info": host_info,
+                "messages": host_messages,
+                "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {},
+            },
+        )
     session, err = _sess(params, rid)
     if err:
         return err
@@ -9202,7 +9230,11 @@ def _(rid, params: dict) -> dict:
                     "summary": summary,
                     "usage": usage,
                     "info": info,
-                    "messages": messages,
+                    # Keep this identical to session.resume / session.history:
+                    # raw tool results can contain large or sensitive payloads
+                    # that belong in persisted history, not the transcript
+                    # replacement response.
+                    "messages": _history_to_messages(messages),
                 },
             )
         finally:
@@ -9223,6 +9255,23 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+
+    if _session_uses_compute_host(session):
+        sid = str(params.get("session_id") or "")
+        try:
+            ack = _send_compute_host_control(
+                sid,
+                route_name="session.save",
+                wait=True,
+            )
+        except Exception as exc:
+            return _err(rid, 5011, f"compute-host session save failed: {exc}")
+        if ack.get("type") in {"control.error", "error"}:
+            return _err(rid, 5011, str(ack.get("message") or "compute-host session save failed"))
+        result = ack.get("result")
+        if not isinstance(result, dict):
+            return _err(rid, 5011, "compute-host session save returned an invalid response")
+        return _ok(rid, result)
 
     agent = session["agent"]
     # Mirror the classic CLI /save: snapshot under the Hermes profile home

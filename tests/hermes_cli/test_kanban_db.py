@@ -323,10 +323,10 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
         kb.complete_task(conn, b)
         assert kb.get_task(conn, c).status == "ready"
 
-
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
     """blocked tasks with all parents done should be promoted to ready,
-    unless the circuit-breaker failure limit has been reached."""
+    unless the circuit-breaker failure limit has been reached.
+    """
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(
@@ -351,6 +351,84 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_recompute_ready_promotes_child_of_review_required_parent(kanban_home):
+    """#67963: a parent self-parked via a `review-required:` block (a
+    transient wait, not a hard failure) must NOT deadlock its dependency
+    children. The child should promote to ready even though the parent
+    is still `blocked`.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Worker self-parks the parent awaiting review (common pattern:
+        # then spawns the follow-up review child as a dependency).
+        assert kb.block_task(
+            conn, parent, reason="review-required: awaiting human review",
+            kind="needs_input",
+        )
+        assert kb.get_task(conn, parent).status == "blocked"
+        # Child starts in todo and must be promoted despite the parent
+        # still being blocked.
+        assert kb.get_task(conn, child).status == "todo"
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_recompute_ready_still_gates_on_hard_blocked_parent(kanban_home):
+    """A parent with a genuine external block (e.g. `needs_input` without
+    the `review-required:` prefix) must still gate its children — only the
+    review-required self-park is non-gating (#67963).
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        assert kb.block_task(
+            conn, parent, reason="waiting on customer", kind="needs_input",
+        )
+        assert kb.get_task(conn, parent).status == "blocked"
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_parent_gates_children_predicate(kanban_home):
+    """Unit cases for _parent_gates_children: done/archived and a
+    review-required park do NOT gate; genuine blocks and in-progress
+    states DO gate (#67963).
+    """
+    with kb.connect() as conn:
+        done = kb.create_task(conn, title="done")
+        kb.complete_task(conn, done)
+        archived = kb.create_task(conn, title="arch")
+        kb.complete_task(conn, archived)
+        # move archived to archived
+        conn.execute("UPDATE tasks SET status='archived' WHERE id=?", (archived,))
+        review_park = kb.create_task(conn, title="rp")
+        kb.block_task(
+            conn, review_park,
+            reason="review-required: pending", kind="transient",
+        )
+        hard_block = kb.create_task(conn, title="hb")
+        kb.block_task(
+            conn, hard_block, reason="waiting on customer", kind="needs_input",
+        )
+        running = kb.create_task(conn, title="run")
+        kb.claim_task(conn, running)
+
+        assert kb._parent_gates_children(conn, done) is False
+        assert kb._parent_gates_children(conn, archived) is False
+        assert kb._parent_gates_children(conn, review_park) is False
+        assert kb._parent_gates_children(conn, hard_block) is True
+        assert kb._parent_gates_children(conn, running) is True
+        # Unknown parent fails safe (gates).
+        assert kb._parent_gates_children(conn, "does_not_exist") is True
 
 
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):

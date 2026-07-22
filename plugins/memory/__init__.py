@@ -99,9 +99,15 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     # 1. Bundled providers (plugins/memory/<name>/)
     if _MEMORY_PLUGINS_DIR.is_dir():
         for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
+            if child.name.startswith(("_", ".")):
                 continue
-            if not (child / "__init__.py").exists():
+            try:
+                is_dir = child.is_dir()
+                has_init = (child / "__init__.py").exists()
+            except OSError as exc:
+                logger.debug("Skipping inaccessible bundled memory provider %s: %s", child, exc)
+                continue
+            if not is_dir or not has_init:
                 continue
             seen.add(child.name)
             dirs.append((child.name, child))
@@ -110,7 +116,14 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     user_dir = _get_user_plugins_dir()
     if user_dir:
         for child in sorted(user_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
+            if child.name.startswith(("_", ".")):
+                continue
+            try:
+                is_dir = child.is_dir()
+            except OSError as exc:
+                logger.debug("Skipping inaccessible user memory provider %s: %s", child, exc)
+                continue
+            if not is_dir:
                 continue
             if child.name in seen:
                 continue  # bundled takes precedence

@@ -115,6 +115,38 @@ def test_gateway_health_snapshot_emits_content_free_diagnostic_event():
     assert "Bearer" not in platform["redacted_message"]
 
 
+def test_gateway_health_snapshot_preserves_real_bounded_platform_states():
+    from agent.monitoring.gateway_health import build_gateway_health_snapshot
+
+    expected = {
+        "connecting",
+        "connected",
+        "disconnected",
+        "disabled",
+        "fatal",
+        "paused",
+        "retrying",
+    }
+    snapshot = build_gateway_health_snapshot(
+        {
+            "gateway_state": "running",
+            "platforms": {state: {"state": state} for state in expected},
+        },
+        gateway_running=True,
+        profile="default",
+        install_id="install-1",
+        version="v-test",
+        supervision_mode="container",
+    )
+
+    observed = {
+        metric.attributes["hermes.platform.state"]
+        for metric in snapshot.metrics
+        if metric.name == "hermes.platform.up"
+    }
+    assert observed == expected
+
+
 def test_gateway_diagnostic_log_handler_redacts_and_filters(caplog):
     from agent.monitoring import emitter
     from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler

@@ -123,3 +123,85 @@ def determine_category(skill_name: str, category_map: Dict[str, str]) -> str:
         if fnmatch.fnmatch(skill_name, pattern):
             return category
     return "external"
+
+
+# ── Category helpers for batch operations ─────────────────────────────────────
+
+def get_skill_category(skill_name: str) -> str:
+    """Get the category for a skill from its SKILL.md frontmatter.
+    
+    Searches for the skill in ~/.hermes/skills/ and external_dirs,
+    parses the frontmatter, and returns the category field.
+    Returns 'general' if not found or if no category is specified.
+    """
+    from pathlib import Path
+    from hermes_constants import get_skills_dir
+    
+    skills_dir = get_skills_dir()
+    if not skills_dir.exists():
+        return "general"
+    
+    # Search for the skill in the skills directory
+    for skill_dir in skills_dir.rglob("*"):
+        if not skill_dir.is_dir():
+            continue
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+            # Parse YAML frontmatter
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    import yaml
+                    frontmatter = yaml.safe_load(parts[1])
+                    if isinstance(frontmatter, dict):
+                        name = frontmatter.get("name", "")
+                        if name == skill_name:
+                            return str(frontmatter.get("category", "general"))
+        except Exception:
+            continue
+    
+    return "general"
+
+
+def get_skills_by_category(category_pattern: str) -> list:
+    """Get all skills matching a category pattern (supports glob).
+    
+    Returns a list of skill names whose category matches the pattern.
+    """
+    import fnmatch
+    from pathlib import Path
+    from hermes_constants import get_skills_dir
+    
+    skills_dir = get_skills_dir()
+    if not skills_dir.exists():
+        return []
+    
+    matched_skills = []
+    
+    for skill_dir in skills_dir.rglob("*"):
+        if not skill_dir.is_dir():
+            continue
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    import yaml
+                    frontmatter = yaml.safe_load(parts[1])
+                    if isinstance(frontmatter, dict):
+                        name = frontmatter.get("name", "")
+                        cat = str(frontmatter.get("category", "general"))
+                        if name and fnmatch.fnmatch(cat, category_pattern):
+                            matched_skills.append(name)
+        except Exception:
+            continue
+    
+    return matched_skills

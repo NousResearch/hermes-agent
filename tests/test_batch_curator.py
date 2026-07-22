@@ -322,3 +322,151 @@ class TestRegisterCLI:
         
         args = parser.parse_args(["usage-filter"])
         assert hasattr(args, "func")
+
+
+class TestBatchCategory:
+    """Test batch commands with category filtering."""
+
+    def test_pin_batch_by_category(self):
+        """Test pinning skills by category pattern."""
+        from hermes_cli.curator import _cmd_pin_batch
+        
+        args = argparse.Namespace(
+            batch=None,
+            by_usage=None,
+            by_category="software-development",
+            dry_run=False,
+        )
+        
+        with patch("agent.skill_external_dirs.get_skills_by_category") as mock_cat:
+            mock_cat.return_value = ["skill-a", "skill-b"]
+            
+            with patch("tools.skill_usage.is_agent_created") as mock_is_agent:
+                mock_is_agent.return_value = True
+                
+                with patch("tools.skill_usage.set_pinned") as mock_set_pinned:
+                    result = _cmd_pin_batch(args)
+                    
+                    assert result == 0
+                    mock_cat.assert_called_once_with("software-development")
+                    assert mock_set_pinned.call_count == 2
+
+    def test_unpin_batch_by_category(self):
+        """Test unpinning skills by category pattern."""
+        from hermes_cli.curator import _cmd_unpin_batch
+        
+        args = argparse.Namespace(
+            batch=None,
+            by_usage=None,
+            by_category="devops",
+            dry_run=False,
+        )
+        
+        with patch("agent.skill_external_dirs.get_skills_by_category") as mock_cat:
+            mock_cat.return_value = ["skill-a"]
+            
+            with patch("tools.skill_usage.is_agent_created") as mock_is_agent:
+                mock_is_agent.return_value = True
+                
+                with patch("tools.skill_usage.get_record") as mock_get_record:
+                    mock_get_record.return_value = {"pinned": True}
+                    
+                    with patch("tools.skill_usage.set_pinned") as mock_set_pinned:
+                        result = _cmd_unpin_batch(args)
+                        
+                        assert result == 0
+                        mock_cat.assert_called_once_with("devops")
+
+    def test_archive_batch_by_category(self):
+        """Test archiving skills by category pattern."""
+        from hermes_cli.curator import _cmd_archive_batch
+        
+        args = argparse.Namespace(
+            batch=None,
+            by_usage=None,
+            stale=None,
+            by_category="testing",
+            dry_run=False,
+            yes=True,
+        )
+        
+        with patch("agent.skill_external_dirs.get_skills_by_category") as mock_cat:
+            mock_cat.return_value = ["test-skill"]
+            
+            with patch("tools.skill_usage.is_agent_created") as mock_is_agent:
+                mock_is_agent.return_value = True
+                
+                with patch("tools.skill_usage.get_record") as mock_get_record:
+                    mock_get_record.return_value = {"pinned": False, "state": "active"}
+                    
+                    with patch("tools.skill_usage.archive_skill") as mock_archive:
+                        mock_archive.return_value = (True, "archived")
+                        
+                        result = _cmd_archive_batch(args)
+                        
+                        assert result == 0
+                        mock_cat.assert_called_once_with("testing")
+
+
+class TestSkillCategoryHelper:
+    """Test the get_skill_category and get_skills_by_category functions."""
+
+    def test_get_skill_category(self):
+        """Test getting category for a skill."""
+        from agent.skill_external_dirs import get_skill_category
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create test skill with category
+            skill_dir = Path(tmpdir) / "test-skill"
+            skill_dir.mkdir()
+            
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text('''---
+name: test-skill
+category: software-development
+---
+
+# Test Skill
+''')
+            
+            with patch("hermes_constants.get_skills_dir") as mock_dir:
+                mock_dir.return_value = Path(tmpdir)
+                
+                category = get_skill_category("test-skill")
+                assert category == "software-development"
+
+    def test_get_skills_by_category(self):
+        """Test getting skills by category pattern."""
+        from agent.skill_external_dirs import get_skills_by_category
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create test skills with categories
+            for name, category in [("skill-a", "devops"), ("skill-b", "devops"), ("skill-c", "testing")]:
+                skill_dir = Path(tmpdir) / name
+                skill_dir.mkdir()
+                
+                skill_md = skill_dir / "SKILL.md"
+                skill_md.write_text(f'''---
+name: {name}
+category: {category}
+---
+
+# {name}
+''')
+            
+            with patch("hermes_constants.get_skills_dir") as mock_dir:
+                mock_dir.return_value = Path(tmpdir)
+                
+                # Test exact match
+                result = get_skills_by_category("devops")
+                assert len(result) == 2
+                assert "skill-a" in result
+                assert "skill-b" in result
+                
+                # Test glob pattern
+                result = get_skills_by_category("dev*")
+                assert len(result) == 2
+                
+                # Test no match
+                result = get_skills_by_category("nonexistent")
+                assert len(result) == 0

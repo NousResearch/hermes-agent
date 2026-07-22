@@ -166,6 +166,10 @@ def auto_load_skills_for_turn(user_message: str, max_skills: int = 5) -> str:
     skill_view, and returns a context block that can be injected into the
     user message via the api_content sidecar.
     
+    Also resolves skill dependencies declared in SKILL.md frontmatter
+    via the ``SkillDependencyResolver``, with configurable safeguards
+    for depth, count, and token budget.
+    
     Returns empty string if no skills match or if auto-loading is disabled.
     """
     from hermes_cli.config import cfg_get
@@ -193,9 +197,61 @@ def auto_load_skills_for_turn(user_message: str, max_skills: int = 5) -> str:
     # Limit to max_skills
     matched = matched[:max_skills]
     
-    # Load each skill and collect content
+    # Check if dependency resolution is enabled
+    deps_enabled = True
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        deps_cfg = config.get("skills", {}).get("dependencies", {})
+        deps_enabled = deps_cfg.get("enabled", True)
+    except Exception:
+        pass
+    
+    # Load each skill and collect content (with dependency resolution)
     loaded_skills = []
+    seen_skills = set()
+    
     for skill_name in matched:
+        if skill_name in seen_skills:
+            continue
+        seen_skills.add(skill_name)
+        
+        # Resolve dependencies first
+        if deps_enabled:
+            try:
+                from agent.skill_dependencies import resolve_skill_dependencies
+                dep_result = resolve_skill_dependencies(skill_name)
+                
+                # Log any dependency resolution errors
+                for err in dep_result.errors:
+                    logger.info(f"Dep resolution: {err.skill_name} skipped: {err.reason}")
+                
+                # Load dependency skills first
+                for dep in dep_result.loaded:
+                    if dep.name not in seen_skills:
+                        seen_skills.add(dep.name)
+                        if dep.name != skill_name:
+                            # Load the dependency content
+                            try:
+                                from tools.skills_tool import skill_view
+                                dep_json = skill_view(dep.name)
+                                import json
+                                dep_result_data = json.loads(dep_json)
+                                if dep_result_data.get("success"):
+                                    dep_content = dep_result_data.get("content", "")
+                                    dep_header = dep.is_optional and " (optional)" or ""
+                                    if dep_content:
+                                        loaded_skills.append(
+                                            f"## Dependency: {dep.name}{dep_header}\n\n"
+                                            f"{dep_content[:2000]}"
+                                        )
+                                        logger.info(f"Loaded dependency: {dep.name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to load dependency {dep.name}: {e}")
+            except Exception as e:
+                logger.debug(f"Dep resolution failed for {skill_name}: {e}")
+        
+        # Load the matched skill itself
         try:
             from tools.skills_tool import skill_view
             result_json = skill_view(skill_name)

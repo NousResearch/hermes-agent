@@ -819,10 +819,9 @@ def _cmd_pin_batch(args) -> int:
                 targets.append(r["name"])
     
     if by_category:
-        # For now, we don't have category in the usage report
-        # This is a placeholder for future implementation
-        print(f"curator: --by-category not yet implemented", file=sys.stderr)
-        return 1
+        from agent.skill_external_dirs import get_skills_by_category
+        cat_skills = get_skills_by_category(by_category)
+        targets.extend(cat_skills)
     
     # Deduplicate
     targets = list(dict.fromkeys(targets))
@@ -876,8 +875,9 @@ def _cmd_unpin_batch(args) -> int:
                 targets.append(r["name"])
     
     if by_category:
-        print(f"curator: --by-category not yet implemented", file=sys.stderr)
-        return 1
+        from agent.skill_external_dirs import get_skills_by_category
+        cat_skills = get_skills_by_category(by_category)
+        targets.extend(cat_skills)
     
     # Deduplicate
     targets = list(dict.fromkeys(targets))
@@ -918,6 +918,7 @@ def _cmd_archive_batch(args) -> int:
     
     batch_names = getattr(args, "batch", None)
     by_usage = getattr(args, "by_usage", None)
+    by_category = getattr(args, "by_category", None)
     stale_days = getattr(args, "stale", None)
     dry_run = getattr(args, "dry_run", False)
     skip_confirm = getattr(args, "yes", False)
@@ -932,6 +933,11 @@ def _cmd_archive_batch(args) -> int:
         for r in skill_usage.agent_created_report():
             if (r.get("use_count") or 0) <= by_usage:
                 targets.append(r["name"])
+    
+    if by_category:
+        from agent.skill_external_dirs import get_skills_by_category
+        cat_skills = get_skills_by_category(by_category)
+        targets.extend(cat_skills)
     
     if stale_days is not None:
         for r in skill_usage.agent_created_report():

@@ -2198,6 +2198,18 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
+        # No-auth providers (local servers with empty env_vars):
+        # allow providers from the providers/ registry that don't need
+        # API keys to appear in the picker (e.g. hypura local server).
+        if not _cp_has_creds:
+            try:
+                from providers import get_provider_profile as _get_pp
+                _pp = _get_pp(_cp.slug)
+                if _pp and not _pp.env_vars:
+                    _cp_has_creds = True
+            except Exception:
+                pass
+
         if not _cp_has_creds:
             continue
 

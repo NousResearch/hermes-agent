@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 from hermes_cli.main import (
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _restart_dashboard_via_service_manager,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -434,3 +436,182 @@ class TestWindowsWmicEncoding:
             )
             # Must not raise.
             assert _find_stale_dashboard_pids() == []
+
+
+class TestRestartDashboardViaServiceManager:
+    """Regression tests for the post-``hermes update`` dashboard restart.
+
+    Repro of the original bug: ``hermes update`` only auto-restarted
+    ``hermes-gateway*`` systemd units and SIGTERM-killed the dashboard by PID,
+    leaving a systemd-managed ``hermes-dashboard.service`` dead after every
+    update.  ``_restart_dashboard_via_service_manager()`` must detect an
+    active ``hermes-dashboard*`` unit and restart it, and return ``False`` (so
+    the caller falls back to the PID-kill) only when no unit owns the
+    dashboard.
+    """
+
+    @staticmethod
+    def _fake_systemctl(unit_line: str, *, is_active: bool = True, sudo_ok: bool = True, scope: str = "user"):
+        """Build a subprocess.run side_effect for one dashboard unit.
+
+        Routes the systemctl / sudo calls the function makes:
+          - list-units hermes-dashboard*  -> emit ``unit_line`` only for the
+            scope under test (user vs system), empty otherwise
+          - is-active <svc>               -> "active" / "inactive"
+          - reset-failed <svc>            -> rc 0
+          - restart <svc>                 -> rc 0
+          - sudo -n true                  -> rc 0 (sudo available) / rc 1
+        """
+        def _side_effect(cmd, *a, **kw):
+            if isinstance(cmd, (list, tuple)) and cmd:
+                if cmd[0] == "sudo":
+                    # Both sudo probes (``sudo -n true`` and the targeted
+                    # ``sudo -n systemctl ... reset-failed``) must reflect the
+                    # same privilege outcome, otherwise the fake lies about
+                    # sudo availability and the restart path proceeds.
+                    return SimpleNamespace(returncode=0 if sudo_ok else 1,
+                                           stdout="", stderr="")
+                if "list-units" in cmd:
+                    # Only advertise the unit in the scope under test so the
+                    # function restarts exactly one unit (mirrors reality: a
+                    # unit is active in at most one scope).
+                    in_user_scope = "--user" in cmd
+                    emit = unit_line if (
+                        (scope == "user" and in_user_scope)
+                        or (scope == "system" and not in_user_scope)
+                        or scope == "both"
+                    ) else ""
+                    return SimpleNamespace(returncode=0, stdout=emit, stderr="")
+                if "is-active" in cmd:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout="active\n" if is_active else "inactive\n",
+                        stderr="",
+                    )
+                if "reset-failed" in cmd:
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if "restart" in cmd:
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return _side_effect
+
+    def _patch_systemd(self, monkeypatch, *, supported: bool = True):
+        monkeypatch.setattr(
+            "hermes_cli.gateway.supports_systemd_services",
+            lambda: supported,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway._ensure_user_systemd_env",
+            lambda: None,
+        )
+
+    def test_no_systemd_support_returns_false(self, monkeypatch):
+        """When the platform has no systemd (e.g. termux), the function must
+        short-circuit and report 'no service manager' (False)."""
+        self._patch_systemd(monkeypatch, supported=False)
+        assert _restart_dashboard_via_service_manager() is False
+
+    def test_no_dashboard_unit_returns_false(self, monkeypatch):
+        """No hermes-dashboard* unit present -> caller should fall back to the
+        legacy PID-kill (returns False)."""
+        self._patch_systemd(monkeypatch, supported=True)
+        with patch("hermes_cli.main.subprocess.run",
+                   side_effect=self._fake_systemctl("", is_active=False)):
+            assert _restart_dashboard_via_service_manager() is False
+
+    def test_user_unit_active_is_restarted(self, monkeypatch, capsys):
+        """An active user-scope hermes-dashboard.service must be restarted via
+        reset-failed + restart, and the function returns True."""
+        self._patch_systemd(monkeypatch, supported=True)
+        with (
+            patch("hermes_cli.main.subprocess.run",
+                  side_effect=self._fake_systemctl(
+                      "hermes-dashboard.service  loaded active running")) as mock_run,
+            patch("hermes_cli.main._time.monotonic", side_effect=[0.0, 0.1]),
+            patch("hermes_cli.main._time.sleep"),
+        ):
+            result = _restart_dashboard_via_service_manager()
+
+        assert result is True
+        invoked = [c.args[0] for c in mock_run.call_args_list]
+        assert ["systemctl", "--user", "--no-ask-password", "reset-failed", "hermes-dashboard"] in invoked
+        assert ["systemctl", "--user", "--no-ask-password", "restart", "hermes-dashboard"] in invoked
+        out = capsys.readouterr().out
+        assert "Restarting dashboard service hermes-dashboard" in out
+        assert "Restarted hermes-dashboard" in out
+
+    def test_system_unit_active_without_sudo_skips_and_hints(self, monkeypatch, capsys):
+        """A system-scope unit with no non-interactive sudo path must not hang
+        on a polkit prompt: it prints a manual-restart hint and returns True
+        (the unit is 'owned' by systemd, so the PID-kill fallback is skipped)."""
+        self._patch_systemd(monkeypatch, supported=True)
+        monkeypatch.setattr("hermes_cli.main.os.geteuid", lambda: 1000)
+        with (
+            patch("hermes_cli.main.subprocess.run",
+                  side_effect=self._fake_systemctl(
+                      "hermes-dashboard.service  loaded active running",
+                      sudo_ok=False, scope="system")) as mock_run,
+            patch("hermes_cli.main._time.monotonic", side_effect=[0.0, 0.1]),
+            patch("hermes_cli.main._time.sleep"),
+        ):
+            result = _restart_dashboard_via_service_manager()
+
+        assert result is True
+        # No restart/reset-failed issued: user scope has no unit and the
+        # system-scope unit has no non-interactive privilege path.
+        invoked = [c.args[0] for c in mock_run.call_args_list]
+        assert not any("restart" in c for c in invoked)
+        out = capsys.readouterr().out
+        assert "needs root to restart" in out
+        assert "systemctl restart hermes-dashboard" in out
+
+    def test_restart_fails_then_succeeds_on_retry(self, monkeypatch, capsys):
+        """If the first restart exits non-zero (transient), the function must
+        retry once and succeed."""
+        self._patch_systemd(monkeypatch, supported=True)
+        state = {"attempt": 0}
+
+        def _flaky_restart(cmd, *a, **kw):
+            if isinstance(cmd, (list, tuple)) and "list-units" in cmd:
+                # Only the user-scope unit exists (system scope finds nothing).
+                emit = "hermes-dashboard.service  loaded active running" if "--user" in cmd else ""
+                return SimpleNamespace(returncode=0, stdout=emit, stderr="")
+            if isinstance(cmd, (list, tuple)) and "is-active" in cmd:
+                return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+            if isinstance(cmd, (list, tuple)) and "reset-failed" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if isinstance(cmd, (list, tuple)) and "restart" in cmd:
+                state["attempt"] += 1
+                if state["attempt"] == 1:
+                    return SimpleNamespace(returncode=1, stdout="", stderr="Job failed")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("hermes_cli.main.subprocess.run", side_effect=_flaky_restart) as mock_run,
+            patch("hermes_cli.main._time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3]),
+            patch("hermes_cli.main._time.sleep"),
+        ):
+            result = _restart_dashboard_via_service_manager()
+
+        assert result is True
+        restart_calls = [
+            c.args[0] for c in mock_run.call_args_list
+            if c.args and isinstance(c.args[0], list) and "restart" in c.args[0]
+        ]
+        assert len(restart_calls) == 2
+        out = capsys.readouterr().out
+        assert "Restarted hermes-dashboard (retry)" in out
+
+    def test_inactive_unit_is_ignored(self, monkeypatch):
+        """A hermes-dashboard* unit that exists but is not active must not be
+        restarted and must not count as 'found'."""
+        self._patch_systemd(monkeypatch, supported=True)
+        with patch("hermes_cli.main.subprocess.run",
+                   side_effect=self._fake_systemctl(
+                       "hermes-dashboard.service  loaded inactive dead",
+                       is_active=False)) as mock_run:
+            result = _restart_dashboard_via_service_manager()
+        assert result is False
+        invoked = [c.args[0] for c in mock_run.call_args_list if c.args]
+        assert not any("restart" in c for c in invoked)

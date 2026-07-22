@@ -3,6 +3,8 @@
 import json
 import time
 import base64
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -953,6 +955,28 @@ def test_refresh_429_without_retry_after_header(monkeypatch):
     assert err.code == CODEX_RATE_LIMITED_CODE
     assert err.relogin_required is False
     assert "quota exhausted" in str(err).lower()
+
+
+def test_parse_retry_after_http_date():
+    """Retry-After may be an HTTP-date, not only delta-seconds."""
+    from hermes_cli.auth import _parse_retry_after_seconds
+
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=90)
+    header = format_datetime(retry_at, usegmt=True)
+
+    parsed = _parse_retry_after_seconds({"retry-after": header})
+
+    assert parsed is not None
+    assert 0 < parsed <= 90
+
+
+def test_parse_retry_after_past_http_date_returns_zero():
+    from hermes_cli.auth import _parse_retry_after_seconds
+
+    retry_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    header = format_datetime(retry_at, usegmt=True)
+
+    assert _parse_retry_after_seconds({"retry-after": header}) == 0
 
 
 def test_is_rate_limited_auth_error_distinguishes_credential_errors():

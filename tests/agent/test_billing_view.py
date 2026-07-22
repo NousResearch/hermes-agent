@@ -14,7 +14,9 @@ request function for the builder.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from email.utils import format_datetime
 
 import pytest
 
@@ -320,6 +322,20 @@ def test_rate_limited_maps_with_retry_after(status):
     assert ei.value.retry_after == 60
     # Critically: a rate limit is NOT a generic BillingError-only — surfaces branch on type.
     assert isinstance(ei.value, BillingRateLimited)
+
+
+def test_rate_limited_maps_with_retry_after_http_date():
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=60)
+
+    with pytest.raises(BillingRateLimited) as ei:
+        _raise_for_error(
+            429,
+            {"error": "rate_limited"},
+            _Headers({"Retry-After": format_datetime(retry_at, usegmt=True)}),
+        )
+
+    assert ei.value.retry_after is not None
+    assert 0 <= ei.value.retry_after <= 60
 
 
 @pytest.mark.parametrize(

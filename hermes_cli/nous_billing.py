@@ -26,10 +26,13 @@ Design rules:
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 DEFAULT_PORTAL_BASE_URL = "https://portal.nousresearch.com"
@@ -296,7 +299,7 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
 
 
 def _retry_after_seconds(headers: Any) -> Optional[int]:
-    """Parse a ``Retry-After`` header (integer seconds) — None if absent/bad."""
+    """Parse a ``Retry-After`` header into whole seconds, if possible."""
     if headers is None:
         return None
     try:
@@ -308,7 +311,16 @@ def _retry_after_seconds(headers: Any) -> Optional[int]:
     try:
         return int(str(raw).strip())
     except (TypeError, ValueError):
-        return None
+        try:
+            retry_at = parsedate_to_datetime(str(raw).strip())
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        delta = (
+            retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)
+        ).total_seconds()
+        return max(0, math.ceil(delta))
 
 
 def _raise_for_error(

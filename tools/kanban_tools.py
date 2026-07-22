@@ -59,6 +59,8 @@ _KANBAN_SHOW_MAX_ATTACHMENTS = 3
 _KANBAN_SHOW_MAX_GRAPH_IDS = 100
 _KANBAN_SHOW_BODY_PREVIEW_CHARS = 500
 _KANBAN_SHOW_FIELD_PREVIEW_CHARS = 300
+_KANBAN_SHOW_IDENTIFIER_PREVIEW_CHARS = 32
+_KANBAN_SHOW_MAX_OUTPUT_CHARS = 30_000
 
 
 def _bounded_preview(value: str, limit: int) -> tuple[str, Optional[int]]:
@@ -96,13 +98,143 @@ def _put_bounded_json(target: dict[str, Any], key: str, value: Any) -> None:
         target[f"{key}_full_chars"] = full_chars
 
 
+def _put_bounded_identifier(
+    target: dict[str, Any], key: str, value: str
+) -> None:
+    """Bound an identifier without duplicating its original size in the preview."""
+    if len(value) <= _KANBAN_SHOW_IDENTIFIER_PREVIEW_CHARS:
+        target[key] = value
+        return
+    target[key] = value[:_KANBAN_SHOW_IDENTIFIER_PREVIEW_CHARS - 1] + "…"
+    target[f"{key}_truncated"] = True
+    target[f"{key}_full_chars"] = len(value)
+
+
+def _bounded_identifier(value: str) -> Any:
+    """Keep ordinary graph-id list items stable; annotate pathological ones."""
+    if len(value) <= _KANBAN_SHOW_IDENTIFIER_PREVIEW_CHARS:
+        return value
+    entry: dict[str, Any] = {}
+    _put_bounded_identifier(entry, "id", value)
+    return entry
+
+
+def _compact_show_value(
+    value: Any, *, string_limit: int = 32, depth: int = 0
+) -> Any:
+    """Best-effort structural compaction before the fixed emergency envelope."""
+    if depth >= 8:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+        preview, _ = _bounded_preview(serialized, string_limit)
+        return preview
+    if isinstance(value, str):
+        preview, _ = _bounded_preview(value, string_limit)
+        return preview
+    if isinstance(value, list):
+        shown = value[:100]
+        compacted_list = [
+            _compact_show_value(item, string_limit=string_limit, depth=depth + 1)
+            for item in shown
+        ]
+        if len(value) > len(shown):
+            compacted_list.append(
+                {"items_omitted_for_output_bound": len(value) - len(shown)}
+            )
+        return compacted_list
+    if isinstance(value, tuple):
+        return _compact_show_value(list(value), string_limit=string_limit, depth=depth)
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        items = list(value.items())[:100]
+        for key, item in items:
+            key_text, _ = _bounded_preview(str(key), 64)
+            # A collision is possible only for adversarial oversized keys. Preserve
+            # the first useful preview rather than allowing unbounded key material.
+            if key_text in compacted:
+                continue
+            compacted[key_text] = _compact_show_value(
+                item, string_limit=string_limit, depth=depth + 1
+            )
+        if len(value) > len(items):
+            compacted["fields_omitted_for_output_bound"] = len(value) - len(items)
+        return compacted
+    return value
+
+
+def _finalize_kanban_show(response: dict[str, Any]) -> str:
+    """Serialize every ``kanban_show`` result under one aggregate hard bound."""
+    response = dict(response)
+    if "error" not in response:
+        response.setdefault(
+            "recovery",
+            "Canonical board data is unchanged. Use the dashboard or the exact original "
+            "task ID with `hermes kanban context`, `show --json`, `runs`, or `log` for "
+            "complete data.",
+        )
+    try:
+        raw = json.dumps(response, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps(
+            {
+                "error": "kanban_show response could not be serialized",
+                "detail": type(exc).__name__,
+                "output_truncated": True,
+                "recovery": "Canonical board data is unchanged; inspect the dashboard.",
+            },
+            ensure_ascii=False,
+        )
+    if len(raw) <= _KANBAN_SHOW_MAX_OUTPUT_CHARS:
+        return raw
+
+    full_output_chars = len(raw)
+    compacted = _compact_show_value(response)
+    if not isinstance(compacted, dict):
+        compacted = {"response": compacted}
+    compacted["output_truncated"] = True
+    compacted["full_output_chars"] = full_output_chars
+    raw = json.dumps(compacted, ensure_ascii=False)
+    if len(raw) <= _KANBAN_SHOW_MAX_OUTPUT_CHARS:
+        return raw
+
+    # A fixed-shape last resort makes the limit independent of nesting, list
+    # cardinality, key size, and future fields. Keep navigation/count metadata.
+    task = response.get("task")
+    task_id = task.get("id") if isinstance(task, dict) else None
+    emergency: dict[str, Any] = {
+        "task": {"id": _compact_show_value(task_id)} if task_id is not None else None,
+        "totals": _compact_show_value(response.get("totals")),
+        "omitted": _compact_show_value(response.get("omitted")),
+        "orientation": _compact_show_value(response.get("orientation")),
+        "output_truncated": True,
+        "full_output_chars": full_output_chars,
+        "recovery": (
+            "Canonical board data is unchanged. Use the dashboard or the exact original "
+            "task ID with `hermes kanban context`, `show --json`, `runs`, or `log`."
+        ),
+    }
+    raw = json.dumps(emergency, ensure_ascii=False)
+    if len(raw) <= _KANBAN_SHOW_MAX_OUTPUT_CHARS:
+        return raw
+
+    # The selected metadata was itself pathological. This constant envelope is
+    # always below the declared maximum and still points to canonical recovery.
+    return json.dumps(
+        {
+            "output_truncated": True,
+            "full_output_chars": full_output_chars,
+            "recovery": "Canonical board data is unchanged; inspect the dashboard.",
+        },
+        ensure_ascii=False,
+    )
+
+
 def _kanban_show_error(message: Any) -> str:
     """Keep every kanban_show return bounded while preserving small errors."""
     error = str(message)
     if len(error) <= 1_000:
-        return tool_error(error)
+        return _finalize_kanban_show({"error": error})
     preview, full_chars = _bounded_preview(error, 1_000)
-    return json.dumps({
+    return _finalize_kanban_show({
         "error": preview,
         "error_truncated": True,
         "error_full_chars": full_chars,
@@ -110,7 +242,7 @@ def _kanban_show_error(message: Any) -> str:
             "Canonical board data is unchanged. Retry with a valid task_id/board, "
             "or inspect the dashboard and `hermes kanban list`."
         ),
-    }, ensure_ascii=False)
+    })
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -469,7 +601,9 @@ def _handle_show(args: dict, **kw) -> str:
                 return entry
 
             def _comment_dict(c):
-                entry = {"id": c.id, "author": c.author, "created_at": c.created_at}
+                entry = {"id": c.id}
+                _put_bounded_text(entry, "author", c.author)
+                entry["created_at"] = c.created_at
                 _put_bounded_text(entry, "body", c.body)
                 return entry
 
@@ -515,11 +649,10 @@ def _handle_show(args: dict, **kw) -> str:
                     if run.outcome == "completed"
                 ]
                 latest = completed[-1] if completed else None
-                handoff = {
-                    "task_id": parent_id,
-                    "completed_at": parent.completed_at,
-                    "run_id": latest.id if latest else None,
-                }
+                handoff: dict[str, Any] = {}
+                _put_bounded_identifier(handoff, "task_id", parent_id)
+                handoff["completed_at"] = parent.completed_at
+                handoff["run_id"] = latest.id if latest else None
                 _put_bounded_text(handoff, "title", parent.title)
                 _put_bounded_text(
                     handoff, "summary",
@@ -536,8 +669,14 @@ def _handle_show(args: dict, **kw) -> str:
             )
 
             shown_parent_handoffs = parent_handoffs[-_KANBAN_SHOW_MAX_PARENT_HANDOFFS:]
-            shown_parents = parents[-_KANBAN_SHOW_MAX_GRAPH_IDS:]
-            shown_children = children[-_KANBAN_SHOW_MAX_GRAPH_IDS:]
+            shown_parents = [
+                _bounded_identifier(parent_id)
+                for parent_id in parents[-_KANBAN_SHOW_MAX_GRAPH_IDS:]
+            ]
+            shown_children = [
+                _bounded_identifier(child_id)
+                for child_id in children[-_KANBAN_SHOW_MAX_GRAPH_IDS:]
+            ]
             shown_comments = all_comments[-_KANBAN_SHOW_MAX_COMMENTS:]
             shown_events = all_events[-_KANBAN_SHOW_MAX_EVENTS:]
             shown_runs = all_runs[-_KANBAN_SHOW_MAX_RUNS:]
@@ -552,7 +691,33 @@ def _handle_show(args: dict, **kw) -> str:
                 "runs": len(all_runs) - len(shown_runs),
             }
 
-            return json.dumps({
+            orientation: dict[str, Any] = {}
+            _put_bounded_text(orientation, "task_id", tid)
+            orientation["read_order"] = [
+                "task", "attachments", "parent_handoffs", "runs",
+                "comments", "events",
+            ]
+            orientation["note"] = (
+                "Task fields and recoverable history use bounded latest "
+                "slices in chronological order. Original character counts "
+                "and omitted counts are explicit."
+            )
+            if len(tid) <= _KANBAN_SHOW_FIELD_PREVIEW_CHARS:
+                recovery = (
+                    f"Canonical board data is unchanged. Use `hermes kanban context {tid}`, "
+                    f"`hermes kanban show {tid} --json`, `hermes kanban runs {tid}`, "
+                    f"or `hermes kanban log {tid}` / the dashboard for complete data. "
+                    "Use the `kanban_attachments` tool for the full attachment manifest."
+                )
+            else:
+                recovery = (
+                    "Canonical board data is unchanged. Use the dashboard or the exact "
+                    "original task ID with `hermes kanban context`, `show --json`, `runs`, "
+                    "or `log` for complete data; orientation.task_id is only a bounded "
+                    "preview. Use `kanban_attachments` for the full attachment manifest."
+                )
+
+            return _finalize_kanban_show({
                 "task": _task_dict(task),
                 "parents": shown_parents,
                 "children": shown_children,
@@ -571,25 +736,9 @@ def _handle_show(args: dict, **kw) -> str:
                     "runs": len(all_runs),
                 },
                 "omitted": omitted,
-                "orientation": {
-                    "task_id": tid,
-                    "read_order": [
-                        "task", "attachments", "parent_handoffs", "runs",
-                        "comments", "events",
-                    ],
-                    "note": (
-                        "Task fields and recoverable history use bounded latest "
-                        "slices in chronological order. Original character counts "
-                        "and omitted counts are explicit."
-                    ),
-                },
-                "recovery": (
-                    f"Canonical board data is unchanged. Use `hermes kanban context {tid}`, "
-                    f"`hermes kanban show {tid} --json`, `hermes kanban runs {tid}`, "
-                    f"or `hermes kanban log {tid}` / the dashboard for complete data. "
-                    "Use the `kanban_attachments` tool for the full attachment manifest."
-                ),
-            }, ensure_ascii=False)
+                "orientation": orientation,
+                "recovery": recovery,
+            })
         finally:
             conn.close()
     except ValueError as e:

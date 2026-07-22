@@ -389,6 +389,134 @@ def test_show_adversarial_error_output_is_bounded(worker_env):
     assert "recovery" in shown
 
 
+def test_show_bounds_oversized_comment_author_with_exact_size(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    author = "reviewer-" + ("A" * 200_000)
+    with kb.connect() as conn:
+        comment_id = kb.add_comment(conn, worker_env, "peer", "bounded body")
+        conn.execute(
+            "UPDATE task_comments SET author = ? WHERE id = ?", (author, comment_id)
+        )
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": worker_env})
+    shown = json.loads(raw)
+
+    assert len(raw) <= kt._KANBAN_SHOW_MAX_OUTPUT_CHARS
+    comment = shown["comments"][-1]
+    assert comment["author"].startswith("reviewer-")
+    assert comment["author_truncated"] is True
+    assert comment["author_full_chars"] == len(author)
+
+
+def test_show_bounds_valid_oversized_task_id_without_recovery_duplication(
+    worker_env,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    task_id = "t_" + ("I" * 200_000)
+    with kb.connect() as conn:
+        source_id = kb.create_task(conn, title="huge-id task", assignee="peer")
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
+        copied = ", ".join(f'"{column}"' for column in columns)
+        selected = ", ".join(
+            "?" if column == "id" else f'"{column}"' for column in columns
+        )
+        conn.execute(
+            f"INSERT INTO tasks ({copied}) SELECT {selected} FROM tasks WHERE id = ?",
+            (task_id, source_id),
+        )
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": task_id})
+    shown = json.loads(raw)
+
+    assert len(raw) <= kt._KANBAN_SHOW_MAX_OUTPUT_CHARS
+    assert shown["task"]["id"].startswith("t_")
+    assert shown["task"]["id_truncated"] is True
+    assert shown["task"]["id_full_chars"] == len(task_id)
+    assert shown["orientation"]["task_id_truncated"] is True
+    assert shown["orientation"]["task_id_full_chars"] == len(task_id)
+    assert task_id not in raw
+    assert "exact original task ID" in shown["recovery"]
+
+
+def test_show_bounds_oversized_graph_and_parent_handoff_ids(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    parent_id = "p_" + ("P" * 200_000)
+    child_id = "c_" + ("C" * 200_000)
+    with kb.connect() as conn:
+        source_id = kb.create_task(conn, title="copy source", assignee="peer")
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
+        copied = ", ".join(f'"{column}"' for column in columns)
+        for task_id in (parent_id, child_id):
+            selected = ", ".join(
+                "?" if column == "id" else f'"{column}"' for column in columns
+            )
+            conn.execute(
+                f"INSERT INTO tasks ({copied}) "
+                f"SELECT {selected} FROM tasks WHERE id = ?",
+                (task_id, source_id),
+            )
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = 42 WHERE id = ?",
+            (parent_id,),
+        )
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent_id, worker_env),
+        )
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (worker_env, child_id),
+        )
+        conn.commit()
+
+    raw = kt._handle_show({"task_id": worker_env})
+    shown = json.loads(raw)
+
+    assert len(raw) <= kt._KANBAN_SHOW_MAX_OUTPUT_CHARS
+    for key, original in (("parents", parent_id), ("children", child_id)):
+        identifier = shown[key][-1]
+        assert identifier["id"].startswith(original[:2])
+        assert identifier["id_truncated"] is True
+        assert identifier["id_full_chars"] == len(original)
+    handoff = shown["parent_handoffs"][-1]
+    assert handoff["task_id"].startswith("p_")
+    assert handoff["task_id_truncated"] is True
+    assert handoff["task_id_full_chars"] == len(parent_id)
+    assert parent_id not in raw
+    assert child_id not in raw
+
+
+def test_show_finalizer_guarantees_aggregate_bound_for_pathological_payload():
+    from tools import kanban_tools as kt
+
+    pathological = {
+        "task": {"id": "t_ok", "body": "B" * 200_000},
+        "nested": [
+            {("K" * 10_000) + str(index): ["V" * 10_000] * 50}
+            for index in range(100)
+        ],
+        "totals": {"comments": 10_000},
+        "omitted": {"comments": 9_997},
+    }
+    raw = kt._finalize_kanban_show(pathological)
+    shown = json.loads(raw)
+
+    assert len(raw) <= kt._KANBAN_SHOW_MAX_OUTPUT_CHARS
+    assert shown["output_truncated"] is True
+    assert shown["full_output_chars"] > kt._KANBAN_SHOW_MAX_OUTPUT_CHARS
+    assert shown["totals"] == pathological["totals"]
+    assert shown["omitted"] == pathological["omitted"]
+    assert "Canonical board data is unchanged" in shown["recovery"]
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

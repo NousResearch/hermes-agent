@@ -703,6 +703,19 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    parts.append(
+        "\n## Delivery Discipline\n"
+        "Your real result must go through the `delegate_tool_reply` tool. "
+        "When your deliverable is ready, call `delegate_tool_reply` with the "
+        "full text as `content`. Do NOT rely on a trailing prose message as "
+        "your result — a short closing comment (e.g. about cleanup) can be "
+        "mistaken for your deliverable and the real content lost. You may "
+        "call `delegate_tool_reply` more than once: chunks are concatenated "
+        "in order, so a large deliverable can be split across calls. After "
+        "calling it you may still run cleanup tools (it does not stop you). "
+        "Your final plain-text reply is only used as a fallback if you "
+        "never call `delegate_tool_reply`."
+    )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1187,6 +1200,17 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
+    # Give the child an explicit delivery channel. The `delegation_reply`
+    # toolset (delegate_tool_reply) is NOT in _HERMES_CORE_TOOLS and NOT in
+    # CONFIGURABLE_TOOLSETS, so ordinary conversations never see it — only
+    # subagents spawned here get the schema. This lets the child hand back
+    # its deliverable through a tool call instead of relying on the trailing
+    # final_response prose, which a cleanup tool call can clobber (see
+    # tools/delegate_tool_reply.py). Unconditional on role: both leaf and
+    # orchestrator subagents produce deliverables that must reach the parent.
+    if "delegation_reply" not in child_toolsets:
+        child_toolsets.append("delegation_reply")
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
         goal,
@@ -1636,6 +1660,29 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)
         return None
+
+
+def _extract_reply_deliverable(child) -> Optional[str]:
+    """Assemble the subagent's deliverable from ``delegate_tool_reply`` calls.
+
+    Reads ``child._delegate_reply_chunks`` — a list the handler appends to at
+    tool-execution time. This lives on the agent instance, **outside** the
+    ``messages`` transcript, so context compression (which replaces the middle
+    of ``messages`` with a summary) cannot destroy it. Returns the
+    concatenated deliverable, or ``None`` if the child never called the tool
+    (caller falls back to ``final_response``).
+
+    Semantics: **append-only**. Every ``delegate_tool_reply`` call's
+    ``content`` is appended in order; the final result is all chunks joined
+    with ``\\n\\n``. There is no "update / replace" — a re-call adds a new
+    chunk, it does not overwrite a previous one.
+    """
+    chunks = getattr(child, "_delegate_reply_chunks", None)
+    if chunks is None:
+        return None
+    if not isinstance(chunks, list):
+        return None
+    return "\n\n".join(chunks) if chunks else ""
 
 
 def _trim_summary_with_footer(
@@ -2118,7 +2165,17 @@ def _run_single_child(
 
         duration = round(time.monotonic() - child_start, 2)
 
-        summary = result.get("final_response") or ""
+        # Prefer the explicit deliverable channel: if the child called
+        # delegate_tool_reply, its content (recorded on the agent instance at
+        # execution time, outside the compressible messages[] transcript) is
+        # the authoritative result and replaces final_response. Falls back to
+        # final_response when the child never used the tool (strictly
+        # not-worse-than-status-quo).
+        _reply_deliverable = _extract_reply_deliverable(child)
+        if _reply_deliverable is not None:
+            summary = _reply_deliverable
+        else:
+            summary = result.get("final_response") or ""
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)

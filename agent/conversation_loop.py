@@ -3358,21 +3358,28 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion)
-                # and transport errors (connection failure / timeout / provider
-                # overloaded).  Rate limits and billing: switch immediately —
-                # the primary provider won't recover within the retry window.
-                # Transport errors: allow 1 retry first (transient hiccups
-                # recover), then fall back if the provider is truly unreachable.
+                # Eager fallback for rate-limit errors (429 or quota exhaustion),
+                # provider overload, and stale-stream failures.  Ordinary fast
+                # connection errors deliberately complete the normal retry cycle
+                # so the primary-client recovery path below can rebuild the
+                # transport and grant one fresh retry cycle before fallback.
+                # Stale streams remain eager after one retry: each attempt can
+                # consume the full multi-minute stale timeout (#22277).
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
-                _is_transport_failure = classified.reason in {
-                    FailoverReason.timeout,
-                    FailoverReason.overloaded,
-                }
+                _is_overload_failure = (
+                    classified.reason == FailoverReason.overloaded
+                )
+                _is_stale_timeout = (
+                    classified.reason == FailoverReason.timeout
+                    and getattr(agent, "_consecutive_stale_streams", 0) > 0
+                )
+                _is_eager_transport_failure = (
+                    _is_overload_failure or _is_stale_timeout
+                )
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
                 # is excluded from `is_rate_limited` — the gate for the adaptive
@@ -3387,7 +3394,7 @@ def run_conversation(
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
                     is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                    or (_is_eager_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -3418,7 +3425,7 @@ def run_conversation(
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
                             )
-                        elif _is_transport_failure:
+                        elif _is_eager_transport_failure:
                             agent._buffer_status(
                                 "⚠️ Provider unreachable — switching to fallback provider..."
                             )

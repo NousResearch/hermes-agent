@@ -4717,7 +4717,9 @@ class AIAgent:
                 )
 
                 apply_custom_provider_extra_headers_to_client_kwargs(
-                    self._client_kwargs, base_url,
+                    self._client_kwargs,
+                    base_url,
+                    provider_key=self.provider,
                 )
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)

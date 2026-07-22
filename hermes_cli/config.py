@@ -5369,12 +5369,15 @@ def get_custom_provider_extra_headers(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
+    provider_key: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Return ``extra_headers`` from a matching ``providers`` / ``custom_providers`` entry.
+    """Return ``extra_headers`` for the selected custom provider.
 
-    Matches the entry whose normalized route identity equals *base_url*,
-    mirroring :func:`get_custom_provider_tls_settings`, and returns its
-    ``extra_headers`` dict, or ``{}`` when no entry matches or declares none.
+    When ``provider_key`` identifies a named ``custom:<provider_key>`` route,
+    match that key before matching ``base_url``. This is important because
+    multiple providers may intentionally share one base URL but have different
+    credentials and headers. Without the key, the first URL match wins for
+    backwards compatibility.
 
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Callers must never
@@ -5389,12 +5392,20 @@ def get_custom_provider_extra_headers(
         return {}
 
     target_url = normalize_route_base_url(base_url)
+    selected_key = (provider_key or "").strip().lower()
+    if selected_key.startswith("custom:"):
+        selected_key = selected_key.split(":", 1)[1].strip()
+
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
+        if selected_key:
+            entry_key = str(entry.get("provider_key", "") or "").strip().lower()
+            if entry_key != selected_key:
+                continue
         return normalize_extra_headers(entry.get("extra_headers"))
     return {}
 
@@ -5404,6 +5415,7 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
+    provider_key: Optional[str] = None,
 ) -> None:
     """Merge per-provider ``extra_headers`` onto OpenAI client ``default_headers``.
 
@@ -5414,7 +5426,12 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
 
     SECURITY: values may carry credentials — never log them.
     """
-    extra_headers = get_custom_provider_extra_headers(base_url, custom_providers, config)
+    extra_headers = get_custom_provider_extra_headers(
+        base_url,
+        custom_providers,
+        config,
+        provider_key=provider_key,
+    )
     if not extra_headers:
         return
     merged = dict(client_kwargs.get("default_headers") or {})

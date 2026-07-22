@@ -1281,6 +1281,7 @@ def init_agent(
                 client_kwargs,
                 _cp_base_url,
                 _cp_entries,
+                provider_key=agent.provider,
             )
         except Exception:
             logger.debug("custom-provider TLS resolution skipped", exc_info=True)

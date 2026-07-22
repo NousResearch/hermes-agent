@@ -83,6 +83,54 @@ def test_get_custom_provider_extra_headers_matches_base_url():
     assert headers == {"CF-Access-Client-Id": "xxxx.access"}
 
 
+def test_get_custom_provider_extra_headers_selects_shared_base_url_by_provider_key():
+    providers = [
+        {
+            "provider_key": "first",
+            "base_url": "https://shared.example.com/v1",
+            "extra_headers": {"X-Route": "first"},
+        },
+        {
+            "provider_key": "selected",
+            "base_url": "https://shared.example.com/v1",
+            "extra_headers": {"X-Route": "selected"},
+        },
+    ]
+
+    assert get_custom_provider_extra_headers(
+        "https://shared.example.com/v1",
+        custom_providers=providers,
+        provider_key="custom:selected",
+    ) == {"X-Route": "selected"}
+
+
+def test_apply_extra_headers_passes_provider_key_to_shared_route():
+    client_kwargs = {"default_headers": {"X-Keep": "1"}}
+    providers = [
+        {
+            "provider_key": "first",
+            "base_url": "https://shared.example.com/v1",
+            "extra_headers": {"X-Route": "first"},
+        },
+        {
+            "provider_key": "selected",
+            "base_url": "https://shared.example.com/v1",
+            "extra_headers": {"X-Route": "selected"},
+        },
+    ]
+
+    apply_custom_provider_extra_headers_to_client_kwargs(
+        client_kwargs,
+        "https://shared.example.com/v1",
+        custom_providers=providers,
+        provider_key="selected",
+    )
+    assert client_kwargs["default_headers"] == {
+        "X-Keep": "1",
+        "X-Route": "selected",
+    }
+
+
 def test_get_custom_provider_extra_headers_no_match_returns_empty():
     providers = [
         {

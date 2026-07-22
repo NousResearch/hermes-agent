@@ -6796,6 +6796,22 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
 
+    # Ensure every assistant message carries reasoning_content for
+    # providers that enforce the echo-back (DeepSeek, Kimi, MiMo).
+    # Auxiliary tasks (compression, session search, etc.) may receive
+    # conversation history that includes assistant messages. The primary
+    # loop's message builder already handles this via
+    # copy_reasoning_content_for_api(), but the auxiliary path bypasses
+    # that. Centralized helper from agent_runtime_helpers. Refs #17341.
+    from agent.agent_runtime_helpers import ensure_reasoning_content_on_messages
+
+    ensure_reasoning_content_on_messages(
+        messages,
+        provider=provider,
+        model=model,
+        base_url=base_url or "",
+    )
+
     return kwargs
 
 

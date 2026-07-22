@@ -6027,15 +6027,21 @@ class AIAgent:
         otherwise re-run ~5 ``base_url_host_matches`` (and therefore
         ``urlparse``) calls under it. Caching drops the per-turn cost from
         ~5us × 16 = ~80us to <1us.
+
+        Delegates detection to the standalone
+        :func:`agent.agent_runtime_helpers.needs_thinking_reasoning_pad`
+        so the provider list cannot drift between the primary and auxiliary
+        paths.
         """
         key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        result = (
-            self._needs_deepseek_tool_reasoning()
-            or self._needs_kimi_tool_reasoning()
-            or self._needs_mimo_tool_reasoning()
+        from agent.agent_runtime_helpers import needs_thinking_reasoning_pad
+        result = needs_thinking_reasoning_pad(
+            provider=self.provider or "",
+            model=self.model or "",
+            base_url=self.base_url or "",
         )
         self._thinking_pad_cache = (key, result)
         return result

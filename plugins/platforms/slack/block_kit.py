@@ -550,3 +550,118 @@ def _split_text(text: str, limit: int) -> List[str]:
     if remaining:
         out.append(remaining)
     return out
+
+
+# ----------------------------------------------------------------------------
+# Outbound payload boundary — last-resort clamp before the Slack API
+# ----------------------------------------------------------------------------
+
+
+def _clamp_text_obj(text_obj: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    """Return ``text_obj`` with its ``text`` clamped to ``limit`` chars."""
+    txt = text_obj.get("text") or ""
+    if len(txt) <= limit:
+        return text_obj
+    clamped = dict(text_obj)
+    clamped["text"] = txt[: limit - 1].rstrip() + "…"
+    return clamped
+
+
+def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
+    """Clamp an outbound ``blocks`` payload to Slack's hard limits.
+
+    Defensive boundary applied wherever the adapter attaches ``blocks`` to
+    ``chat.postMessage`` / ``chat.update``.  One oversized or malformed block
+    fails the WHOLE call with ``invalid_blocks`` — approval cards then never
+    update and messages silently drop — so instead of trusting every builder,
+    the payload is normalized just before the API call:
+
+    * ``section`` / ``context`` text objects are truncated to the 3000-char
+      cap with an ellipsis (Slack HTML-escapes ``< > &`` on storage, so text
+      echoed back through interaction payloads can exceed the limit that the
+      send path originally budgeted for — see #53693 / #62054).
+    * ``header`` text is truncated to its 150-char cap.
+    * Empty blocks (no text / no elements / no rows) are dropped — Slack
+      rejects zero-length text objects and empty element lists.
+    * ``table.column_settings`` entries must all be objects; ``null`` entries
+      (emitted by older renderers, per the "use null to skip" misreading of
+      the schema) are replaced with ``{}`` and default trailing entries are
+      trimmed (#56615).
+    * The payload is capped at Slack's 50-block maximum.
+
+    Returns the sanitized list, or ``None`` when nothing valid remains — the
+    caller then sends the plain ``text`` fallback alone.  Never raises.
+    """
+    if not blocks:
+        return None
+    try:
+        out: List[Block] = []
+        for block in blocks:
+            if not isinstance(block, dict) or not block.get("type"):
+                continue
+            btype = block["type"]
+
+            if btype == "section":
+                text_obj = block.get("text")
+                has_body = bool(block.get("fields")) or bool(block.get("accessory"))
+                if isinstance(text_obj, dict):
+                    if not (text_obj.get("text") or "").strip() and not has_body:
+                        continue
+                    clamped = _clamp_text_obj(text_obj, MAX_SECTION_TEXT)
+                    if clamped is not text_obj:
+                        block = dict(block)
+                        block["text"] = clamped
+                elif not has_body:
+                    continue
+
+            elif btype == "header":
+                text_obj = block.get("text")
+                if not isinstance(text_obj, dict) or not (text_obj.get("text") or "").strip():
+                    continue
+                clamped = _clamp_text_obj(text_obj, MAX_HEADER_TEXT)
+                if clamped is not text_obj:
+                    block = dict(block)
+                    block["text"] = clamped
+
+            elif btype == "context":
+                elements = block.get("elements") or []
+                if not elements:
+                    continue
+                clamped_els = [
+                    _clamp_text_obj(el, MAX_SECTION_TEXT)
+                    if isinstance(el, dict) and el.get("type") in ("mrkdwn", "plain_text")
+                    else el
+                    for el in elements
+                ]
+                if any(c is not e for c, e in zip(clamped_els, elements)):
+                    block = dict(block)
+                    block["elements"] = clamped_els
+
+            elif btype in ("rich_text", "actions", "context_actions"):
+                if not block.get("elements"):
+                    continue
+
+            elif btype == "table":
+                if not block.get("rows"):
+                    continue
+                settings = block.get("column_settings")
+                if isinstance(settings, list) and any(
+                    not isinstance(cs, dict) for cs in settings
+                ):
+                    fixed = [cs if isinstance(cs, dict) else {} for cs in settings]
+                    while fixed and not fixed[-1]:
+                        fixed.pop()
+                    block = dict(block)
+                    if fixed:
+                        block["column_settings"] = fixed
+                    else:
+                        block.pop("column_settings", None)
+
+            out.append(block)
+
+        if not out:
+            return None
+        return out[:MAX_BLOCKS]
+    except Exception:
+        # A sanitizer bug must never take down the send path.
+        return None

@@ -56,9 +56,9 @@ from gateway.platforms.base import (
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
-    from .block_kit import render_blocks
+    from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
-    from block_kit import render_blocks  # type: ignore
+    from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -2284,7 +2284,7 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         try:
             blocks = render_blocks(content, mrkdwn_fn=self.format_message)
-            return self._append_feedback_block(blocks)
+            return sanitize_blocks(self._append_feedback_block(blocks))
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
@@ -4087,7 +4087,7 @@ class SlackAdapter(BasePlatformAdapter):
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
                 "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
-                "blocks": blocks,
+                "blocks": sanitize_blocks(blocks),
             }
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
@@ -4167,7 +4167,7 @@ class SlackAdapter(BasePlatformAdapter):
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
                 "text": f"{title or 'Confirm'}: {body[:100]}",
-                "blocks": blocks,
+                "blocks": sanitize_blocks(blocks),
             }
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
@@ -4337,7 +4337,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=channel_id,
                 ts=msg_ts,
                 text=decision_text,
-                blocks=updated_blocks,
+                blocks=sanitize_blocks(updated_blocks),
             )
         except Exception as e:
             logger.warning("[Slack] Failed to update slash-confirm message: %s", e)
@@ -4509,7 +4509,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=channel_id,
                 ts=msg_ts,
                 text=decision_text,
-                blocks=updated_blocks,
+                blocks=sanitize_blocks(updated_blocks),
             )
         except Exception as e:
             logger.warning("[Slack] Failed to update approval message: %s", e)

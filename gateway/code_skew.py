@@ -13,14 +13,33 @@ gateway" message instead of crashing on a cryptic import error.
 
 If the revision can't be read (non-git install, IO error), the boot snapshot
 stays ``None`` and skew detection no-ops — it never produces a false positive.
+
+We also persist the boot fingerprint to ``HERMES_HOME``. On the next boot,
+supported pre-import gateway launchers can detect that the checkout advanced and
+purge stale ``__pycache__`` before importing ``gateway.run``. The compatible
+``python -m gateway.run`` path does not provide that pre-import guarantee.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _boot_fingerprint: str | None = None
+logger = logging.getLogger("gateway.code_skew")
+
+
+def _fingerprint_file() -> Path:
+    """Return the path to the persisted boot fingerprint.
+
+    Resolved at call time (not import time) via the canonical
+    ``get_hermes_home()`` so profile overrides and context-local
+    HERMES_HOME changes are respected.
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / ".gateway_boot_fingerprint"
 
 
 def _fingerprint() -> str | None:
@@ -39,10 +58,27 @@ def _fingerprint() -> str | None:
 
 
 def record_boot_fingerprint() -> None:
-    """Snapshot the checkout revision at gateway startup (idempotent)."""
+    """Snapshot the checkout revision at gateway startup (idempotent).
+
+    Also persists the fingerprint to ``HERMES_HOME`` for supported launchers to
+    compare before importing ``gateway.run`` on a later boot.
+    """
     global _boot_fingerprint
     if _boot_fingerprint is None:
         _boot_fingerprint = _fingerprint()
+    _persist_boot_fingerprint(_boot_fingerprint)
+
+
+def _persist_boot_fingerprint(fingerprint: str | None) -> None:
+    """Write the boot fingerprint to ``HERMES_HOME`` for next-boot comparison."""
+    if fingerprint is None:
+        return
+    try:
+        fp_file = _fingerprint_file()
+        fp_file.parent.mkdir(parents=True, exist_ok=True)
+        fp_file.write_text(fingerprint, encoding="utf-8")
+    except Exception:
+        logger.debug("Failed to persist boot fingerprint", exc_info=True)
 
 
 def _short(fingerprint: str) -> str:

@@ -294,6 +294,9 @@ def is_windows() -> bool:
 
 def run_gateway():
     """Run the gateway in foreground."""
+    from hermes_cli.gateway_bootstrap import purge_stale_gateway_pycache_before_import
+
+    purge_stale_gateway_pycache_before_import()
     from gateway.run import start_gateway
     print("Starting Hermes Gateway...")
     print("Press Ctrl+C to stop.")

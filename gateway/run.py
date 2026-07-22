@@ -6,11 +6,12 @@ This module provides:
 - GatewayRunner: Main class managing the gateway lifecycle
 
 Usage:
-    # Start the gateway
+    # Recommended: start through the pre-import bootstrap.
+    hermes gateway run
+
+    # Compatibility entry point. It does not provide the pre-import
+    # stale-bytecode cleanup guarantee of the supported launchers above.
     python -m gateway.run
-    
-    # Or from CLI
-    python cli.py --gateway
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
@@ -22836,6 +22837,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # risky work like model switching refused) instead of crashing on a stale
     # in-memory module.
     from gateway.code_skew import record_boot_fingerprint
+
+    # Bytecode cleanup belongs to the launcher/bootstrap boundary before this
+    # module is imported. This function only records the new boot fingerprint.
     record_boot_fingerprint()
 
     # ── Duplicate-instance guard ──────────────────────────────────────

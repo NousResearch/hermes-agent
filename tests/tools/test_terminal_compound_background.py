@@ -116,15 +116,59 @@ class TestTrailingCommandAfterBackgroundIsSkipped:
         cmd = "A && B & C\nfalse || D &"
         assert rewrite(cmd) == "A && B & C\nfalse || { D & }"
 
-    def test_trailing_command_already_valid_shapes_still_rewritten(self):
-        # Newline, `;`, `&&`, `||`, `|` after `&` are already valid
-        # continuations -> these ARE rewritten (no scheduling change,
-        # since there's no bare trailing command to reorder against).
+    def test_newline_after_background_is_rewritten(self):
+        # A newline ends the statement, so wrapping the tail in a brace group
+        # stays valid bash. This runs A in the foreground rather than
+        # backgrounding the whole `A && B` compound -- a deliberate scheduling
+        # change that is the point of the fix, not a preserved behavior
+        # (#68948 review).
         assert rewrite("A && B &\nC") == "A && { B & }\nC"
-        assert rewrite("A && B &;C") == "A && { B & };C"
-        assert rewrite("A && B & && C") == "A && { B & } && C"
-        assert rewrite("A && B & || C") == "A && { B & } || C"
-        assert rewrite("A && B & | C") == "A && { B & } | C"
+
+    def test_malformed_continuation_after_background_is_left_unchanged(self):
+        # `&;`, `& &&`, `& ||`, `& |`, and a second `& &` are ALREADY bash
+        # parse errors. The rewriter must leave them untouched: wrapping them
+        # in a brace group would turn invalid shell into a valid, executable
+        # pipeline (a validity inversion on LLM-supplied commands, #68948).
+        for cmd in (
+            "A && B &;C",
+            "A && B & ;C",
+            "A && B & && C",
+            "A && B & || C",
+            "A && B & | C",
+            "A && B &|C",
+            "A && B & & C",
+            "A && B & }",
+        ):
+            assert rewrite(cmd) == cmd
+
+    def test_rewriter_never_turns_invalid_shell_into_valid(self):
+        # Executable invariant (bash -n): the malformed continuations are
+        # rejected by bash, and the rewriter output must be rejected too -- it
+        # must never flip a parse error (status != 0) into valid shell.
+        shutil = pytest.importorskip("shutil")
+        if shutil.which("bash") is None:
+            pytest.skip("bash not available")
+        for cmd in (
+            "A && B &;C",
+            "A && B & ;C",
+            "A && B & && C",
+            "A && B & || C",
+            "A && B & | C",
+            "A && B &|C",
+            "A && B & & C",
+            "A && B & }",
+        ):
+            orig = subprocess.run(
+                ["bash", "-n", "-c", cmd], capture_output=True, text=True
+            )
+            assert orig.returncode != 0, f"expected {cmd!r} to be malformed"
+            rewritten = rewrite(cmd)
+            out = subprocess.run(
+                ["bash", "-n", "-c", rewritten], capture_output=True, text=True
+            )
+            assert out.returncode != 0, (
+                f"rewriter turned malformed {cmd!r} into valid {rewritten!r}"
+            )
 
     def test_trailing_command_end_of_string_still_rewritten(self):
         assert rewrite("A && B &") == "A && { B & }"

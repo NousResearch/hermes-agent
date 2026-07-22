@@ -873,19 +873,23 @@ def _rewrite_compound_background(command: str) -> str:
             if j >= 0 and command[j] in "<>":
                 i += 1
                 continue
-            # Real background operator. If a command follows on the same
-            # line, rewriting would need a statement separator after the
-            # brace group — which changes scheduling (see docstring) — so
-            # skip the rewrite for this statement entirely rather than
-            # insert one. `;`, `&&`, `||`, `|`, `}`, end-of-line, and
-            # end-of-string are all already-valid continuations that
-            # don't need a rewrite to begin with.
+            # Real background operator. Only rewrite when the backgrounded
+            # compound ends the statement cleanly: end-of-string or a newline.
+            # Those are the shapes where wrapping the tail in a brace group
+            # stays valid bash. A same-line command (`A && B & C`) is valid but
+            # MUST be skipped -- rewriting to `{ B & } C` is a parse error, and
+            # inserting a separator would change C's scheduling (see docstring).
+            # Every other continuation immediately after the `&` (`&;`, `& |`,
+            # `& &`) is ALREADY a bash parse error, so it must be left unchanged:
+            # wrapping it in a brace group would turn invalid shell the caller
+            # supplied into a valid, executable pipeline -- a validity inversion
+            # on LLM-supplied commands run straight through bash (#68948 review).
             if last_chain_op_end >= 0:
                 j = i + 1
                 while j < n and command[j] in " \t":
                     j += 1
                 next_char = command[j] if j < n else ""
-                if not next_char or next_char in ";\n}&|":
+                if not next_char or next_char == "\n":
                     rewrites.append((last_chain_op_end, i))
             last_chain_op_end = -1
             i += 1

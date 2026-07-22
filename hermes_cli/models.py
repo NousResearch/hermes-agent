@@ -2181,6 +2181,15 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
             if name_lower == model_part.lower():
                 return mid
 
+    # Anthropic uses dashes in version numbers (claude-opus-4-8) while
+    # OpenRouter uses dots (claude-opus-4.8). Normalize both sides to
+    # dots for a lenient match.
+    for mid in model_ids():
+        if "/" in mid:
+            _, model_part = mid.split("/", 1)
+            if name_lower.replace("-", ".") == model_part.lower().replace("-", "."):
+                return mid
+
     return None
 
 

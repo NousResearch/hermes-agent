@@ -1,5 +1,5 @@
 import { getSession } from '@/hermes'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -26,7 +26,7 @@ import {
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -73,7 +73,7 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim'] as const
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
@@ -154,7 +154,10 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.pending !== b.pending ||
     a.error !== b.error ||
     a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
+    a.branchGroupId !== b.branchGroupId ||
+    // Interim gates the action footer, so flipping it must repaint (e.g. a
+    // previewed final settling onto a sealed interim bubble restores the bar).
+    (a.interim ?? false) !== (b.interim ?? false)
   ) {
     return false
   }
@@ -222,6 +225,124 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     return withAppendedText(preserved, previousImages.map(url => `\n${url}`).join(''))
   })
+}
+
+/**
+ * Keep the local tail of a turn while a reconnect hydrates an older server
+ * projection. The user's optimistic row exists before prompt.submit persists
+ * it, and the pending assistant row exists before message.complete commits it;
+ * dropping either makes an accepted turn appear to vanish during transport
+ * churn.
+ *
+ * Authoritative rows use different ids, so match by role ordinal. A matching
+ * user row is considered committed only when its visible text also matches;
+ * any authoritative assistant at the same ordinal supersedes the local stream.
+ */
+export function preserveLocalPendingTurnMessages(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[]
+): ChatMessage[] {
+  if (!previousMessages.length) {
+    return nextMessages
+  }
+
+  const nextByRoleOrdinal = new Map<string, ChatMessage>()
+  const nextRoleCounts = new Map<ChatMessage['role'], number>()
+
+  for (const message of nextMessages) {
+    const ordinal = nextRoleCounts.get(message.role) ?? 0
+    nextRoleCounts.set(message.role, ordinal + 1)
+    nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
+  }
+
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const previousRoleCounts = new Map<ChatMessage['role'], number>()
+  const preserved: ChatMessage[] = []
+
+  for (const message of previousMessages) {
+    const ordinal = previousRoleCounts.get(message.role) ?? 0
+    previousRoleCounts.set(message.role, ordinal + 1)
+
+    const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
+
+    const isPendingAssistant =
+      message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+
+    if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+      continue
+    }
+
+    const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+
+    if (authoritative) {
+      if (isPendingAssistant) {
+        continue
+      }
+
+      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
+        continue
+      }
+    }
+
+    preserved.push(message)
+  }
+
+  return preserved.length ? [...nextMessages, ...preserved] : nextMessages
+}
+
+/**
+ * Append the backend-only tail of a live turn to a stored transcript.
+ *
+ * Session history is committed only when a turn finishes. During a reconnect,
+ * `inflight` is therefore the authority for the currently running user/assistant
+ * pair, while `queued` is an accepted next-turn prompt waiting in gateway
+ * memory. Stable ids let repeated activate/resume hydration reconcile instead
+ * of growing duplicate rows.
+ */
+export function appendLiveSessionProjection(
+  messages: ChatMessage[],
+  projection: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] {
+  const inflightUser = projection.inflight?.user?.trim() ?? ''
+  const inflightAssistant = projection.inflight?.assistant ?? ''
+  const inflightStreaming = Boolean(projection.inflight?.streaming)
+  const queuedUser = projection.queued?.user?.trim() ?? ''
+
+  if (!inflightUser && !inflightAssistant && !inflightStreaming && !queuedUser) {
+    return messages
+  }
+
+  const sessionId = projection.session_id || 'session'
+  const projected: ChatMessage[] = []
+
+  if (inflightUser) {
+    projected.push({
+      id: `user-inflight-${sessionId}`,
+      role: 'user',
+      parts: [textPart(inflightUser)]
+    })
+  }
+
+  // Keep a pending assistant boundary even before the first delta when a
+  // queued user turn follows it. This preserves the two distinct turns.
+  if (inflightAssistant || inflightStreaming || (inflightUser && queuedUser)) {
+    projected.push({
+      id: `assistant-stream-${sessionId}`,
+      role: 'assistant',
+      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+      pending: inflightStreaming
+    })
+  }
+
+  if (queuedUser) {
+    projected.push({
+      id: `user-queued-${sessionId}`,
+      role: 'user',
+      parts: [textPart(queuedUser)]
+    })
+  }
+
+  return projected.length ? [...messages, ...projected] : messages
 }
 
 export interface BranchMessage {

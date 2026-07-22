@@ -21,10 +21,11 @@ import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 }
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
@@ -44,7 +45,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
 }
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
+export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -300,7 +301,43 @@ function NoProviderKeys() {
   )
 }
 
-export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
+// Surfaces the "Local / custom endpoint" entry point directly in the API-keys
+// tab so users can add any OpenAI-compatible endpoint (Zyphra, vLLM, Ollama…)
+// from the GUI. The composer pill and the providers "have an API key" affordance
+// both dead-end on the env-var-driven key catalog, which never lists a custom
+// endpoint — so without this row there is no reachable Desktop path to it.
+// The whole row is the button so the click target and a11y focus match the
+// visible area (the chevron + gutter are inside the button, not beside it).
+// Pass reason: null — the onboarding overlay renders an unmapped reason string
+// verbatim as a banner (see ReasonNotice in onboarding/index.tsx), and we don't
+// want a raw identifier like "providers-keys-tab" showing as literal text.
+function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void }) {
+  const { t } = useI18n()
+  const copy = t.settings.providers.localEndpoint
+
+  return (
+    <RowButton
+      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
+      onClick={() => onOpen(null)}
+    >
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{copy.title}</span>
+        <span className="truncate text-[length:var(--conversation-caption-font-size)] leading-5 text-muted-foreground">
+          {copy.description}
+        </span>
+      </div>
+      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+    </RowButton>
+  )
+}
+
+export function ProvidersSettings({
+  onClose,
+  onConfigSaved,
+  onMainModelChanged,
+  onViewChange,
+  view
+}: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
@@ -400,7 +437,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const hasOauth = oauthProviders.length > 0
   // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
   // providers there's nothing for the "Accounts" view to show, so fall to keys.
-  const showApiKeys = view === 'keys' || !hasOauth
+  const showApiKeys = view === 'keys' || (!hasOauth && view !== 'custom-endpoints')
 
   const keyGroups = buildProviderKeyGroups(vars)
 
@@ -417,6 +454,7 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
 
     return (
       <SettingsContent>
+        <LocalEndpointRow onOpen={startManualLocalEndpoint} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField
@@ -452,6 +490,10 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
     )
   }
 
+  if (view === 'custom-endpoints') {
+    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+  }
+
   return (
     <SettingsContent>
       <OAuthPicker
@@ -477,6 +519,8 @@ interface ProviderKeyGroup {
 
 interface ProvidersSettingsProps {
   onClose: () => void
+  onConfigSaved?: () => void
+  onMainModelChanged?: (provider: string, model: string) => void
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

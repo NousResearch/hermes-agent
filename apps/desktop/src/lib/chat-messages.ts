@@ -17,6 +17,10 @@ export type ChatMessage = {
   error?: string
   branchGroupId?: string
   hidden?: boolean
+  /** Sealed mid-turn commentary (`message.interim`) — rendered without the
+   *  action footer so only the turn's final reply carries copy/refresh, and
+   *  the live view matches rehydration (which merges the turn into one bubble). */
+  interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
 }
@@ -76,6 +80,8 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
+  pane?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
@@ -87,6 +93,9 @@ export type GatewayEventPayload = {
   label?: string
   index?: number
   aggregator?: string
+  // message.complete — signals the final text was already previewed via
+  // interim_assistant_callback, so the UI can settle instead of duplicating.
+  response_previewed?: boolean
 }
 
 export function textPart(text: string): ChatMessagePart {
@@ -134,6 +143,46 @@ export function chatMessageText(message: ChatMessage): string {
     .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+/**
+ * Merge the final assistant text into a message's parts.
+ *
+ * - Removes all existing `text` parts (they were streamed deltas, now superseded
+ *   by the authoritative final response).
+ * - Keeps `reasoning` parts, but drops one that the final text fully covers
+ *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
+ *   NOT swallow a longer reasoning block that merely starts with it (#61447).
+ * - Keeps all other part types (tool-call, image, etc.).
+ * - Appends the final text as a new text part.
+ */
+export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  const dedupeReference = normalizeWs(finalText)
+
+  const kept = parts.filter(part => {
+    if (part.type === 'text') {
+      // Sealed text parts were already finalized into their own bubbles —
+      // this filter only runs on the LAST streaming bubble, so there are no
+      // sealed parts here. All text parts are streamed deltas that get
+      // replaced by the authoritative final text.
+      return false
+    }
+
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    // Reasoning is a restatement only when the final FULLY covers it.
+    // The reverse direction is not considered — a short final must not
+    // swallow a longer reasoning block (#61447).
+    const r = normalizeWs(part.text)
+
+    return !(r && dedupeReference.startsWith(r))
+  })
+
+  return finalText ? [...kept, assistantTextPart(finalText)] : kept
 }
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/

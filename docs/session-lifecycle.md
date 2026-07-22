@@ -628,7 +628,7 @@ When a session expires:
 
 ```yaml
 session_reset:
-  mode: both            # none | idle | daily | both
+  mode: none            # none (default) | idle | daily | both
   at_hour: 4            # daily reset hour (local time)
   idle_minutes: 1440    # idle timeout (24h)
   notify: true          # notify user on auto-reset

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -14,7 +15,15 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createCronJob,
@@ -30,9 +39,11 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
+import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -58,6 +69,10 @@ import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-j
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
+
+// Radix <SelectItem> rejects empty-string values, so the "no override" row in
+// the model picker carries this sentinel and is mapped back to '' on save.
+const MODEL_DEFAULT_VALUE = '__default__'
 
 const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
 
@@ -101,6 +116,14 @@ function jobScheduleExpr(job: CronJob): string {
 
 function jobDeliver(job: CronJob): string {
   return asText(job.deliver) || DEFAULT_DELIVER
+}
+
+function jobModel(job: CronJob): string {
+  return asText(job.model).trim()
+}
+
+function jobProvider(job: CronJob): string {
+  return asText(job.provider).trim()
 }
 
 function cronParts(expr: string): null | string[] {
@@ -271,15 +294,20 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // Jobs live per-profile on disk and the list endpoint aggregates 'all' by
+  // default — scope the fetch to the sidebar's profile scope so this overlay
+  // and the sidebar (which share the $cronJobs atom) agree on what's shown.
+  const profileScope = useStore($profileScope)
+
   const refresh = useCallback(async () => {
     try {
-      setCronJobs(await getCronJobs())
+      setCronJobs(await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope))
     } catch (err) {
       notifyError(err, c.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [c])
+  }, [c, profileScope])
 
   useRefreshHotkey(refresh)
 
@@ -391,7 +419,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         prompt: values.prompt,
         schedule: values.schedule,
         name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
+        deliver: values.deliver || DEFAULT_DELIVER,
+        ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
       })
 
       updateCronJobs(rows => [...rows, created])
@@ -550,6 +579,7 @@ function CronJobDetail({
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
+  const modelOverride = jobModel(job)
 
   return (
     <PanelDetail>
@@ -574,7 +604,8 @@ function CronJobDetail({
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
-            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver }
+            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
+            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
           ]}
         />
 
@@ -717,8 +748,20 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
+  // Per-job model override, encoded as `${providerSlug}:${model}` (split on the
+  // first ':' when saving). MODEL_DEFAULT_VALUE = follow the global default.
+  const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
+
+  // Same catalog the chat model picker uses: configured providers and their
+  // actually-available models only. Script-only jobs never run an agent, so
+  // skip the fetch entirely for them.
+  const modelOptions = useQuery({
+    queryKey: ['model-options', 'global'],
+    queryFn: () => requestModelOptions({}),
+    enabled: open && !scriptOnlyJob
+  })
 
   useEffect(() => {
     if (!open) {
@@ -730,6 +773,7 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
+    setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
     setError(null)
     setSaving(false)
   }, [initial, open])
@@ -752,6 +796,19 @@ function CronEditorDialog({
 
   const scheduleHint = scheduleSummary(selectedScheduleOption, schedule, c)
 
+  // Configured providers with at least one available model — mirrors the chat
+  // model picker's gate so only actually-selectable models are offered.
+  const modelProviders = (modelOptions.data?.providers ?? []).filter(
+    provider => provider.authenticated !== false && (provider.models ?? []).length > 0
+  )
+
+  // A previously pinned model that has since left the catalog (provider
+  // removed / model retired) would render Radix's blank trigger. Keep the
+  // stored pin visible and re-selectable rather than silently dropping it.
+  const modelChoiceKnown =
+    modelChoice === MODEL_DEFAULT_VALUE ||
+    modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
@@ -773,14 +830,22 @@ function CronEditorDialog({
       return
     }
 
+    // Decode `${providerSlug}:${model}` — the model half may itself contain
+    // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'), so split once.
+    const overrideIndex = modelChoice === MODEL_DEFAULT_VALUE ? -1 : modelChoice.indexOf(':')
+    const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
+    const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
+
     setSaving(true)
     setError(null)
 
     try {
       await onSave({
         deliver,
+        model: overrideModel,
         name: name.trim(),
         prompt: prompt.trim(),
+        provider: overrideProvider,
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -857,6 +922,38 @@ function CronEditorDialog({
             </Field>
           </div>
 
+          {!scriptOnlyJob && (
+            <Field htmlFor="cron-model" label={c.modelLabel} optional optionalLabel={c.optional}>
+              <Select onValueChange={setModelChoice} value={modelChoice}>
+                <SelectTrigger className="h-9 rounded-md" id="cron-model">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
+                  {!modelChoiceKnown && (
+                    <SelectItem className="font-mono" value={modelChoice}>
+                      {modelChoice.slice(modelChoice.indexOf(':') + 1)}
+                    </SelectItem>
+                  )}
+                  {modelProviders.map(provider => (
+                    <SelectGroup key={provider.slug}>
+                      <SelectLabel>{provider.name}</SelectLabel>
+                      {(provider.models ?? []).map(model => (
+                        <SelectItem
+                          className="font-mono"
+                          key={`${provider.slug}:${model}`}
+                          value={`${provider.slug}:${model}`}
+                        >
+                          {model}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+
           {schedulePreset === 'custom' ? (
             <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
               <Input
@@ -930,8 +1027,12 @@ type EditorState = { mode: 'closed' } | { mode: 'create' } | { job: CronJob; mod
 
 interface EditorValues {
   deliver: string
+  /** Per-job model override ('' = follow the global default). */
+  model: string
   name: string
   prompt: string
+  /** Provider slug for the model override ('' = none). */
+  provider: string
   schedule: string
 }
 

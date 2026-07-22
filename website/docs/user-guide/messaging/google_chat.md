@@ -189,6 +189,23 @@ Send "hola" in the test DM. The bot posts a "Hermes is thinking…" marker, then
 edits that same message in place with the real response — no "message deleted"
 tombstones.
 
+### Customizing the working-state marker
+
+The marker text is configurable via `typing_status_text` in
+`~/.hermes/config.yaml` — e.g. a kitten assistant named Ada:
+
+```yaml
+platforms:
+  google_chat:
+    # Custom working-state marker text (default: "Hermes is thinking…").
+    typing_status_text: "is pouncing… 🐾"
+```
+
+Unlike Slack's ephemeral status line, this is a **real posted message** that
+gets edited in place with the response — so whatever you set here briefly
+appears in the chat as a normal message. Set `typing_indicator: false` to
+disable the marker entirely.
+
 ---
 
 ## Formatting and capabilities

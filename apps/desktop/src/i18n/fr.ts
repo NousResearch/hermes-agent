@@ -511,6 +511,9 @@ export const fr = defineLocale({
         daytonaImage: 'Image Daytona'
       },
       fileReadMaxChars: 'Limite de lecture de fichier',
+      repoScanEnabled: 'Découverte automatique de dépôts',
+      repoScanRoots: 'Racines de découverte de dépôts',
+      repoScanExcludePaths: 'Chemins de dépôts exclus',
       toolOutput: {
         maxBytes: 'Limite de sortie terminal',
         maxLines: 'Limite de pagination',
@@ -664,6 +667,9 @@ export const fr = defineLocale({
         mode: 'Niveau de restriction de l\'exécution de code au projet en cours.'
       },
       fileReadMaxChars: 'Nombre maximum de caractères qu\'Hermes peut lire en une seule lecture de fichier.',
+      repoScanEnabled: 'Analyser les dossiers locaux pour trouver des dépôts Git à afficher dans Projets.',
+      repoScanRoots: 'Dossiers à analyser. Laissez vide pour analyser votre répertoire personnel.',
+      repoScanExcludePaths: 'Dossiers et leurs sous-dossiers à ignorer lors de la découverte de dépôts.',
       toolOutput: {
         maxBytes: 'Taille maximale de la sortie du terminal.',
         maxLines: 'Nombre maximum de lignes par page de fichier.',

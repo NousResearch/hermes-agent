@@ -3578,6 +3578,13 @@ This compaction should PRIORITISE preserving all information related to the focu
           4. Summarize middle turns with structured LLM prompt
           5. On re-compression, iteratively update the previous summary
 
+        Blank platform-echo user rows trailing the latest actionable user
+        turn are removed in the same cheap pre-pass phase as tool-result
+        pruning — i.e. BEFORE any summary-abort early return. An aborted
+        compression can therefore still hand back a modified list (echoes
+        stripped, no turns summarized); this mirrors the long-standing
+        Phase-1 pruning behavior, which likewise survives an abort.
+
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
 

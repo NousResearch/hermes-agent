@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from utils import copy_file_writable, copytree_writable, make_tree_owner_writable
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -373,7 +374,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
         if len(rel_parts) == 1:
             name = rel_parts[0]
             if name == ENV_TEMPLATE_FILENAME:
-                shutil.copy2(src, target / ENV_EXAMPLE_FILENAME)
+                copy_file_writable(src, target / ENV_EXAMPLE_FILENAME)
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
@@ -381,10 +382,11 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
         dest.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
             if dest.exists():
+                make_tree_owner_writable(dest)
                 shutil.rmtree(dest)
-            shutil.copytree(src, dest, ignore=_ignore_user_owned)
+            copytree_writable(src, dest, ignore=_ignore_user_owned)
         else:
-            shutil.copy2(src, dest)
+            copy_file_writable(src, dest)
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

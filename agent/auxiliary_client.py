@@ -742,12 +742,15 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
 
     We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
     ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
-    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
-    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
+    extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
+    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim, and
+    extract ``x-openai-internal-codex-residency`` from the
+    ``chatgpt_data_residency`` claim (falling back to
+    ``chatgpt_compute_residency``) for residency-enforced workspaces.
 
-    Malformed tokens are tolerated — we drop the account-ID header rather than
-    raise, so a bad token still surfaces as an auth error (401) instead of a
-    crash at client construction.
+    Malformed tokens are tolerated — we drop the account-ID and residency
+    headers rather than raise, so a bad token still surfaces as an auth error
+    (401) instead of a crash at client construction.
     """
     headers = {
         "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
@@ -762,9 +765,13 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
             return headers
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        auth = claims.get("https://api.openai.com/auth", {})
+        acct_id = auth.get("chatgpt_account_id")
         if isinstance(acct_id, str) and acct_id:
             headers["ChatGPT-Account-ID"] = acct_id
+        residency = auth.get("chatgpt_data_residency") or auth.get("chatgpt_compute_residency")
+        if isinstance(residency, str) and residency.strip():
+            headers["x-openai-internal-codex-residency"] = residency.strip()
     except Exception:
         pass
     return headers

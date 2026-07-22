@@ -35,18 +35,27 @@ from unittest.mock import MagicMock, patch
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _make_codex_jwt(account_id: str = "acct-test-123") -> str:
+def _make_codex_jwt(
+    account_id: str = "acct-test-123",
+    data_residency: str | None = None,
+    compute_residency: str | None = None,
+) -> str:
     """Build a syntactically valid Codex-style JWT with the account_id claim."""
     def b64url(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
     header = b64url(b'{"alg":"RS256","typ":"JWT"}')
+    auth_claims: dict = {
+        "chatgpt_account_id": account_id,
+        "chatgpt_plan_type": "plus",
+    }
+    if data_residency is not None:
+        auth_claims["chatgpt_data_residency"] = data_residency
+    if compute_residency is not None:
+        auth_claims["chatgpt_compute_residency"] = compute_residency
     claims = {
         "sub": "user-xyz",
         "exp": 9999999999,
-        "https://api.openai.com/auth": {
-            "chatgpt_account_id": account_id,
-            "chatgpt_plan_type": "plus",
-        },
+        "https://api.openai.com/auth": auth_claims,
     }
     payload = b64url(json.dumps(claims).encode())
     sig = b64url(b"fake-sig")
@@ -110,6 +119,40 @@ class TestCodexCloudflareHeaders:
         headers = _codex_cloudflare_headers(token)
         assert headers["originator"] == "codex_cli_rs"
         assert "ChatGPT-Account-ID" not in headers
+
+    def test_residency_header_from_data_residency_claim(self):
+        """chatgpt_data_residency claim should populate x-openai-internal-codex-residency."""
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        headers = _codex_cloudflare_headers(_make_codex_jwt(data_residency="us"))
+        assert headers["x-openai-internal-codex-residency"] == "us"
+
+    def test_residency_header_from_compute_residency_fallback(self):
+        """When data_residency is absent, compute_residency should be used."""
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        headers = _codex_cloudflare_headers(_make_codex_jwt(compute_residency="eu"))
+        assert headers["x-openai-internal-codex-residency"] == "eu"
+
+    def test_data_residency_takes_precedence_over_compute(self):
+        """When both claims exist, data_residency should win."""
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        headers = _codex_cloudflare_headers(
+            _make_codex_jwt(data_residency="us", compute_residency="eu"),
+        )
+        assert headers["x-openai-internal-codex-residency"] == "us"
+
+    def test_no_residency_claims_omits_header(self):
+        """When neither residency claim exists, the header should be absent."""
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        headers = _codex_cloudflare_headers(_make_codex_jwt())
+        assert "x-openai-internal-codex-residency" not in headers
+
+    def test_malformed_token_drops_residency_without_raising(self):
+        """Malformed tokens should not raise; residency header should be absent."""
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        for bad in ["not-a-jwt", "", "only.one", "  ", "...."]:
+            headers = _codex_cloudflare_headers(bad)
+            assert headers["originator"] == "codex_cli_rs"
+            assert "x-openai-internal-codex-residency" not in headers
 
 
 # ---------------------------------------------------------------------------

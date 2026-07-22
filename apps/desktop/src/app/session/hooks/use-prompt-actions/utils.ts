@@ -248,7 +248,9 @@ export function renderRpcResult(response: unknown, name: string): string {
 
   // process.stop — { killed: number }
   if ('killed' in r && typeof r.killed === 'number') {
-    return r.killed > 0 ? `Stopped ${r.killed} background process${r.killed === 1 ? '' : 'es'}.` : 'No background processes to stop.'
+    return r.killed > 0
+      ? `Stopped ${r.killed} background process${r.killed === 1 ? '' : 'es'}.`
+      : 'No background processes to stop.'
   }
 
   // session.save — { file }

@@ -31,13 +31,21 @@ describe('desktop slash command curation', () => {
 
   it('hides terminal, messaging, and dedicated-UI commands from suggestions', () => {
     expect(isDesktopSlashSuggestion('/clear')).toBe(false)
-    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/density')).toBe(false)
     expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
     expect(isDesktopSlashSuggestion('/model')).toBe(false)
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('routes /compact to /compress (context compression), not the TUI display toggle', () => {
+    expect(resolveDesktopCommand('/compact')?.name).toBe('/compress')
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    // Alias stays out of the popover so /compress is the single visible entry.
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
   })
 
   it('surfaces /tools, /save, and /personality on the desktop', () => {
@@ -71,6 +79,18 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
     // Bare /browser expands to its sub-action options in the popover.
     expect(resolveDesktopCommand('/browser')?.args).toBe(true)
+  })
+
+  it('routes /journey (and aliases) to the memory graph overlay action', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(isDesktopSlashCommand('/journey')).toBe(true)
+    expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
+    expect(isDesktopSlashSuggestion('/journey')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
   })
 
   it('allows aliases to execute without cluttering the popover', () => {

@@ -3,6 +3,7 @@ export type GatewayEventName =
   | 'session.info'
   | 'message.start'
   | 'message.delta'
+  | 'message.interim'
   | 'message.complete'
   | 'thinking.delta'
   | 'reasoning.delta'
@@ -23,6 +24,8 @@ export type GatewayEventName =
 
 export interface GatewayEvent<P = unknown> {
   payload?: P
+  /** Renderer-side source tag added by the Desktop gateway registry. */
+  profile?: string
   session_id?: string
   type: GatewayEventName
 }
@@ -92,6 +95,29 @@ export class JsonRpcGatewayClient {
   }
 
   async connect(wsUrl: string): Promise<void> {
+    // Refuse garbage; WebSocket coerces non-strings into
+    // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
+    const invalidUrl = () => {
+      const got = typeof wsUrl === 'string' ? JSON.stringify(wsUrl) : `type "${typeof wsUrl}"`
+
+      return new Error(`gateway connect() requires a ws:// or wss:// URL string, got ${got}`)
+    }
+
+    if (typeof wsUrl !== 'string') {
+      throw invalidUrl()
+    }
+
+    let url: URL
+    try {
+      url = new URL(wsUrl)
+    } catch {
+      throw invalidUrl()
+    }
+
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+      throw invalidUrl()
+    }
+
     if (this.socket?.readyState === WebSocket.OPEN || this.state === 'connecting') {
       return
     }
@@ -165,6 +191,7 @@ export class JsonRpcGatewayClient {
 
           settled = true
           cleanup()
+
           // Drop the half-open socket so the next connect() starts clean
           // instead of short-circuiting on a zombie 'connecting' state.
           if (this.socket === socket) {
@@ -176,6 +203,7 @@ export class JsonRpcGatewayClient {
 
             this.socket = null
           }
+
           this.setState('error')
           reject(new Error(this.options.connectErrorMessage))
         }, this.options.connectTimeoutMs)
@@ -247,6 +275,7 @@ export class JsonRpcGatewayClient {
 
     return new Promise<T>((resolve, reject) => {
       let onAbort: (() => void) | undefined
+
       const detach = () => {
         if (onAbort && signal) {
           signal.removeEventListener('abort', onAbort)
@@ -278,13 +307,16 @@ export class JsonRpcGatewayClient {
       if (signal) {
         onAbort = () => {
           const call = this.pending.get(id)
+
           if (call?.timer) {
             clearTimeout(call.timer)
           }
+
           this.pending.delete(id)
           detach()
           reject(new DOMException('Aborted', 'AbortError'))
         }
+
         signal.addEventListener('abort', onAbort, { once: true })
       }
 

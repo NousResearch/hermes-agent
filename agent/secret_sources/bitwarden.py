@@ -29,11 +29,13 @@ is easier to lazy-install than a wheels-with-Rust-extension dependency.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -42,9 +44,20 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+from agent.secret_sources._cache import (
+    CachedFetch as _CachedFetch,
+    DiskCache,
+    FetchResult,
+    is_valid_env_name as _is_valid_env_name,
+)
+from agent.secret_sources.base import ErrorKind, SecretSource
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +83,7 @@ _BWS_RUN_TIMEOUT = 30
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
 _CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
-_CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
+_CACHE: Dict[_CacheKey, _CachedFetch] = {}
 
 # Disk-persisted cache so back-to-back CLI invocations (e.g. `hermes chat -q ...`
 # called from scripts, cron, the gateway forking new agents) don't each pay the
@@ -81,19 +94,12 @@ _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 # <hermes_home>/cache/bws_cache.json. The file holds only the secret VALUES,
 # never the access token. It's plaintext-equivalent to ~/.hermes/.env (which
 # we already accept) but kept out of the .env file so users editing it won't
-# accidentally commit BSM-sourced secrets.
+# accidentally commit BSM-sourced secrets. The atomic-write/0600/TTL mechanics
+# live in agent.secret_sources._cache.DiskCache, shared with the other backends.
 _DISK_CACHE_BASENAME = "bws_cache.json"
-
-
-def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    """Return the disk cache path under hermes_home/cache/.
-
-    `home_path` is what `load_hermes_dotenv()` already resolved; falling back
-    to `$HERMES_HOME` / `~/.hermes` keeps direct callers working too.
-    """
-    if home_path is None:
-        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return home_path / "cache" / _DISK_CACHE_BASENAME
+_ENCRYPTED_CACHE_BASENAME = "bws_cache.enc.json"
+_ENCRYPTED_CACHE_VERSION = 1
+_ENCRYPTED_CACHE_INFO = b"hermes-bws-encrypted-cache-v1"
 
 
 def _cache_key_str(cache_key: _CacheKey) -> str:
@@ -102,103 +108,25 @@ def _cache_key_str(cache_key: _CacheKey) -> str:
     return f"{token_fp}|{project_id}|{server_url}"
 
 
-def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
-                     home_path: Optional[Path] = None) -> Optional["_CachedFetch"]:
-    """Return a cached entry from disk if fresh, else None.
+_DISK_CACHE: DiskCache = DiskCache(
+    _DISK_CACHE_BASENAME, key_serializer=_cache_key_str
+)
 
-    Best-effort: any I/O or parse error returns None and we re-fetch.
+
+def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    """Return the disk cache path under hermes_home/cache/.
+
+    Thin wrapper over the shared DiskCache, kept for tests and any direct
+    callers; falls back to `$HERMES_HOME` / `~/.hermes` when home is None.
     """
-    if ttl_seconds <= 0:
-        return None
-    path = _disk_cache_path(home_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("key") != _cache_key_str(cache_key):
-        return None
-    secrets = payload.get("secrets")
-    fetched_at = payload.get("fetched_at")
-    if not isinstance(secrets, dict) or not isinstance(fetched_at, (int, float)):
-        return None
-    # Coerce all values to strings — JSON allows numbers but env vars need strings
-    typed_secrets: Dict[str, str] = {
-        k: v for k, v in secrets.items() if isinstance(k, str) and isinstance(v, str)
-    }
-    entry = _CachedFetch(secrets=typed_secrets, fetched_at=float(fetched_at))
-    if not entry.is_fresh(ttl_seconds):
-        return None
-    return entry
+    return _DISK_CACHE.path(home_path)
 
 
-def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
-                      home_path: Optional[Path] = None) -> None:
-    """Persist a cache entry to disk atomically with mode 0600.
+def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    """Return the encrypted disk cache path under hermes_home/cache/."""
+    from agent.secret_sources._cache import resolve_cache_home
 
-    Best-effort: any I/O error is swallowed (the next invocation will just
-    re-fetch). We never want disk cache failures to break startup.
-    """
-    path = _disk_cache_path(home_path)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "key": _cache_key_str(cache_key),
-            "secrets": entry.secrets,
-            "fetched_at": entry.fetched_at,
-        }
-        # Write to a temp file in the same directory and atomic-rename.
-        # tempfile honors os.umask, so we explicitly chmod 0600 before rename.
-        fd, tmp = tempfile.mkstemp(
-            prefix=".bws_cache_", suffix=".tmp", dir=str(path.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass  # best-effort — disk cache miss on next invocation is fine
-
-
-@dataclass
-class _CachedFetch:
-    secrets: Dict[str, str]
-    fetched_at: float
-
-    def is_fresh(self, ttl_seconds: float) -> bool:
-        if ttl_seconds <= 0:
-            return False
-        return (time.time() - self.fetched_at) < ttl_seconds
-
-
-# ---------------------------------------------------------------------------
-# Public dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class FetchResult:
-    """Outcome of a single BSM pull."""
-
-    secrets: Dict[str, str] = field(default_factory=dict)
-    applied: List[str] = field(default_factory=list)   # set into os.environ
-    skipped: List[str] = field(default_factory=list)   # already set, not overridden
-    warnings: List[str] = field(default_factory=list)  # non-fatal issues
-    error: Optional[str] = None                        # fatal: nothing was fetched
-    binary_path: Optional[Path] = None
-
-    @property
-    def ok(self) -> bool:
-        return self.error is None
+    return resolve_cache_home(home_path) / "cache" / _ENCRYPTED_CACHE_BASENAME
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +364,134 @@ def _token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
+def _b64e(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _b64d(text: str) -> bytes:
+    return base64.b64decode(text.encode("ascii"), validate=True)
+
+
+def _derive_encrypted_cache_key(access_token: str, salt: bytes) -> bytes:
+    """Derive the local cache encryption key from the bootstrap BWS token."""
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=_ENCRYPTED_CACHE_INFO,
+    ).derive(access_token.encode("utf-8"))
+
+
+def _write_encrypted_disk_cache(
+    *,
+    cache_key: _CacheKey,
+    access_token: str,
+    entry: _CachedFetch,
+    home_path: Optional[Path] = None,
+) -> None:
+    """Persist an encrypted last-good cache entry atomically.
+
+    Best-effort by design: cache write failure must never block a fresh BWS
+    fetch.  The raw BWS access token is not stored; it only derives the AES key.
+    """
+    path = _encrypted_disk_cache_path(home_path)
+    try:
+        cache_dir = path.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(cache_dir, 0o700)
+        except OSError:
+            pass
+        salt = os.urandom(16)
+        nonce = os.urandom(12)
+        serialized_key = _cache_key_str(cache_key)
+        key = _derive_encrypted_cache_key(access_token, salt)
+        plaintext = json.dumps(
+            {"secrets": entry.secrets, "fetched_at": entry.fetched_at},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        ciphertext = AESGCM(key).encrypt(
+            nonce, plaintext, serialized_key.encode("utf-8")
+        )
+        payload = {
+            "version": _ENCRYPTED_CACHE_VERSION,
+            "key": serialized_key,
+            "salt": _b64e(salt),
+            "nonce": _b64e(nonce),
+            "ciphertext": _b64e(ciphertext),
+        }
+        fd, tmp = tempfile.mkstemp(
+            prefix=".bws_cache_enc_", suffix=".tmp", dir=str(cache_dir)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+            # A successful encrypted write completes migration; remove the
+            # legacy plaintext cache so stale secrets cannot remain on disk.
+            try:
+                _disk_cache_path(home_path).unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:  # noqa: BLE001 — best-effort cache only
+        return
+
+
+def _read_encrypted_disk_cache(
+    *,
+    cache_key: _CacheKey,
+    access_token: str,
+    max_age_seconds: float,
+    home_path: Optional[Path] = None,
+) -> Optional[_CachedFetch]:
+    """Return a decrypted encrypted-cache entry if it matches and is in-window."""
+    if max_age_seconds <= 0:
+        return None
+    path = _encrypted_disk_cache_path(home_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        serialized_key = _cache_key_str(cache_key)
+        if payload.get("version") != _ENCRYPTED_CACHE_VERSION:
+            return None
+        if payload.get("key") != serialized_key:
+            return None
+        salt = _b64d(str(payload.get("salt", "")))
+        nonce = _b64d(str(payload.get("nonce", "")))
+        ciphertext = _b64d(str(payload.get("ciphertext", "")))
+        key = _derive_encrypted_cache_key(access_token, salt)
+        raw = AESGCM(key).decrypt(
+            nonce, ciphertext, serialized_key.encode("utf-8")
+        )
+        inner = json.loads(raw.decode("utf-8"))
+        if not isinstance(inner, dict):
+            return None
+        secrets = inner.get("secrets")
+        inner_fetched_at = inner.get("fetched_at")
+        if not isinstance(secrets, dict) or not isinstance(inner_fetched_at, (int, float)):
+            return None
+        entry_age = time.time() - float(inner_fetched_at)
+        if entry_age < 0 or entry_age > max_age_seconds:
+            return None
+        typed = {
+            k: v for k, v in secrets.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+        return _CachedFetch(secrets=typed, fetched_at=float(inner_fetched_at))
+    except Exception:  # noqa: BLE001 — cache miss on parse/decrypt/I/O errors
+        return None
+
+
 def fetch_bitwarden_secrets(
     *,
     access_token: str,
@@ -445,6 +501,8 @@ def fetch_bitwarden_secrets(
     use_cache: bool = True,
     server_url: str = "",
     home_path: Optional[Path] = None,
+    encrypted_cache_enabled: bool = False,
+    encrypted_cache_max_stale_seconds: float = 0,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Pull the secrets for ``project_id`` from Bitwarden Secrets Manager.
 
@@ -456,12 +514,13 @@ def fetch_bitwarden_secrets(
     (``https://vault.bitwarden.com``, US Cloud).  This is plumbed into
     the subprocess as ``BWS_SERVER_URL``.
 
-    Caching is a two-layer LRU: an in-process dict (for hot-reload paths
-    inside one process) and a disk-persisted JSON file under
-    ``<hermes_home>/cache/bws_cache.json`` (for back-to-back CLI invocations).
-    Both share the same TTL.  Pass ``home_path`` so disk cache lookups find
-    the right directory in tests / non-standard installs; otherwise we fall
-    back to ``$HERMES_HOME`` / ``~/.hermes``.
+    ``cache_ttl_seconds`` controls the normal fresh cache.  When
+    ``encrypted_cache_enabled`` is true, fresh cache entries are written as
+    AES-GCM encrypted JSON instead of plaintext, and a last-good encrypted
+    entry may be used after NETWORK/TIMEOUT failures for up to
+    ``encrypted_cache_max_stale_seconds``.  This stale fallback is separate
+    from the fresh-cache TTL so operators can set ``cache_ttl_seconds: 0``
+    while still keeping an encrypted break-glass cache for offline startup.
 
     Raises :class:`RuntimeError` for fatal conditions (missing binary,
     auth failure, unparseable output).  Callers in the env_loader path
@@ -474,12 +533,20 @@ def fetch_bitwarden_secrets(
         raise RuntimeError("Bitwarden project_id is empty")
 
     cache_key = (_token_fingerprint(access_token), project_id, server_url or "")
-    if use_cache:
+    if use_cache and cache_ttl_seconds > 0:
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
             return cached.secrets, []
         # L2: disk cache. ~5ms on cache hit vs ~380ms for `bws secret list`.
-        disk_cached = _read_disk_cache(cache_key, cache_ttl_seconds, home_path)
+        if encrypted_cache_enabled:
+            disk_cached = _read_encrypted_disk_cache(
+                cache_key=cache_key,
+                access_token=access_token,
+                max_age_seconds=cache_ttl_seconds,
+                home_path=home_path,
+            )
+        else:
+            disk_cached = _DISK_CACHE.read(cache_key, cache_ttl_seconds, home_path)
         if disk_cached is not None:
             # Promote into in-process cache so subsequent fetches in the
             # same process skip the disk read too.
@@ -495,12 +562,105 @@ def fetch_bitwarden_secrets(
             "`hermes secrets bitwarden setup`."
         )
 
-    secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+    try:
+        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+    except RuntimeError as exc:
+        # Live fetch failed. Fall back to a stale disk cache ONLY for
+        # transport-level failures (network down, DNS error, transient BWS
+        # outage / timeout) — never for AUTH_FAILED or a malformed-output
+        # INTERNAL error, where serving old secrets would mask a real
+        # config/credential problem the caller needs to see.  Without this
+        # fallback a fleet of bots sharing one BWS project all stop working
+        # on a single network blip.
+        #
+        # Two fallback tiers share the transport-only gate:
+        # * encrypted cache (opt-in) — AES-GCM payload keyed off the
+        #   bootstrap token, with its own max_stale_seconds window.  When
+        #   enabled it is the ONLY fallback consulted: the whole point is
+        #   that the at-rest payload is never plaintext, so we don't
+        #   quietly serve the plaintext file alongside it.
+        # * plaintext disk cache (default) — the ordinary DiskCache file.
+        #   `cache_ttl_seconds <= 0` means the caller opted out of caching
+        #   entirely (DiskCache.read/write both short-circuit on it) —
+        #   honor that on the fallback path too.  `ttl_seconds=inf` on the
+        #   read bypasses freshness (we explicitly want a stale hit); the
+        #   caller's real TTL gates whether we even attempt the read.
+        kind = _classify_bws_error(str(exc))
+        if use_cache and kind in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
+            if encrypted_cache_enabled:
+                stale = _read_encrypted_disk_cache(
+                    cache_key=cache_key,
+                    access_token=access_token,
+                    max_age_seconds=encrypted_cache_max_stale_seconds,
+                    home_path=home_path,
+                )
+                if stale is not None:
+                    age = max(0.0, time.time() - stale.fetched_at)
+                    _CACHE[cache_key] = stale
+                    return stale.secrets, [
+                        f"bws live fetch failed ({exc}); falling back to "
+                        f"stale ENCRYPTED disk cache ({int(age)}s old)"
+                    ]
+            elif cache_ttl_seconds > 0:
+                stale = _DISK_CACHE.read(cache_key, float("inf"), home_path)
+                if stale is not None:
+                    age = max(0.0, time.time() - stale.fetched_at)
+                    _CACHE[cache_key] = stale
+                    return stale.secrets, [
+                        f"bws live fetch failed ({exc}); "
+                        f"falling back to stale disk cache ({int(age)}s old)"
+                    ]
+        raise
     entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
-    _CACHE[cache_key] = entry
     if use_cache:
-        _write_disk_cache(cache_key, entry, home_path)
+        if cache_ttl_seconds > 0:
+            _CACHE[cache_key] = entry
+        if encrypted_cache_enabled:
+            # Encryption is the storage policy; max_stale_seconds only controls
+            # whether an outage may consume the last-good entry.  Never fall
+            # back to the plaintext cache just because stale fallback is off.
+            _write_encrypted_disk_cache(
+                cache_key=cache_key,
+                access_token=access_token,
+                entry=entry,
+                home_path=home_path,
+            )
+        elif cache_ttl_seconds > 0:
+            _DISK_CACHE.write(cache_key, entry, cache_ttl_seconds, home_path)
     return secrets, warnings
+
+
+def _summarize_bws_stderr(raw: str) -> str:
+    """Reduce a bws (Rust color-eyre) error dump to its cause line(s).
+
+    bws failures look like::
+
+        Error:
+           0: Received error message from server: [400 Bad Request] {"error":"invalid_client"}
+
+        Location:
+           crates/bws/src/main.rs:108
+        ...
+
+    Everything from ``Location:`` on is diagnostic noise for a Hermes
+    user.  Keep the numbered cause lines (joined), drop the rest, and
+    fall back to the stripped raw text when the shape is unrecognized.
+    """
+    text = raw.replace("\x1b", "").strip()
+    if not text:
+        return text
+    causes: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("Location:", "Backtrace omitted", "Run with ")):
+            break
+        if stripped in ("", "Error:"):
+            continue
+        # Cause lines are numbered "0: ...", "1: ..." — strip the index.
+        stripped = re.sub(r"^\d+:\s*", "", stripped)
+        if stripped:
+            causes.append(stripped)
+    return "; ".join(causes) if causes else text
 
 
 def _run_bws_list(
@@ -536,9 +696,11 @@ def _run_bws_list(
         raise RuntimeError(f"failed to invoke bws: {exc}") from exc
 
     if proc.returncode != 0:
-        # bws writes auth/network errors to stderr in plain English.
-        # Strip ANSI just in case and surface the first 200 chars.
-        err = (proc.stderr or proc.stdout or "").strip().replace("\x1b", "")
+        # bws writes auth/network errors to stderr as a Rust error-report
+        # dump (color-eyre): an "Error:" header, indented cause lines, then
+        # "Location:" / "Backtrace omitted" noise.  Strip ANSI and boil it
+        # down to the meaningful cause line(s) before surfacing.
+        err = _summarize_bws_stderr(proc.stderr or proc.stdout or "")
         raise RuntimeError(
             f"bws exited {proc.returncode}: {err[:200]}"
         )
@@ -575,14 +737,6 @@ def _run_bws_list(
     return secrets, warnings
 
 
-def _is_valid_env_name(name: str) -> bool:
-    if not name:
-        return False
-    if not (name[0].isalpha() or name[0] == "_"):
-        return False
-    return all(c.isalnum() or c == "_" for c in name)
-
-
 # ---------------------------------------------------------------------------
 # Public entry point — called from hermes_cli.env_loader
 # ---------------------------------------------------------------------------
@@ -598,6 +752,8 @@ def apply_bitwarden_secrets(
     auto_install: bool = True,
     server_url: str = "",
     home_path: Optional[Path] = None,
+    encrypted_cache_enabled: bool = False,
+    encrypted_cache_max_stale_seconds: float = 0,
 ) -> FetchResult:
     """Pull secrets from BSM and set them on ``os.environ``.
 
@@ -649,6 +805,8 @@ def apply_bitwarden_secrets(
             cache_ttl_seconds=cache_ttl_seconds,
             server_url=server_url,
             home_path=home_path,
+            encrypted_cache_enabled=encrypted_cache_enabled,
+            encrypted_cache_max_stale_seconds=encrypted_cache_max_stale_seconds,
         )
     except RuntimeError as exc:
         result.error = str(exc)
@@ -674,8 +832,201 @@ def apply_bitwarden_secrets(
 
 
 # ---------------------------------------------------------------------------
+# SecretSource adapter — the registry-facing wrapper around this module.
+# ---------------------------------------------------------------------------
+
+
+class BitwardenSource(SecretSource):
+    """Bitwarden Secrets Manager as a registered secret source.
+
+    Thin adapter over the module's fetch machinery.  ``fetch()`` only
+    *fetches* — precedence, override semantics, conflict warnings, and
+    the ``os.environ`` writes are the orchestrator's job
+    (see ``agent.secret_sources.registry.apply_all``).
+
+    Bitwarden is a **bulk** source: it injects every secret in the
+    configured BSM project, so explicit per-var bindings from mapped
+    sources (e.g. the 1Password ``env:`` map) outrank it.
+    """
+
+    name = "bitwarden"
+    label = "Bitwarden Secrets Manager"
+    shape = "bulk"
+    scheme = "bws"
+
+    def override_existing(self, cfg: dict) -> bool:
+        # Default True (matches DEFAULT_CONFIG): the point of BSM is
+        # centralized rotation — if .env had the final say, rotating a
+        # key in Bitwarden wouldn't take effect until the stale .env
+        # line was also deleted.
+        return bool(isinstance(cfg, dict) and cfg.get("override_existing", True))
+
+    def protected_env_vars(self, cfg: dict):
+        token_env = "BWS_ACCESS_TOKEN"
+        if isinstance(cfg, dict):
+            token_env = str(cfg.get("access_token_env") or token_env)
+        return frozenset({token_env})
+
+    def config_schema(self) -> dict:
+        return {
+            "enabled": {"description": "Master switch", "default": False},
+            "access_token_env": {
+                "description": "Env var holding the machine-account access token",
+                "default": "BWS_ACCESS_TOKEN",
+            },
+            "project_id": {"description": "BSM project UUID", "default": ""},
+            "cache_ttl_seconds": {
+                "description": "Fresh disk+memory cache TTL; 0 disables fresh-cache reuse",
+                "default": 300,
+            },
+            "encrypted_cache": {
+                "description": "Encrypted last-good cache for network/timeout fallback",
+                "default": {
+                    "enabled": False,
+                    "max_stale_seconds": 0,
+                },
+            },
+            "override_existing": {
+                "description": "BSM values overwrite .env/shell values",
+                "default": True,
+            },
+            "auto_install": {
+                "description": "Auto-download the pinned bws binary",
+                "default": True,
+            },
+            "server_url": {
+                "description": "Region / self-hosted endpoint (empty = US Cloud)",
+                "default": "",
+            },
+        }
+
+    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        cfg = cfg if isinstance(cfg, dict) else {}
+        result = FetchResult()
+
+        access_token_env = str(cfg.get("access_token_env") or "BWS_ACCESS_TOKEN")
+        access_token = os.environ.get(access_token_env, "").strip()
+        if not access_token:
+            result.error = (
+                f"secrets.bitwarden.enabled is true but {access_token_env} is "
+                "not set.  Run `hermes secrets bitwarden setup`."
+            )
+            result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        project_id = str(cfg.get("project_id") or "")
+        if not project_id:
+            result.error = (
+                "secrets.bitwarden.project_id is empty.  "
+                "Run `hermes secrets bitwarden setup`."
+            )
+            result.error_kind = ErrorKind.NOT_CONFIGURED
+            return result
+
+        auto_install = bool(cfg.get("auto_install", True))
+        binary = find_bws(install_if_missing=auto_install)
+        result.binary_path = binary
+        if binary is None:
+            result.error = (
+                "bws binary not available and auto-install is disabled.  "
+                "Run `hermes secrets bitwarden setup` to install."
+            )
+            result.error_kind = ErrorKind.BINARY_MISSING
+            return result
+
+        try:
+            ttl = float(cfg.get("cache_ttl_seconds", 300))
+        except (TypeError, ValueError):
+            ttl = 300.0
+
+        encrypted_cfg = cfg.get("encrypted_cache")
+        encrypted_cfg = encrypted_cfg if isinstance(encrypted_cfg, dict) else {}
+        encrypted_enabled = bool(encrypted_cfg.get("enabled", False))
+        try:
+            encrypted_max_stale = float(encrypted_cfg.get("max_stale_seconds", 0))
+        except (TypeError, ValueError):
+            encrypted_max_stale = 0.0
+
+        try:
+            secrets, warnings = fetch_bitwarden_secrets(
+                access_token=access_token,
+                project_id=project_id,
+                binary=binary,
+                cache_ttl_seconds=ttl,
+                server_url=str(cfg.get("server_url", "") or "").strip(),
+                home_path=home_path,
+                encrypted_cache_enabled=encrypted_enabled,
+                encrypted_cache_max_stale_seconds=encrypted_max_stale,
+            )
+        except RuntimeError as exc:
+            result.error = str(exc)
+            result.error_kind = _classify_bws_error(str(exc))
+            if result.error_kind == ErrorKind.AUTH_FAILED:
+                # Translate the raw OAuth reject into what it actually means
+                # for the user before the mechanics.
+                result.error = (
+                    "Bitwarden rejected the machine-account access token "
+                    f"({access_token_env}) — it was likely revoked, expired, "
+                    f"or belongs to another region.  ({result.error})"
+                )
+            return result
+
+        result.secrets = secrets
+        result.warnings.extend(warnings)
+        return result
+
+    def remediation(self, kind, cfg: dict) -> str:
+        if kind in (ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
+            return (
+                "Run `hermes secrets bitwarden token` to paste a fresh access "
+                "token (create one in the Bitwarden web app: Secrets Manager → "
+                "Machine accounts → Access tokens).  Wrong region?  Re-run "
+                "`hermes secrets bitwarden setup` and pick EU/self-hosted."
+            )
+        return super().remediation(kind, cfg)
+
+
+def _classify_bws_error(message: str) -> ErrorKind:
+    """Best-effort mapping of bws failure text onto the shared taxonomy."""
+    lowered = message.lower()
+    if "timed out" in lowered:
+        return ErrorKind.TIMEOUT
+    if "binary not available" in lowered or "failed to invoke" in lowered:
+        return ErrorKind.BINARY_MISSING
+    if any(tok in lowered for tok in ("unauthorized", "invalid token",
+                                      "access token", "401", "403",
+                                      # The BSM identity endpoint rejects a
+                                      # revoked/expired/deleted machine-account
+                                      # token with an OAuth-style
+                                      # `[400 Bad Request] {"error":"invalid_client"}`.
+                                      "invalid_client", "invalid_grant",
+                                      "400 bad request")):
+        return ErrorKind.AUTH_FAILED
+    if any(tok in lowered for tok in ("network", "connection", "resolve",
+                                      "download", "dns")):
+        return ErrorKind.NETWORK
+    return ErrorKind.INTERNAL
+
+
+# ---------------------------------------------------------------------------
 # Test hook — used by hermetic tests to flush the cache between cases.
 # ---------------------------------------------------------------------------
+
+
+def clear_caches(home_path: Optional[Path] = None) -> None:
+    """Drop in-process AND disk caches (plaintext and encrypted).
+
+    Used after a token rotation (`hermes secrets bitwarden token`) so the
+    next startup fetches fresh with the new credential instead of serving
+    a pull cached under the old token's fingerprint.  The encrypted cache
+    is keyed off the old token too, so it must go as well.
+    """
+    _CACHE.clear()
+    _DISK_CACHE.clear(home_path)
+    try:
+        _encrypted_disk_cache_path(home_path).unlink()
+    except (FileNotFoundError, OSError):
+        pass
 
 
 def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
@@ -685,8 +1036,4 @@ def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     Without it we fall back to the same default resolution as the cache
     writer itself.
     """
-    _CACHE.clear()
-    try:
-        _disk_cache_path(home_path).unlink()
-    except (FileNotFoundError, OSError):
-        pass
+    clear_caches(home_path)

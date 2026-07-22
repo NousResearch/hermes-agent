@@ -14,6 +14,7 @@ import hermes_cli.gateway as gateway_cli
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
 
@@ -68,6 +69,10 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        # Bypass systemd availability checks — this test targets unit-file
+        # refresh logic, not D-Bus reachability (fails on macOS/WSL/Docker).
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
 
         calls = []
 
@@ -91,6 +96,10 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        # Bypass systemd availability checks — this test targets unit-file
+        # refresh logic, not D-Bus reachability (fails on macOS/WSL/Docker).
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
 
         calls = []
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -412,7 +421,7 @@ class TestRequireServiceInstalled:
 
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
-        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
+        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 30))
         return f"TimeoutStopSec={timeout}"
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
@@ -427,9 +436,9 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
-        # TimeoutStopSec must exceed the default drain_timeout (60s) so
-        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
-        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
+        # The default drain is immediate, so keep a bounded 60-second stop
+        # budget without forcing every restart to wait 90 seconds.
         assert self._expected_timeout_stop_sec() in unit
         # ExecStopPost reaps any process the gateway didn't clean up itself,
         # so long-lived helpers (e.g. adb) can't be left orphaned in the
@@ -439,6 +448,13 @@ class TestGeneratedSystemdUnits:
         # KillMode=mixed is preserved so the gateway still reaps its own
         # tool-call children before systemd SIGKILLs the cgroup — #8202.
         assert "KillMode=mixed" in unit
+
+    def test_user_unit_adds_cleanup_headroom_to_positive_drain_timeout(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 45)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "TimeoutStopSec=75" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -538,9 +554,9 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
-        # TimeoutStopSec must exceed the default drain_timeout (60s) so
-        # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
-        # (tool subprocess kill, adapter disconnect) runs — issue #8202.
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
+        # The default drain is immediate, so keep a bounded 60-second stop
+        # budget without forcing every restart to wait 90 seconds.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
         # ExecStopPost reaps any process the gateway didn't clean up itself,
@@ -1384,7 +1400,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
+        assert domain == "gui/501"
         # Should have probed gui first
         assert run_calls[0] == ["launchctl", "print", f"gui/501/{label}"]
 
@@ -1406,7 +1422,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
+        assert domain == "user/501"
         # Should have tried gui first, then user
         assert len(run_calls) >= 2
 
@@ -1427,7 +1443,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"gui/501"
+        assert domain == "gui/501"
 
     def test_managername_background_selects_user_domain(self, monkeypatch):
         """When managername is Background (non-Aqua), use user/<uid>."""
@@ -1444,7 +1460,7 @@ class TestLaunchdDomainDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         domain = gateway_cli._launchd_domain()
-        assert domain == f"user/501"
+        assert domain == "user/501"
 
     def test_caches_result_across_calls(self, monkeypatch):
         """Domain detection should run once and cache the result."""
@@ -2027,6 +2043,137 @@ class TestSystemUnitHermesHome:
 
         hermes_home = str(gateway_cli.get_hermes_home().resolve())
         assert f'HERMES_HOME={hermes_home}' in unit
+
+
+class TestSystemUnitRefreshSyncsHermesHome:
+    """sudo system refresh must not flip TimeoutStopSec via /root/.hermes."""
+
+    def test_refresh_adopts_unit_hermes_home_before_rewriting(self, tmp_path, monkeypatch):
+        root_home = tmp_path / "root"
+        alice_home = tmp_path / "alice"
+        root_hermes = root_home / ".hermes"
+        alice_hermes = alice_home / ".hermes"
+        root_hermes.mkdir(parents=True)
+        alice_hermes.mkdir(parents=True)
+        (root_hermes / "config.yaml").write_text(
+            "agent:\n  restart_drain_timeout: 60\n", encoding="utf-8"
+        )
+        (alice_hermes / "config.yaml").write_text(
+            "agent:\n  restart_drain_timeout: 180\n", encoding="utf-8"
+        )
+
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(alice_home)),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths", lambda home, existing: []
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda *a, **k: None)
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+
+        # Correct installed unit (operator's HERMES_HOME + drain timeout).
+        monkeypatch.setenv("HERMES_HOME", str(alice_hermes))
+        good_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+        assert "TimeoutStopSec=210" in good_unit
+        unit_path.write_text(good_unit, encoding="utf-8")
+
+        # Simulate sudo without inherited HERMES_HOME (falls back to root).
+        monkeypatch.setenv("HERMES_HOME", str(root_hermes))
+        assert gateway_cli.refresh_systemd_unit_if_needed(system=True) is False
+        assert unit_path.read_text(encoding="utf-8") == good_unit
+        assert os.environ["HERMES_HOME"] == str(alice_hermes)
+        assert gateway_cli.systemd_unit_is_current(system=True) is True
+
+    def test_is_current_syncs_before_reading_unit(self, tmp_path, monkeypatch):
+        """CHOKEPOINT INVARIANT: systemd_unit_is_current() must adopt the
+        unit's pinned HERMES_HOME *before* it reads/compares the unit.
+
+        This is the single site that enforces sync-before-compare for every
+        path (refresh gates on it; status/install call it). If a future edit
+        moves the sync after the read (or drops it), this test fails.
+        """
+        order = []
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Unit]\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        real_read_text = Path.read_text
+
+        def tracking_sync(system):
+            order.append("sync")
+
+        def tracking_read_text(self, *a, **k):
+            if self == unit_path:
+                order.append("read")
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(gateway_cli, "_sync_hermes_home_from_systemd_unit", tracking_sync)
+        monkeypatch.setattr(Path, "read_text", tracking_read_text)
+        # Avoid a real generate/compare — we only assert sync precedes read.
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda **k: "[Unit]\n")
+        monkeypatch.setattr(gateway_cli, "_read_systemd_user_from_unit", lambda p: None)
+
+        gateway_cli.systemd_unit_is_current(system=True)
+
+        assert order, "systemd_unit_is_current did not run sync or read"
+        assert order[0] == "sync", f"sync must precede unit read; got {order}"
+        assert "read" in order and order.index("sync") < order.index("read")
+
+    def test_start_and_restart_delegate_sync_to_chokepoint(self, monkeypatch):
+        """start/restart must NOT pre-sync at the callsite — the sync is owned
+        by the systemd_unit_is_current chokepoint that refresh gates on. This
+        pins the single-chokepoint design so a future edit can't reintroduce a
+        redundant (or, worse, out-of-order) callsite sync.
+        """
+        for entry in ("systemd_start", "systemd_restart"):
+            calls = []
+            monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+            monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+            monkeypatch.setattr(
+                gateway_cli, "_require_service_installed", lambda action, system=False: None
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_sync_hermes_home_from_systemd_unit",
+                lambda system: calls.append("sync"),
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "refresh_systemd_unit_if_needed",
+                lambda system=False: calls.append("refresh"),
+            )
+            monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+            monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+            monkeypatch.setattr(
+                gateway_cli,
+                "_run_systemctl",
+                lambda args, **kwargs: calls.append("systemctl")
+                or SimpleNamespace(returncode=0, stdout="", stderr=""),
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_wait_for_systemd_service_restart",
+                lambda system=False, previous_pid=None: True,
+            )
+
+            getattr(gateway_cli, entry)(system=True)
+
+            # refresh runs; the callsite adds NO separate sync before it (the
+            # chokepoint inside refresh->is_current owns the sync). Here refresh
+            # is mocked out, so no "sync" should appear at all for the refresh
+            # phase — proving the callsite pre-sync was removed.
+            assert "refresh" in calls, f"{entry} must call refresh_systemd_unit_if_needed"
+            assert calls.count("sync") == 0, (
+                f"{entry} should delegate sync to the chokepoint, not pre-sync "
+                f"at the callsite; got {calls}"
+            )
 
 
 class TestHermesHomeForTargetUser:
@@ -2769,7 +2916,7 @@ class TestLegacyHermesUnitDetection:
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
-            name = f"hermes.service" if i == 0 else f"hermes.service"  # same name
+            name = "hermes.service" if i == 0 else "hermes.service"  # same name
             # Test each variant fresh
             (user_dir / "hermes.service").write_text(
                 f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",

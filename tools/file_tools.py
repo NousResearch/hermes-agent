@@ -5,8 +5,10 @@ import errno
 import json
 import logging
 import os
+import posixpath
+import sys
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -81,6 +83,51 @@ def _get_max_read_chars() -> int:
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
 
+
+def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:
+    """Trim line-numbered ``read_file`` content to fit a char budget.
+
+    Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on
+    ``read_file``). Where hermes previously hard-rejected an oversized read
+    (forcing the model to guess a smaller ``limit`` and burn a round-trip
+    returning nothing), this trims the content to the last *complete line*
+    that fits within ``max_chars`` and reports how many lines were kept so
+    the caller can offer a ``next_offset`` continuation.
+
+    ``content`` is the gutter-rendered text (``LINE_NUM|CONTENT`` joined by
+    ``\\n``). Individual lines are already clamped to ``get_max_line_length()``
+    upstream, so a single line never blows the whole budget on its own; the
+    overflow this handles is the *accumulation* of many lines under the
+    line-count limit (logs, wide CSV rows, minified data).
+
+    Returns ``(kept_text, lines_kept, truncated)``. When ``content`` already
+    fits, returns it unchanged with ``truncated=False``. If not even the
+    first line fits, that single line is clamped on a code-point boundary
+    (Python ``str`` slicing never splits a code point) so the read never
+    returns empty and the cursor can still advance.
+    """
+    if len(content) <= max_chars:
+        return content, (content.count("\n") + 1 if content else 0), False
+
+    lines = content.split("\n")
+    kept: list[str] = []
+    running = 0
+    for line in lines:
+        # +1 for the "\n" that rejoins this line to the previous one.
+        addition = len(line) + (1 if kept else 0)
+        if running + addition > max_chars:
+            break
+        kept.append(line)
+        running += addition
+
+    if not kept:
+        # First line alone exceeds the budget. Clamp on a code-point
+        # boundary rather than emitting nothing.
+        kept.append(lines[0][:max_chars])
+
+    return "\n".join(kept), len(kept), True
+
+
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
@@ -101,7 +148,7 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
-def _resolve_path(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
     """
@@ -117,6 +164,62 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
+
+
+def _terminal_env_type_for_task(task_id: str = "default") -> str:
+    """Best-effort terminal backend type for path-resolution decisions."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        try:
+            container_key = _resolve_container_task_id(task_id)
+        except Exception:
+            container_key = task_id
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        if env is not None:
+            name = env.__class__.__name__.lower()
+            if "local" in name:
+                return "local"
+            if "ssh" in name:
+                return "ssh"
+            if "docker" in name:
+                return "docker"
+            if "singularity" in name:
+                return "singularity"
+            if "modal" in name:
+                return "modal"
+            if "daytona" in name:
+                return "daytona"
+        cfg = _get_env_config()
+        return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
+    except Exception:
+        return str(os.getenv("TERMINAL_ENV") or "local").lower()
+
+
+def _uses_container_paths(task_id: str = "default") -> bool:
+    try:
+        from tools.terminal_tool import _CONTAINER_BACKENDS
+        container_backends = _CONTAINER_BACKENDS
+    except Exception:
+        container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
+    return _terminal_env_type_for_task(task_id) in container_backends
+
+
+def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
+    """Normalize path syntax without following host symlinks.
+
+    Container backends use paths that are meaningful inside the sandbox. Calling
+    ``Path.resolve()`` on the host can dereference a host-side symlink such as
+    ``/workspace`` and rewrite the path before Docker sees it.
+    """
+    return PurePosixPath(posixpath.normpath(str(path)))
 
 
 def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
@@ -166,107 +269,45 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
-def _live_cwd_if_owned(env, task_id: str) -> str | None:
-    """The env's live cwd, but only when THIS session owns it.
-
-    The terminal env is shared (collapsed to the ``"default"`` container), so its
-    ``cwd`` tracks the LAST session that ran a command. With two worktree
-    sessions open, trusting it blindly routes one session's edits into the other
-    session's checkout (the wrong-worktree-patch bug). ``terminal_tool`` stamps
-    ``env.cwd_owner`` with the session that last drove the env; return its cwd
-    only when that owner matches the resolving session, else ``None`` so the
-    caller falls through to this session's own registered cwd override. Unknown
-    owner / ``default`` keys keep the prior behavior (single-session / CLI).
-    """
-    if env is None:
-        return None
-    live = getattr(env, "cwd", None)
-    if not live:
-        return None
-    owner = str(getattr(env, "cwd_owner", "") or "")
-    tid = str(task_id or "")
-    if owner and tid and owner != "default" and tid != "default" and owner != tid:
-        return None
-    return live
-
-
-def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
-    """Return the task's live terminal cwd for bookkeeping when available."""
-    try:
-        from tools.terminal_tool import _resolve_container_task_id
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        container_key = task_id
-
-    with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
-    if cached is not None:
-        env = getattr(cached, "env", None)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
-        # Legacy: a cache entry carrying its own cwd with no env to own it.
-        if env is None and getattr(cached, "cwd", None):
-            legacy_cwd = getattr(cached, "cwd", None)
-            _remember_last_known_cwd(container_key, legacy_cwd)
-            return legacy_cwd
-
-    try:
-        from tools.terminal_tool import _active_environments, _env_lock
-
-        with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
-        live_cwd = _live_cwd_if_owned(env, task_id)
-        if live_cwd:
-            _remember_last_known_cwd(container_key, live_cwd)
-            return live_cwd
-    except Exception:
-        pass
-
-    return None
-
-
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
-    Prefers the live terminal cwd (the directory the agent is actually working
-    in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a registered task/session cwd override (TUI/Desktop/ACP
-    sessions register a raw-keyed cwd before any tool runs), then to a
-    sentinel-free absolute ``$TERMINAL_CWD``. This is what lets a worktree or
-    Desktop session warn about (and resolve into) its workspace from the very
-    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
+    Resolution:
+
+      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
+         written on every completed terminal command and seeded by workspace
+         registration, keyed by the raw session id. Because the record is
+         per-session, one session's ``cd`` can never leak into another
+         session's resolution.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed cwd before any tool runs). Normally already
+         mirrored into the record at registration; kept as a direct fallback
+         so a cleared/never-written record still resolves the workspace.
+      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions).
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
     case callers fall back to the process cwd.
     """
-    live = _get_live_tracking_cwd(task_id)
-    if live:
-        return live
-    # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
-    # is more authoritative than the shared last-known anchor: it is keyed by
-    # the raw session id, so when two worktree sessions share the single
-    # "default" terminal env, a NON-owning session must resolve against its OWN
-    # registered worktree — never the other session's leftover cwd. (Checked
-    # before _last_known_cwd, which is keyed by the shared container id.)
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(task_id)
+    except Exception:
+        recorded = None
+    if recorded:
+        return recorded
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
-    # When the terminal env was cleaned up mid-conversation, the live cwd is
-    # gone but the directory the agent navigated to is still recorded in the
-    # durable _last_known_cwd registry. Prefer it over the config/process
-    # fallback so a relative-path write resolved BEFORE the env is rebuilt
-    # still lands in the user's directory (root cause of #26211: write happens
-    # via _resolve_path_for_task -> here, which runs before _get_file_ops
-    # rebuilds the env). Keyed by the resolved container id, same as the save.
-    preserved = _last_known_cwd_for(task_id)
-    if preserved:
-        return preserved
     return _configured_terminal_cwd()
 
 
-def _resolve_base_dir(task_id: str = "default") -> Path:
+def _resolve_base_dir(
+    task_id: str = "default",
+    *,
+    container_paths: bool | None = None,
+) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
     Resolution order:
@@ -290,10 +331,28 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     the process cwd only as a last resort, deterministically.
     """
     root = _authoritative_workspace_root(task_id)
+    if container_paths is None:
+        container_paths = _uses_container_paths(task_id)
     if root:
-        base = Path(_expand_tilde(root))
+        base_text = _expand_tilde(root)
     else:
-        base = Path(os.getcwd())
+        base_text = os.getcwd()
+    if container_paths:
+        if not posixpath.isabs(base_text):
+            base_text = posixpath.join(os.getcwd(), base_text)
+        return _normalize_without_host_deref(base_text)
+    # Git Bash ``pwd -P`` reports ``/c/Users/...``; translate before Path so
+    # relative file-tool paths don't anchor under a nonexistent ``\\c\\Users``.
+    from tools.environments.local import _msys_to_windows_path
+
+    base_text = _msys_to_windows_path(base_text)
+    if sys.platform == "win32":
+        import ntpath
+
+        if not ntpath.isabs(base_text):
+            base_text = ntpath.join(os.getcwd(), base_text)
+        return Path(ntpath.normpath(base_text))
+    base = Path(base_text)
     if not base.is_absolute():
         # Last-resort anchoring: a live cwd should already be absolute, but if a
         # terminal backend ever reports a relative cwd, anchor it to the process
@@ -302,16 +361,41 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
+
+    On native Windows, Git Bash / MSYS drive paths (``/c/Users/...``) are
+    translated to ``C:\\Users\\...`` before resolution so file tools don't
+    treat them as relative ``\\c\\Users\\...`` under the process cwd.
     """
-    p = Path(_expand_tilde(filepath))
+    container_paths = _uses_container_paths(task_id)
+    if container_paths:
+        expanded = _expand_tilde(filepath)
+        if posixpath.isabs(expanded):
+            return _normalize_without_host_deref(expanded)
+        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        return _normalize_without_host_deref(resolved)
+
+    # Host paths only — never rewrite Linux paths inside a container/WSL env.
+    from tools.environments.local import _msys_to_windows_path
+
+    expanded = _expand_tilde(_msys_to_windows_path(filepath))
+    if sys.platform == "win32":
+        import ntpath
+
+        if ntpath.isabs(expanded):
+            return Path(ntpath.normpath(expanded))
+        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
+        return Path(ntpath.normpath(joined))
+
+    p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    return (_resolve_base_dir(task_id) / p).resolve()
+    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    return resolved.resolve()
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
@@ -335,7 +419,10 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        root = Path(_expand_tilde(workspace_root)).resolve()
+        if _uses_container_paths(task_id):
+            root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
+        else:
+            root = Path(_expand_tilde(workspace_root)).resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)
@@ -641,45 +728,6 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
-# Per-task last-known CWD — preserved across env re-creation so
-# relative-path file writes land in the right directory after the
-# terminal environment is cleaned up and rebuilt (root cause of #26211).
-_last_known_cwd: dict = {}
-
-
-def _remember_last_known_cwd(task_id: str, cwd: str | None) -> None:
-    """Mirror a live terminal cwd into the durable ``_last_known_cwd`` registry.
-
-    Belt-and-suspenders for #26211: the cleanup thread can pop BOTH
-    ``_file_ops_cache`` and ``_active_environments`` before ``_get_file_ops``
-    reaches its stale-cache detection branch, in which case the old cwd is
-    never saved and the rebuilt env falls back to the config default — exactly
-    the silent-misplacement bug. By recording the cwd on every successful live
-    read (which happens on every relative-path file resolution while the env is
-    alive), the durable anchor no longer depends on the cleanup-detection
-    branch firing, so it survives recreation regardless of pop ordering.
-    """
-    if not cwd:
-        return
-    with _file_ops_lock:
-        if _last_known_cwd.get(task_id) != cwd:
-            _last_known_cwd[task_id] = cwd
-
-
-def _last_known_cwd_for(task_id: str = "default") -> str | None:
-    """Read the durable last-known cwd for *task_id*, container-key aware.
-
-    The registry is keyed by the resolved container id (the same key used by
-    the save sites in ``_get_file_ops`` / ``_get_live_tracking_cwd``), so look
-    up the resolved key first and fall back to the raw task id.
-    """
-    try:
-        from tools.terminal_tool import _resolve_container_task_id
-        container_key = _resolve_container_task_id(task_id)
-    except Exception:
-        container_key = task_id
-    with _file_ops_lock:
-        return _last_known_cwd.get(container_key) or _last_known_cwd.get(task_id)
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
@@ -916,13 +964,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
                 return cached
             else:
-                # Environment was cleaned up -- preserve the old cwd before
-                # invalidating the stale cache entry (fixes #26211: silent
-                # file-creation failures in long-running conversations).
+                # Environment was cleaned up -- preserve the old cwd in the
+                # session record before invalidating the stale cache entry
+                # (fixes #26211: silent file-creation failures in long-running
+                # conversations). Usually a no-op: every completed command
+                # already recorded its cwd.
                 old_cwd = getattr(cached, "cwd", None)
                 if old_cwd:
-                    with _file_ops_lock:
-                        _last_known_cwd[task_id] = old_cwd
+                    try:
+                        from tools.terminal_tool import record_session_cwd
+                        record_session_cwd(raw_task_id, old_cwd)
+                    except Exception:
+                        pass
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
@@ -960,7 +1013,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
+            try:
+                from tools.terminal_tool import get_session_cwd
+                recorded_cwd = get_session_cwd(raw_task_id)
+            except Exception:
+                recorded_cwd = None
+            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
             # Re-apply the container cwd guard that _get_env_config() already
             # ran on config["cwd"] (see #50636).  A per-task cwd override
             # registered by the gateway/TUI/ACP for workspace tracking is a
@@ -994,6 +1052,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                    "docker_network": config.get("docker_network", True),
                 }
 
             ssh_config = None
@@ -1097,17 +1156,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 content_len = len(result_dict["content"])
                 max_chars = _get_max_read_chars()
                 if content_len > max_chars:
-                    return json.dumps({
-                        "error": (
-                            f"Read produced {content_len:,} characters which exceeds "
-                            f"the safety limit ({max_chars:,} chars). "
-                            "Use offset and limit to read a smaller range. "
-                            f"The document has {total_lines} lines of extracted text."
-                        ),
-                        "path": path,
-                        "total_lines": total_lines,
-                        "file_size": result_dict["file_size"],
-                    }, ensure_ascii=False)
+                    # Graceful char-budget truncation (nearai/ironclaw#5029):
+                    # trim to the last complete line that fits and offer a
+                    # next_offset rather than rejecting the whole extraction.
+                    trimmed, lines_kept, _ = _truncate_to_char_budget(
+                        result_dict["content"], max_chars
+                    )
+                    next_offset = offset + lines_kept
+                    shown_end = offset + lines_kept - 1
+                    result_dict["content"] = trimmed
+                    result_dict["truncated"] = True
+                    result_dict["truncated_by"] = "bytes"
+                    result_dict["next_offset"] = next_offset
+                    result_dict["hint"] = (
+                        f"Output truncated at the {max_chars:,}-char read budget "
+                        f"after {lines_kept} line(s) (showing lines {offset}-"
+                        f"{shown_end} of {total_lines}). Use offset={next_offset} "
+                        "to continue."
+                    )
+                    if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                        result_dict["hint"] += (
+                            " Note: the first line alone exceeded the budget and "
+                            "was clamped mid-line; its remainder is not "
+                            "retrievable via offset."
+                        )
                 if result_dict["content"]:
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
@@ -1210,18 +1282,36 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
         if content_len > max_chars:
+            # Graceful char-budget truncation (ported from nearai/ironclaw#5029).
+            # Instead of rejecting the whole read — which forces the model to
+            # guess a smaller `limit` and wastes a round-trip returning nothing
+            # — trim to the last complete line that fits and offer a
+            # `next_offset` so the model can paginate forward. This rescues the
+            # "few but very long lines" case (logs, wide CSVs, minified data)
+            # that sails past the line-count `limit` but blows the char budget.
             total_lines = result_dict.get("total_lines", "unknown")
-            return json.dumps({
-                "error": (
-                    f"Read produced {content_len:,} characters which exceeds "
-                    f"the safety limit ({max_chars:,} chars). "
-                    "Use offset and limit to read a smaller range. "
-                    f"The file has {total_lines} lines total."
-                ),
-                "path": path,
-                "total_lines": total_lines,
-                "file_size": file_size,
-            }, ensure_ascii=False)
+            trimmed, lines_kept, _ = _truncate_to_char_budget(
+                result.content or "", max_chars
+            )
+            next_offset = offset + lines_kept
+            shown_end = offset + lines_kept - 1
+            result.content = trimmed
+            result_dict["content"] = trimmed
+            result_dict["truncated"] = True
+            result_dict["truncated_by"] = "bytes"
+            result_dict["next_offset"] = next_offset
+            result_dict["hint"] = (
+                f"Output truncated at the {max_chars:,}-char read budget after "
+                f"{lines_kept} line(s) (showing lines {offset}-{shown_end} of "
+                f"{total_lines}). Use offset={next_offset} to continue."
+            )
+            if len(trimmed.split("\n", 1)[0]) >= max_chars:
+                result_dict["hint"] += (
+                    " Note: the first line alone exceeded the budget and was "
+                    "clamped mid-line; its remainder is not retrievable via "
+                    "offset."
+                )
+            content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
@@ -1856,7 +1946,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {

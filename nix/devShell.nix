@@ -25,17 +25,35 @@
     in
     {
       devShells.default = pkgs.mkShell {
-        packages =
-          with pkgs;
-          [
-            uv
-          ]
-          ++ self'.packages.default.passthru.devDeps;
+        packages = with pkgs; [
+          (pkgs.runCommand "hermes" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../hermes} $out/bin/hermes
+          '')
+          (pkgs.runCommand "dev-sandbox" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+          '')
+          uv
+          # Headless Wayland compositor for E2E tests (test:e2e:visual).
+          # cage renders a single client with no window management, so
+          # the Electron window opens at a fixed size without tiling.
+          # libglvnd provides libEGL.so.1 that cage needs on NixOS.
+          cage
+          libglvnd
+        ]
+        ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          echo "Hermes Agent dev shell"
           ${combinedNonNpm}
           ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
-          echo "Ready. Run 'hermes' to start."
+
+          # Force Node to use Nix's playwright-test binary instead of node_modules/.bin
+          export PATH="${pkgs.playwright-test}/bin:$PATH"
+
+          # for the devshell to pick up the src
+          export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
+          echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
+          echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';
       };
     };

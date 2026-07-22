@@ -2,7 +2,19 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo } from 'react'
+import {
+  Children,
+  createContext,
+  type FC,
+  type PropsWithChildren,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -22,11 +34,12 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $toolInlineDiffs } from '@/store/tool-diffs'
+import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
@@ -49,6 +62,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
+import { prettyJson } from './fallback-model/format'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -270,8 +284,9 @@ function ToolEntry({ part }: ToolEntryProps) {
   const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(stablePart)}`
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined
-  const liveDiffs = useStore($toolInlineDiffs)
-  const sideDiff = toolCallId ? liveDiffs[toolCallId] || '' : ''
+  // Subscribe to this tool's diff only, so a live patch for one tool doesn't
+  // re-render every mounted tool row (the factory caches a per-id atom).
+  const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
@@ -297,17 +312,22 @@ function ToolEntry({ part }: ToolEntryProps) {
   // in the composer status stack rather than a bulky inline card. Uses the same
   // detected target the old inline card did, keyed to the active session the
   // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
-  const activeSessionId = useStore($activeSessionId)
-  const currentCwd = useStore($currentCwd)
   const previewTarget = view.previewTarget
 
   useEffect(() => {
-    if (isPending || !activeSessionId || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
-    recordPreviewArtifact(activeSessionId, previewTarget, currentCwd || '')
-  }, [activeSessionId, currentCwd, isPending, previewTarget])
+    // Read (don't subscribe) session/cwd: this only fires when a previewable
+    // target appears, and subscribing re-rendered every tool row on any session
+    // or cwd change.
+    const activeSessionId = $activeSessionId.get()
+
+    if (activeSessionId) {
+      recordPreviewArtifact(activeSessionId, previewTarget, $currentCwd.get() || '')
+    }
+  }, [isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
@@ -324,7 +344,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       .filter(Boolean)
 
     const [summary = '', ...rest] = chunks
-    const subtitleNorm = view.subtitle.trim().toLowerCase()
+    const subtitleNorm = normalize(view.subtitle)
     const summaryDuplicatesSubtitle = summary && summary.toLowerCase() === subtitleNorm
 
     if (summaryDuplicatesSubtitle) {
@@ -334,15 +354,17 @@ function ToolEntry({ part }: ToolEntryProps) {
     return { body: rest.join('\n\n').trim(), summary }
   }, [view.detail, view.status, view.subtitle])
 
-  const detailMatchesSubtitle = looksRedundant(view.subtitle, view.detail)
+  // `looksRedundant` normalizes the FULL (uncapped) detail payload — a
+  // read_file / terminal result can be huge. Memoize on the view fields so it
+  // recomputes only when the tool's content changes, not on every parent
+  // re-render (tool rows re-render on every stream tick of the running message).
+  const detailMatchesSubtitle = useMemo(() => looksRedundant(view.subtitle, view.detail), [view.subtitle, view.detail])
+  const detailMatchesTitle = useMemo(() => looksRedundant(view.title, view.detail), [view.title, view.detail])
 
   const showDetail =
     !view.inlineDiff &&
     ((view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
-      (view.status !== 'error' &&
-        Boolean(view.detail) &&
-        !looksRedundant(view.title, view.detail) &&
-        !detailMatchesSubtitle))
+      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
   const renderDetailAsCode =
     view.status !== 'error' &&
@@ -351,11 +373,18 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasSearchHits = Boolean(view.searchHits?.length)
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
+  // Only web_search renders the raw JSON drilldown, so serialize the result
+  // lazily here instead of prettyJson-ing every tool's result in buildToolView.
+  const rawResult = useMemo(
+    () => (part.toolName === 'web_search' && toolViewMode !== 'technical' ? prettyJson(part.result) : ''),
+    [part.toolName, part.result, toolViewMode]
+  )
+
   const showRawSearchDrilldown =
     part.toolName === 'web_search' &&
     part.result !== undefined &&
     toolViewMode !== 'technical' &&
-    Boolean(view.rawResult.trim())
+    Boolean(rawResult.trim())
 
   const hasExpandableContent = Boolean(
     view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
@@ -428,6 +457,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       )}
       data-file-edit={isFileEdit && open ? '' : undefined}
       data-slot="tool-block"
+      data-tool-open={open ? '' : undefined}
       data-tool-row=""
       ref={enterRef}
     >
@@ -472,10 +502,11 @@ function ToolEntry({ part }: ToolEntryProps) {
           {copyAction.text && (
             <CopyButton
               appearance="inline"
-              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
+              className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
               iconClassName="size-3"
               label={copyAction.label}
               showLabel={false}
+              side="left"
               stopPropagation
               text={copyAction.text}
             />
@@ -568,9 +599,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {showRawSearchDrilldown && (
             <details className="max-w-full">
               <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {view.rawResult}
-              </pre>
+              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>{rawResult}</pre>
             </details>
           )}
           {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (
@@ -592,6 +621,71 @@ function ToolEntry({ part }: ToolEntryProps) {
   )
 }
 
+// A back-to-back run of this many tool calls collapses into the bounded,
+// auto-scrolling window; fewer than this stays a plain inline stack.
+const TOOL_GROUP_SCROLL_THRESHOLD = 3
+
+// Tools whose body (an interactive form, a full-size image) must never be
+// trapped behind the window's max-height + fade mask. A run holding any of
+// them stays a plain, fully-visible stack no matter how long it is.
+export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
+
+export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
+  return childCount >= TOOL_GROUP_SCROLL_THRESHOLD && !hasUnboundable
+}
+
+// Pin-to-bottom + top-fade for the bounded tool window. Pins the newest row on
+// growth (a call lands or a row expands) unless the user scrolled up, and fades
+// the top edge once anything sits above it. Mirrors ThinkingDisclosure's live
+// preview. `enabled` is false for short runs, leaving the plain flat stack.
+function useToolWindow(enabled: boolean) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const stickRef = useRef(true)
+  const [faded, setFaded] = useState(false)
+
+  const syncFade = useCallback(() => setFaded((scrollRef.current?.scrollTop ?? 0) > 4), [])
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8
+    syncFade()
+  }, [syncFade])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    const content = contentRef.current
+
+    if (!enabled || !el || !content) {
+      return
+    }
+
+    const pin = () => {
+      if (stickRef.current) {
+        el.scrollTop = el.scrollHeight
+      }
+
+      syncFade()
+    }
+
+    // No sync pin() here: the observer's guaranteed initial delivery runs it
+    // inside RO timing (layout already clean, still before paint). A sync call
+    // at effect time reads scrollHeight while the commit's layout is dirty —
+    // one forced reflow per tool group, which cascades on a session switch.
+    const observer = new ResizeObserver(pin)
+    observer.observe(content)
+
+    return () => observer.disconnect()
+  }, [enabled, syncFade])
+
+  return { contentRef, faded, onScroll, scrollRef }
+}
+
 /**
  * Flat, Cursor-style tool list. assistant-ui hands us a *range* of
  * consecutive tool-call parts, but how that range is sliced is unstable: a
@@ -600,30 +694,48 @@ function ToolEntry({ part }: ToolEntryProps) {
  * (one big range). Rendering a "Tool actions · N steps" group off that range
  * therefore reshuffled the whole turn the instant it settled.
  *
- * So we never group: each tool is a standalone row, and the wrapper just lays
- * its children out on the tight `--tool-row-gap` rhythm. One range or ten,
- * fragmented or consecutive, the result is pixel-identical — a tight, stable
- * stack. The wrapper stays a single `<div>` of stable identity so children
- * never remount as the range grows mid-stream. `ToolEmbedContext` is false so
- * every row owns its own chrome (timer / preview / copy / inline approval).
+ * So we still never *label* the group: each tool is a standalone row on the
+ * tight `--tool-row-gap` rhythm. Once a run reaches `TOOL_GROUP_SCROLL_THRESHOLD`
+ * rows it collapses into a fixed-height, auto-scrolling window so a long run
+ * doesn't shove the reply off screen; shorter runs are byte-identical to before.
+ * The DOM shape is the same either way — only classes flip — so a run that
+ * crosses the threshold mid-stream never remounts a row. `ToolEmbedContext` is
+ * false so every row owns its own chrome (timer / preview / copy / approval).
  */
 export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
+  endIndex,
   startIndex
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
+
+  const hasUnboundable = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .some(part => part.type === 'tool-call' && UNBOUNDABLE_TOOLS.has(part.toolName))
+  )
+
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
+
+  const bounded = shouldBoundToolGroup(Children.count(children), hasUnboundable)
+  const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
 
   return (
     <ToolEmbedContext.Provider value={false}>
-      <div
-        className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
-        data-slot="tool-block"
-        data-tool-group=""
-        ref={enterRef}
-      >
-        {children}
+      <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
+        <div
+          className={cn(
+            bounded && 'tool-group-scroll max-h-(--tool-group-scroll-max-h) overflow-y-auto',
+            bounded && faded && 'tool-group-scroll--faded'
+          )}
+          onScroll={bounded ? onScroll : undefined}
+          ref={scrollRef}
+        >
+          <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" ref={contentRef}>
+            {children}
+          </div>
+        </div>
       </div>
     </ToolEmbedContext.Provider>
   )

@@ -522,6 +522,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("--max-len", type=int, default=None,
                            help="Trim the stored comment body to this many characters")
 
+    # --- attach / attachments / attach-rm ---
+    p_attach = sub.add_parser("attach", help="Attach a local file to a task")
+    p_attach.add_argument("task_id")
+    p_attach.add_argument("path", help="Path to the local file to attach")
+    p_attach.add_argument("--content-type", default=None,
+                          help="MIME type (default: guessed from the file extension)")
+    p_attach.add_argument("--name", default=None,
+                          help="Stored filename (default: the source file's basename)")
+    p_attach.add_argument("--author", default=None,
+                          help="uploaded_by label (default: $HERMES_PROFILE or 'user')")
+
+    p_attachments = sub.add_parser("attachments", help="List a task's attachments")
+    p_attachments.add_argument("task_id")
+    p_attachments.add_argument("--json", action="store_true")
+
+    p_attach_rm = sub.add_parser("attach-rm", help="Delete an attachment by id")
+    p_attach_rm.add_argument("attachment_id", type=int)
+
     p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
     p_complete.add_argument("task_ids", nargs="+",
                             help="One or more task ids (only --result applies to all of them)")
@@ -576,7 +594,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock = sub.add_parser(
+        "unblock",
+        help="Return blocked/scheduled tasks to ready, or todo while parents remain open",
+    )
     p_unblock.add_argument(
         "--reason",
         default=None,
@@ -859,6 +880,25 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- repair ---
+    p_repair = sub.add_parser(
+        "repair",
+        help="Check kanban.db integrity and auto-repair index-only corruption",
+        description=(
+            "Runs PRAGMA integrity_check on the board's DB and reports the "
+            "result. When the failure consists only of index-scoped errors "
+            "('wrong # of entries in index <name>' / 'row N missing from "
+            "index <name>'), the corrupt file is quarantined to a "
+            ".corrupt.<hash>.bak sibling first and the damaged indexes are "
+            "rebuilt with REINDEX — the same narrow auto-repair the "
+            "connect-time guard applies. Any other corruption class is "
+            "reported and left untouched (fail-closed). Exits 0 when the DB "
+            "is healthy or was repaired, non-zero when it is still corrupt."
+        ),
+    )
+    p_repair.add_argument("--json", action="store_true",
+                          help="Emit the repair report as JSON")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -929,6 +969,12 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
+        # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
+        # init_db() itself raises KanbanDbCorruptError, which would turn
+        # every `hermes kanban repair` into "could not initialize database"
+        # without ever reaching the repair path.
+        if action == "repair":
+            return _cmd_repair(args)
         try:
             kb.init_db()
         except Exception as exc:
@@ -951,6 +997,9 @@ def kanban_command(args: argparse.Namespace) -> int:
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
+            "attach":   _cmd_attach,
+            "attachments": _cmd_attachments,
+            "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
@@ -1851,6 +1900,84 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_attach(args: argparse.Namespace) -> int:
+    """Attach a local file to a task.
+
+    Reads the file off disk, writes it under the task's attachments dir,
+    and records the metadata row via the shared ``store_attachment_bytes``
+    path (same code the dashboard upload and the agent tool use), so the
+    25 MB cap and name-sanitisation behave identically everywhere.
+    """
+    import mimetypes
+
+    src = Path(args.path).expanduser()
+    if not src.is_file():
+        print(f"kanban: no such file: {src}", file=sys.stderr)
+        return 1
+    data = src.read_bytes()
+    name = args.name or src.name
+    content_type = args.content_type or mimetypes.guess_type(name)[0]
+    uploaded_by = args.author or _profile_author()
+    try:
+        with kb.connect_closing() as conn:
+            att_id = kb.store_attachment_bytes(
+                conn,
+                args.task_id,
+                name,
+                data,
+                content_type=content_type,
+                uploaded_by=uploaded_by,
+            )
+    except kb.AttachmentTooLarge as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 1
+    print(f"Attached {name} to {args.task_id} (attachment {att_id}, {len(data)} bytes)")
+    return 0
+
+
+def _cmd_attachments(args: argparse.Namespace) -> int:
+    """List a task's attachments."""
+    with kb.connect_closing() as conn:
+        if kb.get_task(conn, args.task_id) is None:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        atts = kb.list_attachments(conn, args.task_id)
+    if getattr(args, "json", False):
+        print(json.dumps([
+            {
+                "id": a.id,
+                "filename": a.filename,
+                "content_type": a.content_type,
+                "size": a.size,
+                "uploaded_by": a.uploaded_by,
+                "stored_path": a.stored_path,
+                "created_at": a.created_at,
+            }
+            for a in atts
+        ], indent=2))
+        return 0
+    if not atts:
+        print(f"No attachments on {args.task_id}")
+        return 0
+    print(f"Attachments on {args.task_id}:")
+    for a in atts:
+        ct = a.content_type or "-"
+        print(f"  [{a.id}] {a.filename}  ({a.size} bytes, {ct}, by {a.uploaded_by or '-'})")
+        print(f"        {a.stored_path}")
+    return 0
+
+
+def _cmd_attach_rm(args: argparse.Namespace) -> int:
+    """Delete an attachment by id (removes the row and the on-disk blob)."""
+    with kb.connect_closing() as conn:
+        removed = kb.delete_attachment(conn, args.attachment_id)
+    if removed is None:
+        print(f"no such attachment: {args.attachment_id}", file=sys.stderr)
+        return 1
+    print(f"Deleted attachment {args.attachment_id} ({removed.filename}) from {removed.task_id}")
+    return 0
+
+
 def _worker_run_id_for(task_id: str) -> Optional[int]:
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
@@ -1894,6 +2021,50 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            # Goal-mode pre-completion judge gate (mirrors the gate in
+            # tools/kanban_tools.py:_handle_complete — Issue #38367).
+            # Without this, a goal_mode worker can call
+            # `hermes kanban complete <id>` from the terminal tool and
+            # bypass the auxiliary judge that the tool-call path enforces.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode:
+                judge_available = False
+                try:
+                    from agent.auxiliary_client import get_text_auxiliary_client
+                    _client, _model = get_text_auxiliary_client("goal_judge")
+                    judge_available = _client is not None and bool(_model)
+                except Exception:
+                    pass
+                if judge_available:
+                    from hermes_cli.goals import judge_goal
+                    verdict = "done"
+                    reason = ""
+                    try:
+                        # judge_goal returns (verdict, reason, parse_failed,
+                        # wait_directive, transport_failed) — see
+                        # hermes_cli/goals.py. Unpacking fewer raises
+                        # ValueError into the fail-open handler below,
+                        # silently disabling the gate.
+                        verdict, reason, _, _, _ = judge_goal(
+                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                            last_response=(summary or args.result or "").strip(),
+                        )
+                    except Exception as judge_exc:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "goal judge check failed, allowing completion: %s",
+                            judge_exc,
+                            exc_info=True,
+                        )
+                    if verdict != "done":
+                        print(
+                            f"kanban: goal completion of {tid} rejected by judge: {reason}. "
+                            f"Provide evidence matching the task's acceptance criteria.",
+                            file=sys.stderr,
+                        )
+                        failed.append(tid)
+                        continue
+
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
@@ -2740,6 +2911,76 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Check DB integrity and apply the narrow index-REINDEX auto-repair.
+
+    Dispatched BEFORE the auto ``kb.init_db()`` in :func:`kanban_command`
+    (init itself refuses corrupt DBs), so this is reachable on exactly the
+    boards that need it. Exit codes: 0 = healthy / repaired / no DB file,
+    1 = still corrupt (non-index corruption, or REINDEX did not produce a
+    clean re-check).
+    """
+    try:
+        report = kb.repair_db()
+    except Exception as exc:  # locked/busy probe, unexpected I/O
+        print(f"kanban repair: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "status": report.status,
+            "db_path": str(report.db_path),
+            "messages": report.messages,
+            "post_repair_messages": report.post_repair_messages,
+            "backup_path": (
+                str(report.backup_path) if report.backup_path else None
+            ),
+            "reindexed": report.reindexed,
+        }, indent=2))
+        return 0 if report.status in {"ok", "repaired", "missing"} else 1
+
+    if report.status == "missing":
+        print(f"No kanban DB at {report.db_path} — nothing to repair.")
+        return 0
+    if report.status == "ok":
+        print(f"{report.db_path}: integrity_check ok — no repair needed.")
+        return 0
+    if report.status == "repaired":
+        print(f"{report.db_path}: repaired.")
+        print(f"  reindexed: {', '.join(report.reindexed)}")
+        if report.backup_path:
+            print(f"  pre-repair backup: {report.backup_path}")
+        print("  integrity_check now ok.")
+        return 0
+    # still corrupt
+    print(f"{report.db_path}: CORRUPT.", file=sys.stderr)
+    for line in (report.messages or [])[:10]:
+        print(f"  {line}", file=sys.stderr)
+    if report.reindexed:
+        print(
+            f"  REINDEX ({', '.join(report.reindexed)}) attempted but "
+            f"integrity_check is still failing:",
+            file=sys.stderr,
+        )
+        for line in (report.post_repair_messages or [])[:10]:
+            print(f"    {line}", file=sys.stderr)
+    else:
+        print(
+            "  Not an index-only failure — automatic REINDEX repair does "
+            "not apply (fail-closed).",
+            file=sys.stderr,
+        )
+    if report.backup_path:
+        print(f"  corrupt copy quarantined at: {report.backup_path}",
+              file=sys.stderr)
+    print(
+        "  Recover manually (e.g. `sqlite3 kanban.db \".recover\"` into a "
+        "fresh file) or move the file aside to start a new board.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # Slash-command entry point (used by /kanban from CLI and gateway)
 # ---------------------------------------------------------------------------
@@ -2753,6 +2994,7 @@ Common subcommands:
   `stats`               Per-status / per-assignee counts
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
+  `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign

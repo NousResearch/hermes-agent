@@ -62,9 +62,9 @@ describe('usePreviewRouting', () => {
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
-    window.localStorage.clear()
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
+    window.localStorage.clear()
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -78,9 +78,9 @@ describe('usePreviewRouting', () => {
     cleanup()
     $messages.set([])
     $previewTarget.set(null)
-    window.localStorage.clear()
-    clearSessionPreviewRegistry()
     vi.restoreAllMocks()
+    clearSessionPreviewRegistry()
+    window.localStorage.clear()
   })
 
   it('opens the active session preview from the registry', async () => {
@@ -118,6 +118,42 @@ describe('usePreviewRouting', () => {
 
     expect($previewTarget.get()).toBeNull()
     expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+  })
+
+  it('opens the preview pane on a preview.open event for the active session', async () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() =>
+      handleEvent({ payload: { url: 'https://www.cnn.com', label: 'CNN' }, session_id: 'session-1', type: 'preview.open' })
+    )
+
+    await waitFor(() => {
+      expect($previewTarget.get()).toMatchObject({ kind: 'url', label: 'CNN', url: 'https://www.cnn.com' })
+    })
+  })
+
+  it('ignores a preview.open event for a background session', async () => {
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+      />
+    )
+
+    act(() =>
+      handleEvent({ payload: { url: 'https://www.cnn.com' }, session_id: 'other-session', type: 'preview.open' })
+    )
+
+    // Give any (wrongly) scheduled async open a tick to resolve before asserting.
+    await Promise.resolve()
+    expect($previewTarget.get()).toBeNull()
   })
 
   it('does not auto-open a preview from tool results', async () => {

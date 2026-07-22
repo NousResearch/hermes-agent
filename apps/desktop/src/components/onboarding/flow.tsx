@@ -52,7 +52,7 @@ export function FlowPanel({
   }
 
   if (flow.status === 'confirming_model') {
-    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} />
+    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} profile={ctx.profile} />
   }
 
   if (flow.status === 'error') {
@@ -91,21 +91,6 @@ export function FlowPanel({
           <Button disabled={!flow.code.trim()} onClick={() => void submitOnboardingCode(ctx)}>
             {t.common.continue}
           </Button>
-        </FlowFooter>
-      </Step>
-    )
-  }
-
-  if (flow.status === 'awaiting_browser') {
-    return (
-      <Step title={t.onboarding.signInWith(title)}>
-        <p className="text-sm text-muted-foreground">{t.onboarding.autoBrowser(title)}</p>
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t.onboarding.reopenSignInPage}</DocsLink>}>
-          <span className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            {t.onboarding.waitingAuthorize}
-          </span>
-          <CancelBtn size="sm" />
         </FlowFooter>
       </Step>
     )
@@ -232,11 +217,13 @@ function CancelBtn({ size = 'default' }: { size?: 'default' | 'sm' }) {
 function ConfirmingModelPanel({
   flow,
   leaving,
-  onBegin
+  onBegin,
+  profile
 }: {
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
   leaving: boolean
   onBegin: () => void
+  profile?: string
 }) {
   const { t } = useI18n()
   const scrambledModel = useScramble(flow.currentModel, leaving)
@@ -252,7 +239,7 @@ function ConfirmingModelPanel({
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
     queryKey: ['onboarding-model-options', flow.providerSlug],
-    queryFn: () => getGlobalModelOptions()
+    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
   })
 
   const providerRow = options.data?.providers?.find(
@@ -338,6 +325,7 @@ function ConfirmingModelPanel({
           setPickerOpen(false)
         }}
         open={pickerOpen}
+        profile={profile}
       />
     </div>
   )

@@ -92,8 +92,10 @@ export interface DelegationStatus {
 export interface ApprovalReq {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  choices?: string[]
   command: string
   description: string
+  smartDenied?: boolean
 }
 
 export interface ConfirmReq {
@@ -147,13 +149,22 @@ export interface McpServerStatus {
   transport: string
 }
 
+export interface ProjectInfo {
+  id: string
+  name: string
+  primary_path?: null | string
+  slug: string
+}
+
 export interface SessionInfo {
   cwd?: string
   fast?: boolean
+  install_warning?: string
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  project?: null | ProjectInfo
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

@@ -2,11 +2,14 @@
 
 import ast
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
+
+import pytest
 
 import tools.approval as approval_module
 from hermes_constants import get_hermes_home
@@ -55,6 +58,11 @@ class TestApprovalModeParsing:
 
 
 class TestSmartApproval:
+    def test_smart_is_the_default_approval_mode(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["approvals"]["mode"] == "smart"
+
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
@@ -67,6 +75,35 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
+
+    def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
+        session_key = "test-smart-per-command"
+        command = "python -c \"print('hello')\""
+        dangerous, pattern_key, _ = detect_dangerous_command(command)
+        assert dangerous is True
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"mode": "smart"},
+        )
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: "approve")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        approval_module.clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        result = approval_module.check_all_command_guards(command, "local")
+
+        assert result["approved"] is True
+        assert result["smart_approved"] is True
+        assert is_approved(session_key, pattern_key) is False
 
 
 class TestDetectDangerousRm:
@@ -81,6 +118,53 @@ class TestDetectDangerousRm:
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
+
+    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+            for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
+                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                    False,
+                    None,
+                    None,
+                )
+
+    def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
+        real_temp = tmp_path / "real-temp"
+        real_temp.mkdir()
+        linked_temp = tmp_path / "linked-temp"
+        linked_temp.symlink_to(real_temp, target_is_directory=True)
+        basename = "hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
+            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
+            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
+
+    def test_verification_cleanup_exemption_rejects_broader_deletions(self):
+        commands = (
+            "rm -rf /tmp/hermes-verify-example.py",
+            "rm -f /tmp/hermes-verify-example.py /tmp/other.py",
+            "rm -f /tmp/nested/hermes-verify-example.py",
+            "rm -f /tmp/nested/../hermes-verify-example.py",
+            "rm -f /tmp/./hermes-verify-example.py",
+            "rm -f /tmp//hermes-verify-example.py",
+            "rm -f /tmp/a/../../tmp/hermes-verify-example.py",
+            "rm -f /var/tmp/hermes-verify-example.py",
+            "rm -f /tmp/unrelated.py",
+            "rm -f /tmp/hermes-verify-*",
+            "rm -f /tmp/hermes-verify-$(touch>/tmp/pwned).py",
+            "rm -f /tmp/hermes-ad-hoc-`touch>/tmp/pwned`.py",
+            "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
+        )
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+            for command in commands:
+                is_dangerous, key, desc = detect_dangerous_command(command)
+                assert is_dangerous is True, command
+                assert key is not None, command
+                assert "delete" in desc.lower(), command
 
 
 class TestWindowsShellDestructiveCommands:
@@ -150,14 +234,14 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is True
         assert desc == "Windows PowerShell destructive delete"
 
-    def test_powershell_benign_path_containing_del_not_flagged(self):
-        # A benign file path that merely contains "del" must NOT trip the guard
-        # (verb-position anchoring prevents matching inside a -File arg).
+    def test_powershell_benign_path_containing_del_not_matched_as_delete(self):
+        # The path text must not be mistaken for a destructive verb. Running a
+        # script via -File is independently approval-worthy.
         dangerous, key, desc = detect_dangerous_command(
             r"powershell -File C:\del-logs\run.ps1"
         )
-        assert dangerous is False
-        assert key is None
+        assert dangerous is True
+        assert key != "Windows PowerShell destructive delete"
 
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
@@ -618,12 +702,13 @@ class TestHermesConfigWriteProtection:
         assert dangerous is True
 
     def test_perl_eval_no_inplace_safe(self):
-        # `perl -e` with no -i flag is code evaluation, not file mutation —
-        # the perl/ruby -i pattern must not fire on it.
+        # `perl -e` with no -i flag is code evaluation, not file mutation. It
+        # requires approval, but must not be attributed to the in-place rule.
         dangerous, key, desc = detect_dangerous_command(
             "perl -wne 'print' ~/.hermes/config.yaml"
         )
-        assert dangerous is False
+        assert dangerous is True
+        assert key != "in-place edit of Hermes config/env (perl/ruby)"
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.
@@ -1058,6 +1143,110 @@ class TestFullCommandAlwaysShown:
         assert result == "deny"
 
 
+class TestSmartDeniedPrompt:
+    def test_callback_receives_smart_denied_capability(self):
+        captured = {}
+
+        def callback(command, description, **kwargs):
+            captured.update(kwargs)
+            return "deny"
+
+        result = prompt_dangerous_approval(
+            "rm -rf /tmp/example",
+            "recursive delete",
+            allow_permanent=False,
+            smart_denied=True,
+            approval_callback=callback,
+        )
+
+        assert result == "deny"
+        assert captured == {"allow_permanent": False, "smart_denied": True}
+
+    def test_short_prompt_smart_deny_rejects_session_input(self):
+        with mock_patch("builtins.input", return_value="session"):
+            result = prompt_dangerous_approval(
+                "rm -rf /tmp/example",
+                "recursive delete",
+                allow_permanent=False,
+                smart_denied=True,
+            )
+
+        assert result == "deny"
+
+    def test_short_prompt_smart_deny_displays_only_once_and_deny(self, capsys):
+        prompts = []
+
+        def input_once(prompt):
+            prompts.append(prompt)
+            return "deny"
+
+        with mock_patch("builtins.input", side_effect=input_once):
+            prompt_dangerous_approval(
+                "rm -rf /tmp/example",
+                "recursive delete",
+                allow_permanent=False,
+                smart_denied=True,
+            )
+
+        rendered = capsys.readouterr().out
+        assert "[o]nce" in rendered and "[d]eny" in rendered
+        assert "[s]ession" not in rendered and "[a]lways" not in rendered
+        assert prompts == ["      Choice [o/D]: "]
+
+    @pytest.mark.parametrize(
+        ("lang", "once_key", "deny_key", "once_label", "deny_label"),
+        [
+            ("tr", "b", "r", "[b]ir kez", "[r]eddet"),
+            ("fr", "o", "r", "[o]ne fois", "[r]efuser"),
+            ("ja", "o", "d", "[o]今回のみ", "[d]拒否"),
+        ],
+    )
+    def test_smart_deny_uses_locale_specific_once_deny_choices(
+        self, monkeypatch, capsys, lang, once_key, deny_key, once_label, deny_label,
+    ):
+        monkeypatch.setenv("HERMES_LANGUAGE", lang)
+        from agent import i18n
+        i18n.reset_language_cache()
+        prompts = []
+
+        def choose_once(prompt):
+            prompts.append(prompt)
+            return once_key
+
+        try:
+            with mock_patch("builtins.input", side_effect=choose_once):
+                result = prompt_dangerous_approval(
+                    "rm -rf /tmp/example", "recursive delete",
+                    allow_permanent=False, smart_denied=True,
+                )
+        finally:
+            i18n.reset_language_cache()
+
+        rendered = capsys.readouterr().out
+        assert result == "once"
+        assert once_label in rendered
+        assert deny_label in rendered
+        assert i18n.t("approval.choose_short", lang=lang).split("|")[1].strip() not in rendered
+        assert "/".join((once_key, deny_key.upper())) in prompts[0]
+
+    @pytest.mark.parametrize(("lang", "forbidden"), [("tr", "o"), ("fr", "s"), ("ja", "a")])
+    def test_smart_deny_rejects_localized_session_or_always_shortcuts(
+        self, monkeypatch, lang, forbidden,
+    ):
+        monkeypatch.setenv("HERMES_LANGUAGE", lang)
+        from agent import i18n
+        i18n.reset_language_cache()
+        try:
+            with mock_patch("builtins.input", return_value=forbidden):
+                result = prompt_dangerous_approval(
+                    "rm -rf /tmp/example", "recursive delete",
+                    allow_permanent=False, smart_denied=True,
+                )
+        finally:
+            i18n.reset_language_cache()
+        assert result == "deny"
+
+
 class TestForkBombDetection:
     """The fork bomb regex must match the classic :(){ :|:& };: pattern."""
 
@@ -1197,7 +1386,7 @@ class TestNormalizationBypass:
         """ANSI CSI color codes wrapping 'rm' must be stripped and caught."""
         cmd = "\x1b[31mrm\x1b[0m -rf /"
         dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is True, f"ANSI-wrapped 'rm -rf /' was not detected"
+        assert dangerous is True, "ANSI-wrapped 'rm -rf /' was not detected"
 
     def test_ansi_osc_embedded_rm(self):
         """ANSI OSC sequences embedded in command must be stripped."""
@@ -2060,7 +2249,7 @@ class TestApprovalTimeoutIsNotConsent:
     SESSION_KEY = "test-no-consent-session"
 
     def setup_method(self):
-        """Reset module state and force tight gateway_timeout for fast tests."""
+        """Reset module state and force a tight approval timeout for fast tests."""
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
@@ -2097,7 +2286,7 @@ class TestApprovalTimeoutIsNotConsent:
         from tools import approval as mod
         monkeypatch.setattr(
             mod, "_get_approval_config",
-            lambda: {"mode": "manual", "gateway_timeout": seconds, "timeout": seconds},
+            lambda: {"mode": "manual", "timeout": seconds},
         )
 
     def test_timeout_returns_approved_false_with_no_consent(self, monkeypatch):
@@ -2140,10 +2329,12 @@ class TestApprovalTimeoutIsNotConsent:
         assert "rephrase" in msg.lower()
         assert "different command" in msg.lower()
 
-    def test_explicit_deny_carries_same_no_consent_shape(self):
+    def test_explicit_deny_carries_same_no_consent_shape(self, monkeypatch):
         """An explicit /deny must produce the same shape as timeout —
         the agent should treat both identically."""
         from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=60)
 
         notified = []
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))

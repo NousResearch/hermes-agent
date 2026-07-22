@@ -31,6 +31,7 @@ CHAT_PLATFORMS = [
 NOISY_STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+    "💤 Resumed after 3600s idle — compacting ~120,000 tokens before continuing.",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
@@ -142,6 +143,15 @@ def test_chat_gateways_keep_normal_answers(platform):
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(platform, answer) == answer
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_drop_interrupt_sentinel(platform):
+    """The interrupt-while-waiting sentinel is metadata, not a reply (#7921)."""
+    sentinel = "Operation interrupted: waiting for model response (1.7s elapsed)."
+
+    assert _sanitize_gateway_final_response(platform, sentinel) == ""
+    assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
 def test_telegram_status_sanitizes_raw_provider_security_errors():

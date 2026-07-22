@@ -243,6 +243,16 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _recipient_email_address(raw: str) -> str:
+    """Extract a deliverable SMTP recipient from raw chat/session ids."""
+    value = _extract_email_address(raw)
+    matches = re.findall(
+        r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        value,
+    )
+    return matches[-1].lower() if matches else value
+
+
 def _domain_of(address: str) -> str:
     """Return the lowercased domain part of an email address, or ''."""
     _, _, domain = address.rpartition("@")
@@ -925,12 +935,15 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        recipient = _recipient_email_address(to_addr)
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
+        msg["To"] = recipient
 
         # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(recipient, {}) or self._thread_context.get(
+            to_addr, {}
+        )
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1040,11 +1053,14 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        recipient = _recipient_email_address(to_addr)
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
+        msg["To"] = recipient
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(recipient, {}) or self._thread_context.get(
+            to_addr, {}
+        )
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1120,11 +1136,14 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        recipient = _recipient_email_address(to_addr)
         msg = MIMEMultipart()
         msg["From"] = self._address
-        msg["To"] = to_addr
+        msg["To"] = recipient
 
-        ctx = self._thread_context.get(to_addr, {})
+        ctx = self._thread_context.get(recipient, {}) or self._thread_context.get(
+            to_addr, {}
+        )
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
@@ -1216,9 +1235,10 @@ async def _standalone_send(
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
     try:
+        recipient = _recipient_email_address(chat_id)
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
-        msg["To"] = chat_id
+        msg["To"] = recipient
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
@@ -1227,7 +1247,7 @@ async def _standalone_send(
         server.login(address, password)
         server.send_message(msg)
         server.quit()
-        return {"success": True, "platform": "email", "chat_id": chat_id}
+        return {"success": True, "platform": "email", "chat_id": recipient}
     except Exception as e:
         try:
             from tools.send_message_tool import _error as _e

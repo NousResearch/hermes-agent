@@ -123,6 +123,13 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_recipient_email_address_extracts_from_session_key(self):
+        from plugins.platforms.email.adapter import _recipient_email_address
+        self.assertEqual(
+            _recipient_email_address("agent:main:email:dm:John@Example.COM"),
+            "john@example.com",
+        )
+
     def test_strip_html_basic(self):
         from plugins.platforms.email.adapter import _strip_html
         html = "<p>Hello <b>world</b></p>"
@@ -891,6 +898,28 @@ class TestSendMethods(unittest.TestCase):
             mock_server.send_message.assert_called_once()
             mock_server.quit.assert_called_once()
 
+    def test_send_extracts_recipient_from_compound_session_key(self):
+        """Compound gateway session keys should not become SMTP To: addresses."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Cron result",
+            "message_id": "<original@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                adapter.send("agent:main:email:dm:user@test.com", "Hello from Hermes!")
+            )
+
+            self.assertTrue(result.success)
+            sent_msg = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent_msg["To"], "user@test.com")
+            self.assertEqual(sent_msg["Subject"], "Re: Cron result")
+
     def test_send_failure_returns_error(self):
         """SMTP failure should return SendResult with error."""
         import asyncio
@@ -923,10 +952,14 @@ class TestSendMethods(unittest.TestCase):
         self.assertIn("My photo", body)
 
     def test_send_document_with_attachment(self):
-        """send_document should send email with file attachment."""
+        """Document SMTP delivery normalizes a defensive compound recipient."""
         import asyncio
         import tempfile
         adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Requested document",
+            "message_id": "<original@test.com>",
+        }
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             f.write(b"Test document content")
@@ -938,12 +971,18 @@ class TestSendMethods(unittest.TestCase):
                 mock_smtp.return_value = mock_server
 
                 result = asyncio.run(
-                    adapter.send_document("user@test.com", tmp_path, "Here is the file")
+                    adapter.send_document(
+                        "agent:main:email:dm:user@test.com",
+                        tmp_path,
+                        "Here is the file",
+                    )
                 )
 
                 self.assertTrue(result.success)
                 mock_server.send_message.assert_called_once()
                 sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["To"], "user@test.com")
+                self.assertEqual(sent_msg["Subject"], "Re: Requested document")
                 # Should be multipart with attachment
                 parts = list(sent_msg.walk())
                 has_attachment = any(
@@ -951,6 +990,37 @@ class TestSendMethods(unittest.TestCase):
                     for p in parts
                 )
                 self.assertTrue(has_attachment)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_multiple_attachments_normalizes_compound_recipient(self):
+        """Multi-attachment SMTP delivery uses the same recipient contract."""
+        import tempfile
+
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Requested images",
+            "message_id": "<original@test.com>",
+        }
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"not-a-real-image")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                adapter._send_email_with_attachments(
+                    "agent:main:email:dm:user@test.com",
+                    "Here are the images",
+                    [tmp_path],
+                )
+
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["To"], "user@test.com")
+                self.assertEqual(sent_msg["Subject"], "Re: Requested images")
         finally:
             os.unlink(tmp_path)
 
@@ -1220,7 +1290,11 @@ class TestSendEmailStandalone(unittest.TestCase):
             mock_smtp.return_value = mock_server
 
             result = asyncio.run(
-                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.test.com"}, "user@test.com", "Hello")
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.test.com"},
+                    "agent:main:email:dm:user@test.com",
+                    "Hello",
+                )
             )
 
             self.assertTrue(result["success"])
@@ -1232,6 +1306,7 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+            self.assertEqual(result["chat_id"], "user@test.com")
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",

@@ -2069,13 +2069,15 @@ def _nous_inference_env_override() -> Optional[str]:
     """Return the user-set ``NOUS_INFERENCE_BASE_URL`` override, if any.
 
     This is the documented dev/staging escape hatch. The env source is
-    trusted (the OS user set it themselves), so it is intentionally NOT
-    gated by the network host allowlist — unlike Portal-returned URLs.
+    trusted (the active profile set it), so it is intentionally NOT gated by
+    the network host allowlist — unlike Portal-returned URLs.
 
     Returns a trailing-slash-stripped non-empty string, or ``None`` when
     the env var is unset/blank.
     """
-    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
+    from agent.secret_scope import get_secret
+
+    return _optional_base_url(get_secret("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:

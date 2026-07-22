@@ -305,7 +305,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
-    p_create.add_argument("title", help="Task title")
+    p_create.add_argument("title", nargs="+", help="Task title (multi-word OK)")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
@@ -1377,7 +1377,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
-            title=args.title,
+            title=" ".join(args.title).strip() if isinstance(args.title, list) else (args.title or "").strip(),
             body=args.body,
             assignee=args.assignee,
             created_by=args.created_by or _profile_author(),

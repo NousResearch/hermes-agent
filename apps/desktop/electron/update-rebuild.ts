@@ -12,6 +12,17 @@ function shouldRetryRebuild(code) {
   return code !== 0
 }
 
+/** Return only bundles runnable by the current macOS architecture. */
+function macRebuiltBundleCandidates(updateRoot, arch, pathModule = path) {
+  const macArch = arch === 'x64' ? 'mac-x64' : 'mac-arm64'
+  const releaseDir = pathModule.join(updateRoot, 'apps', 'desktop', 'release')
+
+  return [
+    pathModule.join(releaseDir, macArch, 'Hermes.app'),
+    pathModule.join(releaseDir, 'mac', 'Hermes.app')
+  ]
+}
+
 /**
  * Run `rebuild()` (async, resolves `{ code, ... }`), retrying once on failure.
  * Returns the final result.
@@ -26,4 +37,5 @@ async function runRebuildWithRetry(rebuild) {
   return result
 }
 
-export { runRebuildWithRetry, shouldRetryRebuild }
+export { macRebuiltBundleCandidates, runRebuildWithRetry, shouldRetryRebuild }
+import path from 'node:path'

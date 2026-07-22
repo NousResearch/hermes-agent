@@ -52,6 +52,7 @@ class TurnRetryState:
     invalid_encrypted_content_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False
+    stripped_images_this_turn: bool = False
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
 

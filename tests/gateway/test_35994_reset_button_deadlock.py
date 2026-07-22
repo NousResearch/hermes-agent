@@ -78,7 +78,7 @@ def _make_runner_with_cached_agent(close_fn):
     runner._pending_approvals = {}
     runner._session_db = None
     runner._is_user_authorized = lambda _source: True
-    runner._format_session_info = lambda: ""
+    runner._format_session_info = lambda *a, **k: ""
 
     # Enable the cache-lock path (this is what the button callback exercises)
     runner._agent_cache_lock = threading.RLock()

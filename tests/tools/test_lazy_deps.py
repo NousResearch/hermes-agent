@@ -304,7 +304,7 @@ class TestActiveFeatures:
         monkeypatch.setattr(ld, "_is_present", lambda spec: False)
         assert ld.active_features() == []
 
-    def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
+    def test_finds_features_with_anchor_package_installed(self, monkeypatch):
         # Pretend only honcho-ai is installed; nothing else.
         monkeypatch.setattr(
             ld, "_is_present",
@@ -316,15 +316,23 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_anchor_present(self, monkeypatch):
+        # platform.slack has multiple packages; the first spec is its anchor.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_dependency_does_not_activate_feature(self, monkeypatch):
+        # asyncpg is a generic dependency that may be installed for unrelated
+        # reasons. It must not make hermes update try to refresh Matrix unless
+        # the Matrix anchor package (mautrix) is present.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "asyncpg",
+        )
+        assert "platform.matrix" not in ld.active_features()
 
 
 class TestRefreshActiveFeatures:

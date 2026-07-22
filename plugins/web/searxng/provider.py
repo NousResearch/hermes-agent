@@ -32,16 +32,49 @@ logger = logging.getLogger(__name__)
 
 
 def _searxng_url() -> str:
-    """Return SEARXNG_URL from Hermes config-aware env, falling back to process env."""
-    try:
-        from hermes_cli.config import get_env_value
+    """Resolve the SearXNG instance URL using config-aware env lookup.
 
-        val = get_env_value("SEARXNG_URL")
+    Priority:
+    1. ``os.environ["SEARXNG_URL"]`` — already loaded by Hermes startup.
+    2. ``~/.hermes/.env`` — direct read if the env var exists in the file
+       but wasn't injected into ``os.environ`` yet (fixes timing races between
+       dotenv loading and plugin discovery — issue #34290).
+    3. ``config.yaml`` ``web.searxng_url`` — explicit config key fallback.
+
+    Returns the URL (stripped, with trailing slash removed) or empty string.
+    """
+    # 1. Process env (fast path — set by Hermes startup .env loader).
+    val = os.getenv("SEARXNG_URL", "").strip()
+    if val:
+        return val.rstrip("/")
+
+    # 2. Direct .env read — plugin discovery may race against dotenv loading.
+    try:
+        from hermes_cli.config import get_env_path
+
+        env_path = get_env_path()
+        if env_path.exists():
+            import dotenv
+
+            env_vars = dotenv.dotenv_values(str(env_path))
+            val = (env_vars.get("SEARXNG_URL") or "").strip()
+            if val:
+                return val.rstrip("/")
     except Exception:
-        val = None
-    if val is None:
-        val = os.getenv("SEARXNG_URL", "")
-    return (val or "").strip()
+        pass
+
+    # 3. Config.yaml fallback.
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config().get("web", {}) or {}
+        val = (cfg.get("searxng_url") or "").strip()
+        if val:
+            return val.rstrip("/")
+    except Exception:
+        pass
+
+    return ""
 
 
 class SearXNGWebSearchProvider(WebSearchProvider):

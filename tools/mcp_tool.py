@@ -4523,6 +4523,51 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+async def _session_call_tool(
+    session: Any,
+    tool_name: str,
+    args: Optional[dict],
+    *,
+    meta: Optional[Dict[str, Any]] = None,
+):
+    """Invoke ``session.call_tool``, attaching run ``meta`` when supported.
+
+    Prefer ``meta=`` when the callable accepts it (signature check). If the
+    signature is unavailable, try ``meta=`` and fall back on ``TypeError`` so
+    older python-mcp builds without the kwarg do not hard-crash dispatch.
+    """
+    if meta is None:
+        return await session.call_tool(tool_name, arguments=args)
+
+    supports_meta: Optional[bool]
+    try:
+        params = inspect.signature(session.call_tool).parameters
+        supports_meta = (
+            "meta" in params
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        )
+    except (TypeError, ValueError):
+        supports_meta = None
+
+    if supports_meta is False:
+        logger.debug(
+            "MCP session.call_tool has no meta= parameter; dropping run mcp_meta"
+        )
+        return await session.call_tool(tool_name, arguments=args)
+
+    try:
+        return await session.call_tool(tool_name, arguments=args, meta=meta)
+    except TypeError as exc:
+        # Signature lied / was unavailable and the SDK rejected meta=.
+        if "meta" not in str(exc):
+            raise
+        logger.debug(
+            "MCP session.call_tool rejected meta= (%s); dropping run mcp_meta",
+            exc,
+        )
+        return await session.call_tool(tool_name, arguments=args)
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -4598,6 +4643,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
 
+        # Capture run-scoped MCP `_meta` on this (agent) thread. The MCP
+        # loop does not inherit the scheduling thread's ContextVars, so
+        # close over the snapshot for call_tool(meta=...) (#64890).
+        # Parallel tool workers still see it: tool_executor wraps them in
+        # propagate_context_to_thread (full ContextVar copy).
+        from tools.mcp_run_meta import get_mcp_run_meta
+
+        _run_meta = get_mcp_run_meta()
+        if _run_meta is not None:
+            _run_meta = dict(_run_meta)
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -4607,7 +4663,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await _session_call_tool(
+                        server.session, tool_name, args, meta=_run_meta,
+                    )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

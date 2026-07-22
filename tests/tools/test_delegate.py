@@ -2091,6 +2091,47 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
 
 
+class TestDelegateMcpRunMeta(unittest.TestCase):
+    """Subagent workers must re-bind POST /v1/runs mcp_meta (#64890)."""
+
+    def test_run_single_child_rebinds_mcp_meta_on_worker_thread(self):
+        from tools.delegate_tool import _run_single_child
+        from tools.mcp_run_meta import get_mcp_run_meta
+
+        seen = {}
+        parent_thread = threading.current_thread().ident
+
+        child = MagicMock()
+        child._credential_pool = None
+
+        def _run(**kwargs):
+            seen["worker_thread"] = threading.current_thread().ident
+            seen["mcp_meta"] = get_mcp_run_meta()
+            return {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child.run_conversation.side_effect = _run
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Call an MCP tool",
+            child=child,
+            parent_agent=_make_mock_parent(),
+            mcp_meta={"run_token": "signed-xyz"},
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertNotEqual(seen.get("worker_thread"), parent_thread)
+        self.assertEqual(seen.get("mcp_meta"), {"run_token": "signed-xyz"})
+        # Parent thread must not keep a leaked binding from the worker.
+        self.assertIsNone(get_mcp_run_meta())
+
+
 class TestDelegateHeartbeat(unittest.TestCase):
     """Heartbeat propagates child activity to parent during delegation.
 

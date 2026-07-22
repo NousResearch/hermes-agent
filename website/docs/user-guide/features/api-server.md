@@ -252,7 +252,9 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, `previous_response_id`, or `mcp_meta`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+
+`mcp_meta` is an optional JSON object that Hermes relays as MCP request `_meta` on every `tools/call` made during that run — including MCP calls from `delegate_task` subagents. Hermes treats it as opaque passthrough (no signing or validation of contents). Omit the field to keep the previous behavior.
 
 ### GET /v1/runs/\{run_id\}
 

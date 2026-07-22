@@ -185,6 +185,61 @@ class TestStartRun:
         assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
+    async def test_start_invalid_mcp_meta_does_not_allocate_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "mcp_meta": "not-an-object"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "mcp_meta" in data["error"]["message"]
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
+    async def test_start_binds_mcp_meta_for_run_duration(self, adapter):
+        from tools.mcp_run_meta import get_mcp_run_meta
+
+        app = _create_runs_app(adapter)
+        seen = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _run(**kwargs):
+                    seen["during"] = get_mcp_run_meta()
+                    return {"final_response": "ok"}
+
+                mock_agent.run_conversation.side_effect = _run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "mcp_meta": {"run_id": "signed-abc", "tenant": "acme"},
+                    },
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(50):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] in {"completed", "failed", "cancelled"}:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert seen["during"] == {"run_id": "signed-abc", "tenant": "acme"}
+        assert get_mcp_run_meta() is None
+
+    @pytest.mark.asyncio
     async def test_start_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

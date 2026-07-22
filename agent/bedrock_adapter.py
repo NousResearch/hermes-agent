@@ -1218,6 +1218,17 @@ def discover_bedrock_models(
     except Exception as e:
         logger.warning("Failed to list Bedrock foundation models: %s", e)
 
+    # Build a lookup map from foundation models so inference profiles can
+    # inherit modalities.  Without this, profiles default to TEXT-only and
+    # models like Claude (which support IMAGE input) lose that capability,
+    # excluding them from vision-capable model filtering in the /model picker.
+    _foundation_modalities: Dict[str, Dict[str, List[str]]] = {}
+    for m in models:
+        _foundation_modalities[m["id"].lower()] = {
+            "input": m["input_modalities"],
+            "output": m["output_modalities"],
+        }
+
     # 2. Discover inference profiles (cross-region, better capacity)
     try:
         profiles = []
@@ -1242,9 +1253,10 @@ def discover_bedrock_models(
             if profile_id.lower() in seen_ids:
                 continue
 
+            profile_models = profile.get("models", [])
+
             # Apply provider filter to underlying models
             if filter_set:
-                profile_models = profile.get("models", [])
                 matches = any(
                     _extract_provider_from_arn(m.get("modelArn", "")).lower() in filter_set
                     for m in profile_models
@@ -1252,12 +1264,34 @@ def discover_bedrock_models(
                 if not matches:
                     continue
 
+            # Inherit modalities from the underlying foundation model.
+            # Inference profiles wrap foundation models but ListInferenceProfiles
+            # doesn't expose modalities — resolve the base model from the ARN
+            # (arn:aws:bedrock:*::foundation-model/<model-id>) and look it up.
+            # Falls back to stripping the regional prefix
+            # ("us.anthropic.claude-v2" → "anthropic.claude-v2").
+            base_model_id = None
+            for pm in profile_models:
+                arn = pm.get("modelArn", "")
+                match = re.search(r"foundation-model/(.+)$", arn)
+                if match:
+                    base_model_id = match.group(1)
+                    break
+            if base_model_id is None and "." in profile_id:
+                parts = profile_id.split(".", 1)
+                if len(parts) == 2 and parts[0] in ("us", "eu", "ap", "global", "jp", "apac"):
+                    base_model_id = parts[1]
+
+            base_mods = _foundation_modalities.get((base_model_id or "").lower(), {})
+            input_mods = base_mods.get("input", ["TEXT"])
+            output_mods = base_mods.get("output", ["TEXT"])
+
             models.append({
                 "id": profile_id,
                 "name": (profile.get("inferenceProfileName") or profile_id).strip(),
                 "provider": "inference-profile",
-                "input_modalities": ["TEXT"],
-                "output_modalities": ["TEXT"],
+                "input_modalities": input_mods,
+                "output_modalities": output_mods,
                 "streaming": True,
             })
             seen_ids.add(profile_id.lower())

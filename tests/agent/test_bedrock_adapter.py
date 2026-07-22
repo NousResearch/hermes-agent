@@ -921,6 +921,104 @@ class TestDiscoverBedrockModels:
         assert models == []
 
 
+class TestInferenceProfileModalityInheritance:
+    """Inference profiles should inherit modalities from their foundation model.
+
+    ListInferenceProfiles doesn't expose modalities, so profiles previously
+    defaulted to TEXT-only — excluding vision-capable Claude profiles
+    (e.g. us.anthropic.claude-sonnet-4-6) from IMAGE-input filtering in the
+    /model picker.  Ref: PR #7920 feedback from @ptlally.
+    """
+
+    def test_profile_inherits_image_input_from_foundation(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [{
+                "modelId": "anthropic.claude-sonnet-4-6",
+                "modelName": "Claude Sonnet 4.6",
+                "providerName": "Anthropic",
+                "inputModalities": ["TEXT", "IMAGE"],
+                "outputModalities": ["TEXT"],
+                "responseStreamingSupported": True,
+                "modelLifecycle": {"status": "ACTIVE"},
+            }],
+        }
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [{
+                "inferenceProfileId": "us.anthropic.claude-sonnet-4-6",
+                "inferenceProfileName": "US Claude Sonnet 4.6",
+                "status": "ACTIVE",
+                "models": [{"modelArn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6"}],
+            }],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        profile = [m for m in models if m["id"] == "us.anthropic.claude-sonnet-4-6"]
+        assert len(profile) == 1
+        assert "IMAGE" in profile[0]["input_modalities"]
+        assert "TEXT" in profile[0]["input_modalities"]
+
+    def test_profile_inherits_via_regional_prefix_when_arn_absent(self):
+        """When the profile has no model ARN, fall back to stripping the regional prefix."""
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {
+            "modelSummaries": [{
+                "modelId": "anthropic.claude-sonnet-4-6",
+                "modelName": "Claude Sonnet 4.6",
+                "providerName": "Anthropic",
+                "inputModalities": ["TEXT", "IMAGE"],
+                "outputModalities": ["TEXT"],
+                "responseStreamingSupported": True,
+                "modelLifecycle": {"status": "ACTIVE"},
+            }],
+        }
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [{
+                "inferenceProfileId": "us.anthropic.claude-sonnet-4-6",
+                "inferenceProfileName": "US Claude Sonnet 4.6",
+                "status": "ACTIVE",
+                "models": [],  # no ARN — must fall back to prefix stripping
+            }],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        profile = [m for m in models if m["id"] == "us.anthropic.claude-sonnet-4-6"]
+        assert len(profile) == 1
+        assert "IMAGE" in profile[0]["input_modalities"]
+
+    def test_profile_defaults_to_text_when_no_foundation_match(self):
+        """Profiles with no matching foundation model keep the TEXT-only default."""
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        mock_client = MagicMock()
+        mock_client.list_foundation_models.return_value = {"modelSummaries": []}
+        mock_client.list_inference_profiles.return_value = {
+            "inferenceProfileSummaries": [{
+                "inferenceProfileId": "us.unknown.model-v1",
+                "inferenceProfileName": "Unknown Model",
+                "status": "ACTIVE",
+                "models": [],
+            }],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_client):
+            models = discover_bedrock_models("us-east-1")
+
+        assert len(models) == 1
+        assert models[0]["input_modalities"] == ["TEXT"]
+
+
 class TestExtractProviderFromArn:
     def test_extracts_anthropic(self):
         from agent.bedrock_adapter import _extract_provider_from_arn

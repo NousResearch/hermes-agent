@@ -387,6 +387,18 @@ In a Discord text channel where the bot is present:
 - use a dedicated bot/testing channel at first
 - verify STT and TTS work in ordinary text-chat voice mode before trying VC mode
 
+### Long spoken replies
+
+Discord VC replies always preserve the full assistant response in the linked text channel. The spoken companion clip is intentionally capped by default so long answers do not monopolize the voice channel or hit the playback safety timeout.
+
+Tune these in `config.yaml` if your TTS voice is unusually fast/slow:
+
+```yaml
+discord:
+  voice_reply_max_chars: 1200              # spoken VC text only; 0 disables this extra clamp
+  voice_playback_timeout_seconds: 300      # safety timeout for one playback item
+```
+
 ## Voice quality recommendations
 
 ### Best quality setup

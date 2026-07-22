@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { ensureVirtualItemHeight } from '../hooks/useVirtualHistory.js'
+import { ensureVirtualItemHeight, MAX_MOUNTED } from '../hooks/useVirtualHistory.js'
 
 describe('ensureVirtualItemHeight', () => {
   it('reuses cached heights without invoking the estimator', () => {
@@ -35,5 +35,16 @@ describe('ensureVirtualItemHeight', () => {
 
     expect(ensureVirtualItemHeight(heights, 'd', 0, 0, estimateHeight)).toBe(1)
     expect(heights.get('d')).toBe(1)
+  })
+})
+
+// Issue #55594: long assistant responses scroll out of the mounted range
+// and the clamp holds the viewport at the edge of mounted content while
+// the user catches up.  Raising the default cap from 120 → 300 keeps
+// longer responses reachable.  The constant is exported so callers can
+// override per-instance via the `maxMounted` option.
+describe('MAX_MOUNTED default', () => {
+  it('is at least 300 to keep long responses reachable', () => {
+    expect(MAX_MOUNTED).toBeGreaterThanOrEqual(300)
   })
 })

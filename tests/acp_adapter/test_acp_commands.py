@@ -16,6 +16,7 @@ class FakeAgent:
         self.disabled_toolsets = []
         self.tools = []
         self.valid_tool_names = set()
+        self.reasoning_config = None
         self.steers = []
         self.runs = []
 
@@ -65,6 +66,49 @@ def make_agent_and_state():
     conn = CaptureConn()
     acp_agent.on_connect(conn)
     return acp_agent, state, fake, conn
+
+
+@pytest.mark.asyncio
+async def test_acp_new_session_advertises_thought_level_config_option():
+    fake = FakeAgent()
+    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+
+    response = await acp_agent.new_session(cwd=".")
+
+    thought = next((opt for opt in response.config_options if opt.id == "thought_level"), None)
+    assert thought is not None
+    assert thought.category == "thought_level"
+    assert thought.current_value == "medium"
+    assert [opt.value for opt in thought.options] == ["none", "minimal", "low", "medium", "high", "xhigh"]
+
+
+@pytest.mark.asyncio
+async def test_acp_set_thought_level_updates_agent_reasoning_config():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    response = await acp_agent.set_config_option(
+        session_id=state.session_id,
+        config_id="thought_level",
+        value="high",
+    )
+
+    assert fake.reasoning_config == {"enabled": True, "effort": "high"}
+    thought = next((opt for opt in response.config_options if opt.id == "thought_level"), None)
+    assert thought.current_value == "high"
+
+
+@pytest.mark.asyncio
+async def test_acp_set_thought_level_none_disables_reasoning():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    await acp_agent.set_config_option(
+        session_id=state.session_id,
+        config_id="thought_level",
+        value="none",
+    )
+
+    assert fake.reasoning_config == {"enabled": False}
 
 
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):

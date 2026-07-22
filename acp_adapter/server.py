@@ -46,6 +46,8 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
@@ -506,6 +508,8 @@ class HermesACPAgent(acp.Agent):
 
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
+    _THOUGHT_LEVEL_CONFIG_ID = "thought_level"
+    _THOUGHT_LEVEL_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh")
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
     _MODE_DONT_ASK = "dont_ask"
@@ -563,6 +567,35 @@ class HermesACPAgent(acp.Agent):
                 ),
             ],
         )
+
+    def _thought_level_current_value(self, state: SessionState) -> str:
+        reasoning_config = getattr(state.agent, "reasoning_config", None)
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                return "none"
+            effort = str(reasoning_config.get("effort") or "").strip().lower()
+            if effort in self._THOUGHT_LEVEL_VALUES:
+                return effort
+        return "medium"
+
+    def _session_config_options(self, state: SessionState) -> list[Any]:
+        return [
+            SessionConfigOptionSelect(
+                type="select",
+                id=self._THOUGHT_LEVEL_CONFIG_ID,
+                name="Thought level",
+                category="thought_level",
+                description="Controls the reasoning effort Hermes requests from reasoning-capable models.",
+                current_value=self._thought_level_current_value(state),
+                options=[
+                    SessionConfigSelectOption(
+                        value=value,
+                        name=("Off" if value == "none" else value.capitalize()),
+                    )
+                    for value in self._THOUGHT_LEVEL_VALUES
+                ],
+            )
+        ]
 
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
@@ -1125,6 +1158,7 @@ class HermesACPAgent(acp.Agent):
             session_id=state.session_id,
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            config_options=self._session_config_options(state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
             ),
@@ -1172,6 +1206,7 @@ class HermesACPAgent(acp.Agent):
         return LoadSessionResponse(
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            config_options=self._session_config_options(state),
             field_meta=self._provenance_meta(
                 session_id, getattr(state.agent, "session_id", session_id)
             ),
@@ -1207,6 +1242,7 @@ class HermesACPAgent(acp.Agent):
         return ResumeSessionResponse(
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            config_options=self._session_config_options(state),
             field_meta=self._provenance_meta(
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
             ),
@@ -2081,6 +2117,11 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+        elif str(config_id) == self._THOUGHT_LEVEL_CONFIG_ID:
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(str(value))
+            if parsed is not None:
+                setattr(state.agent, "reasoning_config", parsed)
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
@@ -2089,4 +2130,4 @@ class HermesACPAgent(acp.Agent):
             setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state))

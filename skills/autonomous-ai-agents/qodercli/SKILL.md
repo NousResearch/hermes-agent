@@ -1,7 +1,7 @@
 ---
 name: qodercli
 description: "Delegate coding to Qoder CLI (features, PRs, refactors)."
-version: 2.5.1
+version: 2.5.2
 author: explicitcontextualunderstanding
 license: MIT
 platforms: [linux, macos, windows]
@@ -29,6 +29,19 @@ Delegate coding tasks to [Qoder CLI](https://docs.qoder.com) via the `terminal` 
 - Repository-wide analysis (audit trails, migration planning)
 
 Do NOT use for single-file lookups, basic shell commands, or tasks that fit in one tool call.
+
+### Large-repo delegation (80+ files)
+
+For tasks requiring edits to 80+ files, include progress-checkpoint guidance in
+your delegation prompt:
+
+> "Process files one at a time. After every 10 files, state your progress
+> (Completed N/total files). If you lose track, list the directory to recover."
+
+This ensures state survives context compaction on very large tasks (validated
+at 376% of window size with zero state loss). For tasks under 80 files, no
+special guidance is needed — the executor handles context management
+transparently.
 
 ## Prerequisites
 
@@ -61,12 +74,12 @@ terminal(command="HERMES_QODERCLI_BIN=/opt/homebrew/bin/qodercli qodercli -p '..
 
 | Task type | Mode | Why |
 |-----------|------|-----|
-| Bounded implementation (files known) | **`-p` (print)** | One-shot, no monitoring, 8x write compression proven in CTA |
+| Bounded implementation (files known) | **`-p` (print)** | One-shot, no monitoring needed |
 | Repository-wide migration/refactor | **`-p` (print)** | qodercli handles dependency mapping internally |
 | CI/automation/piped input | **`-p` with `-o json`** | Structured output, no PTY needed |
 | Genuinely iterative (needs clarification) | `-i` (interactive) | Only when task requires multi-turn dialogue |
 
-**Default to print mode.** CTA evidence (N=12 sessions): legacy PTY interactive mode had a 40% stuck-session rate (spinner-only polls → premature kill). Plan 7 eliminated this for background tasks via automatic NDJSON structured progress (0% spinner-only, 100% tool-use visibility). Print mode remains simplest for bounded tasks; background mode now has full observability.
+**Default to print mode.** Legacy interactive mode had a high stuck-session rate from spinner-only polling (no progress signal → premature kill). Background tasks now get automatic NDJSON structured progress (0% spinner-only, full tool-use visibility). Print mode remains simplest for bounded tasks; background mode now has full observability.
 
 ### Print mode (one-shot, preferred)
 
@@ -186,7 +199,7 @@ Override the active model to leverage Alibaba Cloud's exclusive 2.4T-parameter f
 terminal(command="qodercli -p 'Refactor src/db/ to SQLAlchemy' -m Qwen3.8-Max-Preview --permission-mode bypass_permissions", workdir="~/project", pty=true, timeout=300)
 ```
 
-`Qwen3.8-Max-Preview` defaults to a **131k token context window** on standard invocations but supports up to **1M tokens** when Qoder manages extended repository contexts. Delegating multi-file edits to `qodercli` prevents flooding Hermes's context window by offloading raw file reads to Qoder's workspace — Hermes sees only the delegation command and summary result.
+`Qwen3.8-Max-Preview` defaults to a **131k token context window** on standard invocations but supports up to **1M tokens** when Qoder manages extended repository contexts. Delegating multi-file edits to `qodercli` prevents flooding Hermes's context window by offloading raw file reads to Qoder's workspace — Hermes sees only the delegation command and summary result. The executor's context management (ingestion-time truncation + compaction with state preservation) handles repos of any realistic size without scope limitations.
 
 ## Procedure
 

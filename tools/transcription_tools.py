@@ -549,11 +549,14 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
 
     Mirrors ``tools.tts_tool._run_command_tts``.
     """
+    from agent.delegation_context import delegated_child_subprocess_env
+
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": delegated_child_subprocess_env(),
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

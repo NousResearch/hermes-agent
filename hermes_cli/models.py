@@ -3219,23 +3219,69 @@ def fetch_lmstudio_models(
     return models or []
 
 
+class LMStudioLoadResult(NamedTuple):
+    """Verified LM Studio runtime plus load-attempt provenance."""
+
+    context_length: Optional[int]
+    load_attempted: bool = False
+    rejected: bool = False
+
+
 def ensure_lmstudio_model_loaded(
     model: str,
     base_url: Optional[str],
     api_key: Optional[str],
-    target_context_length: int,
+    target_context_length: Optional[int],
     timeout: float = 120.0,
-) -> Optional[int]:
-    """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
+    *,
+    return_load_result: bool = False,
+) -> Optional[int] | LMStudioLoadResult:
+    """Ensure ``model`` is loaded and return verified runtime context.
 
-    No-op when an instance is already loaded with sufficient context. Otherwise
-    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
-    at the model's ``max_context_length``. Returns the resolved loaded context
-    length, or ``None`` when the probe / load failed.
+    Existing loaded-instance context is authoritative. Cold loads omit
+    ``context_length`` unless the caller supplied an explicit override; the
+    returned context must come from LM Studio's echoed or refreshed state.
     """
+
+    def _result(
+        context_length: Optional[int],
+        *,
+        load_attempted: bool = False,
+        rejected: bool = False,
+    ) -> Optional[int] | LMStudioLoadResult:
+        value = LMStudioLoadResult(context_length, load_attempted, rejected)
+        return value if return_load_result else context_length
+
+    def _positive_int(value: Any) -> Optional[int]:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return None
+
+    def _loaded_context(entry: dict) -> Optional[int]:
+        instances = entry.get("loaded_instances")
+        if not isinstance(instances, list):
+            return None
+        for instance in instances:
+            config = instance.get("config") if isinstance(instance, dict) else None
+            context = config.get("context_length") if isinstance(config, dict) else None
+            parsed = _positive_int(context)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _find_entry(raw_models: list[dict]) -> Optional[dict]:
+        for raw in raw_models:
+            if isinstance(raw, dict) and (raw.get("key") == model or raw.get("id") == model):
+                return raw
+        return None
+
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
-        return None
+        return _result(None)
+
+    explicit_context = _positive_int(target_context_length)
+    if target_context_length is not None and explicit_context is None:
+        return _result(None)
 
     headers = _lmstudio_request_headers(api_key)
 
@@ -3244,32 +3290,28 @@ def ensure_lmstudio_model_loaded(
     except Exception:
         raw_models = None
     if raw_models is None:
-        return None
+        return _result(None)
 
-    target_entry = None
-    for raw in raw_models:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("key") == model or raw.get("id") == model:
-            target_entry = raw
-            break
+    target_entry = _find_entry(raw_models)
     if target_entry is None:
-        return None
+        return _result(None)
 
-    max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        target_context_length = min(target_context_length, max_ctx)
+    max_ctx = _positive_int(target_entry.get("max_context_length"))
+    if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
+        return _result(None, rejected=True)
 
-    for inst in target_entry.get("loaded_instances") or []:
-        cfg = inst.get("config") if isinstance(inst, dict) else None
-        loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
-            return loaded_ctx
+    current_context = _loaded_context(target_entry)
+    if current_context is not None:
+        return _result(current_context)
 
-    body = json.dumps({
-        "model": model,
-        "context_length": target_context_length,
-    }).encode()
+    loaded_instances = target_entry.get("loaded_instances")
+    if not isinstance(loaded_instances, list) or loaded_instances:
+        return _result(None)
+
+    load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
+    if explicit_context is not None:
+        load_payload["context_length"] = explicit_context
+    body = json.dumps(load_payload).encode()
     load_headers = dict(headers)
     load_headers["Content-Type"] = "application/json"
     try:
@@ -3280,10 +3322,32 @@ def ensure_lmstudio_model_loaded(
             method="POST",
         )
         with _urlopen_model_catalog_request(load_request, timeout=timeout) as resp:
-            resp.read()
+            response_body = resp.read()
     except Exception:
-        return None
-    return target_context_length
+        return _result(None, load_attempted=True)
+
+    try:
+        response_payload = json.loads(response_body.decode())
+    except Exception:
+        response_payload = None
+    load_config = response_payload.get("load_config") if isinstance(response_payload, dict) else None
+    applied_context = (
+        _positive_int(load_config.get("context_length"))
+        if isinstance(load_config, dict)
+        else None
+    )
+    if applied_context is not None:
+        return _result(applied_context, load_attempted=True)
+
+    try:
+        refreshed_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
+    except Exception:
+        refreshed_models = None
+    if refreshed_models is None:
+        return _result(None, load_attempted=True)
+    refreshed_entry = _find_entry(refreshed_models)
+    refreshed_context = _loaded_context(refreshed_entry) if refreshed_entry is not None else None
+    return _result(refreshed_context, load_attempted=True)
 
 
 def lmstudio_model_reasoning_options(

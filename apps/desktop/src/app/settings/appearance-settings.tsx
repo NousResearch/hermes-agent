@@ -321,7 +321,7 @@ export function AppearanceSettings() {
                   <input
                     className="w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Search your themes or the VS Code Marketplace…"
+                    placeholder={t.settings.appearance.themeSearchPlaceholder}
                     spellCheck={false}
                     value={query}
                   />

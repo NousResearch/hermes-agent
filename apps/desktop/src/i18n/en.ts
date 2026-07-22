@@ -430,6 +430,7 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
       installTitle: 'Install from VS Code',
       installDesc:

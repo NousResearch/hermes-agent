@@ -345,6 +345,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string

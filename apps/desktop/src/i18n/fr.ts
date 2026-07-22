@@ -430,6 +430,7 @@ export const fr = defineLocale({
       technicalDesc: 'Inclure les arguments/résultats bruts et les détails de bas niveau.',
       themeTitle: 'Thème',
       themeDesc: 'Palettes du bureau uniquement. Le mode sélectionné est appliqué par-dessus.',
+      themeSearchPlaceholder: 'Rechercher parmi vos thèmes ou sur le Marketplace VS Code…',
       themeProfileNote: profile => `Enregistré pour le profil ${profile} — chaque profil conserve son propre thème.`,
       installTitle: 'Installer depuis VS Code',
       installDesc:
@@ -782,6 +783,7 @@ export const fr = defineLocale({
     config: {
       none: 'Aucun',
       noneParen: '(aucun)',
+      builtinOnly: 'Intégrés uniquement',
       notSet: 'Non défini',
       commaSeparated: 'valeurs séparées par des virgules',
       loading: 'Chargement de la configuration Hermes...',
@@ -813,7 +815,8 @@ export const fr = defineLocale({
       revealValue: 'Révéler la valeur',
       replace: 'Remplacer',
       set: 'Définir',
-      clear: 'Effacer'
+      clear: 'Effacer',
+      manageInKeys: 'Gérer dans Clés API'
     },
     gateway: {
       loading: 'Chargement des paramètres de la passerelle...',
@@ -913,7 +916,44 @@ export const fr = defineLocale({
       cloudSignedOutMessage: 'Session Hermes Cloud effacée.',
       cloudSignedOutTitle: 'Déconnecté de Hermes Cloud',
       cloudStatusLabel: status => `Statut : ${status}`,
-      saveFailed: 'Impossible d\'enregistrer les paramètres de passerelle'
+      saveFailed: 'Impossible d\'enregistrer les paramètres de passerelle',
+      sshTitle: 'Connexion via SSH',
+      sshDesc:
+        'Hermes est lancé sur la machine distante via SSH et tunnellisé vers cette app — rien à démarrer ni exposer vous-même. Nécessite un accès SSH par clé fonctionnel vers l\'hôte.',
+      sshTrustHint: 'La première clé d\'hôte présentée est acceptée et épinglée ; tout changement ultérieur sera bloqué.',
+      sshHostTitle: 'Hôte',
+      sshHostDesc: 'user@host, ou un alias Host de ~/.ssh/config.',
+      sshHostPick: 'Sélectionner un hôte…',
+      sshHostPickTitle: 'Hôte',
+      sshHostPickDesc: 'Un alias Host de ~/.ssh/config, ou Personnalisé pour en saisir un.',
+      sshHostCustom: 'Personnalisé (saisie manuelle)…',
+      sshUserTitle: 'Utilisateur',
+      sshUserDesc: 'Vide = ~/.ssh/config ou votre utilisateur actuel.',
+      sshUserPlaceholder: 'depuis ~/.ssh/config',
+      sshPortTitle: 'Port',
+      sshPortDesc: 'Vide = 22 ou le port de ~/.ssh/config.',
+      sshKeyTitle: 'Fichier d\'identité',
+      sshKeyDesc: 'Chemin de la clé privée. Vide = ssh-agent ou ~/.ssh/config.',
+      sshHermesPathTitle: 'Chemin Hermes (optionnel)',
+      sshHermesPathDesc: 'Chemin complet vers le binaire hermes distant. Vide = détection automatique.',
+      sshHermesPathPlaceholder: 'détection automatique',
+      sshTestConnection: 'Tester SSH',
+      sshConnect: 'Connecter',
+      sshButtonsHint: 'Enregistrer s\'applique au prochain lancement. Connecter reconnecte maintenant.',
+      sshReachable: (host, platform) => `Accessible : ${host} (${platform}) — Hermes trouvé`,
+      sshIncompleteHost: 'Saisissez un hôte SSH avant de vous connecter.',
+      sshErrUnreachable: 'Impossible d\'atteindre cet hôte via SSH. Vérifiez l\'hôte, le port et votre réseau.',
+      sshErrAuth:
+        'Échec de l\'authentification SSH. Chargez votre clé dans ssh-agent (ssh-add) ou définissez un IdentityFile dans ~/.ssh/config — Hermes exécute SSH en mode non interactif.',
+      sshErrHostKey:
+        'La clé d\'hôte a CHANGÉ depuis votre dernière connexion. Vérifiez que cela est attendu, puis exécutez ssh-keygen -R <host> et reconnectez-vous.',
+      sshErrNotInstalled:
+        'Hermes n\'est pas installé sur l\'hôte distant. Installez-le (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) ou définissez le chemin Hermes.',
+      sshErrPlatform:
+        'Plateforme distante non supportée. Le mode SSH de Hermes Desktop prend en charge les hôtes Linux, macOS et Windows.',
+      sshErrTimeout: 'La connexion SSH a expiré. L\'hôte est peut-être injoignable ou en veille.',
+      sshErrUpdateRequired: 'Mettez à jour Hermes sur l\'hôte distant avant de vous connecter avec Desktop SSH.',
+      sshErrUnknown: 'Échec de la connexion SSH.'
     },
     keys: {
       loading: 'Chargement des clés API et secrets...',
@@ -1093,8 +1133,16 @@ export const fr = defineLocale({
       noProviderOptions: 'Cet outil n\'a pas d\'options de fournisseur — activez-le et il fonctionne avec votre configuration actuelle.',
       noProviders: 'Aucun fournisseur n\'est disponible pour cet outil pour l\'instant.',
       ready: 'Prêt',
+      needsSignIn: 'Connexion requise',
+      needsSetup: 'Configuration requise',
       nousIncluded: 'Inclus avec un abonnement Nous — connectez-vous au portail Nous pour activer.',
       noApiKeyRequired: 'Aucune clé API requise.',
+      nousAuthNeededTitle: 'Connectez-vous au portail Nous',
+      nousAuthNeededMessage: provider => `${provider} est enregistré mais ne s\'activera pas tant que vous ne vous connecterez pas au portail Nous.`,
+      nousAuthSignIn: 'Se connecter',
+      nousAuthDoneTitle: 'Portail Nous connecté',
+      nousAuthDoneMessage: 'Vos backends d\'abonnement sont maintenant actifs.',
+      nousAuthFailed: 'La connexion au portail Nous n\'a pas abouti',
       postSetupHint: step =>
         `Ce backend nécessite une installation unique (${step}). S\'exécute sur cette machine — peut prendre quelques minutes.`,
       postSetupRun: 'Lancer l\'installation',
@@ -1105,6 +1153,9 @@ export const fr = defineLocale({
       postSetupErrorTitle: 'Installation terminée avec des erreurs',
       postSetupErrorMessage: step => `Consultez le journal de ${step}.`,
       postSetupFailed: (step: string) => `Échec de l\'installation de ${step}`,
+      postSetupInstalledHint: 'Installé. Relancez l\'installation uniquement si quelque chose est cassé.',
+      postSetupRerun: 'Relancer l\'installation',
+      postSetupInstalled: 'Installé',
       loadingModels: 'Chargement du catalogue de modèles...',
       modelSectionTitle: 'Modèle',
       modelCount: (count: number) => `${count} modèle${count === 1 ? '' : 's'}`,
@@ -1113,7 +1164,29 @@ export const fr = defineLocale({
       modelInactiveHint: 'Sélectionnez d\'abord ce backend pour changer son modèle.',
       modelSelectedTitle: 'Modèle sélectionné',
       modelSelectedMessage: (model: string) => `${model} s\'applique aux nouvelles sessions.`,
-      failedSelectModel: (model: string) => `Impossible de sélectionner ${model}`
+      failedSelectModel: (model: string) => `Impossible de sélectionner ${model}`,
+      webSearchActive: backend => `Recherche : ${backend}`,
+      webExtractActive: backend => `Extraction : ${backend}`,
+      webCapabilityUnset: 'non défini',
+      webUseForSearch: 'Utiliser pour la recherche',
+      webUseForExtract: 'Utiliser pour l\'extraction',
+      webUsedForSearch: 'Backend de recherche',
+      webUsedForExtract: 'Backend d\'extraction',
+      webCapabilitySelectedMessage: (provider, capability) => `${provider} gère maintenant la ${capability} web.`,
+      failedSelectCapability: provider => `Échec de la définition de ${provider}`,
+      terminalBackend: {
+        sectionTitle: 'Backend d\'exécution',
+        loading: 'Vérification des backends d\'exécution…',
+        failedLoad: 'Impossible de charger les backends de terminal',
+        ready: 'Prêt',
+        needsSetup: 'Configuration requise',
+        unavailable: 'Indisponible',
+        inUse: 'Utilisé',
+        selectedTitle: 'Backend sélectionné',
+        selectedMessage: backend => `Les commandes du terminal s\'exécutent maintenant via ${backend}. S\'applique aux nouvelles sessions.`,
+        failedSelect: backend => `Échec de la sélection de ${backend}`,
+        needsSetupHint: 'Vous pouvez sélectionner ce backend maintenant — les commandes échoueront jusqu\'à ce que l\'installation soit terminée.'
+      }
     }
   },
 
@@ -1133,6 +1206,9 @@ export const fr = defineLocale({
     noDescription: 'Aucune description.',
     configured: 'Configuré',
     needsKeys: 'Clés requises',
+    visionModelHint:
+      'La vision utilise votre configuration de modèle auxiliaire — le modèle compatible image est choisi là-bas, pas par fournisseur ici.',
+    visionModelLink: 'Choisir le modèle de vision dans Paramètres → Modèles',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} outils activés`,
     configureToolset: label => `Configurer ${label}`,
     toggleToolset: label => `Activer/désactiver ${label}`,
@@ -1275,7 +1351,8 @@ export const fr = defineLocale({
     ageHours: hours => `il y a ${hours}h`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}min ${seconds}s`,
-    tokens: (value: number | string) => `${value} tok`
+    tokens: (value: number | string) => `${value} tok`,
+    ageDays: days => `il y a ${days}j`
   },
 
   commandCenter: {
@@ -1784,7 +1861,9 @@ export const fr = defineLocale({
     promptRequired: 'Le prompt est requis.',
     scheduleRequired: 'La planification est requise.',
     scriptOnlyEditHint: 'Tâche script seul (pas de prompt IA). ID :',
-    createAction: 'Créer la tâche'
+    createAction: 'Créer la tâche',
+    modelLabel: 'Modèle',
+    modelDefault: 'Par défaut (modèle global)'
   },
 
   artifacts: {
@@ -2026,6 +2105,7 @@ export const fr = defineLocale({
     urlHintPre: 'Incluez l\'URL complète, ex. ',
     attach: 'Joindre',
     queued: count => `${count} en file`,
+    queuedPaused: count => `${count} en file — en pause`,
     attachmentOnly: 'Tour avec pièce jointe uniquement',
     emptyTurn: 'Tour vide',
     attachments: count => `${count} pièce${count === 1 ? '' : 's'} jointe${count === 1 ? '' : 's'}`,
@@ -2035,6 +2115,8 @@ export const fr = defineLocale({
     queueSendNext: 'Suivant',
     queueSend: 'Envoyer',
     queueDelete: 'Supprimer',
+    queueResume: 'Reprendre',
+    queueResumeTip: 'Mis en pause par Arrêter — reprendre l\'envoi des tours en file',
     queueStuckTitle: 'Message en file non envoyé',
     queueStuckBody: 'Un tour en file n\'a pas pu être envoyé. Il est toujours dans la file — essayez de le renvoyer.',
     previewUnavailable: 'Aperçu indisponible',
@@ -2397,6 +2479,12 @@ export const fr = defineLocale({
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,
+      connectionSsh: host => `SSH : ${host}`,
+      connectionRemote: host => `Distant : ${host}`,
+      connectionCloud: host => `Cloud : ${host}`,
+      connectionCloudTooltip: host => `Connecté à Hermes Cloud sur ${host} · cliquer pour gérer`,
+      connectionSshTooltip: host => `Connecté via SSH à ${host} · cliquer pour gérer`,
+      connectionRemoteTooltip: host => `Connecté au backend distant ${host} · cliquer pour gérer`,
       backendLabel: version => `backend v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branche ${branch}`,
@@ -2642,7 +2730,8 @@ export const fr = defineLocale({
       other: 'Autre (tapez votre réponse)',
       placeholder: 'Tapez votre réponse…',
       continueLabel: 'Continuer',
-      skip: 'Passer'
+      skip: 'Passer',
+      skipped: 'Ignorée'
     },
     tool: {
       code: 'Code',
@@ -2835,6 +2924,7 @@ export const fr = defineLocale({
     confirmBody: consequence => `Cela supprimera ${consequence}. Cette action est irréversible.`,
     uninstalling: 'Désinstallation…',
     yesUninstall: 'Oui, désinstaller',
+    couldNotStart: 'La désinstallation n\'a pas pu démarrer.',
     cancel: 'Annuler',
     uninstallHermes: 'Désinstaller Hermes',
     uninstallDescription:

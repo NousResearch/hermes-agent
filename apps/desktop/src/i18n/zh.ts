@@ -419,6 +419,7 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeSearchPlaceholder: '搜索你的主题或 VS Code 市场…',
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',

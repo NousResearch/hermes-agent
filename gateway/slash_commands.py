@@ -1901,37 +1901,49 @@ class GatewaySlashCommandsMixin:
         # through to a synchronous models.dev HTTP fetch (requests.get, 15s
         # timeout) on a cold/expired cache, which freezes the gateway
         # otherwise. See #20525, #41289.
-        result = await asyncio.to_thread(
-            _switch_model,
-            raw_input=model_input,
-            current_provider=current_provider,
-            current_model=current_model,
-            current_base_url=current_base_url,
-            current_api_key=current_api_key,
-            is_global=persist_global,
-            explicit_provider=explicit_provider,
-            user_providers=user_provs,
-            custom_providers=custom_provs,
-        )
+        #
+        # Both this call and the enrich call below must run inside the
+        # routed profile's _profile_runtime_scope: _switch_model() resolves
+        # credentials via resolve_runtime_provider(), whose ${ENV}/key_env
+        # branches read os.environ directly, and enrich_model_switch_warnings
+        # _for_gateway() is invoked immediately (not deferred) with an
+        # unscoped _load_gateway_config, so it would otherwise read the
+        # DEFAULT profile's config. asyncio.to_thread() copies the current
+        # contextvars into the worker thread, so keeping the await inside
+        # this `with` block propagates _profile_runtime_scope's
+        # HERMES_HOME/secret-scope override to the thread (#69178 follow-up).
+        with _model_cmd_scope_factory():
+            _switch_call_kwargs = {
+                "raw_input": model_input,
+                "current_provider": current_provider,
+                "current_model": current_model,
+                "current_base_url": current_base_url,
+                "current_api_key": current_api_key,
+                "is_global": persist_global,
+                "explicit_provider": explicit_provider,
+                "user_providers": user_provs,
+                "custom_providers": custom_provs,
+            }
+            result = await asyncio.to_thread(_switch_model, **_switch_call_kwargs)
 
-        if not result.success:
-            return t("gateway.model.error_prefix", error=result.error_message)
+            if not result.success:
+                return t("gateway.model.error_prefix", error=result.error_message)
 
-        try:
-            from hermes_cli.context_switch_guard import (
-                enrich_model_switch_warnings_for_gateway,
-            )
+            try:
+                from hermes_cli.context_switch_guard import (
+                    enrich_model_switch_warnings_for_gateway,
+                )
 
-            enrich_model_switch_warnings_for_gateway(
-                result,
-                self,
-                session_key=session_key,
-                source=source,
-                custom_providers=custom_provs,
-                load_gateway_config=_load_gateway_config,
-            )
-        except Exception as exc:
-            logger.debug("preflight-compression switch warning failed: %s", exc)
+                enrich_model_switch_warnings_for_gateway(
+                    result,
+                    self,
+                    session_key=session_key,
+                    source=source,
+                    custom_providers=custom_provs,
+                    load_gateway_config=_load_gateway_config,
+                )
+            except Exception as exc:
+                logger.debug("preflight-compression switch warning failed: %s", exc)
 
         async def _finish_switch() -> str:
             with _model_cmd_scope_factory():

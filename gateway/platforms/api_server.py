@@ -200,28 +200,37 @@ def _auto_truncate_response_history(
     *,
     limit: int = RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT,
 ) -> List[Dict[str, Any]]:
-    """Keep recent Responses history without dropping the compaction handoff."""
+    """Keep recent Responses history without dropping the compaction handoff.
+
+    Compaction summaries are preserved wherever they sit in the history —
+    the gateway /compress path can leave them after a retained system head
+    (see ``context_compressor`` force-user-leading handling), so a
+    leading-block-only scan would silently drop them.
+    """
     if limit <= 0 or len(conversation_history) <= limit:
         return conversation_history
 
-    leading_summaries: List[Dict[str, Any]] = []
-    first_conversation_index = 0
-    for message in conversation_history:
-        if not _is_compressed_summary_message(message):
-            break
-        leading_summaries.append(message)
-        first_conversation_index += 1
-
-    if not leading_summaries:
+    summary_indices = [
+        index
+        for index, message in enumerate(conversation_history)
+        if _is_compressed_summary_message(message)
+    ]
+    if not summary_indices:
         return conversation_history[-limit:]
 
-    preserved = leading_summaries[:limit]
-    remaining = limit - len(preserved)
-    if remaining <= 0:
-        return preserved
+    kept_indices = set(summary_indices[:limit])
+    remaining = limit - len(kept_indices)
+    if remaining > 0:
+        summary_index_set = set(summary_indices)
+        for index in range(len(conversation_history) - 1, -1, -1):
+            if index in summary_index_set:
+                continue
+            kept_indices.add(index)
+            remaining -= 1
+            if remaining <= 0:
+                break
 
-    recent_tail = conversation_history[first_conversation_index:][-remaining:]
-    return preserved + recent_tail
+    return [conversation_history[index] for index in sorted(kept_indices)]
 
 
 def _normalize_chat_content(

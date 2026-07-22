@@ -26,6 +26,12 @@ class HermesAgent < Formula
 
     pkgshare.install "skills", "optional-skills"
 
+    # Install WhatsApp bridge scripts alongside the Python package so
+    # gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir() resolves
+    # them via __file__.parents[2] / "scripts" / "whatsapp-bridge".
+    site_packages = venv.site_packages
+    (site_packages / "scripts").install "scripts/whatsapp-bridge"
+
     %w[hermes hermes-agent hermes-acp].each do |exe|
       next unless (libexec/"bin"/exe).exist?
 

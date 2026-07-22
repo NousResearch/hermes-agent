@@ -310,6 +310,72 @@ class _CompressionLockLeaseRefresher:
                 break
 
 
+def _persist_autolowered_threshold(safe_pct: int) -> bool:
+    """Best-effort persist an auto-lowered ``compression.threshold`` ratio
+    to the active profile's ``config.yaml``.
+
+    Without this, the auto-lower in :func:`check_compression_model_feasibility`
+    only patches the live ``ContextCompressor`` in memory: every fresh
+    session re-reads the same stale ratio from disk, recomputes the same
+    too-high absolute threshold against the (possibly since-changed) main
+    model context window, and re-emits the identical warning forever even
+    though it "auto-corrected" last time. Writing the corrected ratio back
+    to disk makes the correction stick across restarts.
+
+    Uses :func:`utils.atomic_roundtrip_yaml_update` — a ruamel.yaml
+    round-trip update scoped to the single ``compression.threshold`` key —
+    instead of the plain read/merge/:func:`hermes_cli.config.atomic_config_write`
+    path. ``atomic_config_write`` dumps the whole parsed dict back out via
+    plain ``yaml.safe_dump`` under the hood, which preserves *sibling keys*
+    but not comments, ordering, or quoting; the round-trip updater preserves
+    all of that because it edits the loaded ``CommentedMap`` in place rather
+    than re-serialising a plain dict.
+
+    Returns ``True`` if the value was durably written, ``False`` if the
+    write was skipped or failed for any reason (managed/package-managed
+    install, managed-scope-pinned key, read-only filesystem, transient I/O
+    error, etc.). Never raises — persistence is a nice-to-have on top of
+    the in-memory correction, which already keeps the current session
+    working regardless of whether this succeeds.
+    """
+    try:
+        from hermes_cli import config as hermes_config
+        from hermes_cli import managed_scope
+        from utils import atomic_roundtrip_yaml_update
+
+        # Package-manager-managed installs (NixOS/Homebrew service mode)
+        # treat config.yaml as owned by the activation script — mirror the
+        # guard `hermes config set` itself applies via set_config_value().
+        if hermes_config.is_managed():
+            return False
+        # Administrator-pinned keys (managed_scope) must never be
+        # overwritten by the agent — the next load would just re-pin it
+        # anyway, and a managed deployment intentionally blocks user/agent
+        # edits to this key.
+        if managed_scope.is_key_managed("compression.threshold"):
+            return False
+
+        config_path = hermes_config.get_config_path()
+        # Refuses to proceed if an existing config.yaml can't be read
+        # (permissions, broken mount) rather than silently clobbering it
+        # with a partial write.
+        hermes_config.require_readable_config_before_write(config_path)
+
+        hermes_config.ensure_hermes_home()
+        atomic_roundtrip_yaml_update(
+            config_path, "compression.threshold", round(safe_pct / 100, 2)
+        )
+        return True
+    except Exception as exc:
+        logger.debug(
+            "Could not persist auto-lowered compression.threshold to "
+            "config.yaml (non-fatal — falling back to in-memory-only "
+            "correction for this session): %s",
+            exc,
+        )
+        return False
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the auxiliary compression model's context
     window is smaller than the main model's compression threshold.
@@ -484,33 +550,61 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 else _main_model
             )
             _aux_label = f"{aux_model} ({_aux_provider_label})"
-            msg = (
-                f"⚠ Compression model {_aux_label} context is "
-                f"{aux_context:,} tokens, but the main model "
-                f"{_main_label}'s compression threshold was "
-                f"{old_threshold:,} tokens. "
-                f"Auto-lowered this session's threshold to "
-                f"{new_threshold:,} tokens so compression can run.\n"
-                f"  To make this permanent, edit config.yaml — either:\n"
-                f"  1. Use a larger compression model:\n"
-                f"       auxiliary:\n"
-                f"         compression:\n"
-                f"           model: <model-with-{old_threshold:,}+-context>\n"
-                f"  2. Lower the compression threshold:\n"
-                f"       compression:\n"
-                f"         threshold: 0.{safe_pct:02d}"
-            )
+
+            # Persist the correction to config.yaml so a fresh session next
+            # time loads the already-corrected ratio instead of recomputing
+            # the same too-high absolute threshold from the stale ratio and
+            # re-emitting this exact warning (see #15962 for the broader
+            # auto-scale-config epic; this is a narrower, standalone fix).
+            #
+            # Round down one extra percentage point below the exact
+            # aux-context-derived ratio so small future fluctuations in the
+            # aux model's reported context length don't immediately trip
+            # another auto-lower.
+            persist_pct = max(1, safe_pct - 1)
+            persisted = _persist_autolowered_threshold(persist_pct)
+
+            if persisted:
+                msg = (
+                    f"⚠ Compression model {_aux_label} context is "
+                    f"{aux_context:,} tokens, but the main model "
+                    f"{_main_label}'s compression threshold was "
+                    f"{old_threshold:,} tokens. "
+                    f"Auto-lowered this session's threshold to "
+                    f"{new_threshold:,} tokens so compression can run, "
+                    f"and updated compression.threshold to 0.{persist_pct:02d} "
+                    f"in config.yaml so this does not recur on future "
+                    f"sessions."
+                )
+            else:
+                msg = (
+                    f"⚠ Compression model {_aux_label} context is "
+                    f"{aux_context:,} tokens, but the main model "
+                    f"{_main_label}'s compression threshold was "
+                    f"{old_threshold:,} tokens. "
+                    f"Auto-lowered this session's threshold to "
+                    f"{new_threshold:,} tokens so compression can run.\n"
+                    f"  To make this permanent, edit config.yaml — either:\n"
+                    f"  1. Use a larger compression model:\n"
+                    f"       auxiliary:\n"
+                    f"         compression:\n"
+                    f"           model: <model-with-{old_threshold:,}+-context>\n"
+                    f"  2. Lower the compression threshold:\n"
+                    f"       compression:\n"
+                    f"         threshold: 0.{safe_pct:02d}"
+                )
             agent._compression_warning = msg
             agent._emit_status(msg)
             logger.warning(
                 "Auxiliary compression model %s has %d token context, "
                 "below the main model's compression threshold of %d "
                 "tokens — auto-lowered session threshold to %d to "
-                "keep compression working.",
+                "keep compression working%s.",
                 aux_model,
                 aux_context,
                 old_threshold,
                 new_threshold,
+                " (persisted to config.yaml)" if persisted else "",
             )
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate

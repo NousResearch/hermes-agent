@@ -91,11 +91,11 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "80,000" in messages[0]        # aux context
     assert "100,000" in messages[0]       # old threshold
     assert "Auto-lowered" in messages[0]
-    # Actionable persistence guidance included
+    # Persisted successfully (isolated per-test HERMES_HOME is writable),
+    # so the message confirms config.yaml was updated permanently rather
+    # than telling the user to edit it themselves.
     assert "config.yaml" in messages[0]
-    assert "auxiliary:" in messages[0]
-    assert "compression:" in messages[0]
-    assert "threshold:" in messages[0]
+    assert "updated compression.threshold" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
     # Threshold on the live compressor was actually lowered to aux_context.
@@ -105,6 +105,12 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     # configured 20%, and larger real-world mismatches can make the tail's 1.5x
     # soft ceiling wider than the entire compression trigger.
     assert agent.context_compressor.tail_token_budget == 16_000
+
+    # Persisted value actually landed on disk, one point under the exact
+    # aux-derived ratio (40%) as a safety margin.
+    from hermes_cli import config as hermes_config
+    persisted_cfg = hermes_config.load_config()
+    assert persisted_cfg["compression"]["threshold"] == 0.39
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -509,8 +515,190 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
 
     # Second turn — nothing replayed
     callback_events.clear()
-    if agent._compression_warning:
-        agent._replay_compression_warning()
-        agent._compression_warning = None
-
     assert len(callback_events) == 0
+
+
+# ── Persistence of the auto-lowered threshold to config.yaml (#15962) ──
+#
+# These exercise the real config.yaml read/merge/write path (not mocks) so
+# an integration bug in the reused hermes_cli.config machinery would show
+# up here, per AGENTS.md's "E2E validation, not just green unit mocks."
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_autolower_persists_corrected_ratio_to_config_yaml(mock_get_client, mock_ctx_len):
+    """E2E: successful persistence writes the corrected ratio to the real
+    (per-test-isolated) config.yaml, and a subsequent fresh load reflects
+    it — proving the fix: the correction survives a session restart
+    instead of being recomputed from the same stale ratio every time."""
+    from hermes_cli import config as hermes_config
+
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    # Seed an existing user config.yaml with an unrelated key + the stale
+    # (too-high) threshold ratio, to prove the write is minimal-diff and
+    # doesn't clobber sibling keys.
+    config_path = hermes_config.get_config_path()
+    config_path.write_text(
+        "model:\n  default: some/model\ncompression:\n  threshold: 0.50\n",
+        encoding="utf-8",
+    )
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    assert "updated compression.threshold" in messages[0]
+
+    # Fresh load (simulating a new session reading config.yaml from
+    # scratch) sees the corrected ratio, not the original 0.50.
+    fresh_cfg = hermes_config.load_config()
+    assert fresh_cfg["compression"]["threshold"] == 0.39
+    # Sibling key preserved — minimal-diff write, not a full rewrite.
+    assert fresh_cfg["model"]["default"] == "some/model"
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_autolower_persist_preserves_comments_and_formatting(mock_get_client, mock_ctx_len):
+    """E2E: the persisted write must survive as a genuine round-trip edit —
+    user comments, key ordering, and quoting in config.yaml must all still
+    be present afterward, not just sibling *values*.
+
+    This is the regression test for the review finding on #65934: the
+    original implementation went through hermes_cli.config.atomic_config_write,
+    which re-serialises the whole parsed dict via plain yaml.safe_dump and
+    silently drops comments even though sibling *keys* survive (which is
+    all the prior test actually checked). The fix routes through
+    utils.atomic_roundtrip_yaml_update (ruamel.yaml round-trip), which
+    edits the loaded CommentedMap in place instead of re-dumping a plain
+    dict, so comments/ordering/quoting all survive.
+    """
+    from hermes_cli import config as hermes_config
+
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    config_path = hermes_config.get_config_path()
+    config_path.write_text(
+        "# top-of-file user comment — must survive\n"
+        "model:\n"
+        "  default: some/model  # inline comment on the model key\n"
+        "compression:\n"
+        "  # comment directly above the threshold key\n"
+        "  threshold: 0.50\n",
+        encoding="utf-8",
+    )
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    assert "updated compression.threshold" in messages[0]
+
+    written = config_path.read_text(encoding="utf-8")
+    assert "# top-of-file user comment — must survive" in written
+    assert "# inline comment on the model key" in written
+    assert "# comment directly above the threshold key" in written
+    # The corrected value landed, in place of the stale one.
+    assert "threshold: 0.39" in written
+    assert "threshold: 0.5" not in written
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_autolower_managed_scope_blocked_falls_back_to_in_memory(mock_get_client, mock_ctx_len, tmp_path, monkeypatch):
+    """When compression.threshold is pinned by the managed scope, the
+    write must not crash and must fall back to in-memory-only correction
+    with the original 'edit config.yaml yourself' warning text."""
+    from hermes_cli import managed_scope
+
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text(
+        "compression:\n  threshold: 0.50\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    managed_scope.invalidate_managed_cache()
+
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    # Should not raise even though the key is managed-pinned.
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    # In-memory correction still applied — session still works.
+    assert agent.context_compressor.threshold_tokens == 80_000
+    # Old-style "edit config.yaml yourself" guidance is preserved, not the
+    # "updated permanently" success text.
+    assert "updated compression.threshold" not in messages[0]
+    assert "To make this permanent, edit config.yaml" in messages[0]
+
+    managed_scope.invalidate_managed_cache()
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_autolower_write_failure_degrades_gracefully(mock_get_client, mock_ctx_len):
+    """A failing config.yaml write (e.g. read-only filesystem, permission
+    error) must not raise and must fall back to in-memory-only correction
+    with the original warning text."""
+    from agent import conversation_compression as cc_module
+
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    with patch.object(
+        cc_module,
+        "_persist_autolowered_threshold",
+        side_effect=OSError("Read-only file system"),
+    ):
+        # The exception is caught by the outer try/except in
+        # check_compression_model_feasibility (mirrors any other
+        # unexpected error in this best-effort probe) — should not raise
+        # and should not block the in-memory correction that already ran.
+        agent._check_compression_model_feasibility()
+
+    # In-memory correction still landed before persistence was attempted.
+    assert agent.context_compressor.threshold_tokens == 80_000
+
+
+def test_persist_autolowered_threshold_readonly_write_returns_false(tmp_path, monkeypatch):
+    """Unit-level check of the helper itself: a write that raises OSError
+    (simulating a read-only filesystem) returns False rather than raising."""
+    from hermes_cli import config as hermes_config
+    from agent.conversation_compression import _persist_autolowered_threshold
+
+    config_path = hermes_config.get_config_path()
+    config_path.write_text("compression:\n  threshold: 0.50\n", encoding="utf-8")
+
+    with patch(
+        "utils.atomic_roundtrip_yaml_update",
+        side_effect=OSError("Read-only file system"),
+    ):
+        result = _persist_autolowered_threshold(39)
+
+    assert result is False
+    # Original file untouched since the write never completed.
+    assert "0.50" in config_path.read_text(encoding="utf-8")

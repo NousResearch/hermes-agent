@@ -174,6 +174,35 @@ def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch
     assert get_disabled_skill_names() == {"new-skill"}
 
 
+def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
+    """$HOME defaults should match the HOME that tools receive."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / "data"
+    subprocess_home = hermes_home / "home"
+    subprocess_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    skill_utils._external_dirs_cache_clear()
+
+    resolved = resolve_skill_config_values(
+        [
+            {"key": "wiki.home_var", "default": "$HOME/wiki"},
+            {"key": "wiki.braced_home", "default": "${HOME}/notes"},
+            {"key": "wiki.tilde", "default": "~/scratch"},
+            {"key": "wiki.other_var", "default": "${PROJECT_ROOT}/cache"},
+        ]
+    )
+
+    assert resolved["wiki.home_var"] == str(subprocess_home / "wiki")
+    assert resolved["wiki.braced_home"] == str(subprocess_home / "notes")
+    assert resolved["wiki.tilde"] == str(subprocess_home / "scratch")
+    assert resolved["wiki.other_var"].endswith("/cache")
+
+
 def test_is_external_skill_path_matches_configured_external_dir(tmp_path, monkeypatch):
     from agent import skill_utils
 

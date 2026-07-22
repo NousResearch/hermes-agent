@@ -3786,7 +3786,7 @@ class TestStartupTimeoutPhaseDetail:
     def test_timeout_error_includes_startup_phase(self):
         import threading
         from typing import Any, cast
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch as _patch
         from tools.computer_use.cua_backend import _CuaDriverSession
 
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
@@ -3802,8 +3802,20 @@ class TestStartupTimeoutPhaseDetail:
         session._bridge = fake_bridge
 
         import asyncio
-        from unittest.mock import patch as _patch
-        with _patch.object(session._ready_event, "wait", return_value=False), \
+
+        class _FakeEvent:
+            """Event whose wait() always returns False (timeout path).
+
+            #69372: _start_lifecycle_locked reassigns a fresh threading.Event()
+            at line 786, so patching the pre-made instance's wait() is lost.
+            Patching threading.Event itself ensures the fresh instance also
+            has the mocked wait()."""
+            def set(self): pass
+            def is_set(self): return False
+            def clear(self): pass
+            def wait(self, timeout=None): return False
+
+        with _patch.object(threading, "Event", _FakeEvent), \
              _patch.object(asyncio, "run_coroutine_threadsafe", return_value=MagicMock()), \
              _patch.object(_CuaDriverSession, "_lifecycle_coro", lambda self: None):
             try:
@@ -3832,7 +3844,13 @@ class TestStartupTimeoutPhaseDetail:
         fake_bridge._loop = MagicMock()
         session._bridge = fake_bridge
 
-        with _patch.object(session._ready_event, "wait", return_value=False), \
+        class _FakeEvent:
+            def set(self): pass
+            def is_set(self): return False
+            def clear(self): pass
+            def wait(self, timeout=None): return False
+
+        with _patch.object(threading, "Event", _FakeEvent), \
              _patch.object(asyncio, "run_coroutine_threadsafe", return_value=MagicMock()), \
              _patch.object(_CuaDriverSession, "_lifecycle_coro", lambda self: None):
             try:

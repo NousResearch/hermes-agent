@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import errno
 import io
 import logging
 import os
@@ -858,6 +859,38 @@ class TestWindowsConcurrentLogLockTimeout:
         finally:
             logger.removeHandler(handler)
             handler.close()
+
+    def test_enospc_through_queued_handler_is_suppressed(self, tmp_path, capsys):
+        """Disk-full failures stay silent through the production queue path."""
+        hermes_logging.setup_logging(hermes_home=tmp_path)
+        handler = next(
+            item
+            for item in hermes_logging.rotating_file_handlers()
+            if Path(item.baseFilename).name == "agent.log"
+        )
+        original_stream = handler.stream
+
+        class FullDiskStream:
+            def write(self, _message):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            def flush(self):
+                pass
+
+            def close(self):
+                pass
+
+        try:
+            handler.stream = FullDiskStream()
+            with patch.object(handler, "shouldRollover", return_value=False):
+                logging.getLogger("debug.share").info("debug share upload")
+                hermes_logging.flush_log_queue()
+
+            captured = capsys.readouterr()
+            assert "No space left on device" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+        finally:
+            handler.stream = original_stream
 
     def test_other_errors_routed_to_handle_error_still_print(self, tmp_path, capsys):
         """An unrelated failure routed through ``handleError`` must still emit the

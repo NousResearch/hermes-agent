@@ -31,6 +31,11 @@ TOOL_COVERAGE_CATEGORIES = (
 _ACCOUNT_INFO_CACHE_TTL = 60
 _account_info_cache: tuple[str, float, "NousPortalAccountInfo"] | None = None
 _ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
+_NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+class _NousAccountResponseTooLarge(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -572,8 +577,17 @@ def _fetch_nous_account_info(
     }
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=8) as resp:
-        payload = json.loads(resp.read().decode())
+        payload = _read_nous_account_json_response(resp)
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_nous_account_json_response(resp: Any) -> Any:
+    body = resp.read(_NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(body) > _NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES:
+        raise _NousAccountResponseTooLarge(
+            f"Nous account response exceeded {_NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(body.decode())
 
 
 def _info_from_valid_jwt(

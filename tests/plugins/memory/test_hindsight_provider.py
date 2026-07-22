@@ -417,6 +417,103 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_propagates_embedding_vars_from_environ(self, monkeypatch):
+        """Embedding/reranker vars in os.environ should auto-propagate."""
+        monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_PROVIDER", "siliconflow")
+        monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_MODEL", "BAAI/bge-m3")
+        monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_BASE_URL", "https://api.siliconflow.cn/v1")
+        monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_API_KEY", "sf-test-key")
+        monkeypatch.setenv("HINDSIGHT_API_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "siliconflow"
+        assert env["HINDSIGHT_API_EMBEDDINGS_MODEL"] == "BAAI/bge-m3"
+        assert env["HINDSIGHT_API_EMBEDDINGS_BASE_URL"] == "https://api.siliconflow.cn/v1"
+        assert env["HINDSIGHT_API_EMBEDDINGS_API_KEY"] == "sf-test-key"
+        assert env["HINDSIGHT_API_RERANKER_MODEL"] == "BAAI/bge-reranker-v2-m3"
+
+    def test_embedded_profile_env_reads_embedding_vars_from_profile_env_file(self, tmp_path, monkeypatch):
+        """Embedding/reranker vars should auto-propagate from the materialized
+        profile env file (~/.hindsight/profiles/<profile>.env).
+
+        Regression for review feedback on #28451: the original PR read from a
+        subdirectory path, but Hermes writes to a flat file.
+        """
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+
+        # Materialize a profile env file with embedding/reranker keys.
+        from plugins.memory.hindsight import _materialize_embedded_profile_env
+        _materialize_embedded_profile_env({
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        # Manually append embedding/reranker keys (simulating what hermes setup
+        # or the user writes to the file).
+        profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.write_text(
+            profile_env.read_text()
+            + "HINDSIGHT_API_EMBEDDINGS_PROVIDER=siliconflow\n"
+            + "HINDSIGHT_API_EMBEDDINGS_MODEL=BAAI/bge-m3\n"
+            + "HINDSIGHT_API_EMBEDDINGS_API_KEY=sf-from-file\n"
+            + "HINDSIGHT_API_RERANKER_MODEL=BAAI/bge-reranker-v2-m3\n",
+            encoding="utf-8",
+        )
+
+        # Clear os.environ to verify the file is the source.
+        for key in list(os.environ):
+            if key.startswith(("HINDSIGHT_API_EMBEDDINGS_", "HINDSIGHT_API_RERANKER_")):
+                monkeypatch.delenv(key, raising=False)
+
+        env = _build_embedded_profile_env({
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "siliconflow"
+        assert env["HINDSIGHT_API_EMBEDDINGS_MODEL"] == "BAAI/bge-m3"
+        assert env["HINDSIGHT_API_EMBEDDINGS_API_KEY"] == "sf-from-file"
+        assert env["HINDSIGHT_API_RERANKER_MODEL"] == "BAAI/bge-reranker-v2-m3"
+
+    def test_embedded_profile_env_os_environ_takes_priority_over_file(self, tmp_path, monkeypatch):
+        """When a key exists in both os.environ and the profile .env file,
+        os.environ should win."""
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+
+        from plugins.memory.hindsight import _materialize_embedded_profile_env
+        _materialize_embedded_profile_env({
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
+        profile_env.write_text(
+            profile_env.read_text()
+            + "HINDSIGHT_API_EMBEDDINGS_API_KEY=file-key\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_API_KEY", "env-key-wins")
+
+        env = _build_embedded_profile_env({
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_API_KEY"] == "env-key-wins"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

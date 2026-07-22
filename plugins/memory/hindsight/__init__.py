@@ -539,6 +539,35 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Auto-propagate embedding and reranker settings that hermes setup writes.
+    # When daemon_env is not explicitly configured (the common case), these
+    # keys are never forwarded to the daemon, causing it to silently fall
+    # back to local sentence-transformers — which may not be installed.
+    _PREFIXES = ("HINDSIGHT_API_EMBEDDINGS_", "HINDSIGHT_API_RERANKER_")
+
+    # Source 1: keys present in the gateway process environment.
+    for ek, ev in os.environ.items():
+        if any(ek.startswith(p) for p in _PREFIXES) and ek not in env_values:
+            env_values[ek] = ev
+
+    # Source 2: the profile-scoped .env file that hermes setup materializes
+    # before daemon startup.  Keys already set by explicit config or os.environ
+    # take priority (the guard above skips ek if already in env_values).
+    try:
+        profile_env_file = _embedded_profile_env_path(config)
+        if profile_env_file.exists():
+            file_env = _load_simple_env(profile_env_file)
+            for ek, ev in file_env.items():
+                if any(ek.startswith(p) for p in _PREFIXES) and ek not in env_values:
+                    env_values[ek] = ev
+    except Exception as exc:
+        logger.debug(
+            "hindsight: could not read profile env file for embedding/reranker "
+            "auto-propagation: %s",
+            exc,
+        )
+
     return env_values
 
 

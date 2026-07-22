@@ -22,6 +22,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { resolveSessionRowClick } from './session-row-gesture'
 import { type SessionDotState, sessionDotState, sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -194,39 +195,34 @@ export function SidebarSessionRow({
             }
           }}
           onClick={event => {
-            const mod = event.metaKey || event.ctrlKey
+            // Modifier-click gestures on a row (see `resolveSessionRowClick`):
+            //   ⇧          → pin / unpin
+            //   ⌘/⌃        → open in a new tab (stack into main)
+            //   ⌘/⌃ + ⇧    → pop into its own window (needs standalone windows)
+            //   ⌥ + ⇧      → archive
+            // A plain click resumes. Archive also lives in the row's ⋯ and
+            // right-click menus and as a rebindable hotkey (`session.archive`).
+            const action = resolveSessionRowClick(event, { canOpenWindow: canOpenSessionWindow() })
 
-            // ⇧⌘-click → pop into its own window (needs standalone windows).
-            if (mod && event.shiftKey && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
-
-              return
-            }
-
-            // ⌘/⌃-click → open in a new tab (stack into main).
-            if (mod) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
+            if (action === 'resume') {
+              onResume()
 
               return
             }
 
-            // ⇧-click → pin.
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
+            event.preventDefault()
+            event.stopPropagation()
+            triggerHaptic('selection')
+
+            if (action === 'archive') {
+              onArchive()
+            } else if (action === 'pin') {
               onPin()
-
-              return
+            } else if (action === 'newTab') {
+              openSessionTile(session.id, 'center')
+            } else {
+              void openSessionInNewWindow(session.id)
             }
-
-            onResume()
           }}
           onMouseDown={event => event.button === 1 && event.preventDefault()}
         >

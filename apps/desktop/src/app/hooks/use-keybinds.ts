@@ -65,6 +65,8 @@ export interface KeybindRuntimeDeps {
   openNewSessionTab: () => void
   /** Pin/unpin the active session. */
   toggleSelectedPin: () => void
+  /** Archive the active session. */
+  archiveSelectedSession: () => void
 }
 
 type HandlerMap = Record<string, () => void>
@@ -154,6 +156,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
+    'session.archive': deps.archiveSelectedSession,
     // Only meaningful inside a git repo — a no-op otherwise (the key falls
     // through instead of silently doing nothing).
     'workspace.newWorktree': () => $repoStatus.get() && requestNewWorktree(),

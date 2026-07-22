@@ -261,5 +261,81 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# _stored_prompt_matches_runtime — line_value returns FIRST match
+# ---------------------------------------------------------------------------
+
+
+class TestLineValueFirstMatch:
+    """Regression: line_value must return the FIRST matching line, not the LAST.
+
+    When plugins inject extra ``Model:`` or ``Provider:`` lines into the
+    system prompt, the old loop-overwriting pattern returned the last match,
+    causing false stale-runtime detection and unnecessary prompt rebuilds
+    (prefix cache miss on every turn).
+    """
+
+    def test_single_model_line(self):
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = MagicMock()
+        agent.model = "claude-sonnet-4"
+        agent.provider = "anthropic"
+        prompt = "Conversation started: Saturday\nModel: claude-sonnet-4\nProvider: anthropic"
+        assert _stored_prompt_matches_runtime(agent, prompt) is True
+
+    def test_multiple_model_lines_returns_first(self):
+        """With two Model: lines (plugin-injected), line_value must return the first."""
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = MagicMock()
+        agent.model = "claude-sonnet-4"
+        agent.provider = "anthropic"
+        # Plugin appends a second Model: line with a different value
+        prompt = (
+            "Conversation started: Saturday\n"
+            "Model: claude-sonnet-4\n"
+            "Provider: anthropic\n"
+            "Model: gpt-4o"
+        )
+        # Old code returned "gpt-4o" (last) → mismatch → stale → rebuild.
+        # Fixed code returns "claude-sonnet-4" (first) → match → reuse.
+        assert _stored_prompt_matches_runtime(agent, prompt) is True
+
+    def test_multiple_provider_lines_returns_first(self):
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = MagicMock()
+        agent.model = "test-model"
+        agent.provider = "openrouter"
+        prompt = (
+            "Conversation started: Saturday\n"
+            "Model: test-model\n"
+            "Provider: openrouter\n"
+            "Provider: anthropic"
+        )
+        assert _stored_prompt_matches_runtime(agent, prompt) is True
+
+    def test_no_model_line_returns_empty(self):
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = MagicMock()
+        agent.model = "test-model"
+        agent.provider = "openrouter"
+        prompt = "Conversation started: Saturday\nProvider: openrouter"
+        # No Model: line → stored_model is empty → no mismatch → returns True
+        assert _stored_prompt_matches_runtime(agent, prompt) is True
+
+    def test_stale_model_still_detected(self):
+        """A genuinely different model must still trigger rebuild."""
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = MagicMock()
+        agent.model = "gpt-4o"
+        agent.provider = "openai"
+        prompt = "Conversation started: Saturday\nModel: claude-sonnet-4\nProvider: openai"
+        assert _stored_prompt_matches_runtime(agent, prompt) is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

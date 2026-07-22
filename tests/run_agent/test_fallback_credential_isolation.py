@@ -167,6 +167,51 @@ class TestFallbackCredentialIsolation:
         assert agent._credential_pool.provider == "openai-codex"
         assert agent._transport_cache == {}
 
+    def test_fallback_activates_attached_pool_credential_immediately(self):
+        """The first fallback request must use the fallback pool's key.
+
+        ``resolve_provider_client`` resolves its client before the fallback pool
+        is attached.  Without an immediate credential swap, that first client
+        can retain a stale environment key instead of the pool's current key.
+        """
+        from agent.chat_completion_helpers import try_activate_fallback
+
+        agent = _make_agent(
+            provider="ollama-cloud",
+            model="glm-5.2",
+            base_url="https://ollama.com/v1",
+            api_mode="chat_completions",
+        )
+        agent._fallback_chain = [{"provider": "openai-codex", "model": "gpt-5.5"}]
+        agent._credential_pool = _make_pool("ollama-cloud")
+        agent._buffer_status = MagicMock()
+        agent._is_azure_openai_url.return_value = False
+        agent._is_direct_openai_url.return_value = False
+        agent._provider_model_requires_responses_api.return_value = False
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded = MagicMock()
+        agent._replace_primary_openai_client = MagicMock()
+        agent.context_compressor = None
+
+        fallback_client = SimpleNamespace(
+            api_key="stale-environment-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            _custom_headers={},
+        )
+        fallback_pool = _make_pool("openai-codex")
+        fallback_entry = fallback_pool.current()
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, "gpt-5.5"),
+        ), patch(
+            "agent.credential_pool.load_pool",
+            return_value=fallback_pool,
+        ):
+            assert try_activate_fallback(agent) is True
+
+        agent._swap_credential.assert_called_once_with(fallback_entry)
+
 
 # ── Test: _recover_with_credential_pool rejects mismatched pool ──────
 

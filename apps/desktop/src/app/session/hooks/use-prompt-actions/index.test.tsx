@@ -1845,6 +1845,57 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
+  it('cleans up the recovered session when the retried submit fails', async () => {
+    const updates: { sessionId: string; state: Record<string, unknown> }[] = []
+    const busyRef: MutableRefObject<boolean> = { current: false }
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        throw new Error('recovered submit failed')
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, _storedSessionId, state) => updates.push({ sessionId, state })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('message whose recovered retry fails')).toBe(false)
+    expect(submitAttempts).toBe(2)
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
+    expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
+    expect(busyRef.current).toBe(false)
+
+    const finalUpdate = updates.at(-1)
+
+    expect(finalUpdate?.sessionId).toBe(RECOVERED_SESSION_ID)
+    expect(finalUpdate?.state.busy).toBe(false)
+    expect(finalUpdate?.state.awaitingResponse).toBe(false)
+    expect(finalUpdate?.state.messages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: 'assistant', error: 'recovered submit failed' })])
+    )
+  })
+
   it('abandons a recovered submit when the user switches sessions during a session-busy retry delay', async () => {
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }

@@ -587,6 +587,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
+              // From this point onward the recovered runtime owns the optimistic
+              // turn. Rebind all success/error cleanup before retrying so a
+              // failed recovered submit cannot strand busy state or attach its
+              // error to the stale runtime session.
+              sessionId = recoveredId
+
               if (targetIsCurrentView()) {
                 setActiveSessionId(recoveredId)
                 activeSessionIdRef.current = recoveredId

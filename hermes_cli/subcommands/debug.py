@@ -97,4 +97,14 @@ Examples:
         default=[],
         help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
+    verbose_parser = debug_sub.add_parser(
+        "verbose",
+        help="Show verbose config, session, tools, and memory info",
+    )
+    verbose_parser.add_argument(
+        "--sections",
+        type=str,
+        default=None,
+        help="Comma-separated sections to include: config,providers,tools,memory,session (default: all)",
+    )
     debug_parser.set_defaults(func=cmd_debug)

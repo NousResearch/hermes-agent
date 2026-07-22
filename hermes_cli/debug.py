@@ -993,6 +993,8 @@ def run_debug(args):
         run_debug_share(args)
     elif subcmd == "delete":
         run_debug_delete(args)
+    elif subcmd == "verbose":
+        run_debug_verbose(args)
     else:
         # Default: show help
         print("Usage: hermes debug <command>")
@@ -1000,6 +1002,7 @@ def run_debug(args):
         print("Commands:")
         print("  share    Upload debug report to a paste service and print URL")
         print("  delete   Delete a previously uploaded paste")
+        print("  verbose  Show verbose config, session, tools, and memory info")
         print()
         print("Options (share):")
         print("  --lines N    Number of log lines to include (default: 200)")
@@ -1011,3 +1014,136 @@ def run_debug(args):
         print()
         print("Options (delete):")
         print("  <url> ...    One or more paste URLs to delete")
+        print()
+        print("Options (verbose):")
+        print("  --sections   Comma-separated sections: config,providers,tools,memory,session")
+
+
+# ---------------------------------------------------------------------------
+# Verbose output for --verbose flag
+# ---------------------------------------------------------------------------
+
+VERBOSE_SECTIONS = {"config", "providers", "tools", "memory", "session"}
+
+
+def run_debug_verbose(args):
+    """Print verbose diagnostic report to stdout."""
+    sections_str = getattr(args, "sections", None)
+    if sections_str:
+        sections = [s.strip() for s in sections_str.split(",") if s.strip()]
+        invalid = [s for s in sections if s not in VERBOSE_SECTIONS]
+        if invalid:
+            print(f"Unknown sections: {', '.join(invalid)}")
+            print(f"Valid sections: {', '.join(sorted(VERBOSE_SECTIONS))}")
+            return
+    else:
+        sections = None
+    print(format_verbose(sections=sections))
+
+
+def format_verbose(sections: list[str] = None) -> str:
+    """Generate structured verbose output for specified sections.
+
+    Args:
+        sections: List of sections to include (default: all).
+                  Options: config, providers, tools, memory, session.
+
+    Returns:
+        Formatted verbose report string.
+    """
+    if sections is None:
+        sections = list(VERBOSE_SECTIONS)
+    lines = ["=" * 60, "HERMES AGENT VERBOSE REPORT", "=" * 60, ""]
+    for section in sections:
+        if section == "config":
+            lines.extend(_verbose_config())
+        elif section == "providers":
+            lines.extend(_verbose_providers())
+        elif section == "tools":
+            lines.extend(_verbose_tools())
+        elif section == "memory":
+            lines.extend(_verbose_memory())
+        elif section == "session":
+            lines.extend(_verbose_session())
+    return "\n".join(lines)
+
+
+def _verbose_config() -> list[str]:
+    lines = ["── Config ──"]
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        keys = ["model.provider", "model.default", "display.skin", "terminal.backend", "plugins.enabled"]
+        for k in keys:
+            parts = k.split(".")
+            val = cfg
+            for p in parts:
+                val = val.get(p, {}) if isinstance(val, dict) else "N/A"
+            lines.append(f"  {k}: {val}" if not isinstance(val, dict) else f"  {k}: (set)")
+    except Exception as e:
+        lines.append(f"  (error reading config: {e})")
+    lines.append("")
+    return lines
+
+
+def _verbose_providers() -> list[str]:
+    lines = ["── Providers ──"]
+    try:
+        import os
+        providers = []
+        for env_var in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+                        "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "AWS_ACCESS_KEY_ID"]:
+            val = os.getenv(env_var, "")
+            status = "✓ configured" if val else "✗ not set"
+            providers.append(f"  {env_var}: {status}")
+        lines.extend(sorted(providers))
+    except Exception as e:
+        lines.append(f"  (error: {e})")
+    lines.append("")
+    return lines
+
+
+def _verbose_tools() -> list[str]:
+    lines = ["── Tools ──"]
+    try:
+        from tools.registry import registry
+        tools = registry.get_all_tool_names() if hasattr(registry, "get_all_tool_names") else []
+        lines.append(f"  Total registered: {len(tools)}")
+        if tools:
+            names = ', '.join(sorted(tools)[:20])
+            lines.append(f"  Names: {names}")
+            if len(tools) > 20:
+                lines.append(f"  ... and {len(tools) - 20} more")
+    except Exception as e:
+        lines.append(f"  (error: {e})")
+    lines.append("")
+    return lines
+
+
+def _verbose_memory() -> list[str]:
+    lines = ["── Memory ──"]
+    try:
+        from hermes_constants import get_hermes_home
+        mem_dir = get_hermes_home() / "memory"
+        if mem_dir.exists():
+            files = list(mem_dir.iterdir())
+            lines.append(f"  Memory files: {len(files)}")
+        else:
+            lines.append("  No memory store found")
+    except Exception as e:
+        lines.append(f"  (error: {e})")
+    lines.append("")
+    return lines
+
+
+def _verbose_session() -> list[str]:
+    lines = ["── Session ──"]
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        total = db.session_count()
+        lines.append(f"  Total sessions: {total}")
+    except Exception as e:
+        lines.append(f"  (error: {e})")
+    lines.append("")
+    return lines

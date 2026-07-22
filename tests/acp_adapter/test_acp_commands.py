@@ -148,6 +148,39 @@ async def test_acp_steer_after_zed_interrupt_replays_interrupted_prompt_with_gui
 
 
 @pytest.mark.asyncio
+async def test_acp_normal_turn_clears_stale_interrupted_prompt():
+    """A completed normal turn must not leave a salvageable prompt behind.
+
+    Regression: interrupted_prompt_text is set only on a running-cancel and
+    cleared only inside the /steer salvage path. If the user cancels a
+    running turn, then sends an ordinary prompt (which runs to completion),
+    the interrupted prompt was never cleared — so a later /steer on the idle
+    session would resurrect and re-run the task the user cancelled and moved
+    on from. Starting any real turn must drop the stale salvage buffer.
+    """
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    # Left over from a prior running-cancel of "refactor the auth module".
+    state.interrupted_prompt_text = "refactor the auth module"
+
+    # An ordinary prompt runs to completion in between.
+    await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="what's the weather")],
+    )
+    assert state.interrupted_prompt_text == ""
+    assert fake.runs == ["what's the weather"]
+
+    # Now /steer on the idle session must run ONLY the steer text, not the
+    # abandoned prompt.
+    fake.runs.clear()
+    await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/steer be concise")],
+    )
+    assert fake.runs == ["be concise"]
+
+
+@pytest.mark.asyncio
 async def test_acp_steer_on_idle_session_runs_as_regular_prompt():
     # /steer on an idle session (no running turn, nothing to salvage) should
     # run the steer payload as a normal user prompt — NOT silently append it

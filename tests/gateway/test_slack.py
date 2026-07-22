@@ -2912,6 +2912,15 @@ class TestEditMessage:
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"] == "AT&amp;T &lt; 5 &gt; 3"
 
+    @pytest.mark.asyncio
+    async def test_edit_message_truncates_oversized_content(self, adapter):
+        """Oversized edits are truncated instead of failing with msg_too_long."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        result = await adapter.edit_message("C123", "1234.5678", "x" * 45000)
+        assert result.success
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+
 
 # ---------------------------------------------------------------------------
 # TestEditMessageStreamingPipeline

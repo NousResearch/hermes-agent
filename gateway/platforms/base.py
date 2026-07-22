@@ -1756,10 +1756,128 @@ class ProcessingOutcome(Enum):
 
 
 @dataclass
+class MessageContextRef:
+    """Platform-neutral reference to context attached to an inbound message.
+
+    Normalizes a forwarded-message origin (and, later, quotes/replies) so the
+    GatewayRunner can render a compact provenance block before the message body.
+    Each adapter fills in the fields it can resolve and leaves the rest ``None``;
+    the renderer (:meth:`render`) tolerates any subset.
+
+    ``kind`` values currently in use:
+      * ``"forward"`` — message forwarded from a known origin
+      * ``"automatic_forward"`` — Telegram channel→discussion auto-forward with
+        no resolvable origin
+      * ``"quote"`` / ``"reply"`` — reserved for future use
+
+    Field semantics by ``origin_type``:
+      * ``"user"`` — ``origin_name`` is the sender's display name, ``origin_id``
+        their user id, ``origin_username`` their @handle.
+      * ``"hidden_user"`` — ``origin_name`` is the only available display name;
+        no id/username are exposed (``is_confidence_limited`` is set).
+      * ``"chat"`` — ``origin_chat`` is the group title, ``origin_id`` its id,
+        and ``origin_name`` the author signature when present.
+      * ``"channel"`` — ``origin_chat`` is the channel title, ``origin_id`` its
+        id, ``origin_message_id`` the original message id, and ``origin_name``
+        the author signature when present.
+    """
+
+    kind: str
+    platform: Optional[str] = None
+    origin_type: Optional[str] = None
+    origin_name: Optional[str] = None
+    origin_id: Optional[str] = None
+    origin_username: Optional[str] = None
+    origin_chat: Optional[str] = None
+    origin_message_id: Optional[str] = None
+    date: Optional[datetime] = None
+    text: Optional[str] = None
+    is_confidence_limited: bool = False
+
+    @staticmethod
+    def _render_field(value: object, *, max_len: int = 200) -> str:
+        """Render untrusted platform metadata as one safe prompt line fragment."""
+        text = str(value or "")
+        text = re.sub(r"[\r\n\t]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > max_len:
+            return text[: max_len - 1].rstrip() + "…"
+        return text
+
+    def render(self) -> str:
+        """Render a compact, deterministic provenance block.
+
+        Output is a few short lines — a ``[Forwarded message]`` header, an
+        origin line tailored to ``origin_type``, and optional date / quote /
+        confidence-limited notes. No raw payloads or secrets are exposed.
+        Returns ``""`` when there is nothing meaningful to show.
+        """
+        header = (
+            "[Forwarded message (automatic)]"
+            if self.kind == "automatic_forward"
+            else "[Forwarded message]"
+        )
+        lines = [header]
+
+        if self.origin_type == "user":
+            who = self._render_field(self.origin_name) or "Unknown user"
+            extras = []
+            if self.origin_username:
+                # Render as "username <handle>" rather than "@<handle>": a literal
+                # '@' would later trigger GatewayRunner._prepare_inbound_message_text's
+                # @ context-reference preprocessing on this synthetic block.
+                extras.append(f"username {self._render_field(self.origin_username)}")
+            if self.origin_id:
+                extras.append(f"id {self._render_field(self.origin_id)}")
+            suffix = f" ({', '.join(extras)})" if extras else ""
+            lines.append(f"From: {who}{suffix}")
+        elif self.origin_type == "hidden_user":
+            who = self._render_field(self.origin_name) or "Hidden user"
+            lines.append(f"From: {who} (sender identity hidden)")
+        elif self.origin_type == "chat":
+            chat = self._render_field(self.origin_chat or self.origin_name) or "Unknown chat"
+            suffix = f" (id {self._render_field(self.origin_id)})" if self.origin_id else ""
+            lines.append(f"From chat: {chat}{suffix}")
+            if self.origin_name:
+                lines.append(f"Author: {self._render_field(self.origin_name)}")
+        elif self.origin_type == "channel":
+            chan = self._render_field(self.origin_chat) or "Unknown channel"
+            extras = []
+            if self.origin_id:
+                extras.append(f"id {self._render_field(self.origin_id)}")
+            if self.origin_message_id:
+                extras.append(f"message {self._render_field(self.origin_message_id)}")
+            suffix = f" ({', '.join(extras)})" if extras else ""
+            lines.append(f"From channel: {chan}{suffix}")
+            if self.origin_name:
+                lines.append(f"Author: {self._render_field(self.origin_name)}")
+        elif self.origin_name or self.origin_chat:
+            lines.append(f"From: {self._render_field(self.origin_name or self.origin_chat)}")
+
+        if self.date is not None:
+            try:
+                lines.append(f"Date: {self.date.isoformat()}")
+            except Exception:
+                pass
+
+        if self.text:
+            snippet = self._render_field(self.text, max_len=500)
+            lines.append(f'Quoted: "{snippet}"')
+
+        if self.is_confidence_limited:
+            lines.append(
+                "(Origin attribution is limited — the sender restricts forward "
+                "attribution, so identity cannot be fully verified.)"
+            )
+
+        return "\n".join(lines)
+
+
+@dataclass
 class MessageEvent:
     """
     Incoming message from a platform.
-    
+
     Normalized representation that all adapters produce.
     """
     # Message content
@@ -1793,6 +1911,11 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+
+    # Normalized, platform-neutral context annotations (forwarded-message
+    # provenance today; quotes/replies later). Rendered into a compact block
+    # before the message body by GatewayRunner._prepare_inbound_message_text.
+    context_refs: List["MessageContextRef"] = field(default_factory=list)
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
@@ -2151,6 +2274,8 @@ def merge_pending_message_event(
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            if getattr(event, "context_refs", None):
+                existing.context_refs.extend(event.context_refs)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
@@ -2160,6 +2285,8 @@ def merge_pending_message_event(
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            if getattr(event, "context_refs", None):
+                existing.context_refs.extend(event.context_refs)
             if event.text:
                 if existing.text:
                     existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
@@ -2182,6 +2309,8 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            if getattr(event, "context_refs", None):
+                existing.context_refs.extend(event.context_refs)
             return
 
     pending_messages[session_key] = event
@@ -4498,6 +4627,8 @@ class BasePlatformAdapter(ABC):
                     if state.event.text
                     else event.text
                 )
+            if getattr(event, "context_refs", None):
+                state.event.context_refs.extend(event.context_refs)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -5643,7 +5774,7 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
-    
+
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]
     ) -> None:

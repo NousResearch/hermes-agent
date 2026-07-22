@@ -32,6 +32,7 @@ sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageContextRef,
     MessageEvent,
     MessageType,
     SendResult,
@@ -153,6 +154,34 @@ async def test_debounce_buffers_rapid_text_then_flushes_to_pending():
 
     assert session_key not in adapter._text_debounce
     assert adapter._pending_messages[session_key].text == "part two\npart three"
+
+
+@pytest.mark.asyncio
+async def test_debounce_preserves_context_refs_from_later_chunks():
+    adapter = _make_adapter()
+    adapter._busy_text_debounce_seconds = 0.05
+
+    first = _make_event("part one")
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    second = _make_event("part two")
+    second.context_refs.append(
+        MessageContextRef(kind="forward", platform="telegram", origin_name="Second Sender")
+    )
+    third = _make_event("part three")
+    third.context_refs.append(
+        MessageContextRef(kind="forward", platform="telegram", origin_name="Third Sender")
+    )
+
+    await adapter.handle_message(second)
+    await adapter.handle_message(third)
+    await asyncio.sleep(0.15)
+
+    pending = adapter._pending_messages[session_key]
+    assert [ref.origin_name for ref in pending.context_refs] == [
+        "Second Sender",
+        "Third Sender",
+    ]
 
 
 @pytest.mark.asyncio

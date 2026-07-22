@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import MessageContextRef, MessageEvent, MessageType, merge_pending_message_event
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -261,6 +261,45 @@ def test_merge_pending_message_event_promotes_document_followups_over_text():
     assert merged.text == "please review this"
     assert merged.media_urls == ["/tmp/report.pdf"]
     assert merged.media_types == ["application/pdf"]
+
+
+def test_merge_pending_message_event_preserves_context_refs_across_merge_modes():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+
+    first = MessageEvent(
+        text="first",
+        message_type=MessageType.TEXT,
+        source=source,
+        context_refs=[MessageContextRef(kind="forward", platform="telegram", origin_name="First")],
+    )
+    second = MessageEvent(
+        text="second",
+        message_type=MessageType.TEXT,
+        source=source,
+        context_refs=[MessageContextRef(kind="forward", platform="telegram", origin_name="Second")],
+    )
+    photo = MessageEvent(
+        text="photo",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/test.png"],
+        media_types=["image/png"],
+        context_refs=[MessageContextRef(kind="forward", platform="telegram", origin_name="Photo")],
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+    merge_pending_message_event(pending, session_key, photo, merge_text=True)
+
+    merged = pending[session_key]
+    assert [ref.origin_name for ref in merged.context_refs] == ["First", "Second", "Photo"]
 
 
 @pytest.mark.asyncio

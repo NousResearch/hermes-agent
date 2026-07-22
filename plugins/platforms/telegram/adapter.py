@@ -253,6 +253,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageContextRef,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
@@ -8286,6 +8287,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Preserve any provenance/context refs from follow-up chunks.
+            if getattr(event, "context_refs", None):
+                existing.context_refs.extend(event.context_refs)
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -8392,6 +8396,8 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            if getattr(event, "context_refs", None):
+                existing.context_refs.extend(event.context_refs)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
@@ -8700,6 +8706,8 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            if getattr(event, "context_refs", None):
+                existing.context_refs.extend(event.context_refs)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
@@ -8892,6 +8900,78 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Cached DM topic from message: %s -> thread_id=%s",
                 self.name, cache_key, thread_id,
             )
+
+    @staticmethod
+    def _forward_context_ref(message) -> Optional[MessageContextRef]:
+        """Normalize Telegram forward metadata into a MessageContextRef.
+
+        Parses ``message.forward_origin`` (PTB 22.6 ``MessageOrigin*`` objects)
+        defensively via attribute access so plain ``SimpleNamespace`` stand-ins
+        work in tests. Falls back to an ``automatic_forward`` marker when
+        ``is_automatic_forward`` is set but no origin is resolvable (Telegram
+        channel→discussion auto-forwards). Returns ``None`` for ordinary
+        (non-forwarded) messages.
+        """
+        origin = getattr(message, "forward_origin", None)
+        is_automatic = bool(getattr(message, "is_automatic_forward", False))
+
+        if origin is None:
+            if is_automatic:
+                return MessageContextRef(kind="automatic_forward", platform="telegram")
+            return None
+
+        origin_type = str(getattr(origin, "type", "") or "").split(".")[-1].lower()
+        ref = MessageContextRef(
+            kind="forward",
+            platform="telegram",
+            date=getattr(origin, "date", None),
+        )
+
+        sender_user = getattr(origin, "sender_user", None)
+        sender_chat = getattr(origin, "sender_chat", None)
+        channel_chat = getattr(origin, "chat", None)
+        sender_user_name = getattr(origin, "sender_user_name", None)
+
+        if origin_type == "user" or sender_user is not None:
+            ref.origin_type = "user"
+            ref.origin_name = (
+                getattr(sender_user, "full_name", None)
+                or getattr(sender_user, "username", None)
+            )
+            uid = getattr(sender_user, "id", None)
+            ref.origin_id = str(uid) if uid is not None else None
+            ref.origin_username = getattr(sender_user, "username", None)
+        elif origin_type == "hidden_user" or sender_user_name:
+            ref.origin_type = "hidden_user"
+            ref.origin_name = sender_user_name
+            ref.is_confidence_limited = True
+        elif origin_type == "chat" or sender_chat is not None:
+            ref.origin_type = "chat"
+            ref.origin_chat = (
+                getattr(sender_chat, "title", None)
+                or getattr(sender_chat, "full_name", None)
+            )
+            cid = getattr(sender_chat, "id", None)
+            ref.origin_id = str(cid) if cid is not None else None
+            ref.origin_name = getattr(origin, "author_signature", None)
+        elif origin_type == "channel" or channel_chat is not None:
+            ref.origin_type = "channel"
+            ref.origin_chat = (
+                getattr(channel_chat, "title", None)
+                or getattr(channel_chat, "full_name", None)
+            )
+            cid = getattr(channel_chat, "id", None)
+            ref.origin_id = str(cid) if cid is not None else None
+            mid = getattr(origin, "message_id", None)
+            ref.origin_message_id = str(mid) if mid is not None else None
+            ref.origin_name = getattr(origin, "author_signature", None)
+        else:
+            # Unknown origin type — keep a generic forward marker so the agent
+            # still sees that the message was forwarded.
+            ref.origin_type = origin_type or None
+            ref.is_confidence_limited = True
+
+        return ref
 
     @classmethod
     def _flatten_rich_inline_text(cls, value: Any) -> str:
@@ -9109,6 +9189,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception:
                         reply_to_text = None
 
+        # Normalized forwarded-message provenance (platform-neutral context ref).
+        context_refs: list[MessageContextRef] = []
+        forward_ref = self._forward_context_ref(message)
+        if forward_ref is not None:
+            context_refs.append(forward_ref)
+
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
@@ -9127,6 +9213,7 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            context_refs=context_refs,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

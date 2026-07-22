@@ -10479,6 +10479,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_author_id=event.reply_to_author_id,
                         reply_to_author_name=event.reply_to_author_name,
                         reply_to_is_own_message=event.reply_to_is_own_message,
+                        context_refs=list(getattr(event, "context_refs", []) or []),
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
                         internal=event.internal,
@@ -11935,6 +11936,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.warning("@ context reference expansion failed: %s", exc)
                 logger.debug("@ context reference expansion failure detail", exc_info=True)
+
+        # Render normalized context refs (forwarded-message provenance, etc.)
+        # as a compact block before the body so the agent sees a forward's
+        # origin rather than treating it as plain pasted text. This happens
+        # AFTER @ context-reference preprocessing so untrusted forwarded
+        # metadata (display names, channel titles, author signatures) cannot be
+        # interpreted as user-authored @file/@url context requests.
+        context_refs = getattr(event, "context_refs", None)
+        if context_refs:
+            rendered_refs = [r for r in (ref.render() for ref in context_refs if ref is not None) if r]
+            if rendered_refs:
+                message_text = "\n\n".join(rendered_refs) + "\n\n" + message_text
 
         return message_text
 

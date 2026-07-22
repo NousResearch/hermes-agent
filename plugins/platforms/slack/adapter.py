@@ -4079,13 +4079,19 @@ class SlackAdapter(BasePlatformAdapter):
             # Re-run command normalization against the canonical Slack text,
             # not the block-augmented agent text. Otherwise quoted/forwarded
             # rich-text payload can become accidental command arguments.
+            # Handles both ``@bot !cmd`` (bang hidden behind the mention when
+            # the first probe ran) and ``@bot /cmd`` (typed slash addressed
+            # at the bot).
             mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
-            command_text = _rewrite_known_bang_command(mention_stripped)
-            if command_text != mention_stripped:
+            if mention_stripped.startswith("/"):
+                command_text = mention_stripped
+            else:
+                command_text = _rewrite_known_bang_command(mention_stripped)
+            if command_text.startswith("/"):
                 original_text = command_text
                 text = command_text
-                # Refresh command classification: the bang was hidden behind
-                # the leading mention when the first probe ran.
+                # Refresh command classification: the command token was
+                # hidden behind the leading mention on the first probe.
                 command_probe_text = command_text
                 is_command_text = True
             # Register this thread so all future messages auto-trigger the bot.
@@ -4491,6 +4497,16 @@ class SlackAdapter(BasePlatformAdapter):
             else:
                 msg_type = MessageType.DOCUMENT
 
+        # Every enrichment path above (blocks, unfurls, attachment notices,
+        # text-file injection, thread history) is deliberately allowed for
+        # normal messages. Commands are restored from canonical authored
+        # input only: the gateway parser requires the command token at
+        # character zero, and enrichment must never mutate a command's
+        # arguments.
+        if is_command_text:
+            text = command_probe_text
+            msg_type = MessageType.COMMAND
+
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(
             user_id, chat_id=channel_id, team_id=team_id
@@ -4619,7 +4635,11 @@ class SlackAdapter(BasePlatformAdapter):
         # the user switches views and would let stale context bleed into later
         # turns. The agent receives an inert label, never a fetched channel body.
         context_channel_id = agent_context.get("context_channel_id", "")
-        if context_channel_id and context_channel_id != channel_id:
+        if (
+            context_channel_id
+            and context_channel_id != channel_id
+            and msg_event.message_type != MessageType.COMMAND
+        ):
             msg_event.text = (
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}"
@@ -5762,7 +5782,8 @@ class SlackAdapter(BasePlatformAdapter):
         message).
         """
         slash_name = (command.get("command") or "").lstrip("/").strip()
-        text = command.get("text", "").strip()
+        raw_text = str(command.get("text") or "")
+        text = raw_text
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
@@ -5775,29 +5796,32 @@ class SlackAdapter(BasePlatformAdapter):
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
+            legacy_text = raw_text.strip()
             from hermes_cli.commands import slack_subcommand_map
 
             subcommand_map = slack_subcommand_map()
             subcommand_map["compact"] = "/compress"
             # Guard against whitespace-only text where ``text`` is truthy but
             # ``text.split()`` returns ``[]`` (e.g. user sends ``/hermes   ``).
-            parts = text.split() if text else []
+            parts = legacy_text.split() if legacy_text else []
             first_word = parts[0] if parts else ""
             if first_word in subcommand_map:
-                rest = text[len(first_word) :].strip()
+                rest = legacy_text[len(first_word) :].strip()
                 text = (
                     f"{subcommand_map[first_word]} {rest}".strip()
                     if rest
                     else subcommand_map[first_word]
                 )
-            elif text:
-                pass  # Treat as a regular question
+            elif legacy_text:
+                text = legacy_text  # Treat as a regular question
             else:
                 text = "/help"
         else:
             # Native slash — /<slash_name> [args].  Route directly through the
-            # gateway command dispatcher by prepending the slash.
-            text = f"/{slash_name} {text}".strip()
+            # gateway command dispatcher by prepending the slash.  Only the
+            # command delimiter is nonsemantic: preserve Slack's raw argument
+            # payload, including meaningful internal/trailing spacing.
+            text = f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
 
         # Slack slash commands can originate from DMs or shared channels.
         # Preserve DM semantics only for DM channel IDs; shared channels must

@@ -606,7 +606,7 @@ export function usePromptActions({
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
-      const sessionId = activeSessionId || activeSessionIdRef.current
+      const sessionId = activeSessionIdRef.current
 
       if (!text || !sessionId) {
         return false
@@ -630,12 +630,13 @@ export function usePromptActions({
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+    [activeSessionIdRef, appendSessionTextMessage, requestGateway]
   )
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
-      if (!activeSessionId || $busy.get()) {
+      const sessionId = activeSessionIdRef.current
+      if (!sessionId || $busy.get()) {
         return
       }
 
@@ -646,16 +647,16 @@ export function usePromptActions({
       }
 
       clearNotifications()
-      updateSessionState(activeSessionId, state => applyReloadOptimistic(state, plan))
+      updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
         await requestGateway(
           'prompt.submit',
-          { session_id: activeSessionId, text: plan.text, truncate_before_user_ordinal: plan.truncateOrdinal },
+          { session_id: sessionId, text: plan.text, truncate_before_user_ordinal: plan.truncateOrdinal },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
       } catch (err) {
-        updateSessionState(activeSessionId, state => ({
+        updateSessionState(sessionId, state => ({
           ...state,
           busy: false,
           awaitingResponse: false
@@ -663,7 +664,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionIdRef, copy.regenerateFailed, requestGateway, updateSessionState]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
@@ -683,7 +684,7 @@ export function usePromptActions({
 
   const restoreToMessage = useCallback(
     async (messageId: string, target?: RestoreMessageTarget) => {
-      const sessionId = activeSessionId || activeSessionIdRef.current
+      const sessionId = activeSessionIdRef.current
 
       if (!sessionId) {
         throw new Error('No active session to restore.')
@@ -724,12 +725,12 @@ export function usePromptActions({
         throw err
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
+    [activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
   )
 
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
-      const sessionId = activeSessionId || activeSessionIdRef.current
+      const sessionId = activeSessionIdRef.current
       const messages = $messages.get()
       const plan = sessionId ? planEdit(messages, edited) : null
 
@@ -780,7 +781,7 @@ export function usePromptActions({
         notifyError(surfaced, copy.editFailed)
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
+    [activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(

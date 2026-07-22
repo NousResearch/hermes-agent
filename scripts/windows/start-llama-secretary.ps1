@@ -1,7 +1,8 @@
-# Local secretary runtime — llama.cpp primary launcher (RTX 3060 profile)
+# Local secretary runtime — llama.cpp primary launcher (RTX 5060 Ti 16GB profile)
 # Loads the configured model GGUF via local path or llama-server -hf/--hf-repo with --jinja for tool calling.
-# RTX 3060 12GB optimized: ngl=99 (all layers on GPU), fa, q8_0 KV cache, 6 threads (physical cores),
-# parallel=2 (Hermes + subagent concurrent requests), batch=2048, ubatch=512.
+# RTX 5060 Ti 16GB optimized: ngl=99 (all layers on GPU), fa, q8_0 KV cache, 6 threads (physical cores),
+# parallel=2 (Hermes + subagent concurrent requests), batch=2048, ubatch=512, ctx=131072.
+# Hardware: RTX 5060 Ti 16GB (換装: 2026-07-22, 旧: RTX 3060 12GB)
 
 param(
     [switch]$SkipFallbackOnFailure,
@@ -57,7 +58,7 @@ $ModelPath = Resolve-Default "HERMES_LLAMA_GGUF_PATH" ""
 $Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M"
 $HostName = Resolve-Default "HERMES_LLAMA_HOST" "127.0.0.1"
 $Port = [int](Resolve-Default "HERMES_LLAMA_PORT" "8080")
-$Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "65536")
+$Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "131072")
 $CacheK = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_K" "q8_0"
 # turbo3 = zapabob llama-turboquant custom KV type; falls back to q8_0 on standard builds via plan iteration
 $CacheV = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_V" "turbo3"
@@ -72,7 +73,7 @@ $UbatchSize = [int](Resolve-Default "HERMES_LLAMA_UBATCH_SIZE" "512")
 $Threads = [int](Resolve-Default "HERMES_LLAMA_THREADS" "6")
 # Parallel slots: 2 allows Hermes + subagent concurrent requests without queuing
 $Parallel = [int](Resolve-Default "HERMES_LLAMA_PARALLEL" "2")
-$Profile = Resolve-Default "HERMES_LLAMA_PROFILE" "rtx3060"
+$Profile = Resolve-Default "HERMES_LLAMA_PROFILE" "rtx5060ti"
 
 if ($Ctx -lt 64000) {
     throw "HERMES_LLAMA_CTX=$Ctx is below the Hermes Agent minimum of 64000. Set HERMES_LLAMA_CTX=65536."

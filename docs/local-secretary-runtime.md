@@ -1,6 +1,8 @@
-# Local Secretary Runtime (RTX 3060 + Ryzen 5 4600)
+# Local Secretary Runtime (RTX 5060 Ti 16GB)
 
-Hermes を **コーディングエージェントではなくローカル秘書** として動かすための RTX 3060 向けランタイム手順。主推論は **llama.cpp server の OpenAI 互換 API**、Ollama は試験用 profile として残す。
+Hermes を **コーディングエージェントではなくローカル秘書** として動かすための RTX 5060 Ti 16GB 向けランタイム手順。主推論は **llama.cpp server の OpenAI 互換 API**、Ollama は試験用 profile として残す。
+
+> **ハードウェア更新履歴**: 2026-07-22 RTX 3060 12GB → RTX 5060 Ti 16GB に換装。VRAM 余裕が拡大したため KV cache の量子化要件が緩和。
 
 ## 推奨モデル
 
@@ -31,13 +33,24 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/start-irodori-tts-serve
 powershell -ExecutionPolicy Bypass -File scripts/windows/test-irodori-tts.ps1
 ```
 
-## GPU VRAM 別 tuning (RTX 3060)
+## GPU VRAM 別 tuning
 
-### 12GB
+### 16GB (RTX 5060 Ti 16GB) ← **現行環境**
+
+- `HERMES_LLAMA_CTX=131072` (4B F16 ≈ 8GB + オーバーヘッド 1.5GB → 残 ~6.5GB でKV余裕大)
+- `HERMES_LLAMA_GPU_LAYERS=99`
+- `HERMES_LLAMA_CACHE_TYPE_K=q8_0` / `HERMES_LLAMA_CACHE_TYPE_V=turbo3`
+  - 16GB なら f16 KV でも 64K ctx OK。q8_0 で 128K+ 快適。
+- `HERMES_LLAMA_SPEC_TYPE=ngram-mod`
+- `HERMES_LLAMA_SPEC_NGRAM_MATCH=24` / `HERMES_LLAMA_SPEC_NGRAM_MIN=48` / `HERMES_LLAMA_SPEC_NGRAM_MAX=64`
+- `HERMES_LLAMA_THREADS=6` / `HERMES_LLAMA_PARALLEL=2`
+- `HERMES_LLAMA_PROFILE=rtx5060ti`
+
+### 12GB (RTX 3060 参考値)
 
 - `HERMES_LLAMA_CTX=65536`
 - `HERMES_LLAMA_GPU_LAYERS=99`
-- `HERMES_LLAMA_CACHE_TYPE_K=q8_0` / `HERMES_LLAMA_CACHE_TYPE_V=turbo3` (TurboQuant asymmetric; safer at 64K+ than symmetric turbo)
+- `HERMES_LLAMA_CACHE_TYPE_K=q8_0` / `HERMES_LLAMA_CACHE_TYPE_V=turbo3`
 - `HERMES_LLAMA_SPEC_TYPE=ngram-mod`
 - `HERMES_LLAMA_SPEC_NGRAM_MATCH=24` / `HERMES_LLAMA_SPEC_NGRAM_MIN=48` / `HERMES_LLAMA_SPEC_NGRAM_MAX=64`
 
@@ -69,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/test-irodori-tts.ps1
 | `HERMES_LLAMA_SPEC_TYPE` | `ngram-mod` |
 | `HERMES_LLAMA_SPEC_NGRAM_MATCH/MIN/MAX` | `24` / `48` / `64` |
 | `HERMES_LLAMA_BATCH_SIZE` / `HERMES_LLAMA_UBATCH_SIZE` | `2048` / `512` |
-| `HERMES_LLAMA_PROFILE` | `rtx3060` |
+| `HERMES_LLAMA_PROFILE` | `rtx5060ti` |
 
 起動 script は `--help` を見て存在しない option は自動で外す:
 

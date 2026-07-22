@@ -54,7 +54,18 @@ test.describe('session compression', () => {
     await send(page, 'E2E_COMPRESSION_THIRD')
     await expect.poll(() => receivedUserTexts().filter(text => text === 'E2E_COMPRESSION_THIRD').length).toBe(1)
 
-    await send(page, '/compress preserve the three test turns')
+    // Commit the command before typing its argument. This waits for the async
+    // completion request on cold CI workers, then uses the composer's own
+    // keyboard accept path to replace the `/compress` trigger with a command
+    // chip. Clicking a later completion after typing the argument can insert a
+    // second command token (for example `//compress ...`) as plain text.
+    const composer = page.locator('[contenteditable="true"]').first()
+    await composer.click()
+    await composer.type('/compress', { delay: 15 })
+    await page.getByText('/compress').first().waitFor({ state: 'visible' })
+    await page.keyboard.press('Enter')
+    await composer.type(' preserve the three test turns', { delay: 15 })
+    await page.keyboard.press('Enter')
     await expect
       .poll(
         () => page.locator('[data-slot="aui_thread-viewport"]').textContent(),

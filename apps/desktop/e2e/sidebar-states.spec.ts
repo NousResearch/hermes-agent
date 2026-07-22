@@ -235,11 +235,15 @@ test.describe('sidebar states — cross-session dot transition', () => {
       .toBe(0)
 
     // The original session should show a "finished unread" indicator (green dot)
-    // since its turn completed while we were in a different session.
-    // We check for the session row in the sidebar — it should have a green dot
-    // (emerald-500 class) or the "Finished — unread" aria-label.
-    const unreadCount = await page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count()
-    expect(unreadCount, 'original session should show finished-unread dot').toBeGreaterThan(0)
+    // since its turn completed while we were in a different session. This is an
+    // event-driven transition, so wait for it instead of sampling the DOM right
+    // after the running dot disappears.
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'original session should show finished-unread dot' },
+      )
+      .toBeGreaterThan(0)
 
     // Evidence: the green "finished unread" dot on the original session after
     // switching to a new session — the cross-session dot transition.

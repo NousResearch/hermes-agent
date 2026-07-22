@@ -3190,6 +3190,46 @@ def test_scratch_cleanup_preserves_directory_replacement_at_delete_boundary(
     assert (quarantines[0] / "human.txt").read_text() == "keep"
 
 
+def test_scratch_cleanup_binds_owner_proof_to_original_directory(
+    kanban_home, monkeypatch
+):
+    """Copied marker text cannot transfer ownership to a replacement root."""
+    real_evidence = kb._scratch_workspace_ownership_evidence
+    original_replace = kb.os.replace
+    injected = False
+    displaced = None
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="scratch evidence replacement")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        (workspace / "agent.txt").write_text("agent")
+        marker_text = (workspace / kb._SCRATCH_OWNER_MARKER_NAME).read_text()
+
+        def replace_after_proof(path, **kwargs):
+            nonlocal injected, displaced
+            evidence = real_evidence(path, **kwargs)
+            if evidence is not None and not injected:
+                injected = True
+                displaced = workspace.with_name(f"{workspace.name}-agent-original")
+                original_replace(workspace, displaced)
+                workspace.mkdir()
+                (workspace / kb._SCRATCH_OWNER_MARKER_NAME).write_text(marker_text)
+                (workspace / "human.txt").write_text("keep")
+            return evidence
+
+        monkeypatch.setattr(
+            kb, "_scratch_workspace_ownership_evidence", replace_after_proof
+        )
+        assert kb.complete_task(conn, task_id, result="done")
+
+    assert displaced is not None and (displaced / "agent.txt").read_text() == "agent"
+    quarantines = list(workspace.parent.glob(f".{workspace.name}.hermes-delete-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "human.txt").read_text() == "keep"
+
+
 # ---------------------------------------------------------------------------
 # Deferred scratch cleanup for parent/child handoff (#33774)
 # ---------------------------------------------------------------------------

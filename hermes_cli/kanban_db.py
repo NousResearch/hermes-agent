@@ -3409,6 +3409,79 @@ def _filesystem_identity(st: os.stat_result) -> _FilesystemIdentity:
     )
 
 
+def _stat_is_reparse(st: os.stat_result) -> bool:
+    """Return whether Windows reports a reparse-point object."""
+    return bool(int(getattr(st, "st_file_attributes", 0)) & 0x400)
+
+
+def _exclusive_attachment_path(
+    dest_dir: Path,
+    safe_name: str,
+    data: bytes,
+) -> tuple[Path, _FilesystemIdentity]:
+    """Create one attachment without overwriting or following a race winner."""
+    directory_identity = dest_dir.lstat()
+    if (
+        not stat.S_ISDIR(directory_identity.st_mode)
+        or _stat_is_reparse(directory_identity)
+    ):
+        raise ValueError(f"attachment directory is not a regular directory: {dest_dir}")
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    while True:
+        dest_path = _collision_free_path(dest_dir, safe_name)
+        try:
+            fd = os.open(dest_path, flags, 0o600)
+        except FileExistsError:
+            # Another writer won after _collision_free_path() inspected the
+            # name. Recompute the next candidate and try exclusively again.
+            continue
+
+        created_identity: Optional[_FilesystemIdentity] = None
+        try:
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            created = os.fstat(fd)
+            if not stat.S_ISREG(created.st_mode):
+                raise ValueError("attachment destination is not a regular file")
+            created_identity = _filesystem_identity(created)
+        except BaseException:
+            try:
+                created_identity = _filesystem_identity(os.fstat(fd))
+            except OSError:
+                pass
+            raise
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            if created_identity is not None and sys.exc_info()[0] is not None:
+                _atomic_remove_expected_file(dest_path, created_identity)
+
+        try:
+            current = dest_path.lstat()
+            current_dir = dest_dir.lstat()
+        except OSError as exc:
+            _atomic_remove_expected_file(dest_path, created_identity)
+            raise ValueError("attachment path changed during creation") from exc
+        if (
+            _filesystem_identity(current) != created_identity
+            or not stat.S_ISREG(current.st_mode)
+            or not os.path.samestat(directory_identity, current_dir)
+        ):
+            _atomic_remove_expected_file(dest_path, created_identity)
+            raise ValueError("attachment path changed during creation")
+        return dest_path, created_identity
+
+
 def _encode_filesystem_identity(identity: Optional[_FilesystemIdentity]) -> Optional[str]:
     return json.dumps(identity) if identity is not None else None
 
@@ -3491,9 +3564,7 @@ def store_attachment_bytes(
     safe_name = _safe_attachment_name(filename)
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = _collision_free_path(dest_dir, safe_name)
-    dest_path.write_bytes(data)
-    dest_identity = _filesystem_identity(dest_path.lstat())
+    dest_path, dest_identity = _exclusive_attachment_path(dest_dir, safe_name, data)
     try:
         return add_attachment(
             conn,
@@ -5357,30 +5428,90 @@ def _scratch_workspace_is_owned(
     tenant: Optional[str],
 ) -> bool:
     """Prove exact task/board/tenant ownership of a path before deletion."""
-    expected = _canonical_scratch_workspace(task_id, board)
-    if expected is None:
-        return False
-    raw = workspace_path.expanduser()
-    try:
-        if not raw.is_absolute() or raw.is_symlink():
-            return False
-        canonical = raw.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        return False
-    # Reject symlink/junction aliases and any path that is not the task's
-    # canonical root. The marker alone is not enough for an aliased path.
-    if os.path.normcase(str(raw)) != os.path.normcase(str(canonical)):
-        return False
-    if not _same_canonical_path(canonical, expected):
-        return False
-    if not canonical.is_dir():
-        return False
-    return _read_scratch_owner_marker(
-        canonical,
+    return _scratch_workspace_ownership_evidence(
+        workspace_path,
         task_id=task_id,
         board=board,
         tenant=tenant,
+    ) is not None
+
+
+def _scratch_workspace_ownership_evidence(
+    workspace_path: Path,
+    *,
+    task_id: str,
+    board: Optional[str],
+    tenant: Optional[str],
+) -> Optional[tuple[os.stat_result, os.stat_result]]:
+    """Return path-bound workspace and marker evidence, or fail closed."""
+    expected = _canonical_scratch_workspace(task_id, board)
+    if expected is None or not board:
+        return None
+    raw = workspace_path.expanduser()
+    marker = raw / _SCRATCH_OWNER_MARKER_NAME
+    marker_fd: Optional[int] = None
+    try:
+        if not raw.is_absolute():
+            return None
+        workspace_identity = raw.lstat()
+        marker_identity = marker.lstat()
+        if (
+            not stat.S_ISDIR(workspace_identity.st_mode)
+            or _stat_is_reparse(workspace_identity)
+            or not stat.S_ISREG(marker_identity.st_mode)
+            or _stat_is_reparse(marker_identity)
+        ):
+            return None
+        canonical = raw.resolve(strict=True)
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        marker_fd = os.open(marker, flags)
+        opened_marker = os.fstat(marker_fd)
+        if (
+            not stat.S_ISREG(opened_marker.st_mode)
+            or not os.path.samestat(marker_identity, opened_marker)
+        ):
+            return None
+        with os.fdopen(marker_fd, "r", encoding="utf-8") as stream:
+            marker_fd = None
+            payload = json.load(stream)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    except (UnicodeError, json.JSONDecodeError, TypeError):
+        return None
+    finally:
+        if marker_fd is not None:
+            try:
+                os.close(marker_fd)
+            except OSError:
+                pass
+
+    # Reject symlink/junction aliases and any path that is not the task's
+    # canonical root. The marker alone is not enough for an aliased path.
+    if os.path.normcase(str(raw)) != os.path.normcase(str(canonical)):
+        return None
+    if not _same_canonical_path(canonical, expected):
+        return None
+    expected_payload = _owner_marker_payload(
+        task_id=task_id,
+        board=board,
+        tenant=tenant,
+        workspace=canonical,
     )
+    if payload != expected_payload:
+        return None
+    try:
+        if (
+            not os.path.samestat(workspace_identity, raw.lstat())
+            or not os.path.samestat(marker_identity, marker.lstat())
+        ):
+            return None
+    except OSError:
+        return None
+    return workspace_identity, marker_identity
 
 
 def _is_managed_scratch_path(p: Path) -> bool:
@@ -5429,12 +5560,13 @@ def _remove_managed_scratch_workspace(
     if workspace_kind != "scratch" or not workspace_path:
         return
     wp = Path(workspace_path).expanduser()
-    if not _scratch_workspace_is_owned(
+    ownership = _scratch_workspace_ownership_evidence(
         wp,
         task_id=task_id,
         board=board,
         tenant=tenant,
-    ):
+    )
+    if ownership is None:
         _log.warning(
             "Refusing to remove scratch workspace without exact owner proof "
             "for task %s: %s (board=%r, tenant=%r)",
@@ -5446,8 +5578,7 @@ def _remove_managed_scratch_workspace(
         return
     marker = wp / _SCRATCH_OWNER_MARKER_NAME
     try:
-        workspace_identity = wp.lstat()
-        marker_identity = marker.lstat()
+        workspace_identity, marker_identity = ownership
         quarantine = wp.with_name(
             f".{wp.name}.hermes-delete-{secrets.token_hex(16)}"
         )

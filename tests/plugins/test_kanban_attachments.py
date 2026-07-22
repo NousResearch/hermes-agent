@@ -345,6 +345,39 @@ def test_store_attachment_bytes_resolves_collisions(kanban_home):
         conn.close()
 
 
+def test_store_attachment_bytes_preserves_race_winner(kanban_home, monkeypatch):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        destination = kb.task_attachments_dir(task_id) / "race.txt"
+        real_open = kb.os.open
+        injected = False
+
+        def race_open(path, flags, *args, **kwargs):
+            nonlocal injected
+            if (
+                Path(path) == destination
+                and flags & kb.os.O_EXCL
+                and not injected
+            ):
+                injected = True
+                destination.write_bytes(b"human winner")
+                raise FileExistsError(str(destination))
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(kb.os, "open", race_open)
+        attachment_id = kb.store_attachment_bytes(
+            conn, task_id, "race.txt", b"agent bytes"
+        )
+        attachment = kb.get_attachment(conn, attachment_id)
+
+        assert destination.read_bytes() == b"human winner"
+        assert attachment is not None and attachment.filename == "race (1).txt"
+        assert Path(attachment.stored_path).read_bytes() == b"agent bytes"
+    finally:
+        conn.close()
+
+
 def test_store_attachment_bytes_unknown_task_leaves_no_blob(kanban_home):
     conn = kb.connect()
     try:

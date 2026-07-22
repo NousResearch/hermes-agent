@@ -101,6 +101,27 @@ async def test_ensure_forum_commands_handles_set_failure():
 
 
 @pytest.mark.asyncio
+async def test_ensure_forum_commands_skips_when_menus_disabled():
+    """When command_menu.enabled is False, _ensure_forum_commands must NOT
+    call set_my_commands -- respect the global disable toggle."""
+    adapter = _make_test_adapter()
+    msg = _forum_message(chat_id=-999, is_forum=True)
+
+    with patch("hermes_cli.commands._telegram_command_menu_config") as mock_cfg:
+        mock_cfg.return_value = {"enabled": False}
+        with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
+            mock_menu.return_value = ([("new", "Start new session")], 0)
+            with patch("telegram.BotCommand"):
+                with patch("telegram.BotCommandScopeChat"):
+                    await adapter._ensure_forum_commands(msg)
+
+    # set_my_commands must NOT have been called
+    adapter._bot.set_my_commands.assert_not_called()
+    # The chat must NOT be added to the registered set either
+    assert -999 not in adapter._forum_command_registered
+
+
+@pytest.mark.asyncio
 async def test_ensure_forum_commands_race_safety():
     """Two concurrent coroutines must not double-register the same chat."""
     adapter = _make_test_adapter()

@@ -638,6 +638,7 @@ def _telegram_command_menu_config() -> dict[str, Any]:
         "max_commands": max_commands,
         "priority_mode": priority_mode,
         "priority": priority,
+        "enabled": menu_cfg.get("enabled"),  # None if not set, False to disable
     }
 
 

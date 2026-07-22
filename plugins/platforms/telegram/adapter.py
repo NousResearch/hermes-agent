@@ -3343,16 +3343,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 max_commands = telegram_menu_max_commands()
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                # Allow users to disable auto-registration via config:
+                #   platforms.telegram.extra.command_menu.enabled: false
+                # When disabled, skip set_my_commands so manual BotFather edits survive.
+                _menu_disabled = False
+                try:
+                    from hermes_cli.commands import _telegram_command_menu_config
+                    menu_cfg = _telegram_command_menu_config()
+                    if menu_cfg.get("enabled") is False:
+                        logger.info("[%s] Telegram command menu auto-registration disabled by config", self.name)
+                        _menu_disabled = True
+                except Exception:
+                    pass
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
                 # through to AllGroupChats or Default).
-                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
-                    scope_name = getattr(scope_cls, "__name__", str(scope_cls))
-                    try:
-                        await self._bot.set_my_commands(bot_commands, scope=scope_cls())
-                        logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
-                    except Exception as scope_err:
-                        logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                if not _menu_disabled:
+                    for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+                        scope_name = getattr(scope_cls, "__name__", str(scope_cls))
+                        try:
+                            await self._bot.set_my_commands(bot_commands, scope=scope_cls())
+                            logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
+                        except Exception as scope_err:
+                            logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
                 # commands via BotCommandScopeChat(chat_id) for forum groups.
                 # Lazy registration happens in _ensure_forum_commands on first
@@ -8121,6 +8134,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id = int(chat.id)
                 if chat_id in self._forum_command_registered:
                     return
+                # Respect the global command_menu.enabled config:
+                # if auto-registration is disabled, skip lazy registration too.
+                try:
+                    from hermes_cli.commands import _telegram_command_menu_config
+                    if _telegram_command_menu_config().get("enabled") is False:
+                        return
+                except Exception:
+                    pass
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
                 menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())

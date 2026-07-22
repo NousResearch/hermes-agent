@@ -253,7 +253,12 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
 def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch):
     """A later apply for the same key must not mutate an earlier home snapshot."""
     from agent.secret_scope import build_profile_secret_scope
-    from agent.secret_sources.registry import AppliedVar, ApplyReport
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import (
+        AppliedVar,
+        ApplyReport,
+        SourceReport,
+    )
     from agent.secret_sources import registry as reg_module
 
     home_a = tmp_path / "profile-a"
@@ -274,6 +279,17 @@ def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch
         value = values[str(Path(home_path).resolve())]
         monkeypatch.setenv("SHARED_API_KEY", value)
         return ApplyReport(
+            # Real apply_all always appends a SourceReport per enabled
+            # source; the env_loader guard (#40597) early-returns on an
+            # empty sources list, so the fake must match the real shape.
+            sources=[
+                SourceReport(
+                    name="test-source",
+                    label="Test Source",
+                    result=FetchResult(),
+                    applied=["SHARED_API_KEY"],
+                )
+            ],
             provenance={
                 "SHARED_API_KEY": AppliedVar(
                     name="SHARED_API_KEY",

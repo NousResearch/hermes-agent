@@ -345,6 +345,49 @@ def test_deleted_persisted_snapshot_is_rejected_before_agent_path():
     assert "no longer exists" in (ledger["error"] or "").lower()
 
 
+def test_delete_between_admission_reload_and_dispatch_claim_is_rejected():
+    job = create_job(
+        name="legitimate report",
+        schedule="every 60m",
+        prompt="Summarize the local report.",
+    )
+    assert trigger_job(job["id"]) is not None
+    snapshot = next(item for item in get_due_jobs() if item["id"] == job["id"])
+    original_admission = scheduler.quarantine_context_free_fixture_job
+
+    def delete_after_reload(job_id):
+        result = original_admission(job_id)
+        assert remove_job(job_id) is True
+        return result
+
+    with (
+        patch.object(
+            scheduler,
+            "quarantine_context_free_fixture_job",
+            side_effect=delete_after_reload,
+        ),
+        patch.object(
+            scheduler, "run_job", side_effect=AssertionError("agent path reached")
+        ) as run_mock,
+        patch.object(scheduler, "mark_job_run") as mark_mock,
+    ):
+        assert (
+            run_one_job(
+                snapshot,
+                require_persisted=bool(snapshot["_persisted_due_snapshot"]),
+            )
+            is True
+        )
+
+    run_mock.assert_not_called()
+    mark_mock.assert_not_called()
+    ledger = latest_execution(job["id"])
+    assert ledger is not None
+    assert ledger["status"] == "failed"
+    assert ledger["started_at"] is None
+    assert "dispatch claim rejected" in (ledger["error"] or "").lower()
+
+
 def test_quarantine_execution_ledger_follows_context_local_profile(tmp_path):
     profile_home = tmp_path / "profile"
     with use_cron_store(profile_home):

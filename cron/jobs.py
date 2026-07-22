@@ -1711,8 +1711,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
-def claim_dispatch(job_id: str) -> bool:
+def claim_dispatch(job_id: str, *, require_persisted: bool = False) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
+
+    ``require_persisted`` is used by scheduler/provider dispatch. If the row was
+    deleted after admission reloaded it, the missing row rejects the dispatch
+    instead of preserving the direct handed-in-job compatibility path.
 
     Increments ``repeat.completed`` under the cross-process jobs lock and
     persists the claim immediately, so that if the tick dies mid-execution
@@ -1766,6 +1770,12 @@ def claim_dispatch(job_id: str) -> bool:
             )
             return True
 
+        if require_persisted:
+            logger.info(
+                "claim_dispatch: job_id %s was removed after admission — rejecting",
+                job_id,
+            )
+            return False
         logger.debug(
             "claim_dispatch: job_id %s not in store — proceeding without claim "
             "(handed-in job dict; nothing to persist a claim against)",

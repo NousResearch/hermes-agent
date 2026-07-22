@@ -3851,15 +3851,23 @@ def run_one_job(
         # use advance_next_run) and infinite/no-repeat jobs. This lives here in
         # the shared body so BOTH the built-in ticker and the external provider
         # (Chronos fire_due) get at-most-times semantics.
-        if not claim_dispatch(job["id"]):
+        dispatch_claimed = (
+            claim_dispatch(job["id"], require_persisted=True)
+            if require_persisted
+            else claim_dispatch(job["id"])
+        )
+        if not dispatch_claimed:
             logger.info(
-                "Job '%s': one-shot dispatch limit reached — skipping",
+                "Job '%s': dispatch claim rejected — missing row or one-shot limit reached",
                 job.get("name", job["id"]),
             )
             finish_execution(
                 execution_id,
                 success=False,
-                error="Dispatch claim rejected; execution was not started.",
+                error=(
+                    "Dispatch claim rejected; persisted job was removed or the "
+                    "one-shot execution limit was reached."
+                ),
             )
             return True  # not an error — already handled/removed
 

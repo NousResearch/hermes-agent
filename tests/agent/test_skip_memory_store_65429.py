@@ -63,3 +63,47 @@ def test_memory_toolset_without_skip_memory_creates_store(monkeypatch, tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
     agent = _make_agent(monkeypatch, enabled_toolsets=["memory"], skip_memory=False)
     assert agent._memory_store is not None
+
+
+def test_skip_memory_memory_tool_handler_works_and_provider_skipped(
+    monkeypatch, tmp_path
+):
+    """End-to-end behavioral check for #65429.
+
+    The memory tool handler must actually WORK (not return the
+    "Memory is not available" store=None error) on a skip_memory=True agent
+    with the memory toolset enabled, while the external memory provider
+    sync/prefetch stays skipped (no MemoryManager is created).
+    """
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
+    agent = _make_agent(monkeypatch, enabled_toolsets=["memory"], skip_memory=True)
+
+    # Provider sync/prefetch must remain skipped: skip_memory still gates the
+    # external memory provider block.
+    assert agent._memory_manager is None, (
+        "skip_memory=True must still skip the external memory provider"
+    )
+
+    # Dispatch through the same entry point the tool executor uses
+    # (agent/tool_executor.py wires store=agent._memory_store).
+    from tools.memory_tool import memory_tool
+
+    raw = memory_tool(
+        action="add",
+        target="memory",
+        content="User prefers concise answers.",
+        store=agent._memory_store,
+    )
+    result = json.loads(raw)
+    assert result.get("success") is True, (
+        f"memory tool handler must work with skip_memory=True + memory "
+        f"toolset (#65429), got: {raw}"
+    )
+    assert "Memory is not available" not in raw
+
+    # The write must actually persist to the profile-scoped memories dir.
+    memory_md = tmp_path / "hm" / "memories" / "MEMORY.md"
+    assert memory_md.exists()
+    assert "User prefers concise answers." in memory_md.read_text()

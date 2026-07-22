@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -1461,7 +1462,23 @@ def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
+def _safe_error_message(msg: Any, *, fallback: str = "Gateway error") -> str:
+    """Return a JSON-RPC/event error message safe for frontend transport."""
+    try:
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(str(msg), force=True)
+        return re.sub(
+            r"\b((?:access|refresh|id)?_?token|api_?key|client_secret|secret|password|key)\s*=\s*([^\s,;]+)",
+            r"\1=***",
+            redacted,
+            flags=re.IGNORECASE,
+        )
+    except Exception:
+        return fallback
+
+
 def _err(rid, code: int, msg: str) -> dict:
+    msg = _safe_error_message(msg)
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
 
 
@@ -1710,8 +1727,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
             _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
-            current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            current["agent_error"] = _safe_error_message(e)
+            _emit("error", sid, {"message": _safe_error_message(f"agent init failed: {e}")})
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -10538,9 +10555,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except Exception:
                 pass
             print(
-                f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
+                f"[gateway-turn] {type(e).__name__}: {_safe_error_message(e)}",
+                file=sys.stderr,
+                flush=True,
             )
-            _emit("error", sid, {"message": str(e)})
+            _emit("error", sid, {"message": _safe_error_message(e)})
         finally:
             if one_turn_restore:
                 try:

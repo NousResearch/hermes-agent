@@ -404,6 +404,13 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "bedrock_converse": "bedrock_converse",
 }
 
+# Inverse of TRANSPORT_TO_API_MODE — provider-module plugins declare api_mode
+# directly (ProviderProfile.api_mode), so map it back to the ProviderDef
+# transport vocabulary. Unknown api_modes fall back to "openai_chat".
+_API_MODE_TO_TRANSPORT: Dict[str, str] = {
+    v: k for k, v in TRANSPORT_TO_API_MODE.items()
+}
+
 
 # -- Helper functions ---------------------------------------------------------
 
@@ -800,6 +807,18 @@ def resolve_provider_full(
     if pdef is not None:
         return pdef
 
+    # 1b. Provider-module plugins (plugins/model-providers/<name>/).
+    #     These are the same profiles that hermes_cli.auth.PROVIDER_REGISTRY
+    #     auto-extends from at import time, so the model-switch path must see
+    #     them too — otherwise a provider that resolves fine at startup (e.g.
+    #     a local Anthropic proxy declared only as a plugin profile) is
+    #     rejected with "Unknown provider" when the user tries to /model into
+    #     it. resolve_provider_full and runtime startup resolution were
+    #     consulting two different registries; this reunifies them.
+    plugin_pdef = _resolve_plugin_provider(canonical, name)
+    if plugin_pdef is not None:
+        return plugin_pdef
+
     # 2. User-defined providers from config
     if user_providers:
         # Try canonical name
@@ -833,3 +852,56 @@ def resolve_provider_full(
         pass
 
     return None
+
+
+def _resolve_plugin_provider(canonical: str, original: str) -> Optional[ProviderDef]:
+    """Resolve a provider declared as a provider-module plugin profile.
+
+    Provider plugins live in ``plugins/model-providers/<name>/`` (bundled) or
+    ``$HERMES_HOME/plugins/model-providers/<name>/`` (user). They register a
+    ``ProviderProfile`` carrying name/aliases/base_url/env_vars/api_mode.
+    ``hermes_cli.auth.PROVIDER_REGISTRY`` already auto-extends from this same
+    source, which is why such providers resolve correctly during runtime
+    startup. The model-switch resolver historically did not, producing the
+    "Unknown provider" failure for plugin-only providers.
+
+    Translates a ``ProviderProfile`` into a ``ProviderDef`` so the rest of the
+    switch path is unchanged. ``api_mode`` maps back to ``transport`` via the
+    inverse of ``TRANSPORT_TO_API_MODE`` (default ``openai_chat``).
+    """
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+
+    profile = None
+    try:
+        profile = get_provider_profile(canonical) or get_provider_profile(
+            (original or "").strip().lower()
+        )
+    except Exception:
+        profile = None
+    if profile is None:
+        return None
+
+    api_mode = getattr(profile, "api_mode", "") or "chat_completions"
+    transport = _API_MODE_TO_TRANSPORT.get(api_mode, "openai_chat")
+
+    env_vars = tuple(getattr(profile, "env_vars", ()) or ())
+    api_key_env_vars = tuple(
+        v for v in env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+    ) or env_vars
+    base_url_env_var = next(
+        (v for v in env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), ""
+    )
+
+    return ProviderDef(
+        id=getattr(profile, "name", canonical),
+        name=getattr(profile, "display_name", "") or getattr(profile, "name", canonical),
+        transport=transport,
+        api_key_env_vars=api_key_env_vars,
+        base_url=getattr(profile, "base_url", "") or "",
+        base_url_env_var=base_url_env_var,
+        auth_type=getattr(profile, "auth_type", "api_key") or "api_key",
+        source="plugin",
+    )

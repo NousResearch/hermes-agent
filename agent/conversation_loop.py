@@ -33,6 +33,7 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import (
+    _compression_warrants_another_preflight_pass,
     build_turn_context,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
@@ -52,6 +53,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    _estimate_tools_tokens_rough,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -683,12 +685,31 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    # One resolved per-turn compression attempt cap, shared by every site that
+    # consumes ``compression_attempts``: the pre-API pressure gate, the
+    # overflow/413 retry handlers, and the post-tool compaction gate.
+    # Config-driven via compression.max_attempts (parsed + validated in
+    # agent_init); default 3 preserves the prior hardcoded behavior for
+    # objects without the attribute (older pickles / minimal stubs).
+    max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
+    _last_preflight_pressure: Optional[int] = None
+    _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    # Tracks whether the pending verification candidate was already streamed
+    # to the user as interim content. The finalizer uses this to set
+    # ``_response_was_previewed`` ONLY when the pending candidate is actually
+    # reused as the final response — not merely because any interim was
+    # streamed. (#65919 review: response-loss blocker)
+    _pending_verification_response_previewed = False
+    # If pre-API compression fires after MoA advisors have produced guidance,
+    # retain that ephemeral output and rebase it onto the compacted transcript
+    # on the next loop iteration. This prevents a second advisor fan-out.
+    pending_moa_prepared_request = None
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -1072,17 +1093,39 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging and pressure checks.
-        # estimate_messages_tokens_rough(api_messages) includes the system
-        # prompt copy but not the tool schema payload, which is sent as a
-        # separate field. Add tools back for compression decisions so long
-        # tool-heavy turns do not creep up to the context ceiling and leave
-        # no room for the model's final answer.
-        total_chars = sum(len(str(msg)) for msg in api_messages)
+        # Build a persistent-MoA request before measuring compression pressure.
+        # MoA reference output is injected into the aggregator prompt, but it
+        # is deliberately ephemeral and therefore absent from ``messages``.
+        # Preparing here makes the pre-API guard measure the exact prompt the
+        # aggregator will receive; ``create()`` consumes this private prepared
+        # request later without running the advisors a second time.
+        _moa_prepared_request = None
+        if agent.provider == "moa":
+            _moa_completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+            if pending_moa_prepared_request is not None:
+                _rebase_moa_request = getattr(_moa_completions, "rebase_prepared_request", None)
+                if callable(_rebase_moa_request):
+                    _moa_prepared_request = _rebase_moa_request(
+                        pending_moa_prepared_request, api_messages
+                    )
+                pending_moa_prepared_request = None
+            if _moa_prepared_request is None:
+                _prepare_moa_request = getattr(_moa_completions, "prepare", None)
+                if callable(_prepare_moa_request):
+                    _moa_prepared_request = _prepare_moa_request(api_messages)
+            if _moa_prepared_request is not None:
+                api_messages = _moa_prepared_request["messages"]
+
+        # One image-stripped message estimate feeds both figures. Was: a
+        # str(msg) char walk (re-serialized base64 every call) + a second
+        # messages walk inside estimate_request_tokens_rough. Tools added
+        # separately (compression needs them: 50+ tools = 20-30K tokens).
+        # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        request_pressure_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+        request_pressure_tokens = approx_tokens + (
+            _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
+        total_chars = approx_tokens * 4
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens
@@ -1119,6 +1162,37 @@ def run_conversation(
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
+        _preflight_threshold = int(
+            getattr(_compressor, "threshold_tokens", 0) or 0
+        )
+        # A previous mid-turn preflight pass deliberately continued the loop so
+        # API-only context and all sanitization could be rebuilt. Compare that
+        # fully assembled request with the fully assembled request that caused
+        # the pass. Raw ``messages`` are not equivalent here: they omit
+        # api_content/plugin injections, prefills, MoA context, and ephemeral
+        # system text.
+        _previous_preflight_pressure = _last_preflight_pressure
+        _last_preflight_pressure = None
+        if (
+            _previous_preflight_pressure is not None
+            and request_pressure_tokens >= _preflight_threshold
+            and not _compression_warrants_another_preflight_pass(
+                _previous_preflight_pressure,
+                request_pressure_tokens,
+                _preflight_threshold,
+            )
+        ):
+            # Stop proactive retries for this turn without consuming the
+            # shared overflow-recovery budget. If the provider proves the
+            # request truly does not fit, its error handler may still compact
+            # with that stronger signal.
+            _preflight_compression_blocked = True
+            logger.warning(
+                "Pre-API compression made insufficient progress: ~%s -> "
+                "~%s request tokens; skipping additional preflight passes",
+                f"{_previous_preflight_pressure:,}",
+                f"{request_pressure_tokens:,}",
+            )
         _defer_preflight = getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
         )
@@ -1128,25 +1202,30 @@ def run_conversation(
         if (
             agent.compression_enabled
             and len(messages) > 1
-            and compression_attempts < 3
+            and compression_attempts < max_compression_attempts
+            and not _preflight_compression_blocked
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
         ):
+            if _moa_prepared_request is not None:
+                pending_moa_prepared_request = _moa_prepared_request
             compression_attempts += 1
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
-                "(context=%s, attempt=%s/3)",
+                "(context=%s, attempt=%s/%s)",
                 f"{request_pressure_tokens:,}",
                 f"{int(getattr(_compressor, 'threshold_tokens', 0) or 0):,}",
                 f"{int(getattr(_compressor, 'context_length', 0) or 0):,}"
                 if getattr(_compressor, "context_length", 0) else "unknown",
                 compression_attempts,
+                max_compression_attempts,
             )
             agent._emit_status(
                 f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
                 f"near the context/output limit. Compacting before the next model call."
             )
+            _last_preflight_pressure = request_pressure_tokens
             messages, active_system_prompt = agent._compress_context(
                 messages,
                 system_message,
@@ -1210,7 +1289,6 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
-        max_compression_attempts = 3
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -1378,6 +1456,12 @@ def run_conversation(
 
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
+
+                # This object is private to the in-process MoA facade.  Add it
+                # only after middleware, hooks, and debug dumps so none of them
+                # attempts to serialize it as part of the provider payload.
+                if _moa_prepared_request is not None and agent.provider == "moa":
+                    api_kwargs["_moa_prepared_request"] = _moa_prepared_request
 
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health
@@ -5133,7 +5217,12 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
-                if agent.compression_enabled and _compressor.should_compress(_real_tokens):
+                if (
+                    agent.compression_enabled
+                    and compression_attempts < max_compression_attempts
+                    and _compressor.should_compress(_real_tokens)
+                ):
+                    compression_attempts += 1
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
@@ -5522,17 +5611,17 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
-                    final_msg["_verification_stop_synthetic"] = True
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the verification loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
-                    # Keep the attempted final answer in model history so the
-                    # synthetic user nudge preserves role alternation, but do
-                    # not surface it to the user as an interim answer. The
-                    # whole point of this guard is to prevent premature
-                    # "done" claims before checks run. Both the attempted
-                    # answer and the nudge are flagged synthetic so neither
-                    # persists — otherwise the resumed transcript keeps a
-                    # premature "done" with the nudge stripped, producing an
-                    # assistant→assistant adjacency. (#55733)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("verify-on-stop interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge,
@@ -5548,7 +5637,13 @@ def run_conversation(
                     # continuation-budget exhaustion.  ``final_response`` itself
                     # must be cleared so the finalizer can distinguish this gate
                     # from unrelated error/recovery exits. (#61631)
+                    # Track whether this candidate was already streamed so the
+                    # finalizer can mark the turn previewed only if the
+                    # candidate is actually reused as the final response.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5587,12 +5682,17 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    final_msg["_pre_verify_synthetic"] = True
-                    # Same alternation contract as verify-on-stop: keep the
-                    # attempted answer in history, follow it with a synthetic
-                    # user nudge, and don't surface the premature answer. Both
-                    # are flagged synthetic so neither persists. (#55733)
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the pre_verify loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("pre_verify interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge2,
@@ -5602,6 +5702,9 @@ def run_conversation(
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5649,6 +5752,9 @@ def run_conversation(
                     # exhaustion path does not treat the narrated stop as
                     # a completed answer.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5773,6 +5879,7 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 
 

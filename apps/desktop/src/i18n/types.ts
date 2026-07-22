@@ -290,6 +290,7 @@ export interface Translations {
       providers: string
       providerAccounts: string
       providerApiKeys: string
+      providerCustomEndpoints: string
       gateway: string
       apiKeys: string
       keybinds: string
@@ -511,6 +512,7 @@ export interface Translations {
     config: {
       none: string
       noneParen: string
+      builtinOnly: string
       notSet: string
       commaSeparated: string
       loading: string
@@ -520,6 +522,8 @@ export interface Translations {
       autosaveFailed: string
       imported: string
       invalidJson: string
+      keepAwakeTitle: string
+      keepAwakeDesc: string
     }
     credentials: {
       pasteKey: string
@@ -534,6 +538,7 @@ export interface Translations {
     envActions: {
       actionsFor: (label: string) => string
       credentialActions: string
+      manageInKeys: string
       docs: string
       hideValue: string
       revealValue: string
@@ -631,6 +636,38 @@ export interface Translations {
       testFailed: string
       applyFailed: string
       saveFailed: string
+      sshTitle: string
+      sshDesc: string
+      sshTrustHint: string
+      sshHostTitle: string
+      sshHostDesc: string
+      sshHostPick: string
+      sshHostPickTitle: string
+      sshHostPickDesc: string
+      sshHostCustom: string
+      sshUserTitle: string
+      sshUserDesc: string
+      sshUserPlaceholder: string
+      sshPortTitle: string
+      sshPortDesc: string
+      sshKeyTitle: string
+      sshKeyDesc: string
+      sshHermesPathTitle: string
+      sshHermesPathDesc: string
+      sshHermesPathPlaceholder: string
+      sshTestConnection: string
+      sshConnect: string
+      sshButtonsHint: string
+      sshReachable: (host: string, platform: string) => string
+      sshIncompleteHost: string
+      sshErrUnreachable: string
+      sshErrAuth: string
+      sshErrHostKey: string
+      sshErrNotInstalled: string
+      sshErrPlatform: string
+      sshErrTimeout: string
+      sshErrUpdateRequired: string
+      sshErrUnknown: string
     }
     keys: {
       loading: string
@@ -862,10 +899,21 @@ export interface Translations {
       noProviderOptions: string
       noProviders: string
       ready: string
+      needsSignIn: string
+      needsSetup: string
       nousIncluded: string
+      nousAuthNeededTitle: string
+      nousAuthNeededMessage: (provider: string) => string
+      nousAuthSignIn: string
+      nousAuthDoneTitle: string
+      nousAuthDoneMessage: string
+      nousAuthFailed: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
+      postSetupInstalledHint: string
       postSetupRun: string
+      postSetupRerun: string
+      postSetupInstalled: string
       postSetupRunning: string
       postSetupStarting: string
       postSetupCompleteTitle: string
@@ -873,6 +921,15 @@ export interface Translations {
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
       postSetupFailed: (step: string) => string
+      webSearchActive: (backend: string) => string
+      webExtractActive: (backend: string) => string
+      webCapabilityUnset: string
+      webUseForSearch: string
+      webUseForExtract: string
+      webUsedForSearch: string
+      webUsedForExtract: string
+      webCapabilitySelectedMessage: (provider: string, capability: string) => string
+      failedSelectCapability: (provider: string) => string
       loadingModels: string
       modelSectionTitle: string
       modelCount: (count: number) => string
@@ -887,6 +944,19 @@ export interface Translations {
       providerBadgeTerms?: Record<string, string>
       envVarPrompts?: Record<string, string>
       modelDetails?: Record<string, string>
+      terminalBackend: {
+        sectionTitle: string
+        loading: string
+        failedLoad: string
+        ready: string
+        needsSetup: string
+        unavailable: string
+        inUse: string
+        selectedTitle: string
+        selectedMessage: (backend: string) => string
+        failedSelect: (backend: string) => string
+        needsSetupHint: string
+      }
     }
   }
 
@@ -908,6 +978,8 @@ export interface Translations {
     noDescription: string
     configured: string
     needsKeys: string
+    visionModelHint: string
+    visionModelLink: string
     toolsetsEnabled: (enabled: number, total: number) => string
     toolCount: (count: number) => string
     toolsetNames: Record<string, string>
@@ -1061,6 +1133,7 @@ export interface Translations {
     ageSeconds: (seconds: number) => string
     ageMinutes: (minutes: number) => string
     ageHours: (hours: number) => string
+    ageDays: (days: number) => string
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
     tokens: (value: number | string) => string
@@ -1431,6 +1504,8 @@ export interface Translations {
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
+    modelLabel: string
+    modelDefault: string
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string
@@ -1645,6 +1720,7 @@ export interface Translations {
     urlHintPre: string
     attach: string
     queued: (count: number) => string
+    queuedPaused: (count: number) => string
     attachmentOnly: string
     emptyTurn: string
     attachments: (count: number) => string
@@ -1654,6 +1730,8 @@ export interface Translations {
     queueSendNext: string
     queueSend: string
     queueDelete: string
+    queueResume: string
+    queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
     previewUnavailable: string
@@ -1984,6 +2062,12 @@ export interface Translations {
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
+      connectionSsh: (host: string) => string
+      connectionRemote: (host: string) => string
+      connectionCloud: (host: string) => string
+      connectionCloudTooltip: (host: string) => string
+      connectionSshTooltip: (host: string) => string
+      connectionRemoteTooltip: (host: string) => string
       backendLabel: (version: string) => string
       commit: (sha: string) => string
       branch: (branch: string) => string

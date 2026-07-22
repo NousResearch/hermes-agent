@@ -11,6 +11,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, u
 
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
@@ -244,10 +245,9 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
 
-      const onMove = (ev: PointerEvent) => {
-        const rawDelta = (horizontal ? ev.clientX : ev.clientY) - start
-        const shiftPx = Math.max(lo, Math.min(hi, rtl ? -rawDelta : rawDelta))
-
+      // pointermove outpaces 60fps and each write relayouts the whole pane tree,
+      // so coalesce to one apply per frame (rafCoalesce commits on cleanup).
+      const applyShift = (shiftPx: number) => {
         if (a.fixed) {
           a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
         }
@@ -258,15 +258,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
         if (!a.fixed && !b.fixed) {
           const weights = [...node.weights]
-          // Convert the CLAMPED pixel sizes back to weights so the persisted
-          // weights always agree with what's on screen.
+          // Clamped px → weights so persisted weights match what's on screen.
           weights[aIndex] = (a0px + shiftPx) / pxPerWeight
           weights[bIndex] = (b0px - shiftPx) / pxPerWeight
           setTreeSplitWeights(node.id, weights)
         }
       }
 
+      const resize = rafCoalesce(applyShift)
+
+      const onMove = (ev: PointerEvent) => {
+        const rawDelta = (horizontal ? ev.clientX : ev.clientY) - start
+        resize.push(Math.max(lo, Math.min(hi, rtl ? -rawDelta : rawDelta)))
+      }
+
       const cleanup = () => {
+        resize.finish()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 

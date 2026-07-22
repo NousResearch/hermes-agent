@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Brain,
   ChevronDown,
@@ -22,6 +23,11 @@ import type {
   ModelsAnalyticsResponse,
 } from "@/lib/api";
 import { timeAgo, cn, themedBody } from "@/lib/utils";
+import {
+  DASHBOARD_MODAL_BACKDROP,
+  DASHBOARD_MODAL_PANEL,
+  shouldCloseOuterModalOnEscape,
+} from "@/lib/dashboard-modal-shell";
 import { formatTokenCount } from "@/lib/format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -765,6 +771,17 @@ function MoaModelsModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Nested ModelPickerDialog owns Escape while open — don't dismiss MoA too.
+  const closeMoaUnlessPickerOpen = useCallback(() => {
+    if (!shouldCloseOuterModalOnEscape(picker !== null)) return;
+    onClose();
+  }, [picker, onClose]);
+
+  const modalRef = useModalBehavior({
+    open: true,
+    onClose: closeMoaUnlessPickerOpen,
+  });
+
   const presetNames = Object.keys(draft.presets || {});
   const preset = draft.presets[selected] || draft.presets[presetNames[0]];
   const slotLabel = (slot: MoaModelSlot) =>
@@ -833,13 +850,36 @@ function MoaModelsModal({
 
   if (!preset) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
-      <Card className="max-h-[85vh] w-full max-w-2xl overflow-auto">
-        <CardHeader>
-          <CardTitle className="text-sm">{copy.moaConfigurePresets}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+  // Portal to document.body: the main dashboard column is `relative z-2`,
+  // which traps fixed descendants below the sidebar (same as ModelPickerDialog).
+  return createPortal(
+    <div
+      ref={modalRef}
+      className={DASHBOARD_MODAL_BACKDROP}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) closeMoaUnlessPickerOpen();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="moa-modal-title"
+    >
+      {/* Opaque panel — do not use <Card> here; Card defaults to bg-background-base/80. */}
+      <div
+        className={cn(
+          themedBody,
+          DASHBOARD_MODAL_PANEL,
+          "max-h-[85vh] max-w-2xl overflow-auto flex flex-col",
+        )}
+      >
+        <header className="p-5 pb-3 border-b border-border">
+          <h2
+            id="moa-modal-title"
+            className="font-mondwest text-display text-base tracking-wider"
+          >
+            {copy.moaConfigurePresets}
+          </h2>
+        </header>
+        <div className="space-y-4 p-5">
           <p className="text-xs text-text-secondary">
             {copy.moaPresetsDescription}
           </p>
@@ -890,10 +930,10 @@ function MoaModelsModal({
           {error && <div className="text-xs text-destructive">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <Button ghost onClick={onClose} disabled={busy}>{copy.cancel}</Button>
-            <Button onClick={save} disabled={busy}>{busy ? copy.saving : copy.save}</Button>
+            <Button onClick={() => void save()} disabled={busy}>{busy ? copy.saving : copy.save}</Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
       {picker && (
         <ModelPickerDialog
           key={`moa-picker-${refreshKey}-${selected}-${picker.kind}-${picker.kind === "reference" ? picker.index : "agg"}`}
@@ -917,7 +957,8 @@ function MoaModelsModal({
           onClose={() => setPicker(null)}
         />
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

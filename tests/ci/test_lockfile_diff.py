@@ -89,15 +89,14 @@ def test_nested_dedup_is_distinct_entry():
     assert d["updated"] == [("node_modules/foo/node_modules/react", "17.0.2", "17.0.3")]
 
 
-def test_render_markdown_contains_marker_and_versions():
+def test_render_markdown_contains_versions_and_nested_display():
     d = _mod.diff_locks(
         _mod.parse_lockfile(BASE),
         _mod.parse_lockfile(_lock({"node_modules/react": {"version": "19.0.0"}})),
     )
     md = _mod.render_markdown({"apps/desktop/package-lock.json": d})
-    assert md.startswith(_mod.COMMENT_MARKER)  # workflow finds its comment by prefix
-    assert "⚠️" in md
-    assert "`apps/desktop/package-lock.json`" in md
+    # Fragment starts directly with the per-lockfile subsection header.
+    assert md.startswith("#### `apps/desktop/package-lock.json`")
     assert "`18.2.0`" in md and "`19.0.0`" in md
     # nested display name keeps the parent chain visible
     assert "nested under foo" in md

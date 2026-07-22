@@ -3539,7 +3539,13 @@ class TestConcurrentToolExecution:
         cp_mock.assert_not_called()
 
     def test_concurrent_blocked_terminal_skips_checkpoint(self, agent, monkeypatch):
-        """Concurrent path: blocked terminal should not trigger checkpoint."""
+        """Concurrent path: blocked terminal should not trigger checkpoint.
+
+        Terminal calls now checkpoint unconditionally (#69171), so this no
+        longer patches the removed ``_is_destructive_command`` heuristic — the
+        checkpoint is gated only on the call actually executing (``block_result
+        is None``). A blocked terminal must still skip the checkpoint.
+        """
         tc1 = _mock_tool_call(name="terminal",
                               arguments='{"command":"rm -rf /tmp/foo"}',
                               call_id="c1")
@@ -3561,8 +3567,7 @@ class TestConcurrentToolExecution:
 
         with patch("run_agent.handle_function_call", side_effect=fake_handle):
             with patch.object(agent._checkpoint_mgr, "ensure_checkpoint") as cp_mock:
-                with patch("agent.tool_executor._is_destructive_command", return_value=True):
-                    agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         cp_mock.assert_not_called()
 

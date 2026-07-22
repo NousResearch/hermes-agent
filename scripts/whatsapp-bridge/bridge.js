@@ -116,6 +116,56 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
+// Opt-in: sync full WhatsApp history on connect (messaging-history.set).
+// Default OFF — existing deployments see no behavior change. Enabling this
+// will populate the in-memory contact store and per-chat message store
+// (if WHATSAPP_ENABLE_HISTORY_API is also on), and causes a one-time burst
+// of history sync traffic on first connect.
+const SYNC_FULL_HISTORY =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_SYNC_FULL_HISTORY === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SYNC_FULL_HISTORY.toLowerCase());
+
+// Opt-in: expose HTTP endpoints for message history, chat listing, and
+// contact search.  Requires WHATSAPP_SYNC_FULL_HISTORY=true to have data on
+// first connect; without it, only messages received *after* the bridge starts
+// are available.  Default OFF — existing deployments see no behavior change.
+//
+// Endpoints added:
+//   GET /chat/:id/messages?limit=N  — recent messages for a chat
+//   GET /chats                       — list all chats with activity
+//   GET /contacts?q=search           — search/list contacts
+const ENABLE_HISTORY_API =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_ENABLE_HISTORY_API === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_ENABLE_HISTORY_API.toLowerCase());
+
+// Optional in-memory stores, only initialized when history API is enabled.
+const MAX_MESSAGES_PER_CHAT = 200;
+const chatMessageStore = ENABLE_HISTORY_API ? new Map() : null;
+const contactStore = ENABLE_HISTORY_API ? new Map() : null;
+
+function storeMessage(chatId, event) {
+  if (!ENABLE_HISTORY_API || !chatId || !chatMessageStore) return;
+  let msgs = chatMessageStore.get(chatId);
+  if (!msgs) {
+    msgs = [];
+    chatMessageStore.set(chatId, msgs);
+  }
+  // Deduplicate by messageId: replace existing entry if same id
+  const idx = msgs.findIndex(m => m.messageId === event.messageId);
+  if (idx >= 0) {
+    msgs[idx] = { ...msgs[idx], ...event };
+  } else {
+    msgs.push(event);
+  }
+  while (msgs.length > MAX_MESSAGES_PER_CHAT) {
+    msgs.shift();
+  }
+}
+
 // --- Send queue: serialise all sock.sendMessage() calls across concurrent
 //     HTTP handlers so a single Baileys socket never has overlapping sends.
 //     Overlapping sends are the root cause of cross-chat contamination
@@ -396,7 +446,7 @@ async function startSocket() {
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
-    syncFullHistory: false,
+    syncFullHistory: SYNC_FULL_HISTORY,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
@@ -465,6 +515,46 @@ async function startSocket() {
       }
     }
   });
+
+  // Handle history sync (contacts, chats, initial messages) — only active
+  // when WHATSAPP_SYNC_FULL_HISTORY=true AND WHATSAPP_ENABLE_HISTORY_API=true.
+  if (ENABLE_HISTORY_API) {
+    sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
+      // Store contacts
+      for (const contact of contacts || []) {
+        if (contact?.id && contactStore) {
+          contactStore.set(contact.id, {
+            jid: contact.id,
+            name: contact.name || contact.notify || contact.verifiedName || '',
+            notifyName: contact.notify || '',
+            pushName: contact.verifiedName || '',
+          });
+        }
+      }
+      // Store initial messages by chat
+      for (const msg of messages || []) {
+        if (!msg?.key?.remoteJid) continue;
+        const chatId = msg.key.remoteJid;
+        const senderId = msg.key.participant || chatId;
+        const textContent = msg.message?.conversation
+          || msg.message?.extendedTextMessage?.text
+          || msg.message?.imageMessage?.caption
+          || msg.message?.videoMessage?.caption
+          || '';
+        const entry = {
+          messageId: msg.key.id,
+          chatId,
+          senderId,
+          fromMe: !!msg.key.fromMe,
+          body: textContent,
+          hasMedia: !!msg.message?.imageMessage || !!msg.message?.videoMessage || !!msg.message?.documentMessage,
+          timestamp: msg.messageTimestamp || Math.floor(Date.now() / 1000),
+        };
+        storeMessage(chatId, entry);
+      }
+      console.log(`[bridge] history sync: ${(contacts || []).length} contacts, ${(messages || []).length} initial messages stored`);
+    });
+  }
 
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
@@ -722,6 +812,26 @@ async function startSocket() {
         },
       });
       event.fromOwner = fromOwner;
+
+      // Store in per-chat history (if history API is enabled).
+      // This runs before echo/empty filtering so ALL messages in the chat
+      // are recorded — useful for context even when the agent ignores
+      // its own echoes.
+      if (ENABLE_HISTORY_API) {
+        storeMessage(chatId, {
+          messageId: msg.key.id,
+          chatId,
+          senderId,
+          senderNumber,
+          isGroup,
+          fromMe: !!msg.key.fromMe,
+          fromOwner: !!fromOwner,
+          body: event.body || '',
+          hasMedia: !!event.hasMedia,
+          mediaType: event.mediaType || '',
+          timestamp: event.timestamp || Math.floor(Date.now() / 1000),
+        });
+      }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
@@ -1067,6 +1177,70 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// --- History API endpoints (only registered when WHATSAPP_ENABLE_HISTORY_API=true) ---
+
+if (ENABLE_HISTORY_API) {
+  // GET /chat/:id/messages?limit=N — Fetch stored messages for a chat
+  app.get('/chat/:id/messages', (req, res) => {
+    const chatId = req.params.id;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, MAX_MESSAGES_PER_CHAT);
+    const msgs = chatMessageStore ? chatMessageStore.get(chatId) : undefined;
+    if (!msgs) {
+      return res.json({ messages: [], total: 0 });
+    }
+    const recent = msgs.slice(-limit).reverse();
+    res.json({ messages: recent, total: msgs.length });
+  });
+
+  // GET /chats — List all chats that have stored messages
+  app.get('/chats', (req, res) => {
+    const chats = [];
+    if (chatMessageStore) {
+      for (const [chatId, msgs] of chatMessageStore) {
+        const last = msgs[msgs.length - 1] || {};
+        chats.push({
+          chatId,
+          isGroup: chatId.endsWith('@g.us'),
+          messageCount: msgs.length,
+          lastMessage: last.body || (last.hasMedia ? '[Media]' : ''),
+          lastTimestamp: last.timestamp || null,
+        });
+      }
+    }
+    // Sort by most recent activity
+    chats.sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0));
+    res.json({ chats });
+  });
+
+  // GET /contacts?q=search — Search or list WhatsApp contacts
+  app.get('/contacts', (req, res) => {
+    const query = (req.query.q || '').toLowerCase().trim();
+    let results = [];
+    if (contactStore) {
+      for (const contact of contactStore.values()) {
+        const name = (contact.name || '').toLowerCase();
+        const jid = (contact.jid || '').toLowerCase();
+        if (!query || name.includes(query) || jid.includes(query)) {
+          results.push(contact);
+        }
+      }
+    }
+    // Also check message history for contacts not in the store
+    if (query && chatMessageStore) {
+      const seen = new Set(results.map(c => c.jid));
+      for (const [chatId] of chatMessageStore) {
+        if (seen.has(chatId)) continue;
+        const displayName = chatId.replace(/@.*/, '');
+        if (displayName.toLowerCase().includes(query)) {
+          results.push({ jid: chatId, name: displayName, notifyName: '', pushName: '' });
+          seen.add(chatId);
+        }
+      }
+    }
+    res.json({ contacts: results });
+  });
+}
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -1111,6 +1285,10 @@ if (PAIR_ONLY) {
     }
     if (WHATSAPP_MODE === 'bot' && FORWARD_OWNER_MESSAGES) {
       console.log(`👤 WHATSAPP_FORWARD_OWNER_MESSAGES=true — owner-typed messages will be forwarded with fromOwner:true`);
+    }
+    if (ENABLE_HISTORY_API) {
+      console.log(`📜 WHATSAPP_ENABLE_HISTORY_API=true — history API endpoints active`);
+      console.log(`   GET /chat/:id/messages  GET /chats  GET /contacts`);
     }
     console.log();
     startSocket();

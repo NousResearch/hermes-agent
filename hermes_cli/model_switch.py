@@ -838,6 +838,9 @@ def resolve_display_context_length(
     model_info: Optional[ModelInfo] = None,
     custom_providers: list | None = None,
     config_context_length: int | None = None,
+    configured_model: str | None = None,
+    configured_provider: str | None = None,
+    configured_base_url: str | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -856,6 +859,24 @@ def resolve_display_context_length(
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    if config_context_length is not None and (
+        configured_model or configured_provider or configured_base_url
+    ):
+        try:
+            from hermes_cli.route_identity import should_clear_context_pin
+
+            if should_clear_context_pin(
+                configured_model,
+                model,
+                configured_base_url,
+                base_url,
+                configured_provider,
+                provider,
+            ):
+                config_context_length = None
+        except Exception:
+            config_context_length = None
+
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
@@ -1450,8 +1471,11 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
+            from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():
+                if not is_provider_enabled(cfg):
+                    continue
                 if slug == target_provider:
                     if new_model in _declared_model_ids(cfg.get("models", {})):
                         override = True
@@ -1628,6 +1652,7 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
                 current_model=ctx.current_model,
                 user_providers=ctx.user_providers,
                 custom_providers=ctx.custom_providers,
+                excluded_providers=ctx.excluded_providers or [],
             )
         except Exception:
             # Best-effort warmup — never surface errors into the session.
@@ -1651,6 +1676,7 @@ def list_authenticated_providers(
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
+    excluded_providers: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1715,13 +1741,17 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
     _current_provider_norm = str(current_provider or "").strip().lower()
     _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
 
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
 
+    # Normalize the excluded-providers list once for fast membership checks.
+    # Compared against hermes_id / mdev_id (section 1), pid / hermes_slug
+    # (section 2) and canonical slug (section 2b) so a single entry like
+    # ``copilot`` hides the provider regardless of which key it surfaces under.
+    _excluded: set = {str(p).strip().lower() for p in (excluded_providers or []) if p}
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1839,6 +1869,7 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+    from hermes_cli.models import _PROVIDER_ALIASES as _CANON_ALIASES
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         # Skip vendor names that are merely aliases routing through an
@@ -1856,10 +1887,32 @@ def list_authenticated_providers(
             and _alias_target in _AGG_PROVIDERS
         ):
             continue
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
+        # Resolve the canonical provider profile name.  Skip hermes_ids
+        # that are mere aliases resolving to a different canonical profile
+        # (e.g. "kimi" and "moonshot" both → "kimi-coding").  Only process
+        # entries whose hermes_id matches the canonical profile name so
+        # distinct profiles (e.g. kimi-coding, kimi-coding-cn) each get
+        # their own picker row.
+        _canonical = hermes_id
+        try:
+            from providers import get_provider_profile as _gpp
+            _prof = _gpp(hermes_id)
+            if _prof is not None:
+                _canonical = _prof.name
+        except Exception:
+            pass
+        if _canonical != hermes_id:
+            continue
+
+        # Skip duplicates: another entry with the same slug was already
+        # emitted (e.g. two PROVIDER_TO_MODELS_DEV entries routing to the
+        # same hermes_id).  Distinct canonical profiles that share a
+        # models.dev ID (e.g. kimi-coding and kimi-coding-cn → kimi-for-coding)
+        # are both allowed through since they have different slugs.
+        slug = hermes_id
+        if slug.lower() in seen_slugs:
+            continue
+        if hermes_id.lower() in _excluded or mdev_id.lower() in _excluded:
             continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
@@ -1928,21 +1981,23 @@ def list_authenticated_providers(
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
-        slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
 
         results.append({
             "slug": slug,
             "name": display_name,
-            "is_current": slug == current_provider or mdev_id == current_provider,
+            "is_current": (
+                slug == current_provider
+                or hermes_id == current_provider
+                or mdev_id == current_provider
+            ),
             "is_user_defined": False,
             "models": top,
             "total_models": total,
             "source": "built-in",
         })
         seen_slugs.add(slug.lower())
-        seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
@@ -1961,6 +2016,8 @@ def list_authenticated_providers(
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
+            continue
+        if pid.lower() in _excluded or hermes_slug.lower() in _excluded:
             continue
 
         # Check if credentials exist
@@ -2131,6 +2188,8 @@ def list_authenticated_providers(
     for _cp in _canon_provs:
         if _cp.slug.lower() in seen_slugs:
             continue
+        if _cp.slug.lower() in _excluded:
+            continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
@@ -2215,9 +2274,15 @@ def list_authenticated_providers(
         # the wire protocol differs.
         from collections import OrderedDict as _OD3
 
+        from hermes_cli.config import is_provider_enabled
+
         ep_groups: "_OD3[tuple, dict]" = _OD3()
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
+                continue
+            # Honour explicit ``providers.<name>.enabled: false`` from
+            # config — these are hidden from the picker.
+            if not is_provider_enabled(ep_cfg):
                 continue
             if ep_name.lower() in seen_slugs:
                 continue
@@ -2679,6 +2744,28 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Apply final ``providers.<name>.enabled: false`` post-filter — covers
+    # built-in PROVIDER_REGISTRY rows (sections 1-2) which would otherwise
+    # bypass the per-section gate. Indexed by lowercase slug AND by
+    # ``provider_id`` so PROVIDER_REGISTRY entries that match user-config
+    # blocks are filtered consistently.
+    try:
+        from hermes_cli.config import is_provider_enabled
+        if isinstance(user_providers, dict):
+            _disabled_slugs = {
+                str(name).strip().lower()
+                for name, cfg in user_providers.items()
+                if isinstance(cfg, dict) and not is_provider_enabled(cfg)
+            }
+            if _disabled_slugs:
+                results = [
+                    r for r in results
+                    if str(r.get("provider_id", "")).strip().lower() not in _disabled_slugs
+                    and str(r.get("slug", "")).strip().lower() not in _disabled_slugs
+                ]
+    except Exception:
+        pass
+
     # Surface a custom / uncurated model the user selected via the CLI.
     # Each row's model list is its curated/live catalog, so a model the user set
     # with `/model <provider>/<uncurated-name>` would otherwise be invisible in
@@ -2731,6 +2818,7 @@ def list_picker_providers(
     max_models: int | None = None,
     current_model: str = "",
     include_moa: bool = False,
+    excluded_providers: list | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2761,6 +2849,7 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
         for_picker=True,
+        excluded_providers=excluded_providers,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

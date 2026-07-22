@@ -481,3 +481,131 @@ def test_delegate_task_proceeds_when_transcripts_unavailable(monkeypatch):
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction
+# ---------------------------------------------------------------------------
+#
+# These transcripts land under ``cache/delegation``, which delegate_tool mounts
+# READ-ONLY into remote terminal backends — so a line written here is readable
+# from inside the sandbox. The rendered events are exactly the secret-bearing
+# surfaces (tool args, tool results, streamed assistant text), and every other
+# sink for that data already routes through the canonical redactor.
+
+_BEARER = "sk-ant-api03-" + "R" * 24
+_ENV_KEY = "sk-proj-" + "L" * 24
+_AWS = "wJalrXUtnFEMIK7MDENG" + "bPxRfiCY"
+
+
+def test_tool_args_are_redacted_before_hitting_disk():
+    w = LiveTranscriptWriter("deleg_redact_args", 0, "g")
+    w.observe(
+        "tool.started",
+        "terminal",
+        f'curl -H "Authorization: Bearer {_BEARER}" https://api.internal',
+        None,
+    )
+    body = w.path.read_text(encoding="utf-8")
+    assert _BEARER not in body
+    assert "terminal" in body, "redaction must not gut the operational detail"
+
+
+def test_tool_results_are_redacted_before_hitting_disk():
+    w = LiveTranscriptWriter("deleg_redact_result", 0, "g")
+    w.observe(
+        "tool.completed",
+        "terminal",
+        None,
+        None,
+        result=f"OPENAI_API_KEY={_ENV_KEY}\nAWS_SECRET_ACCESS_KEY={_AWS}",
+        duration=0.4,
+    )
+    body = w.path.read_text(encoding="utf-8")
+    assert _ENV_KEY not in body
+    assert _AWS not in body
+    assert "OPENAI_API_KEY" in body, "key NAMES stay — only the values are masked"
+
+
+def test_streamed_assistant_text_is_redacted():
+    w = LiveTranscriptWriter("deleg_redact_stream", 0, "g")
+    w.observe("subagent.text", None, f"the key is {_ENV_KEY}")
+    w.flush_stream()
+    assert _ENV_KEY not in w.path.read_text(encoding="utf-8")
+
+
+def test_goal_header_is_redacted():
+    """The header bypasses event(); a pasted key in the goal must not survive."""
+    w = LiveTranscriptWriter("deleg_redact_goal", 0, f"deploy using {_BEARER}")
+    body = w.path.read_text(encoding="utf-8")
+    assert _BEARER not in body
+    assert "deploy using" in body
+
+
+def test_manifest_goal_is_redacted():
+    """manifest.json shares the mounted dir with the .log files.
+
+    Redacting the log header while ``_write_manifest`` serialises the same goal
+    verbatim would leave the credential exposed one file over — both sinks in
+    ``cache/delegation/live/<id>/`` are readable from inside a sandbox.
+    """
+    delegation_id, _writers, _paths = create_live_transcripts(
+        [{"goal": f"deploy using {_BEARER}"}]
+    )
+
+    manifest = json.loads(
+        (live_transcript_root() / delegation_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    goal = manifest["tasks"][0]["goal"]
+
+    assert _BEARER not in goal
+    assert "deploy using" in goal, "redaction must not blank the goal entirely"
+
+
+def test_no_file_in_the_dispatch_directory_carries_the_raw_key():
+    """Whole-directory sweep: every artefact dispatch writes is covered."""
+    delegation_id, _writers, _paths = create_live_transcripts(
+        [{"goal": f"deploy using {_BEARER}"}, {"goal": "second task"}]
+    )
+
+    directory = live_transcript_root() / delegation_id
+    written = sorted(p.name for p in directory.iterdir())
+
+    assert "manifest.json" in written
+    assert any(name.endswith(".log") for name in written)
+    for path in directory.iterdir():
+        assert _BEARER not in path.read_text(encoding="utf-8"), (
+            f"{path.name} leaked the credential"
+        )
+
+
+def test_thinking_text_is_redacted():
+    w = LiveTranscriptWriter("deleg_redact_think", 0, "g")
+    w.observe("_thinking", f"I should use {_ENV_KEY} here")
+    assert _ENV_KEY not in w.path.read_text(encoding="utf-8")
+
+
+def test_redaction_covers_every_helper_via_the_event_chokepoint():
+    """Any helper that reaches disk goes through event(), so all are covered."""
+    w = LiveTranscriptWriter("deleg_redact_all", 0, "g")
+    w.assistant_text(f"a {_ENV_KEY}")
+    w.thinking(f"b {_ENV_KEY}")
+    w.tool_start("terminal", f"c {_ENV_KEY}")
+    w.tool_result("terminal", result=f"d {_ENV_KEY}")
+    w.marker(f"e {_ENV_KEY}")
+    w.finalize({"status": "error", "error": f"f {_ENV_KEY}"})
+    body = w.path.read_text(encoding="utf-8")
+    assert _ENV_KEY not in body, "a write path escaped the redactor"
+
+
+def test_benign_transcript_content_is_untouched():
+    """Redaction must not mangle ordinary transcript text."""
+    w = LiveTranscriptWriter("deleg_redact_benign", 0, "refactor the parser")
+    w.observe("tool.started", "read_file", "src/parser.py", None)
+    w.observe("tool.completed", "read_file", None, None, result="def parse(x): ...", duration=1.5)
+    body = w.path.read_text(encoding="utf-8")
+    assert "src/parser.py" in body
+    assert "def parse(x)" in body
+    assert "refactor the parser" in body

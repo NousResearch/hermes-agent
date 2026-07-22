@@ -89,3 +89,26 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     assert compressor._previous_summary == old_summary
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_handoff_in_protected_head_is_replaced_not_duplicated():
+    """Re-compaction must replace a protected old handoff with the updated one."""
+    compressor = _compressor()
+    old_summary = "OLD-PROTECTED-HANDOFF unique old summary body"
+
+    with patch("agent.context_compressor.call_llm", return_value=_response("UPDATED summary body")):
+        compressed = compressor.compress(_messages_with_handoff(old_summary))
+
+    # The summary may be emitted standalone or merged into the first tail
+    # message (alternation corner case), so detect it the same way the
+    # compressor does rather than via a startswith(SUMMARY_PREFIX) check.
+    summary_messages = [
+        msg
+        for msg in compressed
+        if isinstance(msg, dict)
+        and ContextCompressor._is_context_summary_content(msg.get("content"))
+    ]
+    assert len(summary_messages) == 1
+    assert "UPDATED summary body" in str(summary_messages[0]["content"])
+    assert old_summary not in str(summary_messages[0]["content"])
+    assert old_summary not in "\n".join(str(msg.get("content") or "") for msg in compressed)

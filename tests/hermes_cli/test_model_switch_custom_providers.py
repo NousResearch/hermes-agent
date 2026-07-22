@@ -6,6 +6,7 @@ only looked at `providers:`.
 """
 
 import hermes_cli.providers as providers_mod
+import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
 
@@ -16,6 +17,12 @@ _MOCK_VALIDATION = {
     "recognized": True,
     "message": None,
 }
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_custom_provider_model_probe(monkeypatch):
+    """Keep custom-provider picker fixtures independent of local model servers."""
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
@@ -1631,3 +1638,56 @@ def test_shared_url_per_model_suffix_still_collapses(monkeypatch):
     )
     assert custom[0]["name"] == "Ollama"
     assert set(custom[0]["models"]) == {"glm-5.1", "qwen3-coder"}
+
+
+def test_excluded_providers_hides_builtin_row(monkeypatch):
+    """``excluded_providers`` must hide a built-in provider row that would
+    otherwise surface when its credentials are present."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+    baseline = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+    assert any(p["slug"] == "openrouter" for p in baseline), (
+        "sanity: openrouter row must appear when OPENROUTER_API_KEY is set"
+    )
+
+    filtered = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+        excluded_providers=["openrouter"],
+    )
+    assert not any(p["slug"] == "openrouter" for p in filtered), (
+        "excluded_providers=['openrouter'] must hide the openrouter row"
+    )
+
+
+def test_excluded_providers_empty_is_noop(monkeypatch):
+    """An empty ``excluded_providers`` list must not change picker output."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+    a = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+    b = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+        excluded_providers=[],
+    )
+    assert [p["slug"] for p in a] == [p["slug"] for p in b]

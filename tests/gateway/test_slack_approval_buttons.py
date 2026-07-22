@@ -276,6 +276,37 @@ class TestSlackApprovalAction:
         assert "Denied by alice" in update_kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_truncates_inflated_original_text(self):
+        """Interaction payload re-escapes HTML entities; text must be capped."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1.2"] = False
+
+        # Simulate Slack re-escaping: original was ~2990 chars, but & → &amp;
+        # etc. inflates it past 3000.
+        inflated_text = "a" * 2990 + "&amp;" * 10  # 2990 + 50 = 3040 chars
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1.2", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": inflated_text}},
+            ]},
+            "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U_ALICE"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1):
+            await adapter._handle_approval_action(ack, body, action)
+
+        update_kwargs = mock_client.chat_update.call_args[1]
+        section_text = update_kwargs["blocks"][0]["text"]["text"]
+        assert len(section_text) <= 3000
+
+    @pytest.mark.asyncio
     async def test_global_allowlist_blocks_unauthorized_click(self, monkeypatch):
         adapter = _make_adapter()
         adapter._approval_resolved["1234.5678"] = False
@@ -409,6 +440,40 @@ class TestSlackSlashConfirmAction:
         secondary_client.chat_update.assert_awaited_once()
         secondary_client.chat_postMessage.assert_awaited_once()
         adapter._team_clients["T1"].chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_truncates_inflated_original_text(self):
+        """Interaction payload re-escapes HTML entities; text must be capped."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["2222.3333"] = False
+
+        # Simulate Slack re-escaping inflating text past 3000 chars.
+        inflated_text = "b" * 2990 + "&lt;" * 10  # 2990 + 40 = 3030 chars
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "2222.3333", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": inflated_text}},
+            ]},
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_confirm_once",
+            "value": "agent:main:slack:group:C1:1111|confirm-1",
+        }
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock()
+
+        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="ok")):
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        update_kwargs = mock_client.chat_update.call_args[1]
+        section_text = update_kwargs["blocks"][0]["text"]["text"]
+        assert len(section_text) <= 3000
 
 
 # ===========================================================================
@@ -547,7 +612,145 @@ class TestSlackThreadContext:
         assert "メール要約: 本日の新着3件" in context
 
     @pytest.mark.asyncio
-    async def test_fetch_thread_context_excludes_self_bot_replies(self):
+    async def test_fetch_thread_context_extracts_block_kit_parent(self):
+        """Bot-posted parents that put their content in ``blocks`` (Honeycomb,
+        PagerDuty, Datadog, GitHub bot, etc.) used to be reduced to just the
+        ``text`` field — typically only the alert title — which dropped the
+        URL/button payload that makes the alert useful to an agent replying
+        in the thread. The fetched context must now include bounded display
+        text and actionable URLs so section text and button URLs survive."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                # Bot-posted alert: title in `text`, URL only in `blocks`.
+                # Mirrors what Honeycomb, PagerDuty, etc. actually send.
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_ALERT",
+                    "subtype": "bot_message",
+                    "username": "alertbot",
+                    "text": "low_alerts (checkout)",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "*Trigger fired:* low_alerts",
+                            },
+                        },
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "View graph"},
+                                    "url": "https://example.example/view/abc123",
+                                },
+                            ],
+                        },
+                    ],
+                },
+                # User reply that triggered the fetch.
+                {"ts": "1000.1", "user": "U1", "text": "what's going on?"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1",
+            thread_ts="1000.0",
+            current_ts="1000.1",
+            team_id="T1",
+        )
+
+        # Title still present.
+        assert "low_alerts (checkout)" in context
+        # URL from the action button must now surface.
+        assert "https://example.example/view/abc123" in context
+        # Marked as the thread parent.
+        assert "[thread parent]" in context
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_context_includes_blocks_only_parent(self):
+        """A parent message with empty ``text`` but non-empty ``blocks`` must
+        still be included — without this, alerts that put *everything* in
+        ``blocks`` (some webhook integrations do this) are silently dropped
+        because the ``if not msg_text: continue`` guard fires."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_ALERT",
+                    "subtype": "bot_message",
+                    "username": "alertbot",
+                    "text": "",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "Build failed: <https://example.example/build/9|#9>",
+                            },
+                        },
+                    ],
+                },
+                {"ts": "1000.1", "user": "U1", "text": "looking"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1",
+            thread_ts="1000.0",
+            current_ts="1000.1",
+            team_id="T1",
+        )
+
+        assert "[thread parent]" in context
+        assert "https://example.example/build/9" in context
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_parent_text_surfaces_block_urls(self):
+        """Cold-cache _fetch_thread_parent_text must use the same renderer as
+        _fetch_thread_context so a bot-posted parent with a URL only in
+        ``blocks`` surfaces it in reply_to_text, not just in thread context."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_ALERT",
+                    "subtype": "bot_message",
+                    "username": "alertbot",
+                    "text": "Incident triggered",
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "View incident"},
+                                    "url": "https://example.example/incident/42",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ]
+        })
+
+        text = await adapter._fetch_thread_parent_text(
+            channel_id="C1",
+            thread_ts="1000.0",
+            team_id="T1",
+        )
+
+        assert "Incident triggered" in text
+        assert "https://example.example/incident/42" in text
         """Parent (non-self bot) is kept, self-bot child replies are dropped,
         user replies are kept."""
         adapter = _make_adapter()

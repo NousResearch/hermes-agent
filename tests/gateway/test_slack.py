@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -467,6 +468,7 @@ class TestSlackConnectCleanup:
         )
 
         second_handler = MagicMock()
+        second_handler.close_async = AsyncMock(return_value=None)
         # _start_socket_mode_handler awaits the result of start_async via
         # asyncio.create_task — so the stub must return a real coroutine, not a
         # bare MagicMock.
@@ -488,6 +490,62 @@ class TestSlackConnectCleanup:
         assert result is True
         first_handler.close_async.assert_awaited_once_with()
         assert adapter._handler is second_handler
+
+        with patch("gateway.status.release_scoped_lock"):
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_workspace_clients_and_clears_runtime_state(self):
+        """Regression for #51465: shutdown must close Slack WebClients.
+
+        ``hermes gateway run --replace`` takes the old process through the
+        normal adapter.disconnect() path. If Slack leaves AsyncWebClient
+        instances open there, aiohttp logs ``Unclosed client session`` while
+        the old gateway exits after SIGTERM.
+        """
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        socket_task = asyncio.create_task(_pending_for_fake_task())
+        handler = MagicMock()
+        handler.close_async = AsyncMock(return_value=None)
+
+        primary_client = MagicMock()
+        primary_client.close = AsyncMock(return_value=None)
+        team_client = MagicMock()
+        team_client.close = AsyncMock(return_value=None)
+
+        adapter._running = True
+        adapter._handler = handler
+        adapter._socket_mode_task = socket_task
+        adapter._app = MagicMock()
+        adapter._app.client = primary_client
+        adapter._team_clients = {"T_FAKE": team_client}
+        adapter._team_bot_user_ids = {"T_FAKE": "U_BOT"}
+        adapter._channel_team = {"C_FAKE": "T_FAKE"}
+        adapter._platform_lock_scope = "slack-app-token"
+        adapter._platform_lock_identity = "xapp-fake"
+        adapter._app_token = "xapp-fake"
+        adapter._proxy_url = "http://proxy.example.com:3128"
+        adapter._bot_user_id = "U_BOT"
+
+        with patch("gateway.status.release_scoped_lock") as mock_release:
+            await adapter.disconnect()
+
+        handler.close_async.assert_awaited_once_with()
+        primary_client.close.assert_awaited_once_with()
+        team_client.close.assert_awaited_once_with()
+        assert socket_task.cancelled()
+        assert adapter._app is None
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+        assert adapter._team_clients == {}
+        assert adapter._team_bot_user_ids == {}
+        assert adapter._channel_team == {}
+        assert adapter._bot_user_id is None
+        assert adapter._app_token is None
+        assert adapter._proxy_url is None
+        mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +860,85 @@ class TestSlackSocketWatchdog:
             finally:
                 await adapter.disconnect()
 
+    # -- ping/pong staleness: heals the wedged transport that is_connected() misses --
+
+    def _adapter_with_fake_client(self, **client_attrs):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        client = MagicMock()
+        for key, value in client_attrs.items():
+            setattr(client, key, value)
+        adapter._handler = MagicMock(client=client)
+        return adapter
+
+    def test_ping_pong_stale_when_last_ping_old(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=time.time() - 1000
+        )
+        assert adapter._socket_ping_pong_stale() is True
+
+    def test_ping_pong_fresh_when_last_ping_recent(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=time.time() - 5
+        )
+        assert adapter._socket_ping_pong_stale() is False
+
+    def test_ping_pong_none_within_grace_not_stale(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=None
+        )
+        adapter._socket_handler_started_monotonic = time.monotonic()
+        assert adapter._socket_ping_pong_stale() is False
+
+    def test_ping_pong_none_beyond_grace_is_stale(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=None
+        )
+        adapter._socket_first_ping_grace_s = 0.0
+        adapter._socket_handler_started_monotonic = time.monotonic() - 200
+        assert adapter._socket_ping_pong_stale() is True
+
+    def test_ping_pong_no_handler_not_stale(self):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._handler = None
+        assert adapter._socket_ping_pong_stale() is False
+
+    def test_ping_pong_nonnumeric_attrs_not_stale(self):
+        # A mocked/partial client (MagicMock attrs) must never trigger reconnect.
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._handler = MagicMock()
+        assert adapter._socket_ping_pong_stale() is False
+
+    @pytest.mark.asyncio
+    async def test_watchdog_reconnects_when_ping_pong_stale_despite_is_connected_true(self):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                assert len(instances) == 1
+
+                # Transport lies: is_connected() stays True while ping/pong has
+                # gone stale (the wedged "Session is closed" zombie).
+                instances[0].client.is_connected = lambda: True
+                instances[0].client.ping_interval = 30
+                instances[0].client.last_ping_pong_time = time.time() - 1000
+
+                for _ in range(40):
+                    if len(instances) >= 2:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert len(instances) >= 2, "watchdog did not heal wedged (lying) transport"
+                assert instances[0].closed is True
+                assert adapter._handler is instances[-1]
+            finally:
+                await adapter.disconnect()
+
 
 # ---------------------------------------------------------------------------
 # TestSlackProxyBehavior
@@ -939,6 +1076,20 @@ class TestSlackProxyBehavior:
         assert adapter._handler.proxy == "http://proxy.example.com:3128"
         assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
         assert "hermes_feedback" in created_apps[0].registered_actions
+        assert "hermes_clarify_other" in created_apps[0].registered_actions
+        clarify_choice_patterns = [
+            action_id
+            for action_id in created_apps[0].registered_actions
+            if hasattr(action_id, "fullmatch")
+        ]
+        assert any(
+            pattern.fullmatch("hermes_clarify_choice_0")
+            for pattern in clarify_choice_patterns
+        )
+        assert not any(
+            pattern.fullmatch("hermes_clarify_choice")
+            for pattern in clarify_choice_patterns
+        )
 
     @pytest.mark.asyncio
     async def test_connect_clears_proxy_when_no_proxy_matches_slack(self):
@@ -2912,6 +3063,15 @@ class TestEditMessage:
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"] == "AT&amp;T &lt; 5 &gt; 3"
 
+    @pytest.mark.asyncio
+    async def test_edit_message_truncates_oversized_content(self, adapter):
+        """Oversized edits are truncated instead of failing with msg_too_long."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        result = await adapter.edit_message("C123", "1234.5678", "x" * 45000)
+        assert result.success
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+
 
 # ---------------------------------------------------------------------------
 # TestEditMessageStreamingPipeline
@@ -4071,6 +4231,69 @@ class TestMessageSplitting:
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
 
 
+class TestEmptyTextGuard:
+    """Guard against Slack ``no_text`` errors when content is empty/whitespace."""
+
+    @pytest.mark.asyncio
+    async def test_send_skips_empty_string(self, adapter):
+        """Empty content must not call chat_postMessage."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        result = await adapter.send("C123", "")
+        assert result.success is True
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_skips_whitespace_only(self, adapter):
+        """Whitespace-only content must not call chat_postMessage."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        result = await adapter.send("C123", "   \n\t  ")
+        assert result.success is True
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_skips_empty(self, monkeypatch):
+        """_standalone_send returns success without HTTP call on empty text."""
+        from plugins.platforms.slack.adapter import _standalone_send
+        from types import SimpleNamespace
+
+        pconfig = SimpleNamespace(token="xoxb-test", extra={})
+
+        # Patch aiohttp so the import succeeds, but it should never be used.
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "plugins.platforms.slack.adapter.aiohttp",
+            MagicMock(ClientSession=MagicMock(return_value=mock_session)),
+        )
+
+        result = await _standalone_send(pconfig, "C123", "")
+        assert result.get("success") is True
+        assert result.get("skipped") == "empty_text"
+        mock_session.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_skips_whitespace(self, monkeypatch):
+        """_standalone_send returns success without HTTP call on whitespace."""
+        from plugins.platforms.slack.adapter import _standalone_send
+        from types import SimpleNamespace
+
+        pconfig = SimpleNamespace(token="xoxb-test", extra={})
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "plugins.platforms.slack.adapter.aiohttp",
+            MagicMock(ClientSession=MagicMock(return_value=mock_session)),
+        )
+
+        result = await _standalone_send(pconfig, "C123", "   \n  ")
+        assert result.get("success") is True
+        assert result.get("skipped") == "empty_text"
+        mock_session.post.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # TestReplyBroadcast
 # ---------------------------------------------------------------------------
@@ -4995,3 +5218,175 @@ class TestThreadContextUnverifiedTagging:
         # Renders successfully without trust tag (exception → unknown trust).
         assert "U_X: hello" in content
         assert "[unverified]" not in content
+
+
+# ---------------------------------------------------------------------------
+# TestThreadContextAppMessages
+# ---------------------------------------------------------------------------
+
+
+class TestThreadContextAppMessages:
+    """App-posted messages (Alertmanager, Grafana, CI bots) frequently carry
+    their content in ``attachments``/``blocks`` with an empty top-level
+    ``text``. Thread-context must fall back to those so, e.g., an alert that
+    started the thread the bot was asked to investigate is not dropped."""
+
+    @staticmethod
+    def _make_replies(messages):
+        return AsyncMock(return_value={"messages": messages})
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_parent_is_included(self, adapter):
+        """Alertmanager-style parent: empty text, content in a legacy attachment."""
+        adapter._thread_context_cache.clear()
+        messages = [
+            {  # parent posted by the Alertmanager app: text="" , content in attachment
+                "ts": "100.0",
+                "bot_id": "B_ALERTMGR",
+                "subtype": "bot_message",
+                "username": "Alertmanager",
+                "text": "",
+                "attachments": [
+                    {
+                        "fallback": "[FIRING:1] KubeJobFailed cluster-01 "
+                        "batch-job-123456",
+                        "color": "danger",
+                    }
+                ],
+            },
+            {"ts": "101.0", "user": "U_BOB", "text": "<@U_BOT> investigate"},
+        ]
+        adapter._app.client.conversations_replies = self._make_replies(messages)
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        # The alert text (previously dropped) is now present in the context.
+        assert "KubeJobFailed" in content
+        assert "batch-job-123456" in content
+        assert "[thread parent]" in content
+
+    @pytest.mark.asyncio
+    async def test_blocks_only_message_is_included(self, adapter):
+        """Block Kit message with empty text falls back to block text."""
+        adapter._thread_context_cache.clear()
+        messages = [
+            {"ts": "100.0", "user": "U_BOB", "text": "kickoff"},
+            {
+                "ts": "101.0",
+                "bot_id": "B_CI",
+                "subtype": "bot_message",
+                "username": "CI",
+                "text": "",
+                "blocks": [
+                    {
+                        "type": "rich_text",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "deploy #42 succeeded"}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+        adapter._app.client.conversations_replies = self._make_replies(messages)
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        assert "deploy #42 succeeded" in content
+
+    @pytest.mark.asyncio
+    async def test_message_without_any_text_is_skipped(self, adapter):
+        """A message with no text/blocks/attachments is still skipped (no crash)."""
+        adapter._thread_context_cache.clear()
+        messages = [
+            {"ts": "100.0", "user": "U_BOB", "text": "hello"},
+            {"ts": "101.0", "bot_id": "B_X", "subtype": "bot_message", "text": ""},
+        ]
+        adapter._app.client.conversations_replies = self._make_replies(messages)
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        assert "hello" in content  # the real message survives; empty bot msg dropped
+
+
+# ---------------------------------------------------------------------------
+# Missing-credential handling — fatal-error contract
+# ---------------------------------------------------------------------------
+
+
+class TestMissingCredentials:
+    """Missing SLACK_BOT_TOKEN or SLACK_APP_TOKEN must set a non-retryable fatal error."""
+
+    @pytest.mark.asyncio
+    async def test_missing_bot_token_sets_fatal_error(self):
+        """When SLACK_BOT_TOKEN is absent from both config and env, connect()
+        must set fatal_error with code 'missing_slack_bot_token' and retryable=False."""
+        config = PlatformConfig(enabled=True, token=None)  # no bot token
+        adapter = SlackAdapter(config)
+
+        fatal_errors = []
+
+        def capture_fatal(code, message, *, retryable):
+            fatal_errors.append({"code": code, "message": message, "retryable": retryable})
+
+        with (
+            patch.object(adapter, "_set_fatal_error", side_effect=capture_fatal),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert len(fatal_errors) == 1
+        assert fatal_errors[0]["code"] == "missing_slack_bot_token"
+        assert fatal_errors[0]["retryable"] is False
+        assert "SLACK_BOT_TOKEN" in fatal_errors[0]["message"]
+        assert "hermes gateway setup" in fatal_errors[0]["message"].lower() or ".env" in fatal_errors[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_app_token_sets_fatal_error(self):
+        """When SLACK_APP_TOKEN is absent but SLACK_BOT_TOKEN is present,
+        connect() must set fatal_error with code 'missing_slack_app_token'
+        and retryable=False."""
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        fatal_errors = []
+
+        def capture_fatal(code, message, *, retryable):
+            fatal_errors.append({"code": code, "message": message, "retryable": retryable})
+
+        with (
+            patch.object(adapter, "_set_fatal_error", side_effect=capture_fatal),
+            patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-fake"}, clear=True),
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert len(fatal_errors) == 1
+        assert fatal_errors[0]["code"] == "missing_slack_app_token"
+        assert fatal_errors[0]["retryable"] is False
+        assert "SLACK_APP_TOKEN" in fatal_errors[0]["message"]
+        assert "hermes gateway setup" in fatal_errors[0]["message"].lower() or ".env" in fatal_errors[0]["message"]
+

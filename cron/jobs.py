@@ -115,6 +115,11 @@ _CONTEXT_FREE_FIXTURE_PAIRS = frozenset(
         ("w", "echo hi"),
     }
 )
+# The leaked fixture batch was created during this bounded incident window.
+# Requiring the historical creation timestamp prevents a future legitimate job
+# with the same concise name/prompt pair from being treated as test debris.
+_CONTEXT_FREE_FIXTURE_CREATED_AFTER = "2026-07-16T00:00:00+00:00"
+_CONTEXT_FREE_FIXTURE_CREATED_BEFORE = "2026-07-18T00:00:00+00:00"
 _CONTEXT_FIELDS = (
     "script",
     "skills",
@@ -200,6 +205,11 @@ def use_cron_store(home: Union[str, Path]):
 def get_cron_output_dir() -> Path:
     """Return the output directory for the active cron store context."""
     return _current_cron_store().output_dir
+
+
+def get_cron_dir() -> Path:
+    """Return the cron directory for the active profile/store context."""
+    return _current_cron_store().cron_dir
 
 
 # Fallback stale-recovery window for a one-shot's running-claim (#59229) when
@@ -1459,7 +1469,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
 
 def context_free_fixture_reason(job: Dict[str, Any]) -> Optional[str]:
-    """Return a quarantine reason for a known trivial prompt with no contract."""
+    """Return a quarantine reason for one known historical fixture record."""
     if not isinstance(job, dict) or job.get("no_agent"):
         return None
     name = " ".join(str(job.get("name") or "").strip().lower().split())
@@ -1468,9 +1478,25 @@ def context_free_fixture_reason(job: Dict[str, Any]) -> Optional[str]:
         return None
     if any(job.get(field) for field in _CONTEXT_FIELDS):
         return None
+    deliver = str(job.get("deliver") or "").strip().lower()
+    if deliver not in {"", "local", "origin"} or job.get("attach_to_session"):
+        return None
+    try:
+        created_at = _ensure_aware(datetime.fromisoformat(str(job.get("created_at") or "")))
+        incident_start = _ensure_aware(
+            datetime.fromisoformat(_CONTEXT_FREE_FIXTURE_CREATED_AFTER)
+        )
+        incident_end = _ensure_aware(
+            datetime.fromisoformat(_CONTEXT_FREE_FIXTURE_CREATED_BEFORE)
+        )
+    except (TypeError, ValueError):
+        return None
+    if not incident_start <= created_at < incident_end:
+        return None
     return (
-        f"context-free fixture prompt {prompt!r} has no script, skill, workdir, "
-        "upstream context, origin, explicit model/provider, or narrowed toolset"
+        f"historical context-free fixture prompt {prompt!r} has no script, skill, "
+        "workdir, upstream context, origin, explicit model/provider, narrowed "
+        "toolset, external delivery, or attached session"
     )
 
 
@@ -2221,6 +2247,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
 
+                # Mark only the returned copy, never the persisted record. The
+                # scheduler uses this provenance bit to reject a due snapshot
+                # whose authoritative store row is deleted before dispatch.
+                job["_persisted_due_snapshot"] = True
                 due.append(job)
         except Exception:
             logger.exception(

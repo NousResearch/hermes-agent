@@ -9,9 +9,20 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import cron.scheduler as scheduler
-from cron.jobs import context_free_fixture_reason, create_job, get_job, update_job
+from cron.executions import latest_execution
+from cron.jobs import (
+    context_free_fixture_reason,
+    create_job,
+    get_job,
+    remove_job,
+    update_job,
+    use_cron_store,
+)
 from cron.scheduler import SILENT_MARKER, run_one_job
 from hermes_time import now as hermes_now
+
+
+HISTORICAL_FIXTURE_CREATED_AT = "2026-07-16T12:00:00+00:00"
 
 
 def _fixture_job(**updates):
@@ -30,9 +41,20 @@ def _fixture_job(**updates):
         "base_url": None,
         "enabled_toolsets": None,
         "no_agent": False,
+        "deliver": "local",
+        "attach_to_session": None,
+        "created_at": HISTORICAL_FIXTURE_CREATED_AT,
     }
     job.update(updates)
     return job
+
+
+def _mark_historical_fixture(job):
+    updated = update_job(
+        job["id"], {"created_at": HISTORICAL_FIXTURE_CREATED_AT}
+    )
+    assert updated is not None
+    return updated
 
 
 def test_context_free_fixture_is_detected():
@@ -60,6 +82,8 @@ def test_meaningful_job_context_prevents_quarantine():
         {"provider": "openai-codex"},
         {"base_url": "https://inference.example.test/v1"},
         {"enabled_toolsets": ["file"]},
+        {"deliver": "discord:#ops"},
+        {"attach_to_session": True},
         {"no_agent": True},
     ]
     for updates in meaningful:
@@ -87,8 +111,20 @@ def test_known_prompt_with_unrelated_name_is_not_detected():
     )
 
 
+def test_same_fixture_pair_created_outside_incident_window_is_not_detected():
+    """A future legitimate concise job must not match the historical batch."""
+    assert (
+        context_free_fixture_reason(
+            _fixture_job(created_at="2026-07-21T12:00:00+00:00")
+        )
+        is None
+    )
+
+
 def test_stale_fixture_snapshot_does_not_pause_updated_meaningful_job():
-    created = create_job(name="claim job", schedule="0 7 * * *", prompt="x")
+    created = _mark_historical_fixture(
+        create_job(name="claim job", schedule="0 7 * * *", prompt="x")
+    )
     stale_snapshot = dict(created)
     updated = update_job(
         created["id"],
@@ -119,7 +155,9 @@ def test_stale_fixture_snapshot_does_not_pause_updated_meaningful_job():
 
 def test_run_one_job_keeps_one_shot_fixture_paused_and_saves_receipt():
     run_at = (hermes_now() + timedelta(minutes=5)).isoformat()
-    job = create_job(name="claim job", schedule=run_at, prompt="x")
+    job = _mark_historical_fixture(
+        create_job(name="claim job", schedule=run_at, prompt="x")
+    )
 
     with (
         patch.object(
@@ -143,14 +181,106 @@ def test_run_one_job_keeps_one_shot_fixture_paused_and_saves_receipt():
     save_mock.assert_called_once()
     saved_doc = save_mock.call_args.args[1]
     assert "QUARANTINED" in saved_doc
+    ledger = latest_execution(job["id"])
+    assert ledger is not None
+    assert ledger["status"] == "failed"
+    assert ledger["started_at"] is None
+    assert "admission rejected" in (ledger["error"] or "").lower()
+
+
+def test_quarantine_receipt_failure_preserves_one_shot_and_notifies_provider():
+    run_at = (hermes_now() + timedelta(minutes=5)).isoformat()
+    job = _mark_historical_fixture(
+        create_job(name="claim job", schedule=run_at, prompt="x")
+    )
+    original_repeat = dict(job["repeat"])
+
+    with (
+        patch.object(
+            scheduler, "run_job", side_effect=AssertionError("agent path reached")
+        ),
+        patch.object(
+            scheduler, "save_job_output", side_effect=OSError("receipt disk full")
+        ),
+        patch.object(scheduler, "mark_job_run") as mark_mock,
+        patch.object(scheduler, "_notify_provider_jobs_changed") as notify_mock,
+    ):
+        assert run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored is not None
+    assert stored["state"] == "paused"
+    assert stored["repeat"] == original_repeat
+    mark_mock.assert_not_called()
+    notify_mock.assert_called_once()
+    ledger = latest_execution(job["id"])
+    assert ledger is not None
+    assert ledger["status"] == "failed"
+    assert ledger["started_at"] is None
+
+
+def test_quarantine_ledger_failure_cannot_fall_through_to_repeat_accounting():
+    run_at = (hermes_now() + timedelta(minutes=5)).isoformat()
+    job = _mark_historical_fixture(
+        create_job(name="claim job", schedule=run_at, prompt="x")
+    )
+    original_repeat = dict(job["repeat"])
+
+    with (
+        patch.object(
+            scheduler, "run_job", side_effect=AssertionError("agent path reached")
+        ),
+        patch.object(
+            scheduler, "finish_execution", side_effect=OSError("ledger disk full")
+        ),
+        patch.object(scheduler, "mark_job_run") as mark_mock,
+        patch.object(scheduler, "_notify_provider_jobs_changed") as notify_mock,
+    ):
+        assert run_one_job(job) is True
+
+    stored = get_job(job["id"])
+    assert stored is not None
+    assert stored["state"] == "paused"
+    assert stored["repeat"] == original_repeat
+    mark_mock.assert_not_called()
+    notify_mock.assert_called_once()
+
+
+def test_admission_store_failure_rejects_before_agent_and_repeat_accounting():
+    job = _mark_historical_fixture(
+        create_job(name="claim job", schedule="0 7 * * *", prompt="x")
+    )
+
+    with (
+        patch.object(
+            scheduler,
+            "quarantine_context_free_fixture_job",
+            side_effect=OSError("jobs store unavailable"),
+        ),
+        patch.object(
+            scheduler, "run_job", side_effect=AssertionError("agent path reached")
+        ) as run_mock,
+        patch.object(scheduler, "mark_job_run") as mark_mock,
+    ):
+        assert run_one_job(job) is False
+
+    run_mock.assert_not_called()
+    mark_mock.assert_not_called()
+    ledger = latest_execution(job["id"])
+    assert ledger is not None
+    assert ledger["status"] == "failed"
+    assert ledger["started_at"] is None
+    assert "admission check failed" in (ledger["error"] or "").lower()
 
 
 def test_recurring_fixture_quarantine_preserves_repeat_and_is_idempotent():
-    job = create_job(
-        name="daily build",
-        schedule="every 60m",
-        prompt="build",
-        repeat=3,
+    job = _mark_historical_fixture(
+        create_job(
+            name="daily build",
+            schedule="every 60m",
+            prompt="build",
+            repeat=3,
+        )
     )
     original_repeat = dict(job["repeat"])
 
@@ -181,12 +311,55 @@ def test_recurring_fixture_quarantine_preserves_repeat_and_is_idempotent():
     notify_mock.assert_called_once()
 
 
+def test_deleted_persisted_snapshot_is_rejected_before_agent_path():
+    job = _mark_historical_fixture(
+        create_job(name="claim job", schedule="0 7 * * *", prompt="x")
+    )
+    assert remove_job(job["id"]) is True
+
+    with (
+        patch.object(
+            scheduler, "run_job", side_effect=AssertionError("agent path reached")
+        ) as run_mock,
+        patch.object(scheduler, "mark_job_run") as mark_mock,
+    ):
+        assert run_one_job(job, require_persisted=True) is True
+
+    run_mock.assert_not_called()
+    mark_mock.assert_not_called()
+    ledger = latest_execution(job["id"])
+    assert ledger is not None
+    assert ledger["status"] == "failed"
+    assert ledger["started_at"] is None
+    assert "no longer exists" in (ledger["error"] or "").lower()
+
+
+def test_quarantine_execution_ledger_follows_context_local_profile(tmp_path):
+    profile_home = tmp_path / "profile"
+    with use_cron_store(profile_home):
+        job = _mark_historical_fixture(
+            create_job(name="claim job", schedule="0 7 * * *", prompt="x")
+        )
+        with patch.object(
+            scheduler, "run_job", side_effect=AssertionError("agent path reached")
+        ):
+            assert run_one_job(job) is True
+
+        ledger = latest_execution(job["id"])
+        assert ledger is not None
+        assert ledger["status"] == "failed"
+
+    assert (profile_home / "cron" / "executions.db").exists()
+
+
 def test_scripted_job_with_fixture_pair_still_executes_normally():
-    job = create_job(
-        name="daily build",
-        schedule="every 60m",
-        prompt="build",
-        script="collector.py",
+    job = _mark_historical_fixture(
+        create_job(
+            name="daily build",
+            schedule="every 60m",
+            prompt="build",
+            script="collector.py",
+        )
     )
     with patch.object(
         scheduler,

@@ -17,17 +17,31 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+from cron.jobs import get_cron_dir
 
 EXECUTIONS_FILE = get_hermes_home().resolve() / "cron" / "executions.db"
+_IMPORT_EXECUTIONS_FILE = EXECUTIONS_FILE
 MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+def _execution_file() -> Path:
+    """Resolve the ledger beside the active profile/store at call time.
+
+    Preserve the long-standing ``EXECUTIONS_FILE`` monkeypatch surface for
+    tests/embedders while avoiding an import-time default-profile freeze.
+    """
+    if EXECUTIONS_FILE != _IMPORT_EXECUTIONS_FILE:
+        return Path(EXECUTIONS_FILE)
+    return get_cron_dir() / "executions.db"
+
+
 def _connect() -> sqlite3.Connection:
-    EXECUTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+    executions_file = _execution_file()
+    executions_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(executions_file, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA journal_mode=WAL")

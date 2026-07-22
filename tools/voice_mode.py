@@ -1190,6 +1190,51 @@ def check_voice_requirements() -> Dict[str, Any]:
 # ============================================================================
 # Temp file cleanup
 # ============================================================================
+def _restore_quarantined_recording(
+    original_path: str, quarantine_path: str, moved: os.stat_result
+) -> bool:
+    """Restore a pathname replacement without overwriting a newer winner."""
+    try:
+        quarantined = os.lstat(quarantine_path)
+        if (
+            not stat.S_ISREG(quarantined.st_mode)
+            or not os.path.samestat(moved, quarantined)
+            or os.path.lexists(original_path)
+        ):
+            return False
+
+        if os.name == "nt":
+            # Unlike os.replace(), Windows os.rename() fails when the
+            # destination already exists.  A newer race winner is preserved.
+            os.rename(quarantine_path, original_path)
+            restored = os.lstat(original_path)
+            return stat.S_ISREG(restored.st_mode) and os.path.samestat(
+                moved, restored
+            )
+
+        # link() is an atomic no-replace publication on POSIX.  Remove the
+        # quarantine name only after proving both names still identify the
+        # object that cleanup accidentally moved.
+        os.link(
+            quarantine_path,
+            original_path,
+            follow_symlinks=False,
+        )
+        restored = os.lstat(original_path)
+        quarantined = os.lstat(quarantine_path)
+        if not (
+            stat.S_ISREG(restored.st_mode)
+            and stat.S_ISREG(quarantined.st_mode)
+            and os.path.samestat(moved, restored)
+            and os.path.samestat(moved, quarantined)
+        ):
+            return False
+        os.unlink(quarantine_path)
+        return True
+    except OSError:
+        return False
+
+
 def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     """Remove old temporary voice recording files.
 
@@ -1226,9 +1271,11 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
             )
             os.replace(entry.path, quarantine)
             moved = os.lstat(quarantine)
+            if not os.path.samestat(selected, moved):
+                _restore_quarantined_recording(entry.path, quarantine, moved)
+                continue
             if (
                 not os.path.samestat(root_stat, os.lstat(_TEMP_DIR))
-                or not os.path.samestat(selected, moved)
                 or not stat.S_ISREG(moved.st_mode)
             ):
                 continue

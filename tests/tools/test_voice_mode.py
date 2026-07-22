@@ -1007,6 +1007,39 @@ class TestCleanupTempRecordings:
         monkeypatch.setattr(voice_mode.os, "replace", replace_before_quarantine)
 
         assert voice_mode.cleanup_temp_recordings(max_age_seconds=3600) == 0
+        assert old_file.read_bytes() == b"human replacement"
+        quarantines = list(temp_voice_dir.glob("*.hermes-delete-*"))
+        assert quarantines == []
+
+    def test_cleanup_does_not_overwrite_newer_race_winner(
+        self, temp_voice_dir, monkeypatch
+    ):
+        import tools.voice_mode as voice_mode
+
+        old_file = temp_voice_dir / "recording_20240101_000000.aac"
+        old_file.write_bytes(b"agent-audio")
+        old_mtime = time.time() - 7200
+        os.utime(old_file, (old_mtime, old_mtime))
+        original_replace = voice_mode.os.replace
+        original_restore = voice_mode._restore_quarantined_recording
+
+        def replace_before_quarantine(source, destination):
+            source_path = Path(source)
+            source_path.unlink()
+            source_path.write_bytes(b"human replacement")
+            return original_replace(source, destination)
+
+        def race_before_restore(original_path, quarantine_path, moved):
+            Path(original_path).write_bytes(b"newer winner")
+            return original_restore(original_path, quarantine_path, moved)
+
+        monkeypatch.setattr(voice_mode.os, "replace", replace_before_quarantine)
+        monkeypatch.setattr(
+            voice_mode, "_restore_quarantined_recording", race_before_restore
+        )
+
+        assert voice_mode.cleanup_temp_recordings(max_age_seconds=3600) == 0
+        assert old_file.read_bytes() == b"newer winner"
         quarantines = list(temp_voice_dir.glob("*.hermes-delete-*"))
         assert len(quarantines) == 1
         assert quarantines[0].read_bytes() == b"human replacement"

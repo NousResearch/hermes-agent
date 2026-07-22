@@ -6,6 +6,7 @@ and Daytona.  Docker and Singularity use bind mounts (live host FS
 view) and don't need this.
 """
 
+import errno
 import hashlib
 import logging
 import os
@@ -516,9 +517,23 @@ class FileSyncManager:
         lock_fd = _open_owned_sync_lock(lock_path)
         locked = False
         try:
-            lock_fd.seek(0)
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
-            locked = True
+            while not locked:
+                lock_fd.seek(0)
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+                    locked = True
+                except OSError as exc:
+                    # LK_LOCK gives up after roughly ten seconds on Windows.
+                    # A long concurrent sync is not a failed sync: keep waiting
+                    # for lock-contention errors so teardown cannot discard a
+                    # sandbox before its remote-only changes are downloaded.
+                    if (
+                        getattr(exc, "winerror", None) not in {33, 36}
+                        and getattr(exc, "errno", None)
+                        not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}
+                    ):
+                        raise
+                    _sleep(0.1)
             self._sync_back_impl()
         finally:
             try:

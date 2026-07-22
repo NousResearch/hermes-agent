@@ -1,5 +1,6 @@
 """Cross-platform file-sync locking contracts."""
 
+import errno
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -188,6 +189,42 @@ def test_sync_back_uses_windows_lock_when_fcntl_is_unavailable(tmp_path, monkeyp
         fake_msvcrt.LK_LOCK,
         fake_msvcrt.LK_UNLCK,
     ]
+
+
+def test_sync_back_waits_past_windows_lock_retry_window(tmp_path, monkeypatch):
+    attempts = 0
+
+    def contended_lock(_fd, mode, _size):
+        nonlocal attempts
+        if mode == 1:
+            attempts += 1
+            if attempts <= 4:
+                raise PermissionError(errno.EACCES, "lock is still owned")
+
+    real_get_osfhandle = getattr(file_sync.msvcrt, "get_osfhandle", lambda fd: fd)
+    fake_msvcrt = SimpleNamespace(
+        LK_LOCK=1,
+        LK_UNLCK=2,
+        locking=contended_lock,
+        get_osfhandle=real_get_osfhandle,
+    )
+    monkeypatch.setattr(file_sync, "fcntl", None)
+    monkeypatch.setattr(file_sync, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(file_sync, "_sleep", MagicMock())
+
+    manager = FileSyncManager(
+        get_files_fn=lambda: [],
+        upload_fn=MagicMock(),
+        delete_fn=MagicMock(),
+        bulk_download_fn=lambda destination: None,
+    )
+    manager._sync_back_impl = MagicMock()
+
+    manager._sync_back_locked(tmp_path / ".hermes" / ".sync.lock")
+
+    assert attempts == 5
+    assert file_sync._sleep.call_count == 4
+    manager._sync_back_impl.assert_called_once_with()
 
 
 def test_sync_back_refuses_hardlinked_lock_without_modifying_target(

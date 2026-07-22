@@ -751,6 +751,29 @@ def test_blank_slate_real_command_returns_not_configured_json(tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     env = os.environ.copy()
+    env["OPENROUTER_API_KEY"] = "ambient-provider-credential"
+    credential_suffixes = (
+        "_API_KEY",
+        "_TOKEN",
+        "_SECRET",
+        "_PASSWORD",
+        "_CREDENTIALS",
+        "_ACCESS_KEY",
+        "_SECRET_ACCESS_KEY",
+        "_PRIVATE_KEY",
+        "_OAUTH_TOKEN",
+    )
+    credential_names = {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "FAL_KEY",
+    }
+    for name in tuple(env):
+        if name in credential_names or name.endswith(credential_suffixes):
+            env.pop(name)
+    env["HOME"] = str(tmp_path)
+    env["USERPROFILE"] = str(tmp_path)
     env["HERMES_HOME"] = str(hermes_home)
 
     completed = subprocess.run(

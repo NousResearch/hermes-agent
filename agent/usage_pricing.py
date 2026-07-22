@@ -1143,7 +1143,11 @@ def normalize_usage(
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
         prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
+        if not prompt_total:
+            prompt_total = _to_int(getattr(response_usage, "input_tokens", 0))
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
+        if not output_tokens:
+            output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
         details = getattr(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
         # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)

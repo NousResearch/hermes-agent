@@ -13921,6 +13921,16 @@ def main():
     except Exception:
         pass
 
+    # One-shot Windows home-move safety net: fill any state gaps in the
+    # native %LOCALAPPDATA%\hermes home from a legacy ~/.hermes (auth.json,
+    # cron jobs, etc.) before any command reads config.  No-op off Windows,
+    # when a custom HERMES_HOME is active, or once the marker exists.
+    try:
+        from hermes_cli.legacy_home_migration import maybe_migrate_legacy_windows_home
+        maybe_migrate_legacy_windows_home()
+    except Exception:
+        pass
+
     # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
     # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.

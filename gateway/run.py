@@ -1416,6 +1416,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home, get_hermes_home_override
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
+
+# One-shot Windows home-move safety net: fill any state gaps in the native
+# %LOCALAPPDATA%\hermes home from a legacy ~/.hermes (auth.json, cron jobs,
+# etc.) BEFORE anything below reads config from the home.  No-op off Windows,
+# when a custom HERMES_HOME is active, or once the migration marker exists.
+try:
+    from hermes_cli.legacy_home_migration import maybe_migrate_legacy_windows_home
+    maybe_migrate_legacy_windows_home()
+except Exception as _legacy_mig_exc:  # never block gateway start
+    logging.getLogger(__name__).warning(
+        "Legacy home migration check failed: %s", _legacy_mig_exc
+    )
+
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.

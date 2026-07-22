@@ -63,6 +63,63 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+# Local Moss policy helpers (2026-07-15). Not upstream API — keep tiny and
+# self-contained so they can be re-applied after hermes update if needed.
+_TRIVIAL_MEMORY_QUERY_RE = __import__("re").compile(
+    r"^(?:"
+    r"你好|您好|嗨|哈喽|在吗|在不在|早|早安|晚安|早上好|下午好|晚上好|"
+    r"hi|hello|hey|yo|sup|good\s*(?:morning|afternoon|evening|night)"
+    r")[\s!！。.~～?？…]*$",
+    __import__("re").IGNORECASE,
+)
+_TYPE_RANK = {"observation": 0, "world": 1, "experience": 2}
+
+
+def _is_trivial_memory_query(query: str) -> bool:
+    """True for pure greetings / ultra-short chitchat that should not recall."""
+    q = (query or "").strip()
+    if not q:
+        return True
+    # Very short bare pings (CJK or Latin). Real task questions are longer.
+    if len(q) <= 6 and _TRIVIAL_MEMORY_QUERY_RE.match(q):
+        return True
+    if _TRIVIAL_MEMORY_QUERY_RE.match(q):
+        return True
+    return False
+
+
+def _hard_cap_memory_text(text: str, max_tokens: int) -> str:
+    """Hard-cap recall text by approximate chars (~3 chars/token mid estimate)."""
+    if not text:
+        return ""
+    max_chars = max(400, int(max_tokens or 1024) * 3)
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    # Prefer ending on a line boundary so we don't ship a half-fact.
+    nl = cut.rfind("\n")
+    if nl >= max_chars // 2:
+        cut = cut[:nl]
+    return cut.rstrip() + "\n…(truncated)"
+
+
+def _format_ranked_memory_lines(results, max_tokens: int, numbered: bool = False) -> str:
+    """Observation-first ranking + hard char cap. API order is secondary."""
+    if not results:
+        return ""
+    ranked = sorted(
+        [r for r in results if getattr(r, "text", None)],
+        key=lambda r: (_TYPE_RANK.get(getattr(r, "type", None) or "", 9),),
+    )
+    lines: list[str] = []
+    for i, r in enumerate(ranked, 1):
+        t = (r.text or "").strip()
+        if not t:
+            continue
+        lines.append(f"{i}. {t}" if numbered else f"- {t}")
+    return _hard_cap_memory_text("\n".join(lines), max_tokens)
+
+
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -1491,6 +1548,14 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._shutting_down.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
+        # Local Moss policy (2026-07-15): skip pure greetings / ultra-short chitchat
+        # so cold-start turns don't burn recall budget on noise. Real task queries
+        # still prefetch. Reversible: remove this block on hermes update if upstream
+        # adds a first-class min-length gate.
+        q_stripped = (query or "").strip()
+        if _is_trivial_memory_query(q_stripped):
+            logger.debug("Prefetch: skipped trivial/greeting query (len=%d)", len(q_stripped))
+            return
         # Truncate query to max chars
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
@@ -1501,6 +1566,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
                     resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
                     text = resp.text or ""
+                    text = _hard_cap_memory_text(text, self._recall_max_tokens)
                 else:
                     recall_kwargs: dict = {
                         "bank_id": self._bank_id, "query": query,
@@ -1516,7 +1582,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = _format_ranked_memory_lines(resp.results, self._recall_max_tokens) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1730,6 +1796,12 @@ class HindsightMemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
+            # Local Moss policy (2026-07-15): refuse trivial/greeting tool recalls
+            # so the model cannot re-inflate context with a 你好-style query.
+            if _is_trivial_memory_query(str(query).strip()):
+                return json.dumps({
+                    "result": "Skipped trivial/greeting recall. Ask a concrete topic if you need memory."
+                })
             try:
                 recall_kwargs: dict = {
                     "bank_id": self._bank_id, "query": query, "budget": self._budget,
@@ -1747,8 +1819,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                ranked = _format_ranked_memory_lines(resp.results, self._recall_max_tokens, numbered=True)
+                return json.dumps({"result": ranked})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")

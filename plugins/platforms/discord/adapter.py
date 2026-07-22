@@ -1104,7 +1104,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # bot from coming online at all, so avoid requesting members intent
             # unless it is actually necessary.
             intents = Intents.default()
-            intents.message_content = True
+            # Message Content is required for normal text replies. Keep it
+            # explicit and configurable so a deliberately degraded deployment
+            # can opt out without requiring a source edit; default remains on
+            # because mention replies and DMs are the primary Hermes UX.
+            intents.message_content = os.getenv(
+                "DISCORD_MESSAGE_CONTENT_INTENT", "true"
+            ).strip().lower() in {"true", "1", "yes", "on"}
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = (
@@ -1148,6 +1154,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
                 allowed_mentions=_build_allowed_mentions(),
+                # Include presence in the initial IDENTIFY payload, then
+                # reassert it in on_ready below. Discord can otherwise cache
+                # the bot as offline even while the websocket is healthy.
+                status=discord.Status.online,
+                activity=discord.Activity(
+                    type=discord.ActivityType.listening,
+                    name="for @Hermes",
+                ),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure
@@ -1156,6 +1170,17 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
+
+                try:
+                    await adapter_self._client.change_presence(
+                        status=discord.Status.online,
+                        activity=discord.Activity(
+                            type=discord.ActivityType.listening,
+                            name="for @Hermes",
+                        ),
+                    )
+                except Exception:
+                    logger.debug("[%s] Failed to reassert Discord presence", adapter_self.name, exc_info=True)
 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
@@ -3309,6 +3334,23 @@ class DiscordAdapter(BasePlatformAdapter):
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+        max_bytes = self._discord_max_attachment_bytes()
+        if max_bytes:
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError as exc:
+                return SendResult(success=False, error=f"Cannot inspect attachment: {exc}")
+            if file_size > max_bytes:
+                limit_mib = max_bytes / (1024 * 1024)
+                logger.warning(
+                    "[%s] Refusing outbound attachment %s: %d bytes exceeds %.1f MiB cap",
+                    self.name, file_path, file_size, limit_mib,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"Attachment exceeds Discord safety cap ({limit_mib:.1f} MiB)",
+                )
+
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
@@ -4534,6 +4576,17 @@ class DiscordAdapter(BasePlatformAdapter):
                         raise Exception(f"Failed to download image: HTTP {resp.status}")
 
                     image_data = await resp.read()
+                    max_bytes = self._discord_max_attachment_bytes()
+                    if max_bytes and len(image_data) > max_bytes:
+                        limit_mib = max_bytes / (1024 * 1024)
+                        logger.warning(
+                            "[%s] Refusing downloaded image: %d bytes exceeds %.1f MiB cap",
+                            self.name, len(image_data), limit_mib,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"Image exceeds Discord safety cap ({limit_mib:.1f} MiB)",
+                        )
 
                     # Determine filename from URL or content type
                     content_type = resp.headers.get("content-type", "image/png")

@@ -9645,6 +9645,15 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
+    # Turn-build window: a fresh turn flips running=True and kicks off an async
+    # agent build, so session["agent"] is briefly None. That is not an
+    # unsupported runtime — queue the correction server-side so it reaches the
+    # model as the next turn, instead of a misleading 4010 the client silently
+    # swallows into a lost follow-up.
+    if agent is None and session.get("running"):
+        _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+        session["last_active"] = time.time()
+        return _ok(rid, {"status": "queued", "text": text})
     if (
         agent is None
         or getattr(agent, "_supports_active_turn_redirect", False) is not True

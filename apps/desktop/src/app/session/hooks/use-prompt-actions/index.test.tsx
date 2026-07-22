@@ -777,6 +777,79 @@ describe('usePromptActions redirectPrompt', () => {
     expect(await handle!.redirectPrompt('   ')).toBe(false)
     expect(requestGateway).not.toHaveBeenCalled()
   })
+
+  it('accepts a queued redirect during the agent-build window and records the correction', async () => {
+    // running=True but the agent is still building: the gateway queues the
+    // correction instead of rejecting, so the composer must NOT re-queue it.
+    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
+
+    let handle: HarnessHandle | null = null
+    const capturedStates: Record<string, unknown>[] = []
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.redirectPrompt('build-window nudge')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('session.redirect', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'build-window nudge'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    expect((capturedStates.at(-1)?.messages as unknown[]).at(-1)).toMatchObject({
+      role: 'user',
+      parts: [{ type: 'text', text: 'build-window nudge' }]
+    })
+  })
+
+  it('resumes the stored session and retries once when session.redirect reports "session not found"', async () => {
+    const STORED_SESSION_ID = 'stored-db-xyz789'
+    const RECOVERED_SESSION_ID = 'rt-recovered-456'
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let redirectAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.redirect') {
+        redirectAttempts += 1
+
+        if (redirectAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return { status: 'redirected' } as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.redirectPrompt('reconnect nudge')).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
+    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'reconnect nudge' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'reconnect nudge' })
+    expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
+  })
 })
 
 describe('usePromptActions restoreToMessage', () => {

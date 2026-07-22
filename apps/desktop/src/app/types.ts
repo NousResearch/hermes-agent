@@ -61,7 +61,7 @@ export interface SessionSteerResponse {
 }
 
 export interface SessionRedirectResponse {
-  status?: 'redirected' | 'rejected'
+  status?: 'redirected' | 'queued' | 'rejected'
   text?: string
 }
 

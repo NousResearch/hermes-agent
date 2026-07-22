@@ -253,13 +253,14 @@ class TestTickWorkdirPartition:
 
 
 # ---------------------------------------------------------------------------
-# scheduler.run_job: TERMINAL_CWD + skip_context_files wiring
+# scheduler.run_job: session cwd ContextVar + skip_context_files wiring
 # ---------------------------------------------------------------------------
 
 class TestRunJobTerminalCwd:
     """
-    run_job sets TERMINAL_CWD + flips skip_context_files=False when workdir
-    is set, and restores the prior TERMINAL_CWD in finally — even on error.
+    run_job pins workdir on the task-local ContextVar + session cwd record
+    (NOT process-global TERMINAL_CWD — #69396), flips skip_context_files=False
+    when workdir is set, and clears the pin in finally — even on error.
     We stub AIAgent so no real API call happens.
     """
 
@@ -269,6 +270,7 @@ class TestRunJobTerminalCwd:
         import os
         import sys
         import cron.scheduler as sched
+        from agent.runtime_cwd import resolve_context_cwd
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -277,11 +279,14 @@ class TestRunJobTerminalCwd:
                 observed["terminal_cwd_during_init"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
+                observed["context_cwd_during_init"] = resolve_context_cwd()
+                observed["session_id"] = kwargs.get("session_id")
 
             def run_conversation(self, *_a, **_kw):
                 observed["terminal_cwd_during_run"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
+                observed["context_cwd_during_run"] = resolve_context_cwd()
                 return {"final_response": "done", "messages": []}
 
             def get_activity_summary(self):
@@ -315,14 +320,19 @@ class TestRunJobTerminalCwd:
         # run_job calls load_dotenv(~/.hermes/.env, override=True), which will
         # happily clobber TERMINAL_CWD out from under us if the real user .env
         # has TERMINAL_CWD set (common on dev boxes).  Stub it out.
-        import dotenv
-        monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.load_hermes_dotenv", lambda **_kw: None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.reset_secret_source_cache", lambda: None
+        )
 
     def test_workdir_sets_and_restores_terminal_cwd(
         self, tmp_path, monkeypatch
     ):
         import os
         import cron.scheduler as sched
+        from tools.terminal_tool import get_session_cwd
 
         # Make sure the test's TERMINAL_CWD starts at a known non-workdir value.
         # Use monkeypatch.setenv so it's restored on teardown regardless of
@@ -345,12 +355,15 @@ class TestRunJobTerminalCwd:
         # AIAgent was built with skip_context_files=False (feature ON).
         assert observed["skip_context_files"] is False
         assert observed["load_soul_identity"] is True
-        # TERMINAL_CWD was pointing at the job workdir while the agent ran.
-        assert observed["terminal_cwd_during_init"] == str(tmp_path.resolve())
-        assert observed["terminal_cwd_during_run"] == str(tmp_path.resolve())
-
-        # And it was restored to the original value in finally.
+        # ContextVar pointed at the job workdir while the agent ran.
+        assert observed["context_cwd_during_init"] == tmp_path.resolve()
+        assert observed["context_cwd_during_run"] == tmp_path.resolve()
+        # Process-global TERMINAL_CWD must NOT have been rewritten (#69396).
+        assert observed["terminal_cwd_during_init"] == "/original/cwd"
+        assert observed["terminal_cwd_during_run"] == "/original/cwd"
         assert os.environ["TERMINAL_CWD"] == "/original/cwd"
+        # Session cwd record is cleared in finally.
+        assert get_session_cwd(observed["session_id"]) is None
 
     def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —

@@ -8672,7 +8672,11 @@ def _update_node_dependencies() -> list[str]:
     # need desktop during `hermes update`, so we install root-only first
     # then add just the workspaces the CLI/TUI/web build actually requires.
     # Desktop deps are installed on demand by the desktop launcher
-    # (see _desktop_build_needed).
+    # (see _desktop_build_needed), UNLESS the user already has a desktop
+    # app installed — in that case Step 3 installs desktop workspace deps
+    # (with --ignore-scripts to avoid the Electron download) so that npm
+    # ci --workspaces=false in Step 1 doesn't prune them from root
+    # node_modules and leave the desktop unbootable.
     print("→ Updating Node.js dependencies...")
 
     def _partial_update_failure(*labels: str) -> list[str]:
@@ -8729,6 +8733,29 @@ def _update_node_dependencies() -> list[str]:
     if stderr:
         print(f"    {stderr.splitlines()[-1]}")
     return _partial_update_failure("ui-tui, web workspaces")
+
+    # Step 3: if the user has a desktop app, also install desktop workspace
+    # deps. Without this, npm ci --workspaces=false in Step 1 prunes all
+    # packages hoisted from apps/desktop (TypeScript, Electron, React, shiki,
+    # etc.) from the root node_modules, leaving the desktop unbootable on the
+    # subsequent rebuild attempt. We use --ignore-scripts here to avoid the
+    # ~200MB Electron binary download — the desktop rebuild step (run right
+    # after this) will download it when it runs electron-builder.
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    has_desktop = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+    if has_desktop:
+        dt_args = [*extra_args, "--workspace", "apps/desktop", "--ignore-scripts"]
+        dt_result = _run_npm_install_deterministic(
+            npm,
+            PROJECT_ROOT,
+            extra_args=tuple(dt_args),
+            capture_output=False,
+            env=nixos_env,
+        )
+        if dt_result.returncode == 0:
+            print("  ✓ desktop workspace dependencies installed (Electron binary deferred to build step)")
+        else:
+            print("  ⚠ desktop workspace install failed; the next desktop rebuild step may retry")
 
 
 class _UpdateOutputStream:

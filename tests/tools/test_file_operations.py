@@ -903,3 +903,378 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+class TestPatchRejectsRedactedPlaceholders:
+    """Regression tests for #30962 — refuse patch input that looks like it
+    was copy-pasted from redacted ``read_file`` output.
+
+    The patch tool must not try to match (or write back) masked secret
+    placeholders like ``sk-exa...hars``: matching fails silently against
+    the raw file, and writing would corrupt the real secret.
+    """
+
+    def test_patch_replace_rejects_redacted_old_string(self, file_ops):
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string="api_key: sk-exa...hars\nmodel: title-generator",
+            new_string="api_key: sk-exa...hars\nmodel: new-model",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+        assert "old_string" in result.error
+
+    def test_patch_replace_rejects_redacted_new_string(self, file_ops):
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string="model: title-generator",
+            new_string="model: title-generator\napi_key: ghp_ab...wxyz",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+        assert "new_string" in result.error
+
+    def test_patch_replace_rejects_redacted_private_key_marker(self, file_ops):
+        result = file_ops.patch_replace(
+            "/tmp/secrets.yaml",
+            old_string="ssh_key: [REDACTED PRIVATE KEY]",
+            new_string="ssh_key: replacement",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_replace_allows_normal_ellipsis_in_code(self, mock_env):
+        """``...`` in real code (Python Ellipsis, docstrings) must not trip
+        the check — only known-prefix + ellipsis patterns are rejected."""
+        state = {"content": "def stub(): ...\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            # Writes stream the new content over stdin. The legacy path was a
+            # bare ``cat > file``; the atomic path (#35252) is a ``set -e; …;
+            # cat > "$tmp"; mv -f "$tmp" "$t"`` script. Capture either by
+            # keying on stdin_data, which only the content-write carries.
+            if stdin_data is not None and "cat >" in command:
+                state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace(
+            "/tmp/test/stub.py",
+            old_string="def stub(): ...",
+            new_string="def stub(): return None",
+        )
+        assert result.error is None, f"Unexpected rejection: {result.error}"
+        assert result.success is True
+
+    def test_patch_v4a_rejects_redacted_payload(self, file_ops):
+        payload = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/cfg.yaml\n"
+            "@@ auxiliary @@\n"
+            " title_generation:\n"
+            "    api_key: sk-exa...hars\n"
+            "-    model: title-generator\n"
+            "+    model: new-model\n"
+            "*** End Patch\n"
+        )
+        result = file_ops.patch_v4a(payload)
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+        assert "V4A" in result.error
+
+
+class TestWriteFileRejectsRedactedPlaceholders:
+    """Regression tests for #30962 — `write_file` is the more obvious footgun
+    than `patch_replace`: an agent that reads a redacted file, edits in-memory,
+    and writes the whole thing back overwrites every masked credential on
+    disk with its placeholder."""
+
+    def test_write_file_rejects_prefix_masked_content(self, file_ops):
+        result = file_ops.write_file(
+            "/tmp/cfg.yaml",
+            "auxiliary:\n  api_key: sk-exa...hars\n  model: title-generator\n",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_write_file_rejects_opaque_masked_content(self, file_ops):
+        """Opaque secret (no vendor prefix) behind a sensitive key — the
+        original detector missed this; v2 catches it."""
+        result = file_ops.write_file(
+            "/tmp/cfg.yaml",
+            "password: abc123...wxyz\nuser: alice\n",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_write_file_rejects_triple_star_in_db_connstring(self, file_ops):
+        result = file_ops.write_file(
+            "/tmp/.env",
+            "DATABASE_URL=postgres://user:***@host/db\nLOG_LEVEL=info\n",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_write_file_allows_env_example_placeholders(self, mock_env):
+        """`OPENAI_API_KEY=***` is how real `.env.example` files document
+        the placeholder shape; we deliberately do NOT flag it (the
+        corruption window for sub-floor-length redacted values is narrow,
+        and refusing to edit template files would be worse)."""
+        state = {"content": ""}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            # Writes stream the new content over stdin. The legacy path was a
+            # bare ``cat > file``; the atomic path (#35252) is a ``set -e; …;
+            # cat > "$tmp"; mv -f "$tmp" "$t"`` script. Capture either by
+            # keying on stdin_data, which only the content-write carries.
+            if stdin_data is not None and "cat >" in command:
+                state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file(
+            "/tmp/test/.env.example",
+            "OPENAI_API_KEY=***\nLOG_LEVEL=info\n",
+        )
+        assert result.error is None, f"Template placeholder rejected: {result.error}"
+
+    def test_write_file_error_message_says_restart_required(self, file_ops):
+        """BLOCKER 3: error message must not imply an in-session config flip
+        will fix things — the redaction flag is read at process start."""
+        result = file_ops.write_file(
+            "/tmp/cfg.yaml",
+            "api_key: sk-exa...hars\n",
+        )
+        assert result.error is not None
+        assert "restart" in result.error.lower()
+
+    def test_write_file_allows_normal_content(self, mock_env):
+        """Sanity check: clean content still passes through."""
+        state = {"content": ""}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            # Writes stream the new content over stdin. The legacy path was a
+            # bare ``cat > file``; the atomic path (#35252) is a ``set -e; …;
+            # cat > "$tmp"; mv -f "$tmp" "$t"`` script. Capture either by
+            # keying on stdin_data, which only the content-write carries.
+            if stdin_data is not None and "cat >" in command:
+                state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/clean.py", "def foo():\n    return 42\n")
+        assert result.error is None, f"Unexpected rejection: {result.error}"
+
+
+class TestPatchRejectsRedactedPlaceholdersV2:
+    """#30962 round 2 — coverage for the gaps the first round of integration
+    tests missed: V4A `Add File` (no `old_string` matching → corruption risk
+    is highest), `replace_all=True`, and the opaque / `***` placeholder
+    shapes added to the detector."""
+
+    def test_patch_v4a_rejects_add_file_with_placeholder(self, file_ops):
+        """`*** Add File` blocks have no context-matching step — if the
+        placeholder slipped through it would land directly on disk."""
+        payload = (
+            "*** Begin Patch\n"
+            "*** Add File: /tmp/new-cfg.yaml\n"
+            "+auxiliary:\n"
+            "+  api_key: sk-exa...hars\n"
+            "+  model: title-generator\n"
+            "*** End Patch\n"
+        )
+        result = file_ops.patch_v4a(payload)
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_v4a_rejects_multi_file_payload_with_placeholder(self, file_ops):
+        """Multi-file V4A: even if only one of several files carries a
+        placeholder, the whole payload must be refused."""
+        payload = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/clean.yaml\n"
+            "@@ section @@\n"
+            "-old: 1\n"
+            "+new: 2\n"
+            "*** Update File: /tmp/dirty.yaml\n"
+            "@@ section @@\n"
+            " api_key: sk-exa...hars\n"
+            "-other: a\n"
+            "+other: b\n"
+            "*** End Patch\n"
+        )
+        result = file_ops.patch_v4a(payload)
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_replace_with_replace_all_still_rejects(self, file_ops):
+        """`replace_all=True` must not bypass the guard."""
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string="api_key: sk-exa...hars",
+            new_string="api_key: new-value",
+            replace_all=True,
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_replace_rejects_opaque_masked(self, file_ops):
+        """Opaque token (no vendor prefix) detected via sensitive-key context."""
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string="password: abc123...wxyz",
+            new_string="password: newvalue",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_replace_rejects_triple_star_in_new_string(self, file_ops):
+        """The DB-connstring `***` round-trip — agent reads a redacted env,
+        constructs new_string to update an adjacent var, accidentally leaves
+        the `***`-masked URL in. Without this guard, the real password gets
+        overwritten with `***` on disk."""
+        result = file_ops.patch_replace(
+            "/tmp/.env",
+            old_string="LOG_LEVEL=info",
+            new_string=(
+                "DATABASE_URL=postgres://user:***@host/db\nLOG_LEVEL=debug"
+            ),
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_error_message_says_restart_required(self, file_ops):
+        """BLOCKER 3: error must surface that the redaction flag is
+        process-start, not in-session toggleable."""
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string="api_key: sk-exa...hars",
+            new_string="api_key: x",
+        )
+        assert result.error is not None
+        assert "restart" in result.error.lower()
+
+
+class TestRedactedGuardFileReadEndToEnd:
+    """#30962 round 3 — exercise the PRODUCTION read→write flow.
+
+    ``read_file_tool`` / ``search_tool`` redact file content with
+    ``redact_sensitive_text(..., file_read=True)`` (see tools/file_tools.py),
+    which since #35519 emits the non-reusable sentinel ``«redacted:sk-…»``
+    for prefix credentials instead of the head/tail ASCII mask. These tests
+    feed that *actual* redacted output — not a hand-written fixture — into
+    ``write_file``, replace-mode patching, and V4A patching, so they fail
+    loudly if the redactor's file-read format and the guard ever drift
+    apart again.
+    """
+
+    RAW_CONFIG = (
+        "auxiliary:\n"
+        "  api_key: sk-proj-abcdefghijklmnopqrstuvwxyz123456\n"
+        "  model: title-generator\n"
+    )
+
+    @staticmethod
+    def _redacted_config():
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(
+            TestRedactedGuardFileReadEndToEnd.RAW_CONFIG,
+            force=True,
+            file_read=True,
+        )
+        # Contract with the redactor: the secret is gone and the file-read
+        # sentinel is present. If this assertion fails, the redactor's
+        # file-read format changed and the guard needs re-alignment.
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in redacted
+        assert "«redacted:" in redacted
+        return redacted
+
+    def test_write_file_rejects_actual_file_read_output(self, file_ops):
+        """Read redacted config → write it back verbatim (the #35519
+        corruption flow) → must be refused."""
+        result = file_ops.write_file("/tmp/cfg.yaml", self._redacted_config())
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_replace_rejects_actual_file_read_output(self, file_ops):
+        """old_string copied from redacted read_file output — would never
+        match the raw bytes on disk; must be refused, not silently miss."""
+        redacted = self._redacted_config()
+        key_line = next(l for l in redacted.splitlines() if "api_key" in l)
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string=key_line,
+            new_string="  api_key: replacement",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+        assert "old_string" in result.error
+
+    def test_patch_replace_rejects_sentinel_in_new_string(self, file_ops):
+        """new_string carrying the sentinel — writing it would corrupt the
+        stored credential into the literal marker."""
+        redacted = self._redacted_config()
+        key_line = next(l for l in redacted.splitlines() if "api_key" in l)
+        result = file_ops.patch_replace(
+            "/tmp/cfg.yaml",
+            old_string="model: title-generator",
+            new_string=f"model: new-model\n{key_line}",
+        )
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+        assert "new_string" in result.error
+
+    def test_patch_v4a_rejects_actual_file_read_output(self, file_ops):
+        redacted = self._redacted_config()
+        key_line = next(l for l in redacted.splitlines() if "api_key" in l)
+        payload = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/cfg.yaml\n"
+            "@@ auxiliary @@\n"
+            f" {key_line}\n"
+            "-  model: title-generator\n"
+            "+  model: new-model\n"
+            "*** End Patch\n"
+        )
+        result = file_ops.patch_v4a(payload)
+        assert result.error is not None
+        assert "redacted" in result.error.lower()
+
+    def test_patch_v4a_rejects_add_file_with_sentinel(self, file_ops):
+        """`*** Add File` has no context-match step — a sentinel here lands
+        directly on disk if the guard misses it."""
+        redacted = self._redacted_config()
+        body = "\n".join(f"+{l}" for l in redacted.splitlines())
+        payload = (
+            "*** Begin Patch\n"
+            "*** Add File: /tmp/new-cfg.yaml\n"
+            f"{body}\n"
+            "*** End Patch\n"
+        )
+        result = file_ops.patch_v4a(payload)
+        assert result.error is not None
+        assert "redacted" in result.error.lower()

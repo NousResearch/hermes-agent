@@ -400,6 +400,15 @@ class MemoryManager:
         """
         is_builtin = provider.name == "builtin"
 
+        if is_builtin:
+            if any(p.name == "builtin" for p in self._providers):
+                logger.warning(
+                    "Rejected memory provider '%s' — builtin provider is already "
+                    "registered. Only one builtin slot exists.",
+                    provider.name,
+                )
+                return
+
         if not is_builtin:
             if self._has_external:
                 existing = next(

@@ -187,6 +187,16 @@ class TestMemoryManager:
         assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
 
+    def test_second_builtin_rejected(self):
+        """Only one provider with name builtin may exist; duplicate poisons routing."""
+        mgr = MemoryManager()
+        b1 = FakeMemoryProvider("builtin")
+        b2 = FakeMemoryProvider("builtin")
+        mgr.add_provider(b1)
+        mgr.add_provider(b2)
+        assert [p.name for p in mgr.providers] == ["builtin"]
+        assert mgr.providers[0] is b1
+
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")

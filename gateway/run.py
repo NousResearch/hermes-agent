@@ -2960,6 +2960,27 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _should_continue_goal_after_turn(agent_result, final_text: str) -> bool:
+    """Return True only when a turn produced real text AND completed successfully.
+
+    ``_normalize_empty_agent_response()`` can produce non-empty text from
+    ``failed`` / ``partial`` / interrupted results (e.g. an error message
+    rendered for the user).  Without this check, the goal continuation gate
+    (which previously only tested ``bool(_final_text.strip())``) would treat
+    error text as a successful turn, enqueue a ``[Continuing…]`` prompt, and
+    create a self-sustaining infinite loop when the provider keeps failing.
+
+    Pair ``_should_clear_resume_pending_after_turn`` (which correctly rejects
+    failed/interrupted/partial results) with the non-empty-text check so that
+    goal continuation only fires on genuinely complete turns.
+    """
+    if not str(final_text or "").strip():
+        return False
+    if not isinstance(agent_result, dict):
+        return True
+    return _should_clear_resume_pending_after_turn(agent_result)
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -11482,7 +11503,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                if _should_continue_goal_after_turn(_agent_result, _final_text):
                     try:
                         session_entry = await self.async_session_store.get_or_create_session(source)
                     except Exception:

@@ -1878,7 +1878,8 @@ class SessionStore:
             slot.event.wait()
             if slot.error is not None:
                 raise slot.error
-            assert slot.result is not None
+            if slot.result is None:
+                raise RuntimeError("Session slot result is None after wait")
             return slot.result
 
         try:
@@ -2075,7 +2076,8 @@ class SessionStore:
                     published = candidate
                 else:
                     published = current
-            assert published is not None
+            if published is None:
+                raise RuntimeError("Failed to publish session entry")
             entry = published
             _needs_save = True
             if entry is candidate:

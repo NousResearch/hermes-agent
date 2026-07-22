@@ -6917,7 +6917,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait({"session_id": sid}, rid)
     if err:
         return err
-    assert session is not None
+    if session is None:
+        return _error(rid, -32600, "Session not found")
 
     return _ok(
         rid,

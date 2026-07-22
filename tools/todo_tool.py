@@ -21,6 +21,14 @@ from typing import Dict, Any, List, Optional
 # Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 
+# Fields persisted per todo item. ``activeForm`` is the optional human-readable
+# present-progressive label rendered next to the in_progress marker
+# ("… — Editing todo_tool.py" vs the bare content "Edit todo_tool.py"). It is
+# purely cosmetic — falls back to ``content`` when missing or empty. Issue
+# #59544 (feature: task lists) makes it part of the canonical Claude Code-style
+# schema so models can supply both an action label and a verb-form.
+TODO_ITEM_FIELDS = ("id", "content", "status", "activeForm")
+
 # Bounds on persisted todo state. The todo list is a planning aid the model
 # re-reads after every context-compression event (see format_for_injection),
 # so unbounded item content or count defeats the compression it rides through.
@@ -79,6 +87,14 @@ class TodoStore:
                         status = str(t["status"]).strip().lower()
                         if status in VALID_STATUSES:
                             existing[item_id]["status"] = status
+                    # activeForm is optional — clearing it via merge requires
+                    # an explicit empty string, otherwise the existing label
+                    # is kept (matches how content/status preserve on partial
+                    # writes — only supplied fields are touched).
+                    if "activeForm" in t:
+                        existing[item_id]["activeForm"] = self._cap_content(
+                            str(t["activeForm"]).strip()
+                        ) if t["activeForm"] else ""
                 else:
                     # New item -- validate fully and append to end
                     validated = self._validate(t)
@@ -113,7 +129,10 @@ class TodoStore:
         Render the todo list for post-compression injection.
 
         Returns a human-readable string to append to the compressed
-        message history, or None if the list is empty.
+        message history, or None if the list is empty. The in_progress
+        item (if any) is rendered with its activeForm — Claude Code-style
+        verb-form labelling — so the model can see what it was actively
+        doing when the conversation was compressed.
         """
         if not self._items:
             return None
@@ -138,9 +157,109 @@ class TodoStore:
         lines = ["[Your active task list was preserved across context compression]"]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
-            lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
+            label = item["content"]
+            if item["status"] == "in_progress":
+                active_form = item.get("activeForm", "").strip()
+                if active_form and active_form != label:
+                    label = f"{label} — {active_form}"
+            lines.append(f"- {marker} {item['id']}. {label} ({item['status']})")
 
         return "\n".join(lines)
+
+    def format_for_active_block(self) -> Optional[str]:
+        """
+        Render the active todo list for the system prompt.
+
+        Surfaces the in-progress item (with activeForm) and the pending
+        backlog so the model can refer to its plan across turns without
+        a tool call. Returns None when there is nothing to show — the
+        caller should then skip the block entirely rather than emit a
+        bare header.
+
+        Layout:
+
+            [Active task list (N items; M done)]
+            - [>] 1. Edit todo_tool.py — adding activeForm support (in_progress)
+            - [ ] 2. Wire system prompt injection
+            - [ ] 3. Add persistence tests
+
+        Issue #59544 — the user wants the plan visible to the model in
+        every turn, not just after compression.
+        """
+        if not self._items:
+            return None
+
+        markers = {
+            "completed": "[x]",
+            "in_progress": "[>]",
+            "pending": "[ ]",
+            "cancelled": "[~]",
+        }
+
+        # Include everything the model should be aware of. Completed and
+        # cancelled items stay visible so the model can refer back to what
+        # it has finished (and avoid redoing work) — the post-compression
+        # injection path already filters those out for a different reason
+        # (re-doing finished work after a context window collapse).
+        visible = [item for item in self._items if item["status"] in VALID_STATUSES]
+        if not visible:
+            return None
+
+        total = len(visible)
+        done = sum(1 for i in visible if i["status"] in {"completed", "cancelled"})
+        lines = [f"[Active task list ({total} item{'s' if total != 1 else ''}; {done} done)]"]
+        for item in visible:
+            marker = markers.get(item["status"], "[?]")
+            label = item["content"]
+            if item["status"] == "in_progress":
+                active_form = item.get("activeForm", "").strip()
+                if active_form and active_form != label:
+                    label = f"{label} — {active_form}"
+            lines.append(f"- {marker} {item['id']}. {label} ({item['status']})")
+
+        return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the current state for session persistence.
+
+        Returns a JSON-serializable dict suitable for ``SessionDB.save_todo_state``.
+        Includes the schema version so future migrations can detect older
+        payloads without parsing the items blindly.
+        """
+        return {
+            "version": 1,
+            "items": [item.copy() for item in self._items],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Optional[Dict[str, Any]]) -> "TodoStore":
+        """Rebuild a TodoStore from a persisted payload.
+
+        Tolerant of missing/malformed payloads (returns an empty store).
+        Items pass through ``_validate`` so a payload that survived a
+        schema-version bump still gets re-normalized against the current
+        field set.
+        """
+        store = cls()
+        if not isinstance(payload, dict):
+            return store
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return store
+        # Cap on replay matches the live write path — a corrupted or
+        # oversized persisted blob shouldn't blow up the rehydration block.
+        if len(items) > MAX_TODO_ITEMS:
+            items = items[:MAX_TODO_ITEMS]
+        try:
+            store.write(items, merge=False)
+        except Exception:
+            # Defensive: a single bad item shouldn't nuke the entire store.
+            # _validate already synthesizes placeholder rows, so this branch
+            # is only reached for structural problems (non-list payloads,
+            # items that aren't even iterable). Fail open to an empty store
+            # rather than crashing the session.
+            return cls()
+        return store
 
     @staticmethod
     def _cap_content(content: str) -> str:
@@ -161,10 +280,10 @@ class TodoStore:
         Validate and normalize a todo item.
 
         Ensures required fields exist and status is valid.
-        Returns a clean dict with only {id, content, status}.
+        Returns a clean dict with only {id, content, status, activeForm}.
         """
         if not isinstance(item, dict):
-            return {"id": "?", "content": "(invalid item)", "status": "pending"}
+            return {"id": "?", "content": "(invalid item)", "status": "pending", "activeForm": ""}
 
         item_id = str(item.get("id", "")).strip()
         if not item_id:
@@ -180,7 +299,21 @@ class TodoStore:
         if status not in VALID_STATUSES:
             status = "pending"
 
-        return {"id": item_id, "content": content, "status": status}
+        active_form = str(item.get("activeForm", "")).strip()
+        # Cap activeForm separately — it ships in the system prompt and the
+        # injection block, so the same bounding rationale applies. Empty when
+        # missing so format_for_active_block() falls back to ``content``.
+        if active_form:
+            active_form = TodoStore._cap_content(active_form)
+        else:
+            active_form = ""
+
+        return {
+            "id": item_id,
+            "content": content,
+            "status": status,
+            "activeForm": active_form,
+        }
 
     @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -270,10 +403,15 @@ TODO_SCHEMA = {
         "- merge=false (default): replace the entire list with a fresh plan\n"
         "- merge=true: update existing items by id, add any new ones\n\n"
         "Each item: {id: string, content: string, "
-        "status: pending|in_progress|completed|cancelled}\n"
+        "status: pending|in_progress|completed|cancelled, "
+        "activeForm?: string}\n"
         "List order is priority. Only ONE item in_progress at a time.\n"
         "Mark items completed immediately when done. If something fails, "
         "cancel it and add a revised item.\n\n"
+        "activeForm is optional — supply a short present-progressive label "
+        "(e.g. \"Editing todo_tool.py\") that the agent renders next to "
+        "the in_progress marker so the user can see what it is doing. "
+        "Falls back to content when omitted.\n\n"
         "Always returns the full current list."
     ),
     "parameters": {
@@ -297,6 +435,14 @@ TODO_SCHEMA = {
                             "type": "string",
                             "enum": ["pending", "in_progress", "completed", "cancelled"],
                             "description": "Current status"
+                        },
+                        "activeForm": {
+                            "type": "string",
+                            "description": (
+                                "Optional present-progressive label for the "
+                                "in_progress item (e.g. 'Editing todo_tool.py'). "
+                                "Rendered alongside content in the UI/prompt."
+                            )
                         }
                     },
                     "required": ["id", "content", "status"]

@@ -509,6 +509,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
     timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+
+    # Active todo block (issue #59544) — surfacing the agent's plan in the
+    # system prompt so the model can refer to it across turns without an
+    # extra tool call. Lives in the volatile tier (mutates after every
+    # todo tool call) and renders BEFORE the timestamp so the timestamp
+    # remains the stable tail of the cached prompt block. The block is
+    # always invalidated alongside the todo store (see
+    # agent.tool_executor.todo handler) so the rebuild happens lazily on
+    # the next turn rather than on every store mutation.
+    _todo_store = getattr(agent, "_todo_store", None)
+    if _todo_store is not None:
+        try:
+            _todo_block = _todo_store.format_for_active_block()
+        except Exception:
+            _todo_block = None
+        if _todo_block:
+            volatile_parts.append(_todo_block)
+
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:

@@ -886,6 +886,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    todo_state TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -2873,6 +2874,54 @@ class SessionDB:
                 (system_prompt, session_id),
             )
         self._execute_write(_do)
+
+    def save_todo_state(self, session_id: str, todo_state_json: Optional[str]) -> None:
+        """Persist the agent's todo list snapshot for the session.
+
+        ``todo_state_json`` is a JSON string produced by
+        ``tools.todo_tool.TodoStore.to_dict()`` (a ``{"version": N,
+        "items": [...]}`` envelope). Passing ``None`` clears the stored
+        state. Used by ``AIAgent.close`` and the ``todo`` tool execution
+        path so a fresh agent spun up for the next turn rehydrates the
+        same plan without depending on conversation-history replay
+        (issue #59544).
+
+        The dedicated ``todo_state`` column keeps todo persistence out of
+        ``model_config`` (which is reserved for delegate / branch /
+        ephemeral-child markers) — schema is auto-migrated via
+        ``_reconcile_columns``.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET todo_state = ? WHERE id = ?",
+                (todo_state_json, session_id),
+            )
+        self._execute_write(_do)
+
+    def load_todo_state(self, session_id: str) -> Optional[str]:
+        """Return the persisted todo_state JSON for the session, or None.
+
+        Empty strings are normalized to None so a failed prior save
+        looks the same as no save at all.
+        """
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT todo_state FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+                row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                # Pre-migration DBs that pre-date the todo_state column.
+                # _reconcile_columns will add it on the next call; we
+                # just return None instead of crashing the turn.
+                return None
+        if row is None:
+            return None
+        value = row["todo_state"] if isinstance(row, sqlite3.Row) else row[0]
+        if not value:
+            return None
+        return value
 
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.

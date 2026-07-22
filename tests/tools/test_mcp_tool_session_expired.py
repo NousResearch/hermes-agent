@@ -13,6 +13,7 @@ affected MCP server failed until the gateway was manually restarted.
 import asyncio
 import json
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -507,7 +508,14 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     server._reconnect_event = _ReconnectAdapter()
     mcp_tool._servers["hindsight"] = server
     mcp_tool._server_error_counts["hindsight"] = 7
-    mcp_tool._server_breaker_opened_at["hindsight"] = 123.0
+    # Stamp the breaker "open" far enough in the past that the cooldown has
+    # provably elapsed, so this call is a half-open probe. The breaker compares
+    # against time.monotonic() (tools/mcp_tool.py), whose origin is arbitrary and
+    # small on a freshly-booted CI container — a hardcoded literal like 123.0
+    # only looked "elapsed" on a long-uptime dev box and flaked under CI.
+    mcp_tool._server_breaker_opened_at["hindsight"] = (
+        time.monotonic() - mcp_tool._CIRCUIT_BREAKER_COOLDOWN_SEC - 1.0
+    )
 
     try:
         handler = _make_tool_handler("hindsight", "get_bank", 10.0)

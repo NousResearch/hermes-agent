@@ -2212,6 +2212,13 @@ class Migrator:
                 if api_key and self.migrate_secrets:
                     env_key = f"PLUGIN_{plugin_name.upper().replace('-', '_')}_API_KEY"
                     self._set_env_var(env_key, api_key, f"plugins.entries.{plugin_name}.apiKey")
+                if self.migrate_secrets:
+                    for ev_key, ev_val in env_vars.items():
+                        self._set_env_var(
+                            str(ev_key),
+                            str(ev_val),
+                            f"plugins.entries.{plugin_name}.env.{ev_key}",
+                        )
 
     # ── Cron jobs ─────────────────────────────────────────────
     def migrate_cron_jobs(self, config: Optional[Dict[str, Any]] = None) -> None:
@@ -2562,12 +2569,12 @@ class Migrator:
 
         # Extended channel token/allowlist mapping
         CHANNEL_ENV_MAP = {
-            "matrix": {"token": "MATRIX...OKEN", "tokenField": "accessToken", "allowFrom": "MATRIX_ALLOWED_USERS",
-                        "extras": {"homeserverUrl": "MATRIX_HOMESERVER_URL", "userId": "MATRIX_USER_ID"}},
-            "mattermost": {"token": "MATTERMOST_BOT_TOKEN", "allowFrom": "MATTERMOST_ALLOWED_USERS",
+            "matrix": {"token": "MATRIX_ACCESS_TOKEN", "tokenField": "accessToken", "allowFrom": "MATRIX_ALLOWED_USERS",
+                        "extras": {"homeserverUrl": "MATRIX_HOMESERVER", "userId": "MATRIX_USER_ID"}},
+            "mattermost": {"token": "MATTERMOST_TOKEN", "allowFrom": "MATTERMOST_ALLOWED_USERS",
                            "extras": {"url": "MATTERMOST_URL", "teamId": "MATTERMOST_TEAM_ID"}},
-            "irc": {"extras": {"server": "IRC_SERVER", "nick": "IRC_NICK", "channels": "IRC_CHANNELS"}},
-            "googlechat": {"extras": {"serviceAccountKeyPath": "GOOGLE_CHAT_SA_KEY_PATH"}},
+            "irc": {"extras": {"server": "IRC_SERVER", "nick": "IRC_NICKNAME", "channels": "IRC_CHANNEL"}},
+            "googlechat": {"extras": {"serviceAccountKeyPath": "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"}},
             "imessage": {},
             "bluebubbles": {"extras": {"server": "BLUEBUBBLES_SERVER", "password": "BLUEBUBBLES_PASSWORD"}},
             "msteams": {"token": "MSTEAMS_BOT_TOKEN", "allowFrom": "MSTEAMS_ALLOWED_USERS"},

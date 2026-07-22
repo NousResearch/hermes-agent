@@ -1107,3 +1107,193 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for CHANNEL_ENV_MAP regression tests
+# ---------------------------------------------------------------------------
+
+def _run_channel_migration(tmp_path: Path, channels_cfg: dict) -> str:
+    """Migrate an OpenClaw config that contains only the given channels block.
+
+    Returns the contents of the generated Hermes .env file so that callers
+    can assert which env vars were written.
+    """
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    (source / "credentials").mkdir(parents=True)
+    (target).mkdir()
+
+    openclaw_json = {
+        "agents": {"defaults": {"workspace": str(source / "workspace")}},
+        "channels": channels_cfg,
+    }
+    (source / "openclaw.json").write_text(
+        json.dumps(openclaw_json), encoding="utf-8"
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=target / "migration-report",
+    )
+    migrator.migrate()
+
+    env_path = target / ".env"
+    return env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+
+
+# ---------------------------------------------------------------------------
+# Regression: CHANNEL_ENV_MAP wrong env var names
+# ---------------------------------------------------------------------------
+
+def test_migrator_writes_matrix_access_token_not_truncated_placeholder(tmp_path: Path):
+    """MATRIX_ACCESS_TOKEN - nao o placeholder truncado 'MATRIX...OKEN'.
+
+    Regressao: a entrada 'matrix' do CHANNEL_ENV_MAP tinha 'MATRIX...OKEN'
+    como valor do campo 'token'. Migracao com canal Matrix configurado deve
+    escrever MATRIX_ACCESS_TOKEN no .env do Hermes.
+    """
+    env_text = _run_channel_migration(
+        tmp_path,
+        {
+            "matrix": {
+                "accessToken": "syt_test_token_abc123",
+                "homeserverUrl": "https://matrix.example.com",
+                "userId": "@bot:example.com",
+            }
+        },
+    )
+    assert "MATRIX_ACCESS_TOKEN=syt_test_token_abc123" in env_text, (
+        f"Esperado MATRIX_ACCESS_TOKEN no .env, obtido:\n{env_text}"
+    )
+    assert "MATRIX...OKEN" not in env_text, (
+        "Placeholder truncado 'MATRIX...OKEN' encontrado no .env - correcao nao aplicada"
+    )
+
+
+def test_migrator_writes_matrix_homeserver_not_url_suffix(tmp_path: Path):
+    """MATRIX_HOMESERVER - nao 'MATRIX_HOMESERVER_URL'.
+
+    Regressao: extras do Matrix mapeavam 'homeserverUrl' -> 'MATRIX_HOMESERVER_URL',
+    mas o adapter le 'MATRIX_HOMESERVER' (sem sufixo _URL).
+    """
+    env_text = _run_channel_migration(
+        tmp_path,
+        {
+            "matrix": {
+                "accessToken": "syt_tok",
+                "homeserverUrl": "https://matrix.example.com",
+            }
+        },
+    )
+    assert "MATRIX_HOMESERVER=https://matrix.example.com" in env_text, (
+        f"Esperado MATRIX_HOMESERVER no .env, obtido:\n{env_text}"
+    )
+    assert "MATRIX_HOMESERVER_URL" not in env_text, (
+        "Nome errado 'MATRIX_HOMESERVER_URL' encontrado no .env - deve ser 'MATRIX_HOMESERVER'"
+    )
+
+
+def test_migrator_writes_mattermost_token_not_bot_token(tmp_path: Path):
+    """MATTERMOST_TOKEN - nao 'MATTERMOST_BOT_TOKEN'.
+
+    Regressao: a entrada 'mattermost' do CHANNEL_ENV_MAP tinha 'MATTERMOST_BOT_TOKEN'
+    mas o adapter le 'MATTERMOST_TOKEN'.
+    """
+    env_text = _run_channel_migration(
+        tmp_path,
+        {
+            "mattermost": {
+                "botToken": "mm-tok-abc123",
+                "url": "https://mm.example.com",
+            }
+        },
+    )
+    assert "MATTERMOST_TOKEN=mm-tok-abc123" in env_text, (
+        f"Esperado MATTERMOST_TOKEN no .env, obtido:\n{env_text}"
+    )
+    assert "MATTERMOST_BOT_TOKEN" not in env_text, (
+        "Nome errado 'MATTERMOST_BOT_TOKEN' encontrado no .env - deve ser 'MATTERMOST_TOKEN'"
+    )
+
+
+def test_migrator_writes_irc_nickname_not_nick(tmp_path: Path):
+    """IRC_NICKNAME - nao 'IRC_NICK'.
+
+    Regressao: extras do IRC mapeavam 'nick' -> 'IRC_NICK' mas o adapter
+    le 'IRC_NICKNAME'.
+    """
+    env_text = _run_channel_migration(
+        tmp_path,
+        {
+            "irc": {
+                "server": "irc.example.com",
+                "nick": "mybot",
+                "channels": "#general",
+            }
+        },
+    )
+    assert "IRC_NICKNAME=mybot" in env_text, (
+        f"Esperado IRC_NICKNAME no .env, obtido:\n{env_text}"
+    )
+    # IRC_NICK= (sem sufixo NAME) nao deve aparecer
+    import re as _re
+    assert not _re.search(r"\bIRC_NICK=", env_text), (
+        f"'IRC_NICK=' (sem sufixo NAME) encontrado no .env - deve ser 'IRC_NICKNAME'\n{env_text}"
+    )
+
+
+def test_migrator_writes_irc_channel_singular_not_plural(tmp_path: Path):
+    """IRC_CHANNEL - nao 'IRC_CHANNELS' (plural).
+
+    Regressao: extras do IRC mapeavam 'channels' -> 'IRC_CHANNELS' mas o
+    adapter le 'IRC_CHANNEL' (singular).
+    """
+    env_text = _run_channel_migration(
+        tmp_path,
+        {
+            "irc": {
+                "server": "irc.example.com",
+                "nick": "mybot",
+                "channels": "#general",
+            }
+        },
+    )
+    assert "IRC_CHANNEL=#general" in env_text, (
+        f"Esperado IRC_CHANNEL no .env, obtido:\n{env_text}"
+    )
+    import re as _re
+    assert not _re.search(r"\bIRC_CHANNELS=", env_text), (
+        f"'IRC_CHANNELS=' (plural) encontrado no .env - deve ser 'IRC_CHANNEL' (singular)\n{env_text}"
+    )
+
+
+def test_migrator_writes_google_chat_service_account_json_not_sa_key_path(tmp_path: Path):
+    """GOOGLE_CHAT_SERVICE_ACCOUNT_JSON - nao 'GOOGLE_CHAT_SA_KEY_PATH'.
+
+    Regressao: extras do googlechat mapeavam 'serviceAccountKeyPath' ->
+    'GOOGLE_CHAT_SA_KEY_PATH' mas o adapter le 'GOOGLE_CHAT_SERVICE_ACCOUNT_JSON'.
+    Semantica compativel: o adapter aceita tanto path quanto JSON inline,
+    entao o valor (caminho de arquivo) e valido - apenas o nome da var estava errado.
+    """
+    env_text = _run_channel_migration(
+        tmp_path,
+        {
+            "googlechat": {
+                "serviceAccountKeyPath": "/secrets/sa.json",
+            }
+        },
+    )
+    assert "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=/secrets/sa.json" in env_text, (
+        f"Esperado GOOGLE_CHAT_SERVICE_ACCOUNT_JSON no .env, obtido:\n{env_text}"
+    )
+    assert "GOOGLE_CHAT_SA_KEY_PATH" not in env_text, (
+        "Nome errado 'GOOGLE_CHAT_SA_KEY_PATH' encontrado no .env - "
+        "deve ser 'GOOGLE_CHAT_SERVICE_ACCOUNT_JSON'"
+    )

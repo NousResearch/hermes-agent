@@ -578,6 +578,28 @@ def test_direct_start_drops_context_when_url_userinfo_changes():
     assert agent.context_compressor.config_context_length is None
 
 
+@pytest.mark.parametrize("suffix", [" ", "\t", "\n", "\r", "%20"])
+def test_direct_start_drops_context_for_trailing_url_data(suffix):
+    """Whitespace, controls, and encoded spaces remain route-significant."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": f"https://example.com/v1{suffix}",
+            "context_length": 1_048_576,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
 def test_direct_start_drops_context_when_ipv6_zone_case_changes():
     """IPv6 address hex is case-insensitive, but its zone identifier is not."""
     cfg = {

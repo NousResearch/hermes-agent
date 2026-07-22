@@ -234,9 +234,12 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * dropping either makes an accepted turn appear to vanish during transport
  * churn.
  *
- * Authoritative rows use different ids, so match by role ordinal. A matching
- * user row is considered committed only when its visible text also matches;
- * any authoritative assistant at the same ordinal supersedes the local stream.
+ * A lagging projection can be behind by one live turn, never a whole local
+ * history window. Preserve only the newest optimistic user row: compression
+ * rewrites past context, so older `user-*` rows in a warm cache are stale
+ * history, not in-flight work. The latest authoritative user confirms whether
+ * that tail has persisted; any authoritative assistant at the same ordinal
+ * supersedes the local stream.
  */
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
@@ -257,6 +260,10 @@ export function preserveLocalPendingTurnMessages(
 
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
+  const newestOptimisticUser = [...previousMessages]
+    .reverse()
+    .find(message => message.role === 'user' && message.id.startsWith('user-'))
+  const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
 
   for (const message of previousMessages) {
@@ -269,6 +276,14 @@ export function preserveLocalPendingTurnMessages(
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
     if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+      continue
+    }
+
+    if (isOptimisticUser && message !== newestOptimisticUser) {
+      continue
+    }
+
+    if (isOptimisticUser && latestAuthoritativeUser && chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()) {
       continue
     }
 

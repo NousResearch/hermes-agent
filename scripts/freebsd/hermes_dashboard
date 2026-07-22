@@ -1,0 +1,89 @@
+#!/bin/sh
+
+# PROVIDE: hermes_dashboard
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable hermes_dashboard:
+#
+# hermes_dashboard_enable="YES"
+# hermes_dashboard_user="hermes"              # REQUIRED: account whose ~/.hermes is used
+# hermes_dashboard_host="127.0.0.1"          # OPTIONAL: bind host (default 127.0.0.1)
+# hermes_dashboard_port="9119"               # OPTIONAL: bind port (default 9119)
+# hermes_dashboard_profile=""                # OPTIONAL: -p <profile>
+# hermes_dashboard_args=""                   # OPTIONAL: extra args passed to `hermes dashboard`
+#                                            #   e.g. "--insecure" (DANGEROUS — exposes API keys)
+#                                            #   or   "--tui" (in-browser chat)
+#
+# NOTE: do NOT use ${name}_flags for extra args. rc.subr reserves *_flags
+# for the *command* (i.e. daemon(8)) and will inject them ahead of daemon's
+# own options, which causes daemon to fail with "unrecognized option".
+# Use hermes_dashboard_args instead — it is forwarded to `hermes dashboard`.
+#
+# WARNING: --insecure binds the dashboard to all interfaces and exposes
+# the configured provider API keys on the network.  Only use behind a
+# trusted reverse proxy with auth.  Default binding is 127.0.0.1 only.
+
+. /etc/rc.subr
+
+name="hermes_dashboard"
+rcvar="hermes_dashboard_enable"
+
+load_rc_config $name
+
+: ${hermes_dashboard_enable:="NO"}
+: ${hermes_dashboard_user:=""}
+: ${hermes_dashboard_host:="127.0.0.1"}
+: ${hermes_dashboard_port:="9119"}
+: ${hermes_dashboard_profile:=""}
+: ${hermes_dashboard_args:=""}
+
+# Back-compat: if someone set the legacy *_flags var, honor it but warn.
+if [ -n "${hermes_dashboard_flags}" ] && [ -z "${hermes_dashboard_args}" ]; then
+    warn "hermes_dashboard_flags is deprecated (it collides with rc.subr); use hermes_dashboard_args"
+    hermes_dashboard_args="${hermes_dashboard_flags}"
+fi
+# Suppress rc.subr's automatic *_flags injection — we route extras via
+# hermes_dashboard_args into the inner command instead.
+hermes_dashboard_flags=""
+
+if [ -n "${hermes_dashboard_user}" ]; then
+    hermes_dashboard_home=$(getent passwd "${hermes_dashboard_user}" 2>/dev/null | cut -d: -f6)
+    if [ -z "${hermes_dashboard_home}" ]; then
+        hermes_dashboard_home=$(eval echo "~${hermes_dashboard_user}")
+    fi
+else
+    hermes_dashboard_home=""
+fi
+
+piddir="/var/run/${name}"
+pidfile="${piddir}/${name}.pid"
+
+command="/usr/sbin/daemon"
+# Note: do NOT pass `-u ${hermes_dashboard_user}` to daemon. rc.subr already
+# drops privileges to ${name}_user via su(1) before exec, so adding -u here
+# causes daemon to call initgroups() as a non-root user → EPERM and a tight
+# restart loop with `-r`.
+command_args="-f -r -P ${pidfile} -S -T ${name} \
+    /usr/bin/env HOME=${hermes_dashboard_home} \
+    /usr/local/bin/hermes ${hermes_dashboard_profile:+-p ${hermes_dashboard_profile}} \
+    dashboard --no-open --host ${hermes_dashboard_host} --port ${hermes_dashboard_port} \
+    ${hermes_dashboard_args}"
+
+required_files="/usr/local/bin/hermes"
+
+start_precmd="hermes_dashboard_prestart"
+hermes_dashboard_prestart()
+{
+    if [ -z "${hermes_dashboard_user}" ]; then
+        err 1 "hermes_dashboard_user is not set in rc.conf — refusing to start"
+    fi
+    if [ -z "${hermes_dashboard_home}" ] || [ ! -d "${hermes_dashboard_home}" ]; then
+        err 1 "home directory for user '${hermes_dashboard_user}' not found"
+    fi
+    # piddir must be writable by the unprivileged user since daemon(8)
+    # drops privileges (-u) before writing the supervisor pidfile (-P).
+    install -d -m 0755 -o "${hermes_dashboard_user}" "${piddir}"
+}
+
+run_rc_command "$1"

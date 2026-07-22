@@ -1131,10 +1131,34 @@ class SlackAdapter(BasePlatformAdapter):
             app_token = os.getenv("SLACK_APP_TOKEN")
 
         if not raw_token:
-            logger.error("[Slack] SLACK_BOT_TOKEN not set")
+            logger.error(
+                "[Slack] SLACK_BOT_TOKEN not set — this is a permanent config "
+                "error; set SLACK_BOT_TOKEN via `hermes gateway setup` "
+                "or in the active profile's ~/.hermes/.env file, then restart "
+                "the gateway.",
+            )
+            self._set_fatal_error(
+                "missing_slack_bot_token",
+                "SLACK_BOT_TOKEN not configured. Use `hermes gateway setup` "
+                "or add it to your active profile's ~/.hermes/.env file, "
+                "then restart the gateway.",
+                retryable=False,
+            )
             return False
         if not app_token:
-            logger.error("[Slack] SLACK_APP_TOKEN not set")
+            logger.error(
+                "[Slack] SLACK_APP_TOKEN not set — this is a permanent config "
+                "error; set SLACK_APP_TOKEN via `hermes gateway setup` "
+                "or in the active profile's ~/.hermes/.env file, then restart "
+                "the gateway.",
+            )
+            self._set_fatal_error(
+                "missing_slack_app_token",
+                "SLACK_APP_TOKEN not configured. Use `hermes gateway setup` "
+                "or add it to your active profile's ~/.hermes/.env file, "
+                "then restart the gateway.",
+                retryable=False,
+            )
             return False
 
         proxy_url = _resolve_slack_proxy_url()

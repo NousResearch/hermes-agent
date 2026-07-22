@@ -635,8 +635,12 @@ def telemetry_provenance(
                 return "installed"
         except Exception:
             pass
-    if isinstance(record, dict) and record.get("created_by") == "agent":
-        return "agent_created"
+    if isinstance(record, dict):
+        created_by = record.get("created_by")
+        if created_by == "installed":
+            return "installed"
+        if created_by == "agent":
+            return "agent_created"
     if _find_external_skill_dir(skill_name) is not None:
         return "external"
     if _find_skill_dir(skill_name) is not None or isinstance(record, dict):

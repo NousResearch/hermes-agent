@@ -231,6 +231,30 @@ def test_skill_event_is_not_emitted_when_usage_state_cannot_commit(
     assert events == []
 
 
+def test_installed_lifecycle_uses_persisted_provenance_when_hub_lookup_misses(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    monkeypatch.setattr(skill_usage, "is_hub_installed", lambda _name: False)
+    monkeypatch.setattr(skill_usage, "is_bundled", lambda _name: False)
+
+    skill_usage.record_installed("private-installed-skill")
+
+    assert len(events) == 1
+    assert events[0]["action"] == "installed"
+    assert events[0]["provenance"] == "installed"
+
+
 def test_bump_on_empty_name_is_noop(skills_home):
     from tools.skill_usage import bump_view, load_usage
     bump_view("")

@@ -160,12 +160,14 @@ def test_clean_exit_without_completion_receipt_never_promotes_successor(
         kb._record_worker_exit(pid, 0)
 
         assert parent in kb.detect_crashed_workers(conn)
-        assert kb.get_task(conn, parent).status == "blocked"
+        # Upstream gives clean-exit protocol violations a bounded retry budget.
+        # The safety invariant here is no acceptance/promotion without a receipt.
+        assert kb.get_task(conn, parent).status == "ready"
         assert kb.get_task(conn, child).status == "todo"
         kinds = [event.kind for event in kb.list_events(conn, parent)]
         assert "protocol_violation" in kinds
         assert "completed" not in kinds
-        assert "gave_up" in kinds
+        assert "gave_up" not in kinds
 
 
 def test_crash_retry_then_acceptance_promotes_only_after_retry(kanban_home, monkeypatch):

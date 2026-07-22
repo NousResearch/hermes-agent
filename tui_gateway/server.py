@@ -15052,6 +15052,13 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         (parts[1].strip() if len(parts) > 1 else ""),
         session.get("agent"),
     )
+    if name == "compact":
+        # /compact is an alias of /compress in every host. The compute-host
+        # slash.compress control forwards the user's raw alias verbatim, so
+        # without normalizing here the child mirror silently no-ops — the
+        # session never compresses and the deferred context-engine
+        # notification wiring below is never exercised for that route.
+        name = "compress"
 
     # Reject agent-mutating commands during an in-flight turn.  These
     # all do read-then-mutate on live agent/session state that the

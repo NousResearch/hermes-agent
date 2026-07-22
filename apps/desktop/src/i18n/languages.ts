@@ -10,7 +10,7 @@ export const LOCALE_OPTIONS = [
     name: 'English',
     englishName: 'English',
     configValue: 'en'
-  },
+  },  
   {
     id: 'zh',
     name: '简体中文',
@@ -28,7 +28,13 @@ export const LOCALE_OPTIONS = [
     name: '日本語',
     englishName: 'Japanese',
     configValue: 'ja'
-  }
+  },
+  {
+    id: 'es',
+    name: 'Español',
+    englishName: 'Spanish',
+    configValue: 'es'
+  },
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
 // `name` is the endonym (native name) shown in the picker so users recognize
@@ -64,7 +70,27 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   zh_hant_hk: 'zh-hant',
   ja: 'ja',
   'ja-jp': 'ja',
-  ja_jp: 'ja'
+  ja_jp: 'ja',
+  es: 'es',
+  'es-es': 'es',
+  es_es: 'es',
+  'es-mx': 'es',
+  es_mx: 'es',
+  'es-ar': 'es',
+  es_ar: 'es',
+  'es-cl': 'es',
+  es_cl: 'es',
+  'es-co': 'es',
+  es_co: 'es',
+  'es-pe': 'es',
+  es_pe: 'es',
+  'es-uy': 'es',
+  es_uy: 'es',
+  'es-ve': 'es',
+  es_ve: 'es',
+  'es-419': 'es',  // código oficial para "español de Latinoamérica"
+  'es-us': 'es',   // español hablado en EEUU
+  'es_us': 'es',   // variante con guion bajo (LANG=es_US)
 }
 
 export function isLocale(value: unknown): value is Locale {

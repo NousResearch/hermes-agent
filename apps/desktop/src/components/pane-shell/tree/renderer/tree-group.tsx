@@ -39,9 +39,8 @@ import {
   $narrowViewport,
   $treeDragging,
   activateTreePane,
-  closeTreePane,
+  closePaneTab,
   collapseTreePane,
-  dismissTreePane,
   isCollapsePane,
   moveTreePane,
   restoreTreePane,
@@ -120,7 +119,10 @@ function ZoneMenu({
               const paneId = closable?.()
 
               if (paneId) {
-                closeTreePane(paneId)
+                // #65985: route through the SAME closePaneTab as middle-click /
+                // the tab ✕, so "Close" on a tool-panel tab (terminal/logs)
+                // REMOVES it instead of merely running its collapse closer.
+                closePaneTab(paneId)
               }
             }}
           >
@@ -265,10 +267,11 @@ export function TreeGroup({
   // MAIN strands the whole app behind a strip.
   const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
 
-  // Tab ✕: a tool panel (terminal/logs) is REMOVED from the layout (comes back
-  // via its toggle); everything else routes through its Close (a session tile
-  // closes the session, a store-bound pane collapses).
-  const closeTab = (paneId: string) => (isCollapsePane(paneId) ? dismissTreePane(paneId) : closeTreePane(paneId))
+  // Tab ✕ / middle-click / ⌘-click: routed through the store's shared
+  // closePaneTab — a tool panel (terminal/logs) is REMOVED from the layout
+  // (comes back via its toggle); everything else routes through its Close (a
+  // session tile closes the session, a store-bound pane collapses).
+  const closeTab = closePaneTab
 
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.

@@ -90,6 +90,32 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   return blobs
 }
 
+const TABLE_HTML_RE = /<table[\s>]/i
+
+/**
+ * Plain-text payload for a paste, with surrounding whitespace trimmed.
+ *
+ * Surrounding whitespace is trimmed so a copy that dragged along leading or
+ * trailing blank lines (common when selecting from terminals, code blocks, or
+ * web pages) doesn't dump multiline padding into the composer. Internal
+ * newlines are preserved — only the edges are cleaned up.
+ *
+ * Spreadsheet apps (Excel, Google Sheets, Numbers) put copied cells on the
+ * plain-text clipboard as tab-separated columns and also expose an HTML
+ * `<table>`. Those column tabs render as ragged gaps in the contenteditable
+ * composer, so we collapse them to single spaces — but only when the payload
+ * is genuinely tabular, so tab indentation in pasted code is left untouched.
+ */
+export function readPastedText(clipboard: DataTransfer): string {
+  const text = clipboard.getData('text').trim()
+
+  if (text.includes('\t') && TABLE_HTML_RE.test(clipboard.getData('text/html'))) {
+    return text.replace(/\t/g, ' ')
+  }
+
+  return text
+}
+
 /** Caret-anchored text before the cursor, or null if the selection isn't a collapsed caret inside `editor`. */
 export function textBeforeCaret(editor: HTMLDivElement): string | null {
   const sel = window.getSelection()

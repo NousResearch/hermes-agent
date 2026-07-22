@@ -55,7 +55,7 @@ import {
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
-import { extractClipboardImageBlobs } from './text-utils'
+import { extractClipboardImageBlobs, readPastedText } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -364,11 +364,9 @@ export function ChatBar({
       return
     }
 
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+    // Trim edge whitespace and collapse spreadsheet column tabs (Excel/Sheets)
+    // to spaces; see readPastedText for the rationale.
+    const pastedText = sanitizeComposerInput(readPastedText(event.clipboardData))
 
     if (!pastedText) {
       event.preventDefault()

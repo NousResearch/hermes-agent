@@ -329,6 +329,9 @@ _MANAGED_TRUE_VALUES = ("true", "1", "yes")
 _MANAGED_SYSTEM_NAMES = {
     "brew": "Homebrew",
     "homebrew": "Homebrew",
+    "home-manager": "Home Manager",
+    "hm": "Home Manager",
+    "home-manager-nixos": "Home Manager (NixOS)",
     "nix": "NixOS",
     "nixos": "NixOS",
 }
@@ -345,7 +348,13 @@ def get_managed_system() -> Optional[str]:
 
     managed_marker = get_hermes_home() / ".managed"
     if managed_marker.exists():
-        return "NixOS"
+        # Read marker content to distinguish NixOS vs home-manager.
+        # Legacy (empty) markers default to NixOS for backwards compat.
+        try:
+            content = managed_marker.read_text().strip().lower()
+        except (OSError, UnicodeDecodeError):
+            content = ""
+        return _MANAGED_SYSTEM_NAMES.get(content, "NixOS")
     return None
 
 
@@ -367,6 +376,10 @@ def get_managed_update_command() -> Optional[str]:
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
         return "brew upgrade hermes-agent"
+    if managed_system == "Home Manager (NixOS)":
+        return "sudo nixos-rebuild switch"
+    if managed_system == "Home Manager":
+        return "home-manager switch"
     if managed_system == "NixOS":
         return _NIX_UPDATE_MSG
     return None
@@ -669,6 +682,24 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
             f"(HERMES_MANAGED={env_hint}).\n"
             "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
             "  sudo nixos-rebuild switch"
+        )
+
+    if managed_system == "Home Manager (NixOS)":
+        env_hint = raw or "home-manager-nixos"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by Home Manager "
+            f"(via NixOS module, HERMES_MANAGED={env_hint}).\n"
+            "Edit programs.hermes-agent.settings in your NixOS configuration and run:\n"
+            "  sudo nixos-rebuild switch"
+        )
+
+    if managed_system == "Home Manager":
+        env_hint = raw or "home-manager"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by Home Manager "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Edit programs.hermes-agent.settings in your home-manager config and run:\n"
+            "  home-manager switch"
         )
 
     if managed_system == "Homebrew":

@@ -344,6 +344,52 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           ${self'.packages.messaging.hermesVenv}/bin/python3 -c \
             "import discord; print(discord.__version__)"
           echo "PASS: discord.py importable from messaging variant venv"
+
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify HERMES_MANAGED=home-manager guard works on mutation commands
+        home-manager-guard = pkgs.runCommand "hermes-home-manager-guard" { } ''
+          set -e
+          export HOME=$(mktemp -d)
+
+          check_blocked() {
+            local label="$1"
+            shift
+            OUTPUT=$(HERMES_MANAGED=home-manager "$@" 2>&1 || true)
+            echo "$OUTPUT" | grep -q "managed by Home Manager" || (echo "FAIL: $label not guarded"; echo "$OUTPUT"; exit 1)
+            echo "PASS: $label blocked in home-manager managed mode"
+          }
+
+          echo "=== Checking HERMES_MANAGED=home-manager guards ==="
+          check_blocked "config set" ${hermes-agent}/bin/hermes config set model foo
+          check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
+
+          echo "=== All home-manager guard checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify HERMES_MANAGED=home-manager-nixos guard (NixOS module mode)
+        home-manager-nixos-guard = pkgs.runCommand "hermes-home-manager-nixos-guard" { } ''
+          set -e
+          export HOME=$(mktemp -d)
+
+          check_blocked() {
+            local label="$1"
+            shift
+            OUTPUT=$(HERMES_MANAGED=home-manager-nixos "$@" 2>&1 || true)
+            echo "$OUTPUT" | grep -q "managed by Home Manager" || (echo "FAIL: $label not guarded"; echo "$OUTPUT"; exit 1)
+            echo "$OUTPUT" | grep -q "sudo nixos-rebuild switch" || (echo "FAIL: $label missing nixos-rebuild hint"; echo "$OUTPUT"; exit 1)
+            echo "PASS: $label blocked in home-manager-nixos managed mode"
+          }
+
+          echo "=== Checking HERMES_MANAGED=home-manager-nixos guards ==="
+          check_blocked "config set" ${hermes-agent}/bin/hermes config set model foo
+          check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
+
+          echo "=== All home-manager-nixos guard checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

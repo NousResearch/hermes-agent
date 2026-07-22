@@ -19,7 +19,7 @@
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
-import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
   $layoutTree,
@@ -27,10 +27,16 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $unreadFinishedSessionIds,
+  setActiveSessionStoredIdRotation
+} from './session'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -39,13 +45,161 @@ import { isSecondaryWindow } from './windows'
 
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
-/** Publish one session's state (immutable per-key — slices stay stable). */
+// Stored session ids whose authoritative state is still busy, but whose
+// runtime has produced no state publish for the watchdog window. Silence is
+// not completion: long tool calls can legitimately stay quiet, so this is a
+// presentation hint and never mutates the backend-derived busy state.
+export const $stalledSessionIds = atom<string[]>([])
+
+export function setSessionStalled(storedSessionId: string | null | undefined, stalled: boolean) {
+  if (!storedSessionId) {
+    return
+  }
+
+  const current = $stalledSessionIds.get()
+  const present = current.includes(storedSessionId)
+
+  if (stalled && !present) {
+    $stalledSessionIds.set([...current, storedSessionId])
+  } else if (!stalled && present) {
+    $stalledSessionIds.set(current.filter(id => id !== storedSessionId))
+  }
+}
+
+// --- Watchdog: marks busy sessions quiet after 8 min of stream silence -----
+export const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function armWatchdog(runtimeId: string) {
+  const existing = sessionWatchdogTimers.get(runtimeId)
+
+  if (existing) {
+    clearTimeout(existing)
+  }
+
+  sessionWatchdogTimers.set(
+    runtimeId,
+    setTimeout(() => {
+      sessionWatchdogTimers.delete(runtimeId)
+      const current = $sessionStates.get()[runtimeId]
+
+      if (current?.busy) {
+        setSessionStalled(current.storedSessionId, true)
+      }
+    }, SESSION_WATCHDOG_TIMEOUT_MS)
+  )
+}
+
+function clearWatchdog(runtimeId: string) {
+  const t = sessionWatchdogTimers.get(runtimeId)
+
+  if (t) {
+    clearTimeout(t)
+    sessionWatchdogTimers.delete(runtimeId)
+  }
+}
+
+// --- Settle grace: keeps a just-finished session in the sidebar merge set ---
+const SESSION_SETTLE_GRACE_MS = 30 * 1000
+const settledExpiry = new Map<string, number>()
+
+function markSettled(storedId: string) {
+  settledExpiry.set(storedId, Date.now() + SESSION_SETTLE_GRACE_MS)
+}
+
+function clearSettled(storedId: string) {
+  settledExpiry.delete(storedId)
+}
+
+/** Stored ids whose turn ended within the grace window. Prunes expired. */
+export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
+  const live: string[] = []
+
+  for (const [id, expiry] of settledExpiry) {
+    if (expiry > now) {
+      live.push(id)
+    } else {
+      settledExpiry.delete(id)
+    }
+  }
+
+  return live
+}
+
+// --- Transition detection (called automatically from publishSessionState) ---
+function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
+  // Compression id rotation: signal the route-follow effect with enough
+  // provenance (previous id + runtime) that the consumer can reject the event
+  // if the user navigated elsewhere before React handled it. A bare next id
+  // could let a background session's delayed rotation steal the foreground
+  // route.
+  if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
+    if (runtimeId === $activeSessionId.get()) {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: next.storedSessionId,
+        previousStoredSessionId: previous.storedSessionId,
+        runtimeSessionId: runtimeId
+      })
+    }
+
+    clearSettled(previous.storedSessionId)
+    setSessionStalled(previous.storedSessionId, false)
+  }
+
+  // Every busy publish is stream activity: clear the quiet hint and restart
+  // the silence window. A real terminal transition clears both the timer and
+  // any hint, but only that authoritative transition clears working/busy.
+  if (next.busy) {
+    setSessionStalled(next.storedSessionId, false)
+    armWatchdog(runtimeId)
+  } else {
+    clearWatchdog(runtimeId)
+    setSessionStalled(next.storedSessionId, false)
+    setSessionStalled(previous?.storedSessionId, false)
+  }
+
+  const storedId = next.storedSessionId
+
+  if (!storedId) {
+    return
+  }
+
+  const wasWorking = previous?.busy ?? false
+
+  if (next.busy && !wasWorking) {
+    clearSettled(storedId)
+  } else if (!next.busy && wasWorking) {
+    markSettled(storedId)
+
+    if (storedId !== $selectedStoredSessionId.get()) {
+      const cur = $unreadFinishedSessionIds.get()
+
+      if (!cur.includes(storedId)) {
+        $unreadFinishedSessionIds.set([...cur, storedId])
+      }
+    }
+  }
+}
+
+/** Publish one session's state. Automatically fires transition side-effects
+ *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
+ *  by diffing previous vs next — callers never need to manually call a
+ *  transition handler. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
+  const prev = $sessionStates.get()[runtimeId] ?? null
   $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: state })
+  handleTransition(prev, state, runtimeId)
 }
 
 export function dropSessionState(runtimeId: string) {
+  // Disarm the watchdog — a dropped runtime must not fire a stale clear later.
+  // Settle-grace entries are keyed by stored id and self-expire; leave them so
+  // a just-finished session's row survives merge eviction even if its tile or
+  // cached runtime is dropped in the meantime.
+  clearWatchdog(runtimeId)
+
   const current = $sessionStates.get()
+  setSessionStalled(current[runtimeId]?.storedSessionId, false)
 
   if (!(runtimeId in current)) {
     return
@@ -54,6 +208,55 @@ export function dropSessionState(runtimeId: string) {
   const { [runtimeId]: _dropped, ...rest } = current
   $sessionStates.set(rest)
 }
+
+/** Drop every cached session state — used on soft gateway-mode apply so the
+ *  computed working / attention sets drain to empty alongside the session list.
+ *  Also disarms every watchdog timer and drops all settle-grace entries: a
+ *  wiped gateway's sessions must not fire stale clears or linger in the
+ *  sidebar merge keep-set after the switch. */
+export function clearAllSessionStates() {
+  for (const timer of sessionWatchdogTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  sessionWatchdogTimers.clear()
+  settledExpiry.clear()
+  $stalledSessionIds.set([])
+  $sessionStates.set({})
+}
+
+// Derived per-session status sets — pure projections of `$sessionStates` (which
+// holds `busy`/`needsInput` per runtime), keeping the data flow one-directional:
+// gateway event → cache → $sessionStates → computed views.
+//
+// Perf: `$sessionStates` is republished on EVERY message delta (tens/sec during
+// a turn), but these sets only change on busy/needsInput edges. `stableArray`
+// keeps the prior reference when membership is unchanged so `computed` skips the
+// emit — otherwise the whole sidebar + every row re-renders per token.
+const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientSessionState) => boolean) =>
+  Object.values(states)
+    .filter(s => pred(s) && s.storedSessionId)
+    .map(s => s.storedSessionId!)
+
+let workingIds: readonly string[] = []
+export const $workingSessionIds = computed(
+  $sessionStates,
+  states =>
+    (workingIds = stableArray(
+      workingIds,
+      storedIds(states, s => s.busy)
+    ))
+)
+
+let attentionIds: readonly string[] = []
+export const $attentionSessionIds = computed(
+  $sessionStates,
+  states =>
+    (attentionIds = stableArray(
+      attentionIds,
+      storedIds(states, s => s.needsInput)
+    ))
+)
 
 // ---------------------------------------------------------------------------
 // Session tiles.
@@ -73,10 +276,11 @@ export interface SessionTile {
   /** Dock against `anchor` on adoption (default right; center = stack). */
   dir?: TileDock
   /** Pane to dock against (a drop's target zone) — default the workspace.
-   *  In-memory only: after first adoption the tree remembers placement. */
+   *  Persisted so a restart re-docks in place; a stale id falls back to the
+   *  workspace (findGroupOfPane misses → the move is skipped). */
   anchor?: string
-  /** Center docks: stack BEFORE this pane id (`null`/omitted = append) —
-   *  the strip divider's slot. In-memory, like `anchor`. */
+  /** Center docks: stack BEFORE this pane id (`null`/omitted = append) — the
+   *  strip divider's slot. Persisted, like `anchor`; a stale id appends. */
   before?: null | string
   /** Live runtime id once the tile's resume has bound one. */
   runtimeId?: string
@@ -92,16 +296,34 @@ export interface SessionTile {
 // "stale runtime after respawn" bugs by construction).
 const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
+const TILE_PANE_PREFIX = 'session-tile:'
 
-type StoredTile = Pick<SessionTile, 'dir' | 'storedSessionId'>
+/** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
+ *  restart / profile swap re-adopts tiles in the same order, not all stacked
+ *  right of workspace. */
+type StoredTile = Pick<SessionTile, 'anchor' | 'before' | 'dir' | 'storedSessionId'>
 
-const toStored = (t: SessionTile): StoredTile => ({ dir: t.dir, storedSessionId: t.storedSessionId })
+const toStored = (t: SessionTile): StoredTile => ({
+  anchor: t.anchor,
+  before: t.before,
+  dir: t.dir,
+  storedSessionId: t.storedSessionId
+})
 
 function parseTileList(value: unknown): StoredTile[] {
   return Array.isArray(value)
     ? value
         .filter((t): t is SessionTile => Boolean(t && typeof (t as SessionTile).storedSessionId === 'string'))
-        .map(toStored)
+        .map(t => {
+          const raw = t as SessionTile
+
+          return {
+            anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
+            before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
+            dir: raw.dir,
+            storedSessionId: raw.storedSessionId
+          }
+        })
     : []
 }
 
@@ -230,6 +452,56 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
 }
 
+/** Reorder tiles to match layout-tree encounter order (stored ids in the order
+ *  their `session-tile:` panes are walked). Restore replays the array through
+ *  sequential adoption (each center tile APPENDS after the ones before it), so
+ *  array order IS strip order — no `before` stamping needed; a stale `before`
+ *  naming an absent pane falls back to append anyway (see insertAtGroup). Tiles
+ *  not yet adopted sort after placed ones, stably. Returns `null` when nothing
+ *  moves so callers can skip a needless persist. */
+export function orderTilesByTree<T extends { storedSessionId: string }>(
+  tree: LayoutNode | null,
+  tiles: readonly T[]
+): null | T[] {
+  if (!tree || tiles.length < 2) {
+    return null
+  }
+
+  const order: string[] = []
+
+  const walk = (node: LayoutNode) => {
+    if (node.type === 'group') {
+      for (const id of node.panes) {
+        if (id.startsWith(TILE_PANE_PREFIX)) {
+          order.push(id.slice(TILE_PANE_PREFIX.length))
+        }
+      }
+
+      return
+    }
+
+    node.children.forEach(walk)
+  }
+
+  walk(tree)
+
+  const rank = new Map(order.map((id, i) => [id, i]))
+
+  const next = [...tiles].sort(
+    (a, b) => (rank.get(a.storedSessionId) ?? Infinity) - (rank.get(b.storedSessionId) ?? Infinity)
+  )
+
+  return next.some((t, i) => t !== tiles[i]) ? next : null
+}
+
+function syncTileStripOrder() {
+  const next = orderTilesByTree($layoutTree.get(), $sessionTiles.get())
+
+  if (next) {
+    saveTiles(next)
+  }
+}
+
 /** Open a tile for a stored session, or MOVE an existing one to the new dock
  *  (`dir`; `center` = stack into the anchor's zone, `before` = strip slot). The
  *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop
@@ -250,6 +522,8 @@ export function openSessionTile(
 
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
     saveTiles([...tiles, { anchor, before, dir, storedSessionId }])
+    // Adoption is async via the registry — order sync runs after the move path
+    // below; a brand-new tile's strip slot is already in `before`.
 
     return
   }
@@ -261,6 +535,8 @@ export function openSessionTile(
 
   if (target) {
     moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
+    patchSessionTile(storedSessionId, { anchor, before: before ?? undefined, dir })
+    syncTileStripOrder()
   }
 }
 
@@ -355,8 +631,6 @@ export function reopenLastClosedTile(): void {
 // timer / model) reads these instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
 
-const TILE_PANE_PREFIX = 'session-tile:'
-
 /** Stored id of the focused session (the interacted zone's tile, else the
  *  primary's selection). Null on a fresh draft. */
 export const $focusedStoredSessionId = computed(
@@ -386,12 +660,20 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
   runtimeId ? states[runtimeId] : undefined
 )
 
-// A PRIMARY navigation (sidebar resume, route change, new chat) moves focus
-// home to the workspace — a previously-clicked tile must not keep owning the
-// titlebar/statusbar readouts for a session switch it had no part in. It also
-// FRONTS the workspace tab: the resumed chat loads in the workspace pane, so a
-// zone parked on a tile tab must switch back or the click looks dead.
-$selectedStoredSessionId.listen(() => {
+/** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to
+ *  the workspace — UNLESS the selected id is already an open TILE, where
+ *  `focusOpenSession` owns the move and homing would yank every stacked tile
+ *  behind the workspace (A+B "disappear" when switching to C). */
+export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
+  !(selected && tiles.some(t => t.storedSessionId === selected))
+
+// Homing also FRONTS the workspace tab: the resumed chat loads in the workspace
+// pane, so a zone parked on a tile tab must switch back or the click looks dead.
+$selectedStoredSessionId.listen(selected => {
+  if (!selectionHomesToWorkspace(selected, $sessionTiles.get())) {
+    return
+  }
+
   noteActiveTreeGroup(null)
   revealTreePane('workspace')
 })

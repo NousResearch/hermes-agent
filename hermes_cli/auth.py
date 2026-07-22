@@ -984,7 +984,25 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
-_auth_lock_holder = threading.local()
+_auth_target_lock_holders: Dict[str, threading.local] = {}
+_auth_target_lock_holders_guard = threading.Lock()
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except Exception:
+        return left == right
+
+
+def _auth_lock_holder_for(target_path: Path) -> threading.local:
+    """Return a reentrancy tracker keyed to one canonical auth-store path."""
+    try:
+        key = str(target_path.resolve(strict=False))
+    except Exception:
+        key = str(target_path)
+    with _auth_target_lock_holders_guard:
+        return _auth_target_lock_holders.setdefault(key, threading.local())
 
 
 @contextmanager
@@ -1060,8 +1078,16 @@ def _file_lock(
 
 
 @contextmanager
-def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-process advisory lock for auth.json reads+writes.  Reentrant.
+def _auth_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    *,
+    target_path: Optional[Path] = None,
+):
+    """Cross-process advisory lock for one auth.json read/write transaction.
+
+    ``target_path`` is required for profile-to-global write-throughs. A profile
+    lock does not protect the distinct global auth store; each path therefore
+    uses its own reentrancy tracker and kernel lock.
 
     Lock ordering invariant: when this lock is held together with
     ``_nous_shared_store_lock``, acquire ``_auth_store_lock`` FIRST
@@ -1069,9 +1095,11 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     refresh paths follow this order; violating it risks deadlock
     against a concurrent import on the shared store.
     """
+    auth_path = target_path if target_path is not None else _auth_file_path()
+    lock_path = auth_path.with_suffix(".lock") if target_path is not None else _auth_lock_path()
     with _file_lock(
-        _auth_lock_path(),
-        _auth_lock_holder,
+        lock_path,
+        _auth_lock_holder_for(auth_path),
         timeout_seconds,
         "Timed out waiting for auth store lock",
     ):
@@ -1204,6 +1232,37 @@ def _load_provider_state_with_source(
     return None, None
 
 
+@contextmanager
+def _provider_state_transaction(provider_id: str):
+    """Lock the active auth store and any global fallback source in order.
+
+    Profile-backed refresh paths must take the global auth-store lock before
+    any provider-specific shared-store lock. Re-reading the source after the
+    target lock is acquired prevents both stale refreshes and whole-file lost
+    updates without inverting the documented auth -> shared lock order.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state, source_path = _load_provider_state_with_source(
+            auth_store,
+            provider_id,
+        )
+        active_path = _auth_file_path()
+        if source_path is None or _same_path(source_path, active_path):
+            yield auth_store, state, source_path
+            return
+
+        with _auth_store_lock(target_path=source_path):
+            source_store = _load_auth_store(source_path)
+            source_providers = source_store.get("providers")
+            source_state = None
+            if isinstance(source_providers, dict):
+                raw_state = source_providers.get(provider_id)
+                if isinstance(raw_state, dict):
+                    source_state = dict(raw_state)
+            yield auth_store, source_state, source_path
+
+
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
     """Return a provider's persisted state.
 
@@ -1247,9 +1306,12 @@ def _save_provider_state_to_source(
         _save_auth_store(auth_store)
         return
 
-    source_store = _load_auth_store(source_path)
-    _save_provider_state(source_store, provider_id, state)
-    _save_auth_store(source_store, target_path=source_path)
+    _persist_provider_state_to_store(
+        provider_id,
+        state,
+        source_path,
+        set_active=True,
+    )
 
 
 def _store_provider_state(
@@ -1266,6 +1328,25 @@ def _store_provider_state(
     providers[provider_id] = state
     if set_active:
         auth_store["active_provider"] = provider_id
+
+
+def _persist_provider_state_to_store(
+    provider_id: str,
+    state: Dict[str, Any],
+    target_path: Path,
+    *,
+    set_active: bool = False,
+) -> Path:
+    """Merge one provider into a specific auth store under that store's lock."""
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path)
+        _store_provider_state(
+            auth_store,
+            provider_id,
+            dict(state),
+            set_active=set_active,
+        )
+        return _save_auth_store(auth_store, target_path=target_path)
 
 
 def mark_provider_active_if_unset(provider_id: str) -> None:
@@ -1524,6 +1605,12 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
+    # Fallback to ProviderDef from models.dev catalog when the provider
+    # isn't in the manually-maintained PROVIDER_REGISTRY (e.g. openrouter).
+    # Both expose .auth_type and .api_key_env_vars with the same shape.
+    if pconfig is None:
+        from hermes_cli.providers import get_provider
+        pconfig = get_provider(normalized)
     if pconfig and pconfig.auth_type == "api_key":
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
@@ -3687,6 +3774,34 @@ def resolve_codex_runtime_credentials(
             }
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
+            # Before surfacing the persisted cooldown, ask the Codex usage
+            # endpoint whether the quota actually reset early (banked reset
+            # redeemed, plan upgraded, window reset upstream).  The persisted
+            # ``last_error_reset_at`` can be days in the future while the
+            # account is already usable again — see issue #43747.
+            stale_token = str(pool_rate_limit.get("access_token") or "").strip()
+            if stale_token and _probe_codex_quota_restored(
+                stale_token,
+                base_url=pool_rate_limit.get("base_url"),
+            ):
+                logger.info(
+                    "Codex quota restored upstream — clearing stale pool cooldown(s)."
+                )
+                clear_codex_pool_quota_cooldowns()
+                pool_token = _pool_codex_access_token()
+                if pool_token:
+                    base_url = (
+                        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                        or DEFAULT_CODEX_BASE_URL
+                    )
+                    return {
+                        "provider": "openai-codex",
+                        "base_url": base_url,
+                        "api_key": pool_token,
+                        "source": "credential_pool",
+                        "last_refresh": None,
+                        "auth_mode": "chatgpt",
+                    }
             reset_at = pool_rate_limit.get("reset_at")
             if isinstance(reset_at, (int, float)) and reset_at > time.time():
                 remaining = int(reset_at - time.time())
@@ -3749,6 +3864,190 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _is_codex_rate_limit_shaped(
+    code: Any,
+    reason: Any,
+    message: Any,
+) -> bool:
+    """True when persisted pool-entry error metadata describes a 429/quota stop."""
+    reason_l = str(reason or "").lower()
+    message_l = str(message or "").lower()
+    return (
+        code == 429
+        or "rate_limit" in reason_l
+        or "usage_limit" in reason_l
+        or "quota" in reason_l
+        or "rate limit" in message_l
+        or "usage limit" in message_l
+        or "quota" in message_l
+    )
+
+
+# Throttle for the live Codex quota probe below.  The probe runs on the hot
+# credential-selection path while the pool is exhausted, so without a floor a
+# busy gateway would hammer the usage endpoint on every model/auxiliary call.
+CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
+_codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
+_codex_quota_probe_lock = threading.Lock()
+
+
+def _codex_usage_probe_url(base_url: Optional[str]) -> str:
+    """Resolve the Codex usage endpoint for a probe.
+
+    Mirrors the Codex CLI's PathStyle split (codex-rs backend-client, same
+    logic as ``agent.account_usage._codex_backend_urls``): base URLs
+    containing ``/backend-api`` use the ChatGPT ``/wham/usage`` path;
+    everything else uses ``/api/codex/usage``.  Kept local so this low-level
+    auth module doesn't import the auxiliary account-usage module.
+    """
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = (
+            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            or DEFAULT_CODEX_BASE_URL
+        )
+    if normalized.endswith("/codex"):
+        normalized = normalized[: -len("/codex")]
+    prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
+    return prefix + "/usage"
+
+
+def _probe_codex_quota_restored(
+    access_token: Any,
+    *,
+    base_url: Optional[str] = None,
+    min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS,
+) -> Optional[bool]:
+    """Ask the Codex usage endpoint whether this account's quota is usable again.
+
+    Hermes persists a Codex 429's ``reset_at`` locally and freezes the
+    credential until it elapses — but the upstream window can reopen EARLY
+    (the user redeems a banked rate-limit reset via the Codex CLI/ChatGPT UI,
+    upgrades their plan, or OpenAI resets the window).  This probe detects
+    that: it GETs the same ``/usage`` endpoint the Codex CLI uses and checks
+    the reported windows.
+
+    Returns:
+      * ``True``  — every reported rate-limit window is below 100% used;
+        the account can serve requests again and stale local cooldowns
+        should be lifted.
+      * ``False`` — a window is still fully used (or the probe itself 429'd);
+        keep the cooldown.
+      * ``None``  — indeterminate (no token, network error, unexpected
+        payload/status); keep the cooldown.
+
+    Probes are throttled per access token (module-local cache) so the hot
+    selection path can fire this freely.
+    """
+    token = str(access_token or "").strip()
+    if not token:
+        return None
+    # Real Codex access tokens are JWTs. Refusing to probe non-JWT tokens
+    # avoids pointless network calls for corrupt/placeholder entries (and
+    # keeps hermetic test fixtures with dummy tokens offline).
+    if not _decode_jwt_claims(token):
+        return None
+    cache_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    now = time.monotonic()
+    with _codex_quota_probe_lock:
+        cached = _codex_quota_probe_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < min_interval_seconds:
+            return cached[1]
+        # Reserve the slot immediately so concurrent selectors don't stampede
+        # the endpoint while this probe is in flight.
+        _codex_quota_probe_cache[cache_key] = (now, None)
+
+    result: Optional[bool] = None
+    try:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "codex-cli",
+        }
+        # Best-effort ChatGPT-Account-Id from the JWT (the backend requires it
+        # for some account shapes; harmless to omit for others).
+        claims = _decode_jwt_claims(token)
+        account_id = (
+            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+            if isinstance(claims.get("https://api.openai.com/auth"), dict)
+            else None
+        )
+        if isinstance(account_id, str) and account_id.strip():
+            headers["ChatGPT-Account-Id"] = account_id.strip()
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(_codex_usage_probe_url(base_url), headers=headers)
+        if response.status_code == 200:
+            payload = response.json() or {}
+            rate_limit = payload.get("rate_limit") or {}
+            worst_used: Optional[float] = None
+            for key in ("primary_window", "secondary_window"):
+                used = (rate_limit.get(key) or {}).get("used_percent")
+                if isinstance(used, (int, float)):
+                    worst_used = max(worst_used or 0.0, float(used))
+            if worst_used is not None:
+                result = worst_used < 100.0
+        elif response.status_code == 429:
+            result = False
+    except Exception:
+        logger.debug("Codex quota probe failed", exc_info=True)
+        result = None
+
+    with _codex_quota_probe_lock:
+        _codex_quota_probe_cache[cache_key] = (now, result)
+    return result
+
+
+def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
+    """Clear rate-limit cooldowns on persisted openai-codex pool entries.
+
+    Called after the upstream quota is KNOWN to be restored (a successful
+    ``/usage reset`` redemption, or a positive live probe) so auth.json stops
+    freezing credentials behind a stale ``last_error_reset_at``.  Only lifts
+    ``exhausted`` entries whose error metadata is 429/quota-shaped — DEAD
+    (terminal auth) entries and non-rate-limit failures are untouched.
+
+    When *access_token* is given, only the matching entry is cleared;
+    otherwise every rate-limited entry clears (a redeemed banked reset
+    restores the whole account, and any entry that is genuinely still
+    exhausted just re-freezes with fresh metadata on its next 429).
+
+    Returns the number of entries cleared.
+    """
+    cleared = 0
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            pool = auth_store.get("credential_pool")
+            entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+            if not isinstance(entries, list):
+                return 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("last_status") != "exhausted":
+                    continue
+                if access_token and str(entry.get("access_token") or "") != access_token:
+                    continue
+                if not _is_codex_rate_limit_shaped(
+                    entry.get("last_error_code"),
+                    entry.get("last_error_reason"),
+                    entry.get("last_error_message"),
+                ):
+                    continue
+                entry["last_status"] = None
+                entry["last_status_at"] = None
+                entry["last_error_code"] = None
+                entry["last_error_reason"] = None
+                entry["last_error_message"] = None
+                entry["last_error_reset_at"] = None
+                cleared += 1
+            if cleared:
+                _save_auth_store(auth_store)
+    except Exception:
+        logger.debug("Failed to clear Codex pool quota cooldowns", exc_info=True)
+    return cleared
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
@@ -3818,6 +4117,8 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 "reset_at": reset_at,
                 "reason": entry.get("last_error_reason"),
                 "message": entry.get("last_error_message"),
+                "access_token": token.strip(),
+                "base_url": entry.get("base_url"),
             }
     except Exception:
         logger.debug("Codex pool rate-limit lookup failed", exc_info=True)
@@ -4009,14 +4310,12 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
             except Exception:
                 return
     try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
-        _save_auth_store(global_store, global_path)
+        _persist_provider_state_to_store(
+            "xai-oauth",
+            state,
+            global_path,
+            set_active=False,
+        )
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
 
@@ -4923,11 +5222,11 @@ def _quarantine_nous_oauth_state(
     reason: str,
 ) -> None:
     """Keep routing metadata but remove dead OAuth material so it is not replayed."""
-    # Forensic logging BEFORE we clear the token material. A NAS-hosted Fly agent
+    # Forensic logging BEFORE we clear the token material. A hosted agent
     # can take a terminal invalid_grant and get quarantined here silently: the
     # only downstream signal is a "No access token found" WARNING once the pool
-    # is already empty, which is too late to root-cause. The Fly log drain is
-    # WARNING-only, so this MUST be logger.warning (INFO never reaches the drain).
+    # is already empty, which is too late to root-cause. A managed log drain may
+    # be WARNING-only, so this MUST be logger.warning (INFO never reaches it).
     #
     # Redaction safety: emit ONLY the 12-char SHA-256 hex prefix of the refresh
     # token (correlates to NAS's refreshTokenHash without leaking the secret) plus
@@ -5240,9 +5539,11 @@ def resolve_nous_access_token(
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> str:
     """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state, state_source_path = _load_provider_state_with_source(auth_store, "nous")
+    with _provider_state_transaction("nous") as (
+        auth_store,
+        state,
+        state_source_path,
+    ):
 
         if not state:
             raise AuthError(
@@ -5571,9 +5872,11 @@ def resolve_nous_runtime_credentials(
     """
     sequence_id = uuid.uuid4().hex[:12]
 
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state, state_source_path = _load_provider_state_with_source(auth_store, "nous")
+    with _provider_state_transaction("nous") as (
+        auth_store,
+        state,
+        state_source_path,
+    ):
 
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
@@ -8065,7 +8368,7 @@ def step_up_nous_billing_scope(
     The lazy step-up (plan D-A): triggered when a billing endpoint returns
     ``403 insufficient_scope``. Runs a fresh device-connect with
     ``inference:invoke tool:invoke billing:manage`` on the scope. The user must be
-    an ADMIN/OWNER and tick "Allow terminal billing" in the portal for the minted
+    an ADMIN/OWNER and select "Allow Remote Spending" in the portal for the minted
     token to actually carry the scope; otherwise the server silently downscopes and this
     returns False.
 

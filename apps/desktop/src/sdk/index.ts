@@ -177,7 +177,13 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
-export type { HermesPlugin, PluginContext, PluginContribution, PluginRestOptions, PluginStorage } from '@/contrib/plugin'
+export type {
+  HermesPlugin,
+  PluginContext,
+  PluginContribution,
+  PluginRestOptions,
+  PluginStorage
+} from '@/contrib/plugin'
 
 // -- contracts ----------------------------------------------------------------
 
@@ -188,8 +194,19 @@ export type { HermesPlugin, PluginContext, PluginContribution, PluginRestOptions
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 export type { Contribution } from '@/contrib/types'
-/** Localized copy — plugins reuse the app's strings (and stay translatable). */
-export { useI18n } from '@/i18n'
+/** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
+ *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
+ *  `ctx.storage` and resolved against the app's active locale — no core edit. */
+export {
+  type Locale,
+  type PluginI18n,
+  type PluginLocaleBundles,
+  type PluginMessages,
+  type PluginMessageValue,
+  type PluginTranslate,
+  useI18n,
+  usePluginI18n
+} from '@/i18n'
 export { triggerHaptic as haptic } from '@/lib/haptics'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'

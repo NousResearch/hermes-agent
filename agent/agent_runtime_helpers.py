@@ -26,10 +26,11 @@ import copy
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
@@ -37,6 +38,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
+from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -357,6 +359,108 @@ def sanitize_tool_call_arguments(
     return repaired
 
 
+# Session-scoped in-flight registry backing note_turn_start's cross-agent
+# check.  The per-agent marker catches a second turn on the SAME AIAgent
+# object, but the gateway caches agents per *routing key* (``_agent_cache``
+# in gateway/run.py) while the durable transcript is keyed by *session_id* —
+# and the key→id mapping is many-to-one (``switch_session``: /resume from a
+# second chat/topic, CLI-continuity rebinding, async-delegation pinning,
+# topic-binding tip-walks).  Two routing keys mapped to one session_id run
+# concurrent turns on two different agent objects, which per-agent state can
+# never see (#64934).  Keyed by session_id so that route produces the same
+# named warning.  Process-local by design — same visibility scope as the
+# per-agent marker it extends.
+_INFLIGHT_TURNS_BY_SESSION: Dict[str, Tuple[str, float]] = {}
+_INFLIGHT_TURNS_LOCK = threading.Lock()
+
+
+def note_turn_start(agent, turn_id: str):
+    """Tripwire: detect a turn starting while a previous turn of the same
+    agent — or of the same underlying *session* on a different agent object —
+    has not completed its turn-end persist.
+
+    Two turns interleaving on one session corrupt the durable transcript:
+    their flushes race (user rows can persist out of arrival order), a row
+    can be swallowed by the identity-marker dedup over shared history dicts,
+    and the second turn runs on a history base that never saw the first
+    turn's exchange. This helper does NOT prevent any of that — it names the
+    occurrence, with both turn ids, so the dispatch route that let the
+    second turn through the busy guard can be identified from logs.
+
+    Returns the previous in-flight turn_id when an overlap is detected,
+    else None. Takes ownership of the in-flight slot either way, so a turn
+    that crashed before its persist produces at most one warning."""
+    prev = getattr(agent, "_inflight_turn_id", None)
+    prev_started = getattr(agent, "_inflight_turn_started", 0.0)
+    agent._inflight_turn_id = turn_id
+    agent._inflight_turn_started = time.time()
+    overlap = None
+    if prev and prev != turn_id:
+        logger.warning(
+            "turn %s starting while turn %s (started %.0fs ago) has not "
+            "completed its turn-end persist (session=%s) — concurrent turns "
+            "on one session; transcript writes may interleave",
+            turn_id,
+            prev,
+            time.time() - prev_started if prev_started else -1.0,
+            getattr(agent, "session_id", None) or "-",
+        )
+        overlap = prev
+
+    # Cross-agent leg: same session_id in flight under a different agent
+    # object means two routing keys resolve to one durable session — the
+    # busy guard (keyed by routing key) cannot see this overlap at all.
+    # Persist-disabled agents (background-review forks) deliberately share
+    # the live parent's session_id for prompt-cache warmth but can never
+    # write to the transcript — they must not register here (would warn a
+    # false overlap against the parent's real turn) nor pop the parent's
+    # slot at their persist (note_turn_persisted skips them symmetrically).
+    session_id = getattr(agent, "session_id", None)
+    if session_id and not getattr(agent, "_persist_disabled", False):
+        now = time.time()
+        with _INFLIGHT_TURNS_LOCK:
+            entry = _INFLIGHT_TURNS_BY_SESSION.get(session_id)
+            _INFLIGHT_TURNS_BY_SESSION[session_id] = (turn_id, now)
+        # Stamp the session id this turn registered under: compression can
+        # rotate agent.session_id mid-turn, and the persist-time clear must
+        # pop the slot the turn actually holds, not the rotated id.
+        agent._inflight_turn_session_id = session_id
+        if entry and entry[0] not in (turn_id, prev):
+            logger.warning(
+                "turn %s starting while turn %s (started %.0fs ago) is still "
+                "in flight on session %s under a different agent object — "
+                "two routing keys are mapped to one session_id; concurrent "
+                "turns on one session; transcript writes may interleave",
+                turn_id,
+                entry[0],
+                now - entry[1] if entry[1] else -1.0,
+                session_id,
+            )
+            overlap = overlap or entry[0]
+    return overlap
+
+
+def note_turn_persisted(agent):
+    """Clear the in-flight marker at turn-end persist (see note_turn_start).
+
+    Called from the single persist funnel; unconditional by design — when two
+    turns genuinely overlap, the first persist clears the second turn's slot
+    and the tripwire under-reports instead of double-reporting. A diagnostic
+    must never be noisier than the defect it hunts."""
+    agent._inflight_turn_id = None
+    # Symmetric with note_turn_start's cross-agent leg: persist-disabled
+    # forks never registered a session slot, and their persist funnel still
+    # runs — popping here would steal the live parent turn's slot and make
+    # the tripwire under-report the real overlap it exists to catch.
+    if not getattr(agent, "_persist_disabled", False):
+        session_id = getattr(agent, "_inflight_turn_session_id", None) or getattr(
+            agent, "session_id", None
+        )
+        if session_id:
+            with _INFLIGHT_TURNS_LOCK:
+                _INFLIGHT_TURNS_BY_SESSION.pop(session_id, None)
+    agent._inflight_turn_session_id = None
+
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
@@ -426,6 +530,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             or m.get("finish_reason") == "incomplete"
         )
 
+    def _is_verification_candidate(m: Dict) -> bool:
+        return m.get("finish_reason") in {
+            "verification_required",
+            "verify_hook_continue",
+        }
+
     collapsed: List[Dict] = []
     for msg in messages:
         if (
@@ -438,6 +548,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
+            # Verification candidate collapsing: when the earlier assistant
+            # message is a provisional candidate (finish_reason =
+            # verification_required / verify_hook_continue), the later
+            # response supersedes it for model replay — replace rather than
+            # union. Both remain durable in state.db; this only affects the
+            # in-memory sequence sent to the model. (#65919 §7)
+            if _is_verification_candidate(prev):
+                collapsed[-1] = msg
+                repairs += 1
+                continue
             # Union tool_calls (preserve order, both may carry them).
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])
@@ -545,6 +665,10 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                     if prev_content and new_content
                     else (prev_content or new_content)
                 )
+                # Merged content invalidates the api_content sidecar (exact
+                # bytes previously sent for the pre-merge message) — drop it
+                # so replay can't substitute stale bytes.
+                drop_stale_api_content(prev)
                 repairs += 1
                 continue
         merged.append(msg)
@@ -601,16 +725,16 @@ def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
-      1. Closed tag pairs (``<think>…</think>``) — the common path when
+      1. Closed tag pairs (`` <think>… ``) — the common path when
          the provider emits complete reasoning blocks.
       2. Unterminated open tag at a block boundary (start of text or
          after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
          closing tag is dropped.  Everything from the open tag to end
          of string is stripped.  The block-boundary check mirrors
          ``gateway/stream_consumer.py``'s filter so models that mention
-         ``<think>`` in prose aren't over-stripped.
+         `` <think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
-      4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
+      4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
          ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
          case-insensitive.
 
@@ -630,6 +754,39 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # Coerce non-string content to text before any regex runs.  Providers
+    # that return assistant ``content`` as a list of blocks (Anthropic via
+    # OpenRouter emits ``[{"type":"text",...}, {"type":"thinking",...}]``) or
+    # as a dict flow into this shared helper from several callers — most
+    # notably ``_interim_assistant_visible_text`` reading a *stored* history
+    # message whose content was persisted as a list.  A raw list/dict reaching
+    # ``re.sub`` below raises ``TypeError: expected string or bytes-like
+    # object, got 'list'``, which the outer conversation loop swallows and
+    # retries forever (observed as an infinite "preparing terminal…" loop on
+    # Anthropic models via OpenRouter).  Flatten here so every caller is safe.
+    if not isinstance(content, str):
+        if isinstance(content, list):
+            _parts: list[str] = []
+            for _part in content:
+                if isinstance(_part, str):
+                    _parts.append(_part)
+                elif isinstance(_part, dict):
+                    _ptype = str(_part.get("type") or "").strip().lower()
+                    # Drop reasoning/thinking blocks outright — this function's
+                    # whole job is to strip them, and their text lives under
+                    # different keys ("thinking", "reasoning") per provider.
+                    if _ptype in {"thinking", "reasoning", "redacted_thinking"}:
+                        continue
+                    _text = _part.get("text")
+                    if isinstance(_text, str) and _text:
+                        _parts.append(_text)
+            content = "".join(_parts)
+        elif isinstance(content, dict):
+            content = str(content.get("text") or content.get("content") or "")
+        else:
+            content = str(content)
+        if not content:
+            return ""
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.
@@ -795,7 +952,14 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            # Runtime credentials can be resolved by a separate pool instance,
+            # leaving this recovery pool without ``current_id``. Match the key
+            # that actually failed instead of quarantining a different account.
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -3092,6 +3256,10 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         if isinstance(reason, str) and reason.strip():
             context["reason"] = reason.strip()
         message = payload.get("message") or payload.get("error_description")
+        if not message and isinstance(payload.get("error"), str):
+            # xAI uses a top-level string ``error`` beside a structured
+            # ``code`` (for example personal-team-blocked:spending-limit).
+            message = payload.get("error")
         if isinstance(message, str) and message.strip():
             context["message"] = message.strip()
         for key in ("resets_at", "reset_at"):

@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -64,6 +65,11 @@ from hermes_cli.setup import (
 from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
+
+
+def _plist_string(value: object) -> str:
+    """Return a launchd plist string element with XML-sensitive chars escaped."""
+    return f"<string>{_xml_escape(str(value))}</string>"
 
 # =============================================================================
 # Process Management (for manual gateway runs)
@@ -3981,18 +3987,18 @@ def generate_launchd_plist() -> str:
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
+        _plist_string(python_path),
+        _plist_string("-m"),
+        _plist_string("hermes_cli.main"),
     ]
     if profile_arg:
         for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
+            prog_args.append(_plist_string(part))
     prog_args.extend(
         [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
+            _plist_string("gateway"),
+            _plist_string("run"),
+            _plist_string("--replace"),
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)
@@ -4002,7 +4008,7 @@ def generate_launchd_plist() -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    {_plist_string(label)}
 
     <key>ProgramArguments</key>
     <array>
@@ -4010,16 +4016,16 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    {_plist_string(working_dir)}
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
+        {_plist_string(sane_path)}
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+        {_plist_string(venv_dir)}
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        {_plist_string(hermes_home)}
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -4045,10 +4051,10 @@ def generate_launchd_plist() -> str:
     <integer>25</integer>
 
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    {_plist_string(log_dir / "gateway.log")}
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    {_plist_string(log_dir / "gateway.error.log")}
 </dict>
 </plist>
 """

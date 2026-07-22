@@ -18,6 +18,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 // post-boot reconnect loop.
 
 type Listener = (ev: unknown) => void
+let connectionApplied: null | (() => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -97,7 +98,13 @@ function fakeDesktop() {
     })),
     onBootProgress: vi.fn(() => () => undefined),
     onBackendExit: vi.fn(() => () => undefined),
-    onConnectionApplied: vi.fn(() => () => undefined),
+    onConnectionApplied: vi.fn(callback => {
+      connectionApplied = callback
+
+      return () => {
+        connectionApplied = null
+      }
+    }),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
@@ -105,13 +112,17 @@ function fakeDesktop() {
   }
 }
 
-function Harness() {
+function Harness({
+  beforeConnectionSwitch = () => undefined,
+  refreshSessions
+}: { beforeConnectionSwitch?: () => void; refreshSessions?: () => Promise<void> } = {}) {
   useGatewayBoot({
+    beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig: async () => undefined,
-    refreshSessions: async () => undefined
+    refreshSessions: refreshSessions ?? (async () => undefined)
   })
 
   return null
@@ -123,6 +134,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  connectionApplied = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -199,6 +211,18 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($desktopBoot.get().error).toBeTruthy()
   })
 
+  it('resets the old machine context before connecting an applied gateway', async () => {
+    const beforeConnectionSwitch = vi.fn()
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+    expect(connectionApplied).not.toBeNull()
+
+    act(() => connectionApplied?.())
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+  })
+
   it('a remote that drops post-boot keeps looping with NO boot.error (the dead-end CONNECTING combo)', async () => {
     render(<Harness />)
     await flushAsync()
@@ -266,5 +290,26 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('FIX: a failed session-list fetch during boot is non-fatal — the app still boots', async () => {
+    // The version-skew report: gateway WS connects fine, but refreshSessions()
+    // rejects (e.g. older backend 404s an endpoint the fallback didn't cover,
+    // or a transient read error). That must NOT reject boot() into
+    // failDesktopBoot's "Hermes couldn't start" overlay — the socket is open
+    // and the app is fully usable with an empty sidebar.
+    const refreshSessions = vi.fn(async () => {
+      throw new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}')
+    })
+
+    render(<Harness refreshSessions={refreshSessions} />)
+    await flushAsync()
+
+    expect(refreshSessions).toHaveBeenCalled()
+    expect($gatewayState.get()).toBe('open')
+    // Boot completed: no error, overlay dismissed.
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
+    expect($desktopBoot.get().phase).toBe('renderer.ready')
   })
 })

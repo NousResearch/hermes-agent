@@ -132,6 +132,8 @@ export interface SidebarNavItem {
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
+  /** Keybind action id — when set, the tooltip shows the keybind hint. */
+  keybindActionId?: string
 }
 
 export interface ClientSessionState {
@@ -152,6 +154,8 @@ export interface ClientSessionState {
   sawAssistantPayload: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
+  /** True after message.interim finalized a bubble in the still-running turn. */
+  interimBoundaryPending: boolean
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

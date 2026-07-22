@@ -26,6 +26,7 @@ jobs:
   build:
     name: Build distribution 📦
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -56,10 +57,24 @@ jobs:
           node-version: "22"
 
       - name: Build web dashboard
-        run: cd web && npm ci && npm run build
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci
+          working-directory: web
+
+      - name: Compile web dashboard
+        run: npm run build
+        working-directory: web
 
       - name: Build TUI bundle
-        run: cd ui-tui && npm ci && npm run build
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci
+          working-directory: ui-tui
+
+      - name: Compile TUI bundle
+        run: npm run build
+        working-directory: ui-tui
 
       - name: Bundle TUI into hermes_cli
         run: |
@@ -90,6 +105,7 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment:
       name: pypi
       url: https://pypi.org/p/hermes-agent
@@ -115,6 +131,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write # attach assets to the existing release
       id-token: write # sigstore signing
@@ -126,9 +143,16 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Get GitHub App token
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Wait for GitHub Release to exist
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         # release.py creates the GitHub Release after pushing the tag,
         # but this workflow starts from the tag push — wait for it.
         run: |
@@ -154,7 +178,7 @@ jobs:
       - name: Attach signed artifacts to GitHub Release
         if: env.skip_sign != 'true'
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         # release.py already created the GitHub Release — just upload
         # the Sigstore signatures alongside the existing assets.
         run: >-

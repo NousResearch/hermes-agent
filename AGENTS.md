@@ -21,6 +21,14 @@ reviewing any change:
   swaps toolsets, or rebuilds the system prompt mid-conversation invalidates
   that cache and multiplies the user's cost. We do not do it (the one
   exception is context compression).
+- **Skill loads are load-once and progressively disclosed.** Route with the
+  compact skill index first, then load the smallest complete section or
+  reference that covers the task. Never call `skill_view` again for the same
+  unchanged skill/file/section while its content is already in the current
+  conversation. Successful loads carry a content hash and duplicate loads are
+  suppressed per live session; `force_reload` is for deliberate rereads only.
+  Keep top-level `SKILL.md` files as compact routers and move detailed material
+  into focused `references/` files.
 - **The core is a narrow waist; capability lives at the edges.** Every model
   tool we add is sent on every API call, so the bar for a new *core* tool is
   high. Most new capability should arrive as a CLI command + skill, a

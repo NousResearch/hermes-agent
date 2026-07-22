@@ -3783,3 +3783,63 @@ def test_run_codex_stream_surfaces_commentary_from_concrete_response(monkeypatch
 
     assert returned is response
     assert interim_commentary == ["I’ll inspect the logs."]
+
+
+@pytest.mark.parametrize(
+    ("added_event", "delta_event"),
+    [
+        (
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", id="analysis-1", phase="analysis"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                output_index=0,
+                delta="PRIVATE-A",
+            ),
+        ),
+        (
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="message", phase="analysis"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                item_id="analysis-1",
+                delta="PRIVATE-B",
+            ),
+        ),
+    ],
+)
+def test_consume_codex_stream_keeps_unmatched_aliased_deltas_private(
+    added_event, delta_event
+):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    visible = []
+    reasoning = []
+    commentary = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(
+            [
+                added_event,
+                delta_event,
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed"),
+                ),
+            ]
+        ),
+        model="gpt-5-codex",
+        on_text_delta=visible.append,
+        on_reasoning_delta=reasoning.append,
+        on_commentary_message=commentary.append,
+    )
+
+    assert visible == []
+    assert commentary == []
+    assert reasoning == [delta_event.delta]
+    assert response.output_text == ""

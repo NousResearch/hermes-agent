@@ -1100,8 +1100,20 @@ def _consume_codex_event_stream(
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
+            aliases = _message_aliases(event)
             state = _message_state(event)
             phase = state.get("phase") if state is not None else None
+            # An aliased delta that cannot be tied to a registered message item
+            # must never fall through to visible final text. Providers can mix
+            # item_id/output_index shapes; without a proven association the safe
+            # destination is the private reasoning rail.
+            if delta_text and state is None and aliases:
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(delta_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                continue
             if delta_text and state is not None and phase == "commentary":
                 state["deltas"].append(delta_text)
                 # Preserve CLI/backward compatibility when no first-class

@@ -69,6 +69,30 @@ def get_env_value(name, default=None):
         return os.getenv(name, default)
     value = _get_env_value(name)
     return default if value is None else value
+
+
+def _resolve_provider_key(env_var: str, provider_id: str) -> str:
+    """Resolve an API key from env, .env, or the credential pool.
+
+    Used by TTS providers (Mistral, ElevenLabs) that store keys
+    via ``hermes auth add <provider_id>``.
+    """
+    key = get_env_value(env_var)
+    if key:
+        return key
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider_id)
+        if pool and pool.has_credentials():
+            entry = pool.peek()
+            if entry:
+                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                key = str(key).strip()
+                if key:
+                    return key
+    except Exception:
+        pass
+    return ""
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
@@ -986,7 +1010,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
+    api_key = (_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs") or "")
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
 
@@ -1557,7 +1581,7 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     and writes the raw bytes to *output_path*.
     Supports native Opus output for Telegram voice bubbles.
     """
-    api_key = (get_env_value("MISTRAL_API_KEY") or "")
+    api_key = (_resolve_provider_key("MISTRAL_API_KEY", "mistral") or "")
     if not api_key:
         raise ValueError("MISTRAL_API_KEY not set. Get one at https://console.mistral.ai/")
 
@@ -2631,7 +2655,7 @@ def check_tts_requirements() -> bool:
             _import_elevenlabs()
         except ImportError:
             return False
-        return bool(get_env_value("ELEVENLABS_API_KEY"))
+        return bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"))
     if provider == "openai":
         try:
             _import_openai_client()
@@ -2660,7 +2684,7 @@ def check_tts_requirements() -> bool:
             _import_mistral_client()
         except ImportError:
             return False
-        return bool(get_env_value("MISTRAL_API_KEY"))
+        return bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral"))
     if provider == "neutts":
         return _check_neutts_available()
     if provider == "kittentts":
@@ -2789,7 +2813,7 @@ def stream_tts_to_speaker(
             {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
         )
 
-        api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
+        api_key = (_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs") or "")
         if not api_key:
             logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
         else:
@@ -2975,7 +2999,7 @@ if __name__ == "__main__":
     print("\nProvider availability:")
     print(f"  Edge TTS:   {'installed' if _check(_import_edge_tts, 'edge') else 'not installed (pip install edge-tts)'}")
     print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
-    print(f"    API Key:  {'set' if get_env_value('ELEVENLABS_API_KEY') else 'not set'}")
+    print(f"    API Key:  {'set' if _resolve_provider_key('ELEVENLABS_API_KEY', 'elevenlabs') else 'not set'}")
     print(f"  OpenAI:     {'installed' if _check(_import_openai_client, 'oai') else 'not installed'}")
     print(
         "    API Key:  "

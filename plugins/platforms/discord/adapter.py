@@ -63,6 +63,14 @@ _DISCORD_MAX_APP_COMMANDS = 100
 _DISCORD_SELECT_FIELD_LIMIT = 100
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
+# Discord API caps on an autocomplete response: at most 25 choices, and each
+# choice's name/value is limited to 100 characters.
+_DISCORD_AUTOCOMPLETE_MAX_CHOICES = 25
+_DISCORD_CHOICE_LIMIT = 100
+# /model autocomplete fires per keystroke, so the flattened catalog is cached
+# briefly rather than rebuilt on every character.
+_MODEL_AUTOCOMPLETE_CACHE_TTL = 120.0
+_MODEL_AUTOCOMPLETE_MAX_MODELS = 1000
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
@@ -4927,6 +4935,83 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    def _model_autocomplete_entries(self) -> "list[tuple[str, str]]":
+        """Build (and briefly cache) the flat model list for ``/model`` autocomplete.
+
+        Returns ``(label, value)`` tuples where *value* is the argument string
+        handed to ``/model`` — a bare model id for the current provider, or
+        ``"<id> --provider <slug>"`` for other authenticated providers. Sourced
+        from the same authenticated-provider catalog the interactive picker
+        uses, but uncapped, so every model is searchable rather than the
+        picker's first 50.
+
+        Cached briefly because the autocomplete callback fires on every
+        keystroke; the underlying read is served from the on-disk
+        provider-model cache, so a rebuild is cheap.
+        """
+        import time
+
+        now = time.time()
+        cached = getattr(self, "_model_entries_cache", None)
+        cached_at = getattr(self, "_model_entries_cache_at", 0.0)
+        if cached is not None and (now - cached_at) < _MODEL_AUTOCOMPLETE_CACHE_TTL:
+            return cached
+
+        entries: "list[tuple[str, str]]" = []
+        try:
+            from gateway.run import _load_gateway_config
+            from hermes_cli.model_switch import list_authenticated_providers
+
+            cfg = _load_gateway_config() or {}
+            model_cfg = cfg.get("model", {})
+            if not isinstance(model_cfg, dict):
+                model_cfg = {}
+            cur_provider = str(model_cfg.get("provider", "") or "")
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+
+                custom_provs = get_compatible_custom_providers(cfg)
+            except Exception:
+                custom_provs = cfg.get("custom_providers")
+
+            providers = list_authenticated_providers(
+                current_provider=cur_provider,
+                current_base_url=str(model_cfg.get("base_url", "") or ""),
+                current_model=str(model_cfg.get("default", "") or ""),
+                user_providers=cfg.get("providers"),
+                custom_providers=custom_provs,
+                max_models=_MODEL_AUTOCOMPLETE_MAX_MODELS,
+            )
+            # Current provider first so its models rank highest in the
+            # unfiltered (empty-query) view shown before the user types.
+            providers = sorted(
+                providers,
+                key=lambda p: 0
+                if str(p.get("slug", "")).lower() == cur_provider.lower()
+                else 1,
+            )
+            seen: "set[tuple[str, str]]" = set()
+            for p in providers:
+                slug = str(p.get("slug", "") or "")
+                pname = str(p.get("name", "") or slug)
+                is_current = slug.lower() == cur_provider.lower()
+                for mid in p.get("models", []) or []:
+                    mid = str(mid)
+                    if (mid, slug) in seen:
+                        continue
+                    seen.add((mid, slug))
+                    entries.append((
+                        f"{mid} · {pname}",
+                        mid if is_current else f"{mid} --provider {slug}",
+                    ))
+        except Exception:
+            # Keep the last good catalog rather than blanking autocomplete.
+            entries = cached or []
+
+        self._model_entries_cache = entries
+        self._model_entries_cache_at = now
+        return entries
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -4942,8 +5027,54 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reset(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reset", "Session reset~")
 
+        async def _autocomplete_model(
+            interaction: "discord.Interaction", current: str,
+        ) -> list:
+            """Live-filter the full model catalog as the user types.
+
+            Sources every authenticated provider's models and filters by the
+            typed substring, so ``/model`` can search *all* models rather than
+            the 50 a select-menu picker can show. The current provider's models
+            rank first so an empty query still surfaces the likely target.
+
+            Authorization is pre-checked quietly (returns ``[]`` for
+            unauthorized users) so the catalog isn't leaked in the picker, and
+            the callback never raises — any failure yields an empty suggestion
+            list rather than a typing-time error popup.
+            """
+            try:
+                allowed, _reason = self._evaluate_slash_authorization(interaction)
+            except Exception:
+                return []
+            if not allowed:
+                return []
+            try:
+                entries = await asyncio.to_thread(self._model_autocomplete_entries)
+            except Exception:
+                return []
+            q = (current or "").strip().lower()
+            choices: list = []
+            for label, value in entries:
+                # The value is the literal /model argument, later parsed for
+                # `--provider`. Truncating it would silently produce a different
+                # (or unresolvable) target, so skip what cannot be sent intact.
+                if len(value) > _DISCORD_CHOICE_LIMIT:
+                    continue
+                if q and q not in label.lower():
+                    continue
+                if len(label) > _DISCORD_CHOICE_LIMIT:
+                    # Labels are display-only, so trimming them is safe.
+                    label = label[:_DISCORD_CHOICE_LIMIT - 1] + _DISCORD_ELLIPSIS
+                choices.append(
+                    discord.app_commands.Choice(name=label, value=value)
+                )
+                if len(choices) >= _DISCORD_AUTOCOMPLETE_MAX_CHOICES:
+                    break
+            return choices
+
         @tree.command(name="model", description="Show or change the model")
-        @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
+        @discord.app_commands.describe(name="Start typing to search all models. Leave empty to see current.")
+        @discord.app_commands.autocomplete(name=_autocomplete_model)
         async def slash_model(interaction: discord.Interaction, name: str = ""):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 

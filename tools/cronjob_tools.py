@@ -654,6 +654,118 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         return {"claimed": True, "success": False, "error": str(e)}
+# ---------------------------------------------------------------------------
+# Recent delivered output (the "pull" side of cron session-awareness)
+# ---------------------------------------------------------------------------
+#
+# Cron deliveries do NOT land in the interactive conversation history (that was
+# removed in #2313 because assistant-role mirrors broke message alternation).
+# These helpers let the agent read back what its jobs delivered, on demand, by
+# parsing the per-run markdown saved under ~/.hermes/cron/output/<job_id>/.
+#
+# The saved-file formats are fixed by the scheduler (cron/scheduler.py):
+#   - agent-mode:  "## Response\n\n<delivered text>"
+#   - no_agent:    "<header>\n---\n\n<script stdout>"
+
+
+def _extract_delivered_content(text: str) -> str:
+    """Pull the delivered message body out of a saved cron output document.
+
+    Tries the two real delivery shapes in order, then falls back to stripping
+    the leading metadata header so status/failure docs still yield something.
+    """
+    m = re.search(r"\n##\s*Response\s*\n", text)
+    if m:
+        return text[m.end():].strip()
+    m = re.search(r"\n---[ \t]*\n", text)
+    if m:
+        return text[m.end():].strip()
+    lines = text.splitlines()
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.startswith(("#", "**")) or not line.strip():
+            body_start = i + 1
+        else:
+            break
+    return "\n".join(lines[body_start:]).strip()
+
+
+def _parse_output_file(path: Path) -> Dict[str, Any]:
+    """Parse one saved cron output ``.md`` into structured fields."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+
+    def _grab(pattern: str) -> Optional[str]:
+        m = re.search(pattern, text, re.MULTILINE)
+        return m.group(1).strip() if m else None
+
+    return {
+        "job_id": _grab(r"^\*\*Job ID:\*\*\s*(.+)$"),
+        "name": _grab(r"^#\s*Cron Job:\s*(.+)$"),
+        "run_time": _grab(r"^\*\*Run Time:\*\*\s*(.+)$"),
+        "content": _extract_delivered_content(text),
+    }
+
+
+def _is_safe_output_component(job_id: str) -> bool:
+    """Whether ``job_id`` is a single safe path component under the output root.
+
+    Job IDs scope a filesystem read under the cron output dir. A crafted or
+    unresolved id containing ``..``, path separators, or an absolute path would
+    let the read escape the sandbox and glob ``*.md`` elsewhere. Mirrors the
+    containment guard in ``cron.jobs._job_output_dir`` (which protects the
+    write/delete side) so the read side is equally contained.
+    """
+    text = str(job_id or "").strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text:
+        return False
+    if Path(text).is_absolute() or Path(text).drive:
+        return False
+    return True
+
+
+def _read_recent_outputs(
+    job_id: Optional[str] = None,
+    limit: int = 5,
+    output_root: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Return the most recent delivered cron outputs, newest first.
+
+    When ``job_id`` is given, scope to that one job; otherwise scan every job's
+    output directory and interleave by recency. ``output_root`` is injectable
+    for tests; production resolves it under the Hermes home.
+    """
+    if output_root is not None:
+        root = Path(output_root)
+    else:
+        from hermes_constants import get_hermes_home
+        root = get_hermes_home() / "cron" / "output"
+
+    if not root.is_dir():
+        return []
+
+    if job_id:
+        if not _is_safe_output_component(job_id):
+            logger.warning(
+                "Ignoring unsafe cron output job_id %r (path-escape attempt)", job_id
+            )
+            return []
+        job_dir = root / job_id
+        dirs = [job_dir] if job_dir.is_dir() else []
+    else:
+        dirs = [d for d in root.iterdir() if d.is_dir()]
+
+    files: List[Path] = []
+    for d in dirs:
+        files.extend(d.glob("*.md"))
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    outputs: List[Dict[str, Any]] = []
+    for p in files[: max(1, limit)]:
+        try:
+            outputs.append(_parse_output_file(p))
+        except Exception as e:  # never let one bad file sink the read
+            logger.debug("Skipping unreadable cron output %s: %s", p, e)
+    return outputs
 
 
 def cronjob(
@@ -677,6 +789,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    limit: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -776,6 +889,19 @@ def cronjob(
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+
+        if normalized in {"output", "outputs", "history"}:
+            # Read what jobs actually delivered. job_id is optional here: omit
+            # to scan all jobs by recency, or pass one to scope to a single job.
+            try:
+                resolved_id = resolve_job_ref(job_id)["id"] if job_id else None
+            except (AmbiguousJobReference, TypeError, KeyError):
+                resolved_id = job_id  # fall back to raw id; reader tolerates misses
+            outputs = _read_recent_outputs(job_id=resolved_id, limit=limit or 5)
+            return json.dumps(
+                {"success": True, "count": len(outputs), "outputs": outputs},
+                indent=2,
+            )
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
@@ -973,6 +1099,7 @@ CRONJOB_SCHEMA = {
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
+Use action='output' to read back what jobs recently DELIVERED (their messages do not appear in this chat's history, so this is how you recall what a cron sent). Omit job_id for the latest across all jobs, or pass job_id to scope to one. Use 'limit' to control how many.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
@@ -991,7 +1118,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, output, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. action=output reads recently delivered cron results (job_id optional)."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "For action=output: how many recent deliveries to return (default 5)."
             },
             "job_id": {
                 "type": "string",
@@ -1140,6 +1271,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        limit=args.get("limit"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

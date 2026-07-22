@@ -241,6 +241,46 @@ class TestHandleVoiceCommand:
         assert adapter._auto_tts_disabled_chats == {"123"}
 
     @pytest.mark.asyncio
+    async def test_voice_on_after_legacy_off_overrides_fallback_after_restart(self, tmp_path):
+        """Full lifecycle: a pre-#12542 legacy {chat_id: 'off'} row is
+        preserved across save/reload, but an explicit /voice on writes a
+        prefixed entry that overrides the legacy fallback on subsequent
+        restarts — no split-brain where /voice status reports 'on' while
+        auto-TTS stays suppressed (#14025)."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        runner._VOICE_MODE_PATH.write_text(json.dumps({"123": "off"}))
+        runner._voice_mode = runner._load_voice_modes()
+        assert runner._voice_mode == {"123": "off"}
+
+        event = _make_event("/voice on", chat_id="123")
+        await runner._handle_voice_command(event)
+
+        restored_runner = _make_runner(tmp_path)
+        restored_runner._voice_mode = restored_runner._load_voice_modes()
+        adapter = SimpleNamespace(
+            _auto_tts_default=False,
+            _auto_tts_enabled_chats=set(),
+            _auto_tts_disabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"auto_tts": True}},
+        ):
+            restored_runner._sync_voice_mode_state_to_adapter(adapter)
+
+        from gateway.platforms.base import BasePlatformAdapter
+
+        assert restored_runner._voice_mode["123"] == "off"
+        assert restored_runner._voice_mode["telegram:123"] == "voice_only"
+        assert adapter._auto_tts_default is True
+        assert adapter._auto_tts_enabled_chats == {"123"}
+        assert adapter._auto_tts_disabled_chats == set()
+        assert BasePlatformAdapter._should_auto_tts_for_chat(adapter, "123") is True
+
+    @pytest.mark.asyncio
     async def test_per_chat_isolation(self, runner):
         e1 = _make_event("/voice on", chat_id="aaa")
         e2 = _make_event("/voice tts", chat_id="bbb")

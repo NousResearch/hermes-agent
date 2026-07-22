@@ -3727,6 +3727,7 @@ def resolve_codex_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    read_only: bool = False,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store.
 
@@ -3738,13 +3739,20 @@ def resolve_codex_runtime_credentials(
     pool seed, a partial re-auth, or pool-only restoration from a backup — gets a bare
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
+
+    ``read_only=True`` makes this a strict diagnostic read: it never recovers tokens
+    from the Codex CLI (``_recover_codex_tokens_from_cli``) and never refreshes an
+    expiring token (``_refresh_codex_auth_tokens``), so ``hermes status`` / ``hermes
+    doctor`` stay side-effect-free.  Without this gate, a diagnostic read could reach a
+    second credential store, perform a network-backed refresh, and persist auth state —
+    see issue #68004.
     """
     read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()
     except AuthError as exc:
         read_error = exc
-        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
+        if (not read_only) and getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
             "codex_auth_missing_access_token",
             "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape",
@@ -3805,8 +3813,10 @@ def resolve_codex_runtime_credentials(
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
 
+    # Diagnostic reads (read_only) must not refresh an expiring token — that path
+    # performs a network call and persists new auth state.
     should_refresh = bool(force_refresh)
-    if (not should_refresh) and refresh_if_expiring:
+    if (not should_refresh) and refresh_if_expiring and (not read_only):
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
         # Re-read under lock to avoid racing with other Hermes processes
@@ -3816,7 +3826,7 @@ def resolve_codex_runtime_credentials(
             access_token = str(tokens.get("access_token", "") or "").strip()
 
             should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
+            if (not should_refresh) and refresh_if_expiring and (not read_only):
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
@@ -6281,9 +6291,11 @@ def get_codex_auth_status() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Fall back to legacy provider state
+    # Fall back to legacy provider state. Diagnostic reads (status/doctor) must
+    # never recover or refresh Codex credentials — use read_only to stay
+    # side-effect-free (issue #68004).
     try:
-        creds = resolve_codex_runtime_credentials()
+        creds = resolve_codex_runtime_credentials(read_only=True)
         return {
             "logged_in": True,
             "auth_store": str(_auth_file_path()),

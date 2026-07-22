@@ -206,3 +206,88 @@ def test_missing_singleton_access_token_reraises_when_codex_cli_half_token(tmp_p
         resolve_codex_runtime_credentials()
 
     assert ei.value.code == "codex_auth_missing_access_token"
+
+
+class TestResolveCodexReadonly:
+    """Issue #68004: status/doctor must stay side-effect-free.
+
+    ``resolve_codex_runtime_credentials(read_only=True)`` must never recover
+    tokens from the Codex CLI nor refresh an expiring token — otherwise a
+    diagnostic read would reach a second credential store, perform a
+    network-backed refresh, and persist auth state.
+    """
+
+    def test_read_only_does_not_recover_tokens(self, monkeypatch):
+        """A relogin-required read error must NOT trigger CLI recovery when
+        read_only=True (it re-raises unchanged instead)."""
+        import hermes_cli.auth as auth
+
+        recover_calls = []
+        original = auth._recover_codex_tokens_from_cli
+
+        def _spy_recover(reason):
+            recover_calls.append(reason)
+            return original(reason)
+
+        monkeypatch.setattr(auth, "_recover_codex_tokens_from_cli", _spy_recover)
+        monkeypatch.setattr(
+            auth,
+            "_read_codex_tokens",
+            lambda *_a, **_k: (_ for _ in ()).throw(
+                AuthError(
+                    "missing access token",
+                    provider="openai-codex",
+                    code="codex_auth_missing_access_token",
+                    relogin_required=True,
+                )
+            ),
+        )
+        monkeypatch.setattr(auth, "_pool_codex_access_token", lambda: None)
+
+        with pytest.raises(AuthError) as ei:
+            resolve_codex_runtime_credentials(read_only=True)
+
+        assert ei.value.code == "codex_auth_missing_access_token"
+        assert recover_calls == [], "read_only must not recover tokens"
+
+    def test_read_only_does_not_refresh_expiring_token(self, monkeypatch):
+        """An expiring token must be returned as-is when read_only=True — no
+        network refresh, no persist.  The same call without read_only WOULD
+        refresh, proving the gate actually suppresses the mutation."""
+        import hermes_cli.auth as auth
+        import base64, json as _json
+
+        # Build a JWT whose exp is in the past so _codex_access_token_is_expiring
+        # reports True.
+        def _b64(d):
+            return base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()
+
+        expired_jwt = f"{_b64({'alg': 'none'})}.{_b64({'exp': 1})}.sig"
+
+        refresh_calls = []
+
+        monkeypatch.setattr(
+            auth,
+            "_read_codex_tokens",
+            lambda *_a, **_k: {
+                "tokens": {
+                    "access_token": expired_jwt,
+                    "refresh_token": "r",
+                },
+                "last_refresh": None,
+            },
+        )
+        monkeypatch.setattr(
+            auth, "_refresh_codex_auth_tokens",
+            lambda tokens, *_a: refresh_calls.append(tokens) or dict(tokens, access_token="refreshed"),
+        )
+
+        creds = resolve_codex_runtime_credentials(read_only=True)
+        assert creds["api_key"] == expired_jwt
+        assert refresh_calls == [], "read_only must not refresh expiring token"
+
+        # Contrast: without read_only the same token triggers refresh (the real
+        # helper persists internally), proving the gate suppresses the mutation.
+        refreshed = resolve_codex_runtime_credentials(read_only=False)
+        assert refreshed["api_key"] == "refreshed"
+        assert len(refresh_calls) == 1, "non-read-only must refresh expiring token"

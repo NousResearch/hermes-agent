@@ -28,7 +28,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import parse_qs, urlparse, urlsplit, urlunparse, urlunsplit
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
@@ -48,6 +48,7 @@ from agent.tool_guardrails import (
     ToolGuardrailDecision,
 )
 from hermes_cli.config import cfg_get
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
@@ -70,51 +71,7 @@ def _ra():
 
 def _normalize_route_base_url(base_url: Any) -> str:
     """Canonicalize an endpoint URL for model-route identity comparisons."""
-    raw = str(base_url or "")
-    if not raw:
-        return ""
-    if any(ord(char) <= 0x20 for char in raw):
-        return raw
-    had_query_delimiter = "?" in raw.split("#", 1)[0]
-    try:
-        parsed = urlsplit(raw)
-        hostname = parsed.hostname
-        if not parsed.scheme or not hostname:
-            return raw
-        scheme = parsed.scheme.lower()
-        if "%" in hostname:
-            address, zone = hostname.split("%", 1)
-            host = f"{address.lower()}%{zone}"
-        else:
-            host = hostname.lower()
-        port = parsed.port
-    except (TypeError, ValueError):
-        return raw
-
-    route_host = parsed.netloc.rsplit("@", 1)[-1]
-    if route_host.startswith("[") or ":" in host:
-        host = f"[{host}]"
-    if port is not None and (scheme, port) not in {("http", 80), ("https", 443)}:
-        host = f"{host}:{port}"
-    if "@" in parsed.netloc:
-        host = f"{parsed.netloc.rsplit('@', 1)[0]}@{host}"
-
-    path = parsed.path
-    if path.endswith("/") and not had_query_delimiter:
-        path = path[:-1]
-
-    normalized = urlunsplit(
-        (
-            scheme,
-            host,
-            path,
-            parsed.query,
-            "",
-        )
-    )
-    if had_query_delimiter and not parsed.query:
-        normalized += "?"
-    return normalized
+    return normalize_route_base_url(base_url)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -172,6 +129,54 @@ def _provider_default_routes(provider: str) -> set[str]:
             for route in list(routes)
         )
     return routes
+
+
+def _context_route_mismatch(
+    configured_base_url: Any,
+    active_base_url: Any,
+    configured_provider: Any,
+    active_provider: Any,
+    *,
+    already_normalized: bool = False,
+) -> bool:
+    """Return whether a context pin's configured route differs from runtime."""
+    if already_normalized:
+        configured_route = str(configured_base_url or "")
+        active_route = str(active_base_url or "")
+    else:
+        configured_route = _normalize_route_base_url(configured_base_url)
+        active_route = _normalize_route_base_url(active_base_url)
+    if configured_route:
+        return configured_route != active_route
+
+    configured_provider = str(configured_provider or "").strip()
+    active_provider = str(active_provider or "").strip()
+    if not configured_provider:
+        return False
+    try:
+        from hermes_cli.models import normalize_provider as normalize_model_provider
+
+        configured_provider = normalize_model_provider(configured_provider)
+        active_provider = normalize_model_provider(active_provider)
+    except Exception:
+        configured_provider = configured_provider.lower()
+        active_provider = active_provider.lower()
+    try:
+        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+
+        configured_provider = normalize_registry_provider(configured_provider)
+        active_provider = normalize_registry_provider(active_provider)
+    except Exception:
+        pass
+
+    if active_route:
+        configured_routes = _provider_default_routes(configured_provider)
+        return not configured_routes or active_route not in configured_routes
+    return bool(
+        configured_provider
+        and active_provider
+        and configured_provider != active_provider
+    )
 
 
 def _normalize_custom_provider_name(value: Any) -> str:
@@ -2021,49 +2026,13 @@ def init_agent(
             except (TypeError, ValueError):
                 pass
         _active_base_url = _normalize_route_base_url(_active_route_url)
-        _route_mismatch = bool(
-            _configured_base_url
-            and _configured_base_url != _active_base_url
+        _route_mismatch = _context_route_mismatch(
+            _configured_base_url,
+            _active_base_url,
+            _configured_provider,
+            agent.provider,
+            already_normalized=True,
         )
-        if not _configured_base_url:
-            _active_provider = str(agent.provider or "").strip()
-            _normalize_provider_fn = None
-            _normalize_registry_provider_fn = None
-            try:
-                from hermes_cli.models import normalize_provider as _normalize_provider_fn
-
-                _configured_provider = _normalize_provider_fn(_configured_provider)
-                _active_provider = _normalize_provider_fn(_active_provider)
-            except Exception:
-                _configured_provider = _configured_provider.lower()
-                _active_provider = _active_provider.lower()
-            try:
-                from hermes_cli.providers import (
-                    normalize_provider as _normalize_registry_provider_fn,
-                )
-
-                _configured_provider = _normalize_registry_provider_fn(
-                    _configured_provider
-                )
-                _active_provider = _normalize_registry_provider_fn(
-                    _active_provider
-                )
-            except Exception:
-                pass
-            if _active_base_url:
-                _configured_routes = _provider_default_routes(
-                    _configured_provider
-                )
-                _route_mismatch = bool(
-                    not _configured_routes
-                    or _active_base_url not in _configured_routes
-                )
-            else:
-                _route_mismatch = bool(
-                    _configured_provider
-                    and _active_provider
-                    and _configured_provider != _active_provider
-                )
         _model_mismatch = bool(
             _configured_default_runtime_model
             and _configured_default_runtime_model != _active_runtime_model
@@ -2102,11 +2071,11 @@ def init_agent(
         # Surface a clear warning if the user set a context_length but it
         # wasn't a valid positive int — the helper silently skips those.
         if _config_context_length is None:
-            _target = agent.base_url.rstrip("/") if agent.base_url else ""
+            _target = _normalize_route_base_url(agent.base_url)
             for _cp_entry in _custom_providers:
                 if not isinstance(_cp_entry, dict):
                     continue
-                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                _cp_url = _normalize_route_base_url(_cp_entry.get("base_url"))
                 if _target and _cp_url == _target:
                     _cp_models = _cp_entry.get("models", {})
                     if isinstance(_cp_models, dict):

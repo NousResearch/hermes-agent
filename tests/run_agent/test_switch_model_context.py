@@ -52,6 +52,14 @@ def test_route_url_normalization_preserves_malformed_trailing_slash():
 
 
 @pytest.mark.parametrize(
+    "raw",
+    ["http://[bad/v1/", "example.com/v1/", "https:///v1/"],
+)
+def test_route_url_normalization_keeps_unparseable_routes_byte_exact(raw):
+    assert _normalize_route_base_url(raw) == raw
+
+
+@pytest.mark.parametrize(
     ("configured", "active"),
     [
         ("http://EXAMPLE.COM:80/v1/", "http://example.com/v1"),
@@ -571,6 +579,34 @@ def test_direct_start_drops_context_when_extra_trailing_segment_changes():
             "base_url": "https://example.com/v1//",
             "context_length": 1_048_576,
         }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="shared-model",
+        provider="custom",
+        base_url="https://example.com/v1",
+    )
+
+    assert agent.context_compressor.config_context_length is None
+
+
+def test_direct_start_does_not_reapply_custom_context_across_extra_slash():
+    """Per-model custom overrides use the same fail-closed route identity."""
+    cfg = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+        },
+        "custom_providers": [
+            {
+                "name": "large-route",
+                "base_url": "https://example.com/v1//",
+                "models": {
+                    "shared-model": {"context_length": 1_048_576}
+                },
+            }
+        ],
     }
 
     agent = _make_direct_start_agent(

@@ -2742,5 +2742,20 @@ export const en: Translations = {
         consequence: 'EVERYTHING \u2014 the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
       }
     }
+  },
+
+  billing: {
+    autoRefill: 'Auto-refill',
+    balance: 'Balance',
+    plan: 'Plan',
+    connectTitle: 'Connect your Nous account',
+    connectMessage: 'Run /portal in the TUI or open the Nous portal to connect your account.',
+    openPortal: 'Open portal',
+    openPortalArrow: 'Open portal ↗',
+    autoRefillUpdated: 'Auto-refill updated.',
+    autoRefillTurnedOff: 'Auto-refill turned off.',
+    autoRefillThreshold: 'Auto-refill threshold',
+    autoRefillReloadTo: 'Auto-refill reload-to amount',
+    autoRefillCaption: cardLabel => `Auto-refill charges ${cardLabel} — reconcile on the portal`
   }
 }

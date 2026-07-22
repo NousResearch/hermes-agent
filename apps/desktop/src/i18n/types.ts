@@ -2308,4 +2308,19 @@ export interface Translations {
       full: { title: string; description: string; consequence: string }
     }
   }
+
+  billing: {
+    autoRefill: string
+    balance: string
+    plan: string
+    connectTitle: string
+    connectMessage: string
+    openPortal: string
+    openPortalArrow: string
+    autoRefillUpdated: string
+    autoRefillTurnedOff: string
+    autoRefillThreshold: string
+    autoRefillReloadTo: string
+    autoRefillCaption: (cardLabel: string) => string
+  }
 }

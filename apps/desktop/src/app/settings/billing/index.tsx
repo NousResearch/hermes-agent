@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { BarChart3, ExternalLink, Lock, Package, Plus, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -215,6 +216,7 @@ function BuyCreditsOutcome({
   outcome: ReturnType<typeof useChargeFlow>['outcome']
 }) {
   const stepUp = useStepUpFlow()
+  const { t } = useI18n()
 
   if (busy) {
     return (
@@ -244,7 +246,7 @@ function BuyCreditsOutcome({
         </span>
         {outcome.portalUrl && (
           <Button onClick={() => onPortal(outcome.portalUrl)} size="sm" type="button" variant="outline">
-            Open portal
+            {t.billing.openPortal}
             <ExternalLink className="size-3.5" />
           </Button>
         )}
@@ -267,7 +269,7 @@ function BuyCreditsOutcome({
       {outcome.action?.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => onPortal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {t.billing.openPortal}
           <ExternalLink className="size-3.5" />
         </Button>
       )}
@@ -454,6 +456,7 @@ function BillingSettingsContent({
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const { t } = useI18n()
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -462,7 +465,7 @@ function BillingSettingsContent({
   const subscriptionState = useSubscriptionState()
   const billingResult = billingState.data
   const subscriptionResult = subscriptionState.data
-  const view = deriveBillingView(billingResult, subscriptionResult)
+  const view = deriveBillingView(billingResult, subscriptionResult, t)
   const billing = billingResult?.ok ? billingResult.data : undefined
   const usageUpdatedAt = oldestUpdatedAt(billingState.dataUpdatedAt, subscriptionState.dataUpdatedAt)
   const usageIsFetching = billingState.isFetching || subscriptionState.isFetching

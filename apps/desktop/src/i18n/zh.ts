@@ -2900,5 +2900,20 @@ export const zh: Translations = {
         consequence: '所有内容——聊天界面、Hermes 代理以及您的所有配置、聊天记录、密钥和日志'
       }
     }
+  },
+
+  billing: {
+    autoRefill: '自动充值',
+    balance: '余额',
+    plan: '套餐',
+    connectTitle: '连接你的 Nous 账户',
+    connectMessage: '在终端运行 /portal 或打开 Nous 门户来连接你的账户。',
+    openPortal: '打开门户',
+    openPortalArrow: '打开门户 ↗',
+    autoRefillUpdated: '自动充值已更新。',
+    autoRefillTurnedOff: '自动充值已关闭。',
+    autoRefillThreshold: '自动充值阈值',
+    autoRefillReloadTo: '自动充值金额',
+    autoRefillCaption: cardLabel => `自动充值从 ${cardLabel} 扣款 — 在门户上管理`
   }
 }

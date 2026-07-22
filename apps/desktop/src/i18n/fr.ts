@@ -2904,5 +2904,20 @@ export const fr = defineLocale({
     saveApply: 'Enregistrer et appliquer',
     notExpressible: 'cet arrangement est imbriqué (moulinet) — pas encore exprimable en divisions imbriquées',
     zoneCount: count => `${count} zones`
+  },
+
+  billing: {
+    autoRefill: 'Recharge auto',
+    balance: 'Solde',
+    plan: 'Abonnement',
+    connectTitle: 'Connectez votre compte Nous',
+    connectMessage: 'Lancez /portal dans le TUI ou ouvrez le portail Nous pour connecter votre compte.',
+    openPortal: 'Ouvrir le portail',
+    openPortalArrow: 'Ouvrir le portail ↗',
+    autoRefillUpdated: 'Recharge auto mise à jour.',
+    autoRefillTurnedOff: 'Recharge auto désactivée.',
+    autoRefillThreshold: 'Seuil de recharge auto',
+    autoRefillReloadTo: 'Montant de recharge auto',
+    autoRefillCaption: cardLabel => `La recharge auto débite ${cardLabel} — à gérer sur le portail`
   }
 })

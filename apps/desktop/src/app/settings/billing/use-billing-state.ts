@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
+import { useI18n } from '@/i18n'
 import { fmtDate } from '@/lib/time'
 
 import type { BillingRefusal, BillingResult } from './api'
@@ -18,7 +19,7 @@ const BILLING_QUERY_OPTIONS = {
 } as const
 
 export interface BillingSummaryItemView {
-  label: 'Auto-refill' | 'Balance' | 'Plan'
+  label: string
   tone?: 'muted' | 'primary'
   value: string
 }
@@ -159,12 +160,13 @@ export function useSubscriptionState(enabled = true) {
 
 export function deriveBillingView(
   stateResult?: BillingResult<BillingStateResponse>,
-  subscriptionResult?: BillingResult<SubscriptionStateResponse>
+  subscriptionResult?: BillingResult<SubscriptionStateResponse>,
+  t?: ReturnType<typeof import('@/i18n').useI18n>['t']
 ): BillingView {
   if (!stateResult) {
     return {
       status: 'loading',
-      summary: emptySummary(),
+      summary: emptySummary(t),
       tiers: [],
       usageRows: []
     }
@@ -172,9 +174,9 @@ export function deriveBillingView(
 
   if (!stateResult.ok) {
     return {
-      notice: refusalNotice(stateResult.refusal),
+      notice: refusalNotice(stateResult.refusal, t),
       status: 'refusal',
-      summary: emptySummary(),
+      summary: emptySummary(t),
       tiers: [],
       usageRows: []
     }
@@ -186,12 +188,12 @@ export function deriveBillingView(
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {
-        action: { label: 'Open portal ↗', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
-        message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
-        title: 'Connect your Nous account'
+        action: { label: t?.billing?.openPortalArrow ?? 'Open portal ↗', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
+        message: t?.billing?.connectMessage ?? 'Run /portal in the TUI or open the Nous portal to connect your account.',
+        title: t?.billing?.connectTitle ?? 'Connect your Nous account'
       },
       status: 'logged_out',
-      summary: emptySummary(),
+      summary: emptySummary(t),
       tiers: [],
       usageRows: []
     }
@@ -210,13 +212,13 @@ export function deriveBillingView(
     notice: undefined,
     paymentRow: paymentMethodRow(billing),
     plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable, pending),
-    refillRow: autoReloadRow(billing),
+    refillRow: autoReloadRow(billing, t),
     status: 'normal',
     summary: [
-      { label: 'Balance', value: displayBalance(billing) },
-      { label: 'Plan', value: displayPlan(subscription, billing.usage) },
+      { label: t?.billing?.balance ?? 'Balance', value: displayBalance(billing) },
+      { label: t?.billing?.plan ?? 'Plan', value: displayPlan(subscription, billing.usage) },
       {
-        label: 'Auto-refill',
+        label: t?.billing?.autoRefill ?? 'Auto-refill',
         tone: billing.auto_reload?.enabled ? 'primary' : billing.auto_reload ? 'muted' : undefined,
         value: billing.auto_reload ? (billing.auto_reload.enabled ? 'Enabled' : 'Off') : EMPTY_BILLING_VALUE
       }
@@ -296,20 +298,20 @@ export function formatUsageUpdatedAgo(updatedAt: number, now: number): string {
   return `${Math.floor(elapsedMinutes / 60)}h ago`
 }
 
-function emptySummary(): BillingSummaryItemView[] {
+function emptySummary(t?: ReturnType<typeof import('@/i18n').useI18n>['t']): BillingSummaryItemView[] {
   return [
-    { label: 'Balance', value: EMPTY_BILLING_VALUE },
-    { label: 'Plan', value: EMPTY_BILLING_VALUE },
-    { label: 'Auto-refill', value: EMPTY_BILLING_VALUE }
+    { label: t?.billing?.balance ?? 'Balance', value: EMPTY_BILLING_VALUE },
+    { label: t?.billing?.plan ?? 'Plan', value: EMPTY_BILLING_VALUE },
+    { label: t?.billing?.autoRefill ?? 'Auto-refill', value: EMPTY_BILLING_VALUE }
   ]
 }
 
-function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
+function refusalNotice(refusal: BillingRefusal, t?: ReturnType<typeof import('@/i18n').useI18n>['t']): BillingNoticeView {
   const resolved = resolveRefusal(refusal)
   const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : undefined
 
   return {
-    action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
+    action: portalUrl ? { label: t?.billing?.openPortalArrow ?? 'Open portal ↗', url: portalUrl } : undefined,
     message: resolved.message,
     title: resolved.title
   }
@@ -587,7 +589,7 @@ function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
 // this with the disambiguating "Charges $X … below $Y." sentence (spec §8).
 const AUTO_REFILL_GENERIC = 'Keep your balance topped up when it drops below your threshold.'
 
-function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
+function autoReloadRow(billing: BillingStateResponse, t?: ReturnType<typeof import('@/i18n').useI18n>['t']): BillingAccountRowView {
   const autoReload = billing.auto_reload
 
   if (!autoReload) {
@@ -620,7 +622,7 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
 
     return {
       action: { label: 'Reconcile ↗', url: portalUrl },
-      caption: `Auto-refill charges ${cardLabel} — reconcile on the portal`,
+      caption: t?.billing?.autoRefillCaption?.(cardLabel) ?? `Auto-refill charges ${cardLabel} — reconcile on the portal`,
       description: AUTO_REFILL_GENERIC,
       id: 'auto_reload',
       pill: { label: 'Enabled', tone: 'primary' },

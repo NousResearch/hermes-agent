@@ -130,7 +130,11 @@ describe('usePreviewRouting', () => {
     )
 
     act(() =>
-      handleEvent({ payload: { url: 'https://www.cnn.com', label: 'CNN' }, session_id: 'session-1', type: 'preview.open' })
+      handleEvent({
+        payload: { url: 'https://www.cnn.com', label: 'CNN' },
+        session_id: 'session-1',
+        type: 'preview.open'
+      })
     )
 
     await waitFor(() => {

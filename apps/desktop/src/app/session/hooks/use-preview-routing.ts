@@ -116,7 +116,10 @@ export function usePreviewRouting({
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
             if (resolved) {
               const trimmedLabel = typeof label === 'string' ? label.trim() : ''
-              setCurrentSessionPreviewTarget(trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved, 'tool-result')
+              setCurrentSessionPreviewTarget(
+                trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved,
+                'tool-result'
+              )
             }
           })
         }

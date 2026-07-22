@@ -137,6 +137,11 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    # Append-only so existing positional ProcessSession(...) call sites keep working.
+    origin_ui_session_id: str = ""              # Exact WebUI/desktop tab that commissioned notifications
+    # Alias for WebUI Option-3 duck-typing (spawn_session_id / owner_session_id / turn_session_id).
+    # Kept equal to origin_ui_session_id when set so older WebUI safety nets can re-route.
+    spawn_session_id: str = ""
 
 
 class ProcessRegistry:
@@ -316,6 +321,7 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
                     "command": session.command,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
@@ -347,6 +353,7 @@ class ProcessRegistry:
         self.completion_queue.put({
             "session_id": session.id,
             "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -694,6 +701,9 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        origin_ui_session_id: str = "",
+        notify_on_complete: bool = False,
+        watch_patterns: Optional[List[str]] = None,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -704,7 +714,16 @@ class ProcessRegistry:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
+            notify_on_complete: Queue a completion notification when the process
+                     exits. MUST be supplied here (not assigned on the returned
+                     session) — the reader thread starts before this method
+                     returns, so a fast command can reach _move_to_finished()
+                     before any post-spawn assignment runs, silently dropping
+                     the completion event.
+            watch_patterns: Output patterns that trigger notifications. Same
+                     spawn-time-initialization requirement as notify_on_complete.
         """
+        _origin = str(origin_ui_session_id or "")
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -712,6 +731,10 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            origin_ui_session_id=_origin,
+            spawn_session_id=_origin,
+            notify_on_complete=bool(notify_on_complete),
+            watch_patterns=list(watch_patterns) if watch_patterns else [],
         )
 
         if use_pty:
@@ -760,6 +783,14 @@ class ProcessRegistry:
         # Standard Popen path (non-PTY or PTY fallback)
         # Use the user's login shell for consistency with LocalEnvironment --
         # ensures rc files are sourced and user tools are available.
+        #
+        # NOTE: unlike the PTY path above, this invocation must NOT pass
+        # ``-i``: stdout/stderr are pipes here, not a TTY. On FreeBSD an
+        # interactive bash without a controlling terminal stops itself with
+        # SIGTTIN during job-control init (process state ``TsJ``), so the
+        # command never runs and the session never completes. ``set +m`` in
+        # the -c string can't prevent this because it runs after job-control
+        # init. Login (``-l``) is kept so profile files still set up PATH.
         user_shell = _find_shell()
         # Force unbuffered output for Python scripts so progress is visible
         # during background execution (libraries like tqdm/datasets buffer when
@@ -769,7 +800,7 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lc", f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -833,6 +864,9 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        origin_ui_session_id: str = "",
+        notify_on_complete: bool = False,
+        watch_patterns: Optional[List[str]] = None,
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -844,7 +878,12 @@ class ProcessRegistry:
 
         This is less capable than local spawn (no live stdout pipe, no stdin),
         but it ensures the command runs in the correct sandbox context.
+
+        notify_on_complete / watch_patterns must be supplied at spawn time for
+        the same reason as spawn_local(): the poller thread starts before this
+        method returns, so post-spawn assignment races the completion event.
         """
+        _origin = str(origin_ui_session_id or "")
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -854,6 +893,10 @@ class ProcessRegistry:
             started_at=time.time(),
             env_ref=env,
             pid_scope="sandbox",
+            origin_ui_session_id=_origin,
+            spawn_session_id=_origin,
+            notify_on_complete=bool(notify_on_complete),
+            watch_patterns=list(watch_patterns) if watch_patterns else [],
         )
 
         # Run the command in the sandbox with output capture
@@ -1093,6 +1136,7 @@ class ProcessRegistry:
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "origin_ui_session_id": session.origin_ui_session_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -1899,6 +1943,7 @@ class ProcessRegistry:
                             "started_at": s.started_at,
                             "task_id": s.task_id,
                             "session_key": s.session_key,
+                            "origin_ui_session_id": s.origin_ui_session_id,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_user_id": s.watcher_user_id,
@@ -1971,6 +2016,8 @@ class ProcessRegistry:
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
                 session_key=entry.get("session_key", ""),
+                origin_ui_session_id=entry.get("origin_ui_session_id", "") or entry.get("spawn_session_id", ""),
+                spawn_session_id=entry.get("spawn_session_id", "") or entry.get("origin_ui_session_id", ""),
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
@@ -1998,6 +2045,7 @@ class ProcessRegistry:
                     "session_id": session.id,
                     "check_interval": session.watcher_interval,
                     "session_key": session.session_key,
+                    "origin_ui_session_id": session.origin_ui_session_id,
                     "platform": session.watcher_platform,
                     "chat_id": session.watcher_chat_id,
                     "user_id": session.watcher_user_id,

@@ -2002,13 +2002,25 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-            )
+            from gateway.session_context import bind_ui_session_id
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+            # Rebind the commissioning tab's UI id so a child-started
+            # terminal(notify_on_complete=True) stamps ProcessSession.origin_ui_session_id
+            # with the parent chat — not the temporary child session_key.
+            with bind_ui_session_id(
+                str(getattr(child, "_origin_ui_session_id", "") or "")
+            ):
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+
+        from tools.thread_context import propagate_context_to_thread
+
+        _child_future = _timeout_executor.submit(
+            propagate_context_to_thread(_run_with_thread_capture)
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2625,6 +2637,21 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    # Child execution crosses executor boundaries that start with empty
+    # ContextVars. Preserve only the parent's WebUI/desktop return address;
+    # execution ownership remains the child's own task/session key.
+    try:
+        from gateway.session_context import get_session_env
+
+        _origin_ui_session_id = (
+            get_session_env("HERMES_UI_SESSION_ID", "")
+            or get_session_env("HERMES_SESSION_KEY", "")
+        )
+    except Exception:
+        _origin_ui_session_id = ""
+    for _, _, child in children:
+        child._origin_ui_session_id = _origin_ui_session_id
+
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
@@ -2649,11 +2676,12 @@ def delegate_task(
             # normally, but if the parent is interrupted while a child is
             # wedged, the abandoned worker must not block interpreter exit.
             from tools.daemon_pool import DaemonThreadPoolExecutor
+            from tools.thread_context import propagate_context_to_thread
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
-                        _run_single_child,
+                        propagate_context_to_thread(_run_single_child),
                         task_index=i,
                         goal=t["goal"],
                         child=child,
@@ -2939,7 +2967,9 @@ def delegate_task(
             from gateway.session_context import get_session_env
 
             _source = get_session_env("HERMES_SESSION_SOURCE", "")
-            _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+            _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or get_session_env(
+                "HERMES_SESSION_KEY", ""
+            )
             # In desktop/TUI, the routable session key is the durable
             # AIAgent.session_id. Context compression can rotate that id during
             # the same turn before the TUI-side session dict is re-anchored;

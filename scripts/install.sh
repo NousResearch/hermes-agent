@@ -795,6 +795,29 @@ node_satisfies_build() {
     return 1
 }
 
+# Verify that an existing Node binary matches the current machine's architecture.
+# Prevents keeping an x86_64 Node after e.g. Migration Assistant transfer to ARM64.
+node_arch_matches() {
+    local node_bin="$1"
+    local machine_arch
+    machine_arch="$(uname -m)"
+    local file_output
+    file_output="$(file "$node_bin" 2>/dev/null)" || return 1
+
+    case "$machine_arch" in
+        arm64|aarch64)
+            echo "$file_output" | grep -qiE "arm64|aarch64" && return 0
+            ;;
+        x86_64)
+            echo "$file_output" | grep -qiE "x86.64|x86-64" && return 0
+            ;;
+        armv7l)
+            echo "$file_output" | grep -qi "armv7" && return 0
+            ;;
+    esac
+    return 1
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -811,10 +834,14 @@ check_node() {
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     if [ -x "$HERMES_HOME/node/bin/node" ] && node_satisfies_build "$("$HERMES_HOME/node/bin/node" --version)"; then
-        export PATH="$HERMES_HOME/node/bin:$PATH"
-        log_success "Node.js $("$HERMES_HOME/node/bin/node" --version) found (Hermes-managed)"
-        HAS_NODE=true
-        return 0
+        if ! node_arch_matches "$HERMES_HOME/node/bin/node"; then
+            log_warn "Hermes-managed Node.js is built for a different architecture — reinstalling..."
+        else
+            export PATH="$HERMES_HOME/node/bin:$PATH"
+            log_success "Node.js $("${HERMES_HOME}/node/bin/node" --version) found (Hermes-managed)"
+            HAS_NODE=true
+            return 0
+        fi
     fi
 
     if command -v node &> /dev/null; then

@@ -1788,11 +1788,24 @@ def init_agent(
     # estimate above the threshold even though the messages compress fine
     # (the #62605 failure class).  Default 3 preserves current behavior, so
     # an unset key is behavior-neutral; validated >= 1, hard-capped at 10,
-    # and a non-integer value falls back to 3.
-    try:
-        compression_max_attempts = int(_compression_cfg.get("max_attempts", 3))
-    except (TypeError, ValueError):
+    # and any non-int-like value falls back to 3.  Booleans are rejected
+    # (bool subclasses int, so int(True) would silently become 1) and
+    # fractional floats are rejected rather than truncated — "4.7 attempts"
+    # is a config mistake, not a request for 4.
+    _raw_max_attempts = _compression_cfg.get("max_attempts", 3)
+    if isinstance(_raw_max_attempts, bool):
         compression_max_attempts = 3
+    elif isinstance(_raw_max_attempts, int):
+        compression_max_attempts = _raw_max_attempts
+    elif isinstance(_raw_max_attempts, float):
+        compression_max_attempts = (
+            int(_raw_max_attempts) if _raw_max_attempts.is_integer() else 3
+        )
+    else:
+        try:
+            compression_max_attempts = int(str(_raw_max_attempts).strip())
+        except (TypeError, ValueError):
+            compression_max_attempts = 3
     if compression_max_attempts < 1:
         compression_max_attempts = 3
     compression_max_attempts = min(compression_max_attempts, 10)

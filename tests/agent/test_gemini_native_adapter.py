@@ -511,3 +511,47 @@ def test_hermes_version_is_valid():
     assert _HERMES_VERSION != "0.0.0", (
         "Version should resolve from hermes_cli.__version__, not the fallback"
     )
+
+
+# ---------------------------------------------------------------------------
+# Inherited Authorization header is stripped (native auth is x-goog-api-key)
+# ---------------------------------------------------------------------------
+
+
+def test_inherited_authorization_header_is_stripped():
+    """An Authorization header from default_headers must not reach Google.
+
+    The native v1beta endpoint authenticates via ``x-goog-api-key``.  A stray
+    ``Authorization: Bearer`` (inherited from an OpenAI-compat / aggregator
+    profile) makes Google treat the call as OAuth2 and reject the API key with
+    401 Unauthorized, so it is dropped while the API key is preserved.
+    """
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="AIza-test",
+        model="gemini-2.0-flash",
+        default_headers={"Authorization": "Bearer inherited-token"},
+    )
+    headers = client._headers()
+
+    assert "Authorization" not in headers
+    assert "authorization" not in headers
+    assert headers["x-goog-api-key"] == "AIza-test"
+
+
+def test_authorization_header_stripped_case_insensitively():
+    """default_headers is caller-supplied, so any casing must be removed."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="AIza-test",
+        model="gemini-2.0-flash",
+        default_headers={"AUTHORIZATION": "Bearer x", "X-Custom": "keep"},
+    )
+    headers = client._headers()
+
+    assert not any(k.lower() == "authorization" for k in headers)
+    # Unrelated default headers are still forwarded.
+    assert headers["X-Custom"] == "keep"
+    assert headers["x-goog-api-key"] == "AIza-test"

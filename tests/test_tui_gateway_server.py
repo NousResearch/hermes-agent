@@ -2509,6 +2509,14 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
             "fallback_providers": fallback_chain,
         },
     )
+    # This test covers fallback-chain forwarding, not startup dotenv/model
+    # resolution. Importing run_agent below may load the developer profile's
+    # dotenv before it is patched, so pin the orthogonal startup decision.
+    monkeypatch.setattr(
+        server,
+        "_resolve_startup_runtime",
+        lambda: ("gpt-5.5", "openai-codex"),
+    )
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, target_model=None: {

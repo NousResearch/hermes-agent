@@ -5369,16 +5369,29 @@ class TestAuxUnhealthyCache:
         _mark_provider_unhealthy("openrouter")
         assert _is_provider_unhealthy("openrouter") is True
 
-    def test_ttl_expiry_evicts(self):
+    def test_ttl_expiry_evicts(self, monkeypatch):
+        import agent.auxiliary_client as auxiliary_client
+
+        class _ControlledTime:
+            def __init__(self, now):
+                self.now = now
+
+            def time(self):
+                return self.now
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        clock = _ControlledTime(time.time())
+        monkeypatch.setattr(auxiliary_client, "time", clock)
         from agent.auxiliary_client import (
             _mark_provider_unhealthy,
             _is_provider_unhealthy,
             _aux_unhealthy_until,
         )
-        _mark_provider_unhealthy("openrouter", ttl=0.01)
+        _mark_provider_unhealthy("openrouter", ttl=10.0)
         assert _is_provider_unhealthy("openrouter") is True
-        import time
-        time.sleep(0.02)
+        clock.now += 10.01
         # Lazy eviction: first lookup after expiry returns False AND removes the entry.
         assert _is_provider_unhealthy("openrouter") is False
         assert "openrouter" not in _aux_unhealthy_until

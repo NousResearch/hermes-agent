@@ -7,6 +7,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_account_usage(monkeypatch):
+    """Keep session-usage tests independent of local or remote account state.
+
+    Account-section tests override these stubs explicitly. This fixture keeps
+    the remaining tests focused on their session/token contracts and prevents
+    a developer login or live provider response from changing their output.
+    """
+    monkeypatch.setattr(
+        "gateway.slash_commands.fetch_account_usage",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.nous_credits_lines",
+        lambda markdown=False: [],
+    )
+
+
 def _make_mock_agent(**overrides):
     """Create a mock AIAgent with realistic session counters."""
     agent = MagicMock()
@@ -86,7 +104,8 @@ class TestUsageCachedAgent:
         assert "50,000" in result  # total
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
+        # Session cost estimates and cache-hit reporting are removed. Provider
+        # account balances/usage are covered separately below.
         assert "$" not in result
         assert "Cache read" not in result
         assert "Cache write" not in result

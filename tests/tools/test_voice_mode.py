@@ -333,6 +333,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -351,6 +352,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -371,6 +373,7 @@ class TestDetectAudioEnvironment:
         sd = MagicMock()
         sd.query_devices.return_value = []
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -391,6 +394,7 @@ class TestDetectAudioEnvironment:
         sd = MagicMock()
         sd.query_devices.side_effect = RuntimeError("boom")
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -410,6 +414,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()

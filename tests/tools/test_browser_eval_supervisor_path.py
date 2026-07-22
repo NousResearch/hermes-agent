@@ -240,13 +240,16 @@ def _make_supervisor_with_cdp(cdp_response):
     # Build a real running event loop on a background thread so
     # asyncio.run_coroutine_threadsafe has somewhere to dispatch.
     loop = asyncio.new_event_loop()
+    loop_started = threading.Event()
 
     def _runner():
         asyncio.set_event_loop(loop)
+        loop.call_soon(loop_started.set)
         loop.run_forever()
 
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
+    assert loop_started.wait(timeout=2.0), "test event loop did not start"
 
     async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
         return cdp_response

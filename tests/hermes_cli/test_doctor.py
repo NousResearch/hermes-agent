@@ -1375,6 +1375,18 @@ class TestDoctorStaleMaxIterationsDrift:
         else:
             monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
 
+        # This test covers local config drift only. Keep the doctor run
+        # hermetic instead of allowing its later connectivity/tool probes to
+        # depend on DNS, network latency, or host-installed executables.
+        import httpx
+
+        monkeypatch.setattr(
+            httpx,
+            "get",
+            lambda *args, **kwargs: SimpleNamespace(status_code=200, text=""),
+        )
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda _cmd: None)
+
         # Short-circuit at the Tool Availability stage — the drift check runs
         # well before it in the Configuration Files section.
         fake_model_tools = types.SimpleNamespace(

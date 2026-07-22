@@ -551,10 +551,39 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
 
 def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
     """The owning compression call must keep its lease alive while it runs."""
+    import hermes_state
+
     real_try_acquire = SessionDB.try_acquire_compression_lock
+    real_refresh = SessionDB.refresh_compression_lock
+    lock_acquired = threading.Event()
+    lock_refreshed = threading.Event()
+    release_compressor = threading.Event()
+
+    class _ControlledTime:
+        def __init__(self, now):
+            self.now = now
+
+        def time(self):
+            return self.now
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    clock = _ControlledTime(time.time())
 
     def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+        acquired = real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+        if acquired and holder != "refresh_probe":
+            lock_acquired.set()
+        return acquired
+
+    def _observe_refresh(
+        self, session_id: str, holder: str, ttl_seconds: float = 300.0
+    ) -> bool:
+        refreshed = real_refresh(self, session_id, holder, ttl_seconds=ttl_seconds)
+        if refreshed:
+            lock_refreshed.set()
+        return refreshed
 
     monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
 
@@ -562,19 +591,15 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
 
     parent_sid = "REFRESH_TEST"
     db.create_session(parent_sid, source="discord")
+    monkeypatch.setattr(hermes_state, "time", clock)
+    monkeypatch.setattr(SessionDB, "refresh_compression_lock", _observe_refresh)
 
     agent_a = _build_agent_with_db(db, parent_sid)
-    # 3s TTL / 0.25s refresh: ~12 refresh opportunities per lease. A 1s TTL
-    # left one missed scheduling quantum between "refreshed" and "expired"
-    # on a loaded runner.
-    agent_a._compression_lock_ttl_seconds = 3.0
+    agent_a._compression_lock_ttl_seconds = 1.0
     agent_a._compression_lock_refresh_interval = 0.25
-    compression_started = threading.Event()
-    release_compression = threading.Event()
 
     def _slow_compress(*_a, **_kw):
-        compression_started.set()
-        assert release_compression.wait(timeout=10)
+        assert release_compressor.wait(timeout=10.0)
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
@@ -588,16 +613,23 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
 
     t_a = threading.Thread(target=run, args=(agent_a,), name="refresh_owner")
     t_a.start()
-    try:
-        assert compression_started.wait(timeout=10), "compression never acquired its lock"
-        assert db.get_compression_lock_holder(parent_sid) is not None
-        time.sleep(3.5)
-        assert db.try_acquire_compression_lock(
-            parent_sid, "refresh_probe", ttl_seconds=3.0
-        ) is False, "live owner lease expired and was reclaimable before compression finished"
-    finally:
-        release_compression.set()
-        t_a.join(timeout=10)
+    assert lock_acquired.wait(timeout=10.0)
+    assert db.get_compression_lock_holder(parent_sid) is not None
+
+    # Move the database clock forward within the original lease, then wait
+    # for the background refresher to extend it from that new point.
+    lock_refreshed.clear()
+    clock.now += 0.5
+    assert lock_refreshed.wait(timeout=10.0)
+
+    # This instant is past the original one-second lease but still inside the
+    # refreshed lease. A competing owner must therefore remain locked out.
+    clock.now += 0.6
+    assert db.try_acquire_compression_lock(
+        parent_sid, "refresh_probe", ttl_seconds=1.0
+    ) is False, "live owner lease expired and was reclaimable before compression finished"
+    release_compressor.set()
+    t_a.join(timeout=10)
 
     assert not t_a.is_alive()
     assert _count_children(db, parent_sid) == 1

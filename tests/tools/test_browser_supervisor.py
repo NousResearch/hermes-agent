@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -26,8 +27,9 @@ import pytest
 
 
 pytestmark = pytest.mark.skipif(
-    not shutil.which("google-chrome") and not shutil.which("chromium"),
-    reason="Chrome/Chromium not installed",
+    os.environ.get("HERMES_E2E_BROWSER") != "1"
+    or (not shutil.which("google-chrome") and not shutil.which("chromium")),
+    reason="real Chrome supervisor tests require HERMES_E2E_BROWSER=1 and Chrome/Chromium",
 )
 
 

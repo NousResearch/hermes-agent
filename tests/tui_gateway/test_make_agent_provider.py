@@ -30,6 +30,10 @@ def test_make_agent_passes_resolved_provider():
 
     with (
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch(
+            "tui_gateway.server._resolve_startup_runtime",
+            return_value=("claude-opus-4-6", "anthropic"),
+        ),
         patch("tui_gateway.server._get_db", return_value=MagicMock()),
         patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
         patch("tui_gateway.server._load_reasoning_config", return_value=None),
@@ -46,12 +50,13 @@ def test_make_agent_passes_resolved_provider():
 
         _make_agent("sid-1", "key-1")
 
-        # target_model comes from _resolve_startup_runtime() which reads
-        # _load_cfg().  Due to module-level caching in tui_gateway.server,
-        # the patched config may not take effect when the module was already
-        # imported by an earlier test.  Assert the stable part of the call.
+        # Startup resolution is covered separately. Pin it here so import-time
+        # dotenv loading cannot replace this test's explicit provider/model.
         mock_resolve.assert_called_once()
-        assert mock_resolve.call_args.kwargs.get("requested") is None
+        assert mock_resolve.call_args.kwargs == {
+            "requested": "anthropic",
+            "target_model": "claude-opus-4-6",
+        }
 
         call_kwargs = mock_agent.call_args
         assert call_kwargs.kwargs["provider"] == "anthropic"

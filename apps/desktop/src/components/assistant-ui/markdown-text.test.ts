@@ -94,6 +94,43 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
+  it('escapes unknown html-like prose tokens before they reach the renderer', () => {
+    const output = preprocessMarkdown(
+      'The proxy uses <tool_call> and <observation> blocks. Keep the rest of the sentence visible.'
+    )
+
+    expect(output).toContain(
+      'The proxy uses &lt;tool_call&gt; and &lt;observation&gt; blocks. Keep the rest of the sentence visible.'
+    )
+    expect(output).not.toContain('<tool_call>')
+    expect(output).not.toContain('<observation>')
+  })
+
+  it('preserves known html tags and markdown autolinks', () => {
+    const output = preprocessMarkdown('Use <strong>bold</strong> and visit https://example.com/page.')
+
+    expect(output).toContain('<strong>bold</strong>')
+    expect(output).toContain('<https://example.com/page>')
+  })
+
+  it('does not escape html-like tokens inside code', () => {
+    const fence = '```'
+
+    const input = [
+      'Inline `return <tool_call>` stays code.',
+      '',
+      `${fence}xml`,
+      '<tool_call>',
+      fence
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('`return <tool_call>`')
+    expect(output).toContain('<tool_call>')
+    expect(output).toContain(`${fence}xml`)
+  })
+
   it('strips orphan numeric citation markers outside code spans', () => {
     const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
 

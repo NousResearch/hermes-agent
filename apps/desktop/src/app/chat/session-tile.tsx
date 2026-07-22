@@ -35,6 +35,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { createComposerAttachmentScope } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $activeGatewayProfile } from '@/store/profile'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
   $gatewayState,
@@ -112,6 +113,7 @@ function TileChat({
   const { gatewayRef, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
   const { selectModel } = useModelControls({ queryClient, requestGateway })
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
 
@@ -148,10 +150,11 @@ function TileChat({
         <ModelMenuPanel
           gateway={gatewayRef.current || undefined}
           onSelectModel={selectModel}
+          profile={activeGatewayProfile}
           requestGateway={requestGateway}
         />
       ) : null,
-    [gatewayOpen, gatewayRef, requestGateway, selectModel]
+    [activeGatewayProfile, gatewayOpen, gatewayRef, requestGateway, selectModel]
   )
 
   return (

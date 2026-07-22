@@ -14542,10 +14542,42 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5020, str(e))
 
 
+def _model_picker_context(agent):
+    """Layer live session state onto config without losing custom identity."""
+    from hermes_cli.inventory import load_picker_context
+
+    ctx = load_picker_context()
+    provider = getattr(agent, "provider", "") if agent else ""
+    base_url = getattr(agent, "base_url", "") if agent else ""
+    if str(provider or "").strip().lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            provider = (
+                canonical_custom_identity(
+                    base_url=base_url or None,
+                    config_provider=ctx.current_provider,
+                )
+                or provider
+            )
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (model picker)",
+                exc_info=True,
+            )
+
+    return ctx.with_overrides(
+        current_provider=provider,
+        current_model=(getattr(agent, "model", "") if agent else "")
+        or _resolve_model(),
+        current_base_url=base_url,
+    )
+
+
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import build_models_payload
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
@@ -14553,13 +14585,7 @@ def _(rid, params: dict) -> dict:
         # is spawned, IT owns the live provider/model/base_url. Empty
         # agent attributes must NOT clobber disk config (with_overrides
         # is truthy-only).
-        ctx = load_picker_context().with_overrides(
-            current_provider=getattr(agent, "provider", "") if agent else "",
-            current_model=(
-                (getattr(agent, "model", "") if agent else "") or _resolve_model()
-            ),
-            current_base_url=getattr(agent, "base_url", "") if agent else "",
-        )
+        ctx = _model_picker_context(agent)
         # picker_hints + canonical_order produce the TUI/desktop picker shape:
         # `authenticated`/`auth_type`/`key_env`/`warning` per row, in
         # CANONICAL_PROVIDERS declaration order. Desktop pickers default to the
@@ -14599,7 +14625,7 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         from hermes_cli.config import is_managed
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import build_models_payload
 
         slug = (params.get("slug") or "").strip()
         api_key = (params.get("api_key") or "").strip()
@@ -14640,13 +14666,7 @@ def _(rid, params: dict) -> dict:
         # carries `authenticated` for the TUI frontend.
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
-        ctx = load_picker_context().with_overrides(
-            current_provider=getattr(agent, "provider", "") if agent else "",
-            current_model=(
-                (getattr(agent, "model", "") if agent else "") or _resolve_model()
-            ),
-            current_base_url=getattr(agent, "base_url", "") if agent else "",
-        )
+        ctx = _model_picker_context(agent)
         payload = build_models_payload(
             ctx, picker_hints=True, max_models=50,
         )

@@ -44,6 +44,12 @@ interface ModelOptionsRequest {
   sessionId?: null | string
 }
 
+export function modelOptionsQueryKey(profile: null | string | undefined, sessionId?: null | string) {
+  const profileKey = (profile ?? '').trim() || 'default'
+
+  return ['model-options', profileKey, sessionId || 'global'] as const
+}
+
 export function requestModelOptions({
   explicitOnly = true,
   gateway,

@@ -503,15 +503,16 @@ class TestUserInstalledProviderDiscovery:
     directory, ignoring user-installed plugins.
     """
 
-    def _make_user_memory_plugin(self, tmp_path, name="myprovider"):
+    def _make_user_memory_plugin(self, tmp_path, name="myprovider", *, provider_name=None):
         """Create a minimal user memory provider plugin."""
         plugin_dir = tmp_path / "plugins" / name
         plugin_dir.mkdir(parents=True)
+        registered_name = provider_name or name
         (plugin_dir / "__init__.py").write_text(
             "from agent.memory_provider import MemoryProvider\n"
             "class MyProvider(MemoryProvider):\n"
             f"    @property\n"
-            f"    def name(self): return {name!r}\n"
+            f"    def name(self): return {registered_name!r}\n"
             "    def is_available(self): return True\n"
             "    def initialize(self, **kw): pass\n"
             "    def sync_turn(self, *a, **kw): pass\n"
@@ -549,33 +550,20 @@ class TestUserInstalledProviderDiscovery:
         assert p.name == "myexternal"
         assert p.is_available()
 
-    def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
-        """Bundled provider wins when user plugin has the same name."""
-        from plugins.memory import load_memory_provider, discover_memory_providers
-        # Create user plugin named "holographic" (same as bundled)
-        plugin_dir = tmp_path / "plugins" / "holographic"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
-            "class Fake(MemoryProvider):\n"
-            "    @property\n"
-            "    def name(self): return 'holographic-FAKE'\n"
-            "    def is_available(self): return True\n"
-            "    def initialize(self, **kw): pass\n"
-            "    def sync_turn(self, *a, **kw): pass\n"
-            "    def get_tool_schemas(self): return []\n"
-            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
+    def test_user_plugin_overrides_bundled_same_name(self, tmp_path, monkeypatch):
+        """A same-name user memory provider overrides the bundled provider."""
+        from plugins.memory import discover_memory_providers, load_memory_provider
+
+        self._make_user_memory_plugin(tmp_path, "holographic", provider_name="holographic-USER")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
         )
-        # Load should return bundled (name "holographic"), not user (name "holographic-FAKE")
+
         p = load_memory_provider("holographic")
         assert p is not None
-        assert p.name == "holographic"  # bundled wins
+        assert p.name == "holographic-USER"
 
-        # discover should not duplicate
         providers = discover_memory_providers()
         holo_count = sum(1 for n, _, _ in providers if n == "holographic")
         assert holo_count == 1

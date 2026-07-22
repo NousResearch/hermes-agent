@@ -1021,3 +1021,127 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+class TestSubscriptionIncludedCostOmission:
+    """Regression: subscription-included providers (e.g. openai-codex) must
+    NOT send explicit zero cost_details to Langfuse.  Langfuse treats provided
+    cost_details as authoritative and will not recalculate estimated cost from
+    model pricing when zeros are present (issue #43129)."""
+
+    # --- Path 1: _usage_and_cost (response-object path) -------------------
+
+    def test_usage_and_cost_skips_cost_details_for_subscription_included(self):
+        """_usage_and_cost must return empty cost_details for
+        subscription-included providers so Langfuse can estimate costs."""
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        class _FakeUsage:
+            input_tokens = 1000
+            output_tokens = 200
+            prompt_tokens = 1000
+            completion_tokens = 200
+
+        class _FakeResp:
+            usage = _FakeUsage()
+
+        # openai-codex → subscription_included
+        usage_details, cost_details = mod._usage_and_cost(
+            _FakeResp(), provider="openai-codex", api_mode="codex_responses",
+            model="gpt-5.4", base_url="",
+        )
+        assert usage_details["input"] > 0
+        assert usage_details["output"] > 0
+        # cost_details must be empty — no explicit zeros
+        assert cost_details == {}
+
+    def test_usage_and_cost_populates_cost_details_for_normal_provider(self):
+        """For normal providers (non-subscription), cost_details must still be
+        populated so Langfuse shows per-type cost breakdown."""
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        class _FakeUsage:
+            input_tokens = 1_000_000
+            output_tokens = 500_000
+            prompt_tokens = 1_000_000
+            completion_tokens = 500_000
+
+        class _FakeResp:
+            usage = _FakeUsage()
+
+        # openai → official_models_api
+        usage_details, cost_details = mod._usage_and_cost(
+            _FakeResp(), provider="openai", api_mode="chat_completions",
+            model="gpt-4o", base_url="",
+        )
+        assert usage_details["input"] == 1_000_000
+        assert cost_details  # non-empty
+
+    # --- Path 2: post_api_request dict path -------------------------------
+
+    def test_sanitized_dict_skips_cost_for_subscription_included(self, monkeypatch):
+        """The post_api_request dict path must also omit cost_details for
+        subscription-included providers."""
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-sub", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = observation
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-sub", "sess-sub"), state)
+        captured = {}
+
+        def fake_end(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            captured["usage_details"] = usage_details
+            captured["cost_details"] = cost_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_llm_call(
+            task_id="task-sub",
+            session_id="sess-sub",
+            api_call_count=1,
+            model="gpt-5.4",
+            provider="openai-codex",
+            response=None,
+            usage={"input_tokens": 5000, "output_tokens": 300, "reasoning_tokens": 50},
+            assistant_content_chars=100,
+        )
+
+        assert captured["usage_details"]["input"] == 5000
+        assert captured["usage_details"]["output"] == 300
+        # cost_details must be empty for subscription_included
+        assert captured["cost_details"] == {}
+
+    def test_sanitized_dict_populates_cost_for_normal_provider(self, monkeypatch):
+        """For normal providers, the dict path must still populate cost_details."""
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        observation = object()
+        state = mod.TraceState(trace_id="trace-norm", root_ctx=None, root_span=None)
+        state.generations[mod._request_key(1)] = observation
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-norm", "sess-norm"), state)
+        captured = {}
+
+        def fake_end(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            captured["usage_details"] = usage_details
+            captured["cost_details"] = cost_details
+
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+
+        mod.on_post_llm_call(
+            task_id="task-norm",
+            session_id="sess-norm",
+            api_call_count=1,
+            model="gpt-4o",
+            provider="openai",
+            response=None,
+            usage={"input_tokens": 1_000_000, "output_tokens": 500_000},
+            assistant_content_chars=200,
+        )
+
+        assert captured["usage_details"]["input"] == 1_000_000
+        assert captured["cost_details"]  # non-empty

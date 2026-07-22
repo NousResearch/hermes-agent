@@ -573,9 +573,14 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
             base_url=base_url,
             api_key="",
         )
-        if cost.amount_usd is not None:
+        if cost.amount_usd is not None and cost.status != "included":
             # Langfuse cost_details keys must match usage_details keys.
             # Provide per-type breakdown so dashboard can show cost by type.
+            # Skip for subscription-included routes (e.g. openai-codex):
+            # Langfuse treats provided cost_details as authoritative and will
+            # not recalculate estimated cost from model pricing when zeros are
+            # sent.  Omitting cost_details lets Langfuse fall back to its own
+            # model-based cost estimation.
             try:
                 from agent.usage_pricing import get_pricing_entry
                 from decimal import Decimal
@@ -988,9 +993,14 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         if _reasoning:
             usage_details["reasoning_tokens"] = _reasoning
         cost_details = {}
-        # Estimate per-type cost from the summary if possible
+        # Estimate per-type cost from the summary if possible.
+        # Skip for subscription-included routes (e.g. openai-codex):
+        # get_pricing_entry returns a PricingEntry with zero costs for these
+        # routes, and Langfuse treats provided cost_details as authoritative —
+        # sending explicit zeros prevents Langfuse from calculating estimated
+        # cost from model pricing.
         try:
-            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry
+            from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, get_pricing_entry, resolve_billing_route
             from decimal import Decimal
             _ONE_M = Decimal("1000000")
             _cu = CanonicalUsage(
@@ -1000,20 +1010,22 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                 cache_write_tokens=_cache_write,
                 reasoning_tokens=_reasoning,
             )
-            entry = get_pricing_entry(model, provider=provider, base_url=base_url)
-            if entry:
-                if entry.input_cost_per_million is not None and _input:
-                    cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
-                if entry.output_cost_per_million is not None and _output:
-                    cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
-                if entry.cache_read_cost_per_million is not None and _cache_read:
-                    cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
-                if entry.cache_write_cost_per_million is not None and _cache_write:
-                    cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
-            else:
-                _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
-                if _cost.amount_usd is not None:
-                    cost_details["total"] = float(_cost.amount_usd)
+            _route = resolve_billing_route(model, provider=provider, base_url=base_url)
+            if _route.billing_mode != "subscription_included":
+                entry = get_pricing_entry(model, provider=provider, base_url=base_url)
+                if entry:
+                    if entry.input_cost_per_million is not None and _input:
+                        cost_details["input"] = float(Decimal(_input) * entry.input_cost_per_million / _ONE_M)
+                    if entry.output_cost_per_million is not None and _output:
+                        cost_details["output"] = float(Decimal(_output) * entry.output_cost_per_million / _ONE_M)
+                    if entry.cache_read_cost_per_million is not None and _cache_read:
+                        cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
+                    if entry.cache_write_cost_per_million is not None and _cache_write:
+                        cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
+                else:
+                    _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
+                    if _cost.amount_usd is not None:
+                        cost_details["total"] = float(_cost.amount_usd)
         except Exception:
             pass
     else:

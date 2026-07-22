@@ -35,6 +35,8 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _get_child_toolsets,
+    delegation_isolation_state,
 )
 
 
@@ -3255,6 +3257,126 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestChildToolsetsConfig(unittest.TestCase):
+    """delegation.child_toolsets — operator-configured server-side narrowing."""
+
+    def test_unset_config_means_no_narrowing(self):
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            self.assertIsNone(_get_child_toolsets())
+
+    def test_configured_list_is_cleaned(self):
+        cfg = {"child_toolsets": ["file", " web ", "", 42]}
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            self.assertEqual(_get_child_toolsets(), ["file", "web", "42"])
+
+    def test_non_list_and_empty_values_mean_no_narrowing(self):
+        for raw in ("file", {"a": 1}, [], ["  ", ""], None, True):
+            with patch(
+                "tools.delegate_tool._load_config",
+                return_value={"child_toolsets": raw},
+            ):
+                self.assertIsNone(_get_child_toolsets(), raw)
+
+    def test_configured_toolsets_reach_child_narrowing(self):
+        """The config value must flow into _build_child_agent's intersection
+        path: a child of a parent with file+web+terminal, narrowed to ["file"],
+        must not keep web or terminal."""
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["file", "web", "terminal"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            with patch(
+                "tools.delegate_tool._load_config",
+                return_value={"child_toolsets": ["file"]},
+            ):
+                _build_child_agent(
+                    task_index=0,
+                    goal="Narrowed child",
+                    context=None,
+                    toolsets=_get_child_toolsets(),
+                    model=None,
+                    max_iterations=10,
+                    parent_agent=parent,
+                    task_count=1,
+                )
+
+        _, kwargs = MockAgent.call_args
+        child_toolsets = kwargs["enabled_toolsets"]
+        self.assertIn("file", child_toolsets)
+        self.assertNotIn("web", child_toolsets)
+        self.assertNotIn("terminal", child_toolsets)
+
+
+class TestDelegationIsolationState(unittest.TestCase):
+    """Capability advertisement must track live config, never over-claim."""
+
+    def test_no_narrowing_means_no_isolation_claims(self):
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": False,
+                    "delegation_mcp_isolation": False,
+                },
+            )
+
+    def test_narrowing_with_default_mcp_inheritance(self):
+        cfg = {"child_toolsets": ["file"]}
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": True,
+                    "delegation_mcp_isolation": False,
+                },
+            )
+
+    def test_narrowing_with_strict_mcp_intersection(self):
+        cfg = {"child_toolsets": ["file"], "inherit_mcp_toolsets": False}
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": True,
+                    "delegation_mcp_isolation": True,
+                },
+            )
+
+    def test_explicit_mcp_selection_does_not_claim_mcp_isolation(self):
+        """An MCP toolset named directly in child_toolsets survives the
+        intersection in _build_child_agent, so the child keeps it even with
+        inherit_mcp_toolsets: false. delegation_mcp_isolation must stay False
+        rather than over-claim — for both the mcp- prefix and registered
+        aliases that resolve to an mcp- toolset. safe_delegation_isolation stays
+        True: narrowing is still in effect."""
+        # (1) canonical mcp- prefix
+        cfg = {"child_toolsets": ["file", "mcp-github"], "inherit_mcp_toolsets": False}
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": True,
+                    "delegation_mcp_isolation": False,
+                },
+            )
+        # (2) alias resolving to an mcp- toolset
+        cfg = {"child_toolsets": ["file", "gh"], "inherit_mcp_toolsets": False}
+        with patch(
+            "tools.delegate_tool._load_config", return_value=cfg
+        ), patch(
+            "tools.registry.registry.get_toolset_alias_target",
+            side_effect=lambda n: "mcp-github" if n == "gh" else None,
+        ):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": True,
+                    "delegation_mcp_isolation": False,
+                },
+            )
 
 
 if __name__ == "__main__":

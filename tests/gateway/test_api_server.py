@@ -1042,10 +1042,32 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            # Isolation flags default to False: no delegation.child_toolsets
+            # configured means children inherit the parent's full toolsets,
+            # and the advertisement must not over-claim safety.
+            assert data["features"]["safe_delegation_isolation"] is False
+            assert data["features"]["delegation_mcp_isolation"] is False
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_live_delegation_isolation(self, adapter):
+        """The flags must track live delegation config: narrowing configured
+        (child_toolsets) flips safe_delegation_isolation, and disabling MCP
+        inheritance additionally flips delegation_mcp_isolation."""
+        from unittest.mock import patch
+
+        app = _create_app(adapter)
+        cfg = {"child_toolsets": ["file"], "inherit_mcp_toolsets": False}
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/capabilities")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["features"]["safe_delegation_isolation"] is True
+                assert data["features"]["delegation_mcp_isolation"] is True
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

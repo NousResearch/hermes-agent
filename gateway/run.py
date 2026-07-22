@@ -19408,6 +19408,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event_type not in {"tool.started",}:
                 return
 
+            # Some tools deliver their own complete prompt to the chat via a
+            # dedicated adapter callback (clarify → send_clarify).  Their
+            # generic tool-progress bubble ("❓ Asking …") is a verbatim
+            # duplicate of that prompt, so skip it here. (#69175)
+            from agent.display import tool_renders_own_progress
+            if tool_renders_own_progress(tool_name):
+                return
+
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
             # fires N "tool.started" events back-to-back before checking for

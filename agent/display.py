@@ -645,6 +645,21 @@ def verb_drops_preview(tool_name: str) -> bool:
     return tool_name in _TOOL_VERBS_NO_PREVIEW
 
 
+# Tools that deliver their own complete, purpose-built prompt to the chat via a
+# dedicated adapter callback, rather than relying on a generic tool-progress
+# bubble.  ``clarify`` sends its full question (and any choices) through the
+# adapter's ``send_clarify`` callback (see gateway/run.py
+# ``_clarify_callback_sync``); the extra "❓ Asking …" tool-progress bubble was a
+# verbatim duplicate of that prompt (#69175).
+_TOOL_SELF_RENDERED_PROGRESS: frozenset[str] = frozenset({"clarify"})
+
+
+def tool_renders_own_progress(tool_name: str) -> bool:
+    """Whether the tool emits its own chat message and should therefore skip the
+    generic tool-progress bubble (which would just duplicate it)."""
+    return tool_name in _TOOL_SELF_RENDERED_PROGRESS
+
+
 def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
     """Build a short present-tense status phrase for platform status surfaces.
 

@@ -10,8 +10,10 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    get_tool_verb,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
+    tool_renders_own_progress,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -551,3 +553,21 @@ class TestBuildStatusPhrase:
         from agent.display import build_status_phrase
         phrase = build_status_phrase("skills_list", {"category": "devops"})
         assert phrase == "is listing skills…"
+
+
+class TestToolRendersOwnProgress:
+    """`clarify` sends its own full prompt via send_clarify, so its generic
+    tool-progress bubble must be suppressed to avoid a duplicate message
+    (#69175)."""
+
+    def test_clarify_renders_own_progress(self):
+        assert tool_renders_own_progress("clarify") is True
+
+    def test_regular_tools_do_not_render_own_progress(self):
+        for name in ("terminal", "read_file", "web_search", "delegate_task", "memory"):
+            assert tool_renders_own_progress(name) is False
+
+    def test_clarify_verb_still_defined(self):
+        # Suppression happens at the progress-bubble layer only; the verb
+        # mapping (used by the ephemeral status line) is intentionally intact.
+        assert get_tool_verb("clarify") == "Asking"

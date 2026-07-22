@@ -1195,6 +1195,48 @@ class TestLaunchdServiceRecovery:
         # Marker is still written so status knows launchd is unavailable
         assert gateway_cli._launchd_unsupported_marker_exists()
 
+    def test_spawn_detached_gateway_closes_first_fd_on_second_open_failure(self, monkeypatch, tmp_path):
+        """When the second open() (error log) fails, the first fd (stdout log)
+        must be closed before re-raising the OSError."""
+        from hermes_cli import gateway as gateway_cli
+
+        call_order = []
+        first_handle = None
+
+        class FakeFile:
+            def __init__(self, *args, **kwargs):
+                self._closed = False
+
+            def close(self):
+                self._closed = True
+
+        def fake_open(path, mode="r"):
+            call_order.append(path)
+            if "gateway.log" in str(path):
+                nonlocal first_handle
+                first_handle = FakeFile(path, mode)
+                return first_handle
+            raise OSError("fake open error")
+
+        import builtins
+        real_open = builtins.open
+        orig_open = builtins.open
+
+        def tracked_open(path, mode="r", *args, **kwargs):
+            if "gateway" in str(path) and str(path).endswith((".log", ".error.log")):
+                return fake_open(path, mode)
+            return orig_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", tracked_open)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", lambda *a, **k: None)
+        monkeypatch.setattr(gateway_cli, "_gateway_run_command", lambda: ["hermes", "gateway", "run"])
+
+        result = gateway_cli._spawn_detached_gateway()
+        assert result is False
+        assert first_handle is not None
+        assert first_handle._closed, "First handle must be closed when second open fails"
+
     # ── PID parsing ──────────────────────────────────────────────────────
 
     def test_parse_launchd_pid_from_list_output_with_pid(self):

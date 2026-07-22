@@ -22994,11 +22994,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
 
-    if runner.should_exit_with_failure:
-        if runner.exit_reason:
-            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-        return False
-    
     # Stop cron scheduler + housekeeping cleanly.
     #
     # These MUST be awaited cooperatively, not join()ed. A cron delivery in
@@ -23032,6 +23027,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         shutdown_mcp_servers()
     except Exception:
         pass
+
+    # Failure-path cleanup check. Placed AFTER cron/housekeeping/MCP cleanup so
+    # the cooperative shutdown runs even when the runner reports failure —
+    # returning early here would leak the cron and housekeeping daemon threads
+    # (and any in-flight MCP connections) until process exit. See #12175.
+    if runner.should_exit_with_failure:
+        if runner.exit_reason:
+            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+        return False
 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)

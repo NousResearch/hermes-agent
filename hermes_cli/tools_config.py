@@ -374,6 +374,14 @@ TOOL_CATEGORIES = {
                 "post_setup": "piper",
             },
             {
+                "name": "SuperTonic 3",
+                "badge": "local · free",
+                "tag": "Local neural TTS, 31 languages, expression tags (~200MB)",
+                "env_vars": [],
+                "tts_provider": "supertonic",
+                "post_setup": "supertonic",
+            },
+            {
                 "name": "DeepInfra TTS",
                 "badge": "paid",
                 "tag": "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com",
@@ -1415,6 +1423,28 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
         _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
+
+    elif post_setup_key == "supertonic":
+        try:
+            __import__("supertonic")
+            _print_success("    supertonic is already installed")
+        except ImportError:
+            _print_info("    Installing supertonic (~200MB model downloaded on first use)...")
+            try:
+                result = _pip_install(["-U", "supertonic", "--quiet"], timeout=300)
+                if result.returncode == 0:
+                    _print_success("    supertonic installed")
+                else:
+                    _print_warning("    supertonic install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info("    Run manually: uv pip install -U supertonic")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    supertonic install timed out (>5min)")
+                _print_info("    Run manually: uv pip install -U supertonic")
+                return
+        _print_info("    Default voice: M1 (male). Voices: M1-M5, F1-F5")
+        _print_info("    31 languages. Set tts.supertonic.voice / .lang in ~/.hermes/config.yaml")
 
     elif post_setup_key == "ddgs":
         try:

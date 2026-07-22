@@ -544,6 +544,15 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "supertonic":
+        try:
+            supertonic_ok = importlib.util.find_spec("supertonic") is not None
+        except Exception:
+            supertonic_ok = False
+        if supertonic_ok:
+            tool_status.append(("Text-to-Speech (SuperTonic 3 local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (SuperTonic 3 — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -948,6 +957,7 @@ def _setup_tts_provider(config: dict):
         "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
+        "supertonic": "SuperTonic 3",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -972,9 +982,10 @@ def _setup_tts_provider(config: dict):
             "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
+            "SuperTonic 3 (local on-device, free, 31 languages, ~200MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "supertonic"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1158,6 +1169,38 @@ def _setup_tts_provider(config: dict):
                     selected = "edge"
             else:
                 print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
+                selected = "edge"
+
+    elif selected == "supertonic":
+        # Check if already installed
+        try:
+            already_installed = importlib.util.find_spec("supertonic") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("SuperTonic 3 is already installed")
+        else:
+            print()
+            print_info("SuperTonic 3 is a local neural TTS engine (99M params, CPU-only).")
+            print_info("31 languages, 44.1kHz output, expression tags. ~200MB model download on first use.")
+            print_info("Voices: M1-M5 (male), F1-F5 (female)")
+            print()
+            if prompt_yes_no("Install SuperTonic 3 now?", True):
+                print_info("Installing supertonic Python package...")
+                try:
+                    result = _pip_install(["supertonic", "--quiet"], timeout=300)
+                    if result:
+                        print_success("supertonic installed successfully")
+                    else:
+                        print_warning("SuperTonic installation incomplete. Falling back to Edge TTS.")
+                        selected = "edge"
+                except Exception as e:
+                    print_error(f"Failed to install supertonic: {e}")
+                    print_info("Try manually: pip install supertonic")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'supertonic' after installing manually.")
                 selected = "edge"
 
     # Save the selection

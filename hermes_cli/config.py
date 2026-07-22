@@ -2207,7 +2207,7 @@ DEFAULT_CONFIG = {
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local) | "supertonic" (local)
         "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
@@ -2276,6 +2276,14 @@ DEFAULT_CONFIG = {
             # "noise_w_scale": 0.8,
             # "volume": 1.0,
             # "normalize_audio": True,
+        },
+        "supertonic": {
+            # SuperTonic 3 by Supertone — local CPU-only neural TTS (99M params).
+            # 31 languages, 44.1kHz output, expression tags (<laugh>, <breath>, <sigh>).
+            # Voices: M1-M5 (male), F1-F5 (female). M1 = default male, F1 = default female.
+            "voice": "M1",
+            "lang": "en",          # BCP-47-ish code; "na" for language-agnostic
+            "steps": 5,            # 5 = natural quality (4.2x RT), 2 = fast (8.3x RT, robotic)
         },
         "deepinfra": {
             "model": "",  # empty = first tts-tagged model from the live catalog

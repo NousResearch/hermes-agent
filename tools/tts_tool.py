@@ -966,9 +966,17 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
         pct = round((speed - 1.0) * 100)
         kwargs["rate"] = f"{pct:+d}%"
 
+    wants_opus = output_path.endswith(".ogg")
+    synthesis_path = output_path
+    if wants_opus:
+        synthesis_path = output_path.rsplit(".", 1)[0] + ".mp3"
+
     communicate = _edge_tts.Communicate(text, **kwargs)
-    await communicate.save(output_path)
-    return output_path
+    await communicate.save(synthesis_path)
+    if wants_opus:
+        opus_path = _convert_to_opus(synthesis_path)
+        return opus_path or synthesis_path
+    return synthesis_path
 
 
 # ===========================================================================
@@ -2509,11 +2517,11 @@ def text_to_speech_tool(
                 try:
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        pool.submit(
+                        file_str = pool.submit(
                             lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))
                         ).result(timeout=60)
                 except RuntimeError:
-                    asyncio.run(_generate_edge_tts(text, file_str, tts_config))
+                    file_str = asyncio.run(_generate_edge_tts(text, file_str, tts_config))
             elif _check_neutts_available():
                 logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
                 provider = "neutts"
@@ -2568,6 +2576,8 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
+        elif provider == "edge" and file_str.endswith(".ogg"):
+            voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 

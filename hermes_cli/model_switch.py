@@ -1838,7 +1838,7 @@ def list_authenticated_providers(
             live = fetch_lmstudio_models(
                 api_key=os.environ.get("LM_API_KEY", ""),
                 base_url=lm_base,
-                timeout=1.5, # Smaller timeout for picker
+                timeout=11.5, # Increased from 1.5s to reduce premature picker failures
             )
         except AuthError:
             live = []

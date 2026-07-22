@@ -2878,6 +2878,19 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+            try:
+                if self._app and getattr(self._app, "bot", None):
+                    try:
+                        await self._app.bot.delete_webhook(drop_pending_updates=True)
+                    except Exception:
+                        pass
+                    try:
+                        await self._app.bot.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             await asyncio.sleep(RETRY_DELAY)
             if getattr(self, "_polling_teardown_started", False):
                 return

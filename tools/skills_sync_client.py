@@ -30,11 +30,17 @@ remove it (or replace it with a real ``sync:*`` scope / config toggle) when
 sync ships to all users.
 
 --- OPT-IN DEFAULT (M1-D, provisional) -----------------------------------
-Nothing syncs unless the user marks a skill for sync via a ``sync`` flag on
-the skill's usage sidecar (alongside ``pinned``/``created_by`` in
-``.usage.json``). Only agent-created + user-authored skills under
-``~/.hermes/skills/`` are eligible; bundled and hub-installed skills are
-excluded.
+Nothing syncs unless the user marks a skill for sync. The user's local intent
+is toggled via ``hermes sync enable/disable`` (a ``sync`` flag on the skill's
+``.usage.json`` sidecar, alongside ``pinned``/``created_by``), but the DURABLE,
+CROSS-DEVICE opt-in state is a committed ``sync-manifest`` object in the sync
+plane (design.md §2.8): a root-level blob in the tree at
+``refs/user/<owner>/HEAD`` recording per-skill ``{name, enabled}``. Push writes
+the manifest from local intent; pull reconciles local intent FROM it, so a skill
+opted in on one device becomes opted in on the others. The plane manifest is
+authoritative; the local flag is just the editable intent. Only agent-created +
+user-authored skills under ``~/.hermes/skills/`` are eligible; bundled and
+hub-installed skills are excluded.
 """
 
 from __future__ import annotations
@@ -66,6 +72,87 @@ MODE_EXEC = "exec"
 MODE_DIR = "dir"
 
 ARTIFACT_TYPE_SKILL = "skill"
+
+# ---------------------------------------------------------------------------
+# `sync-manifest` object convention (design.md §2.8).
+#
+# Per-skill sync opt-in ("this skill syncs / this one does not" — the M1-D
+# opt-in state) is CONTENT inside the HSP object model, NOT a device-local flag
+# or a mutable preference table. An owner's synced set is a small committed blob
+# named ``sync-manifest`` at the ROOT of the tree referenced by
+# ``refs/user/<owner>/HEAD``, recording per-skill ``{name, enabled}``. Toggling
+# opt-in is a plain CAS ref update (upload the new manifest blob + root tree +
+# commit, then CAS HEAD) — the same primitives push already uses.
+#
+# This makes opt-in durable and CROSS-DEVICE: device B learns which skills the
+# user opted in on device A by reading the manifest on pull, rather than each
+# device keeping its own local flag. The ``.usage.json`` ``sync`` flag is kept
+# only as the local *intent* the user toggles via ``hermes sync enable`` — it is
+# reconciled TO the manifest on pull and FROM it on push; the manifest in the
+# plane is authoritative.
+#
+# MUST match gateway-gateway ``src/sync/manifest.ts`` byte-for-byte (the server
+# reads + validates this exact shape). Entry name, ``type`` marker, ``version``,
+# and the ``{name, enabled}`` skill shape are the shared contract.
+# ---------------------------------------------------------------------------
+
+SYNC_MANIFEST_ENTRY_NAME = "sync-manifest"
+SYNC_MANIFEST_TYPE = "sync-manifest"
+SYNC_MANIFEST_VERSION = 1
+
+
+def build_sync_manifest_bytes(skills: Dict[str, bool]) -> bytes:
+    """Serialize the per-skill opt-in map into canonical ``sync-manifest`` bytes.
+
+    ``skills`` maps skill name -> enabled. Emits the shape gateway-gateway's
+    ``parseSyncManifest`` validates: ``{type, version:1, skills:[{name,enabled}]}``.
+    Skill entries are sorted by name for a stable content address.
+    """
+    manifest = {
+        "type": SYNC_MANIFEST_TYPE,
+        "version": SYNC_MANIFEST_VERSION,
+        "skills": [
+            {"name": name, "enabled": bool(enabled)}
+            for name, enabled in sorted(skills.items())
+        ],
+    }
+    return canonical_json_bytes(manifest)
+
+
+def parse_sync_manifest(data: bytes) -> Optional[Dict[str, bool]]:
+    """Parse ``sync-manifest`` bytes into ``{name: enabled}``, or ``None`` if the
+    bytes are not a well-formed manifest.
+
+    Strict (mirrors gateway-gateway ``parseSyncManifest``): an unknown ``type``,
+    a missing/!=1 ``version``, a non-array ``skills``, or a malformed skill entry
+    all reject rather than being coerced — a malformed manifest must not be
+    mistaken for "no skills opted in."
+    """
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(value, dict):
+        return None
+    if value.get("type") != SYNC_MANIFEST_TYPE:
+        return None
+    if value.get("version") != SYNC_MANIFEST_VERSION:
+        return None
+    raw_skills = value.get("skills")
+    if not isinstance(raw_skills, list):
+        return None
+    out: Dict[str, bool] = {}
+    for raw in raw_skills:
+        if not isinstance(raw, dict):
+            return None
+        name = raw.get("name")
+        enabled = raw.get("enabled")
+        if not isinstance(name, str) or not name:
+            return None
+        if not isinstance(enabled, bool):
+            return None
+        out[name] = enabled
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +761,12 @@ def snapshot_profile(
     The root tree nests category directories: a skill at ``devops/foo`` yields
     a root entry ``devops`` (tree) containing ``foo`` (tree). Flat skills yield
     a direct root entry.
+
+    The root tree also carries a ``sync-manifest`` BLOB (design.md §2.8)
+    recording the per-skill opt-in state, so opt-in is durable + cross-device
+    rather than a device-local ``.usage.json`` flag. Every skill in
+    ``skill_names`` is recorded ``enabled: true`` (they ARE the opted-in set);
+    the manifest is the authoritative record the plane + other devices read.
     """
     from tools.skill_usage import _find_skill_dir
 
@@ -700,12 +793,28 @@ def snapshot_profile(
             node = node.setdefault(part, {})
         node[parts[-1]] = {"__tree__": tree_hash}
 
-    root_hash = _build_root_tree(root, objects)
+    # §2.8 sync-manifest: record the opt-in state (the pushed set = enabled).
+    # Only skills that actually made it into the tree are recorded, keyed by the
+    # skill NAME (matching gateway-gateway's manifest shape + the read walk that
+    # enumerates skill subtrees by name).
+    manifest_map = {name: True for name in skill_tree_map}
+    manifest_hash = objects.add(
+        KIND_BLOB, build_sync_manifest_bytes(manifest_map)
+    )
+
+    root_hash = _build_root_tree(root, objects, manifest_hash=manifest_hash)
     return objects, root_hash, skill_tree_map
 
 
-def _build_root_tree(node: Dict[str, Any], objects: ObjectSet) -> str:
-    """Recursively canonicalize the nested root structure into HSP trees."""
+def _build_root_tree(
+    node: Dict[str, Any], objects: ObjectSet, *, manifest_hash: Optional[str] = None
+) -> str:
+    """Recursively canonicalize the nested root structure into HSP trees.
+
+    ``manifest_hash`` (only passed at the top level) adds a root-level
+    ``sync-manifest`` BLOB entry (design.md §2.8) alongside the skill subtrees.
+    It cannot collide with a skill dir (skill entries are trees; this is a blob).
+    """
     entries: List[Dict[str, str]] = []
     for name, child in node.items():
         if isinstance(child, dict) and "__tree__" in child and len(child) == 1:
@@ -717,6 +826,15 @@ def _build_root_tree(node: Dict[str, Any], objects: ObjectSet) -> str:
             entries.append(
                 {"name": name, "kind": KIND_TREE, "hash": sub_hash, "mode": MODE_DIR}
             )
+    if manifest_hash is not None:
+        entries.append(
+            {
+                "name": SYNC_MANIFEST_ENTRY_NAME,
+                "kind": KIND_BLOB,
+                "hash": manifest_hash,
+                "mode": MODE_FILE,
+            }
+        )
     entries.sort(key=lambda e: e["name"])
     tree_obj = {"type": KIND_TREE, "entries": entries}
     return objects.add(KIND_TREE, canonical_json_bytes(tree_obj))
@@ -764,6 +882,33 @@ def _skill_trees_of_root(client: "HSPClient", root_tree_hash: str) -> Dict[str, 
 
     _walk(root_tree_hash, "")
     return result
+
+
+def read_manifest_of_root(
+    client: "HSPClient", root_tree_hash: str
+) -> Optional[Dict[str, bool]]:
+    """Read the ``sync-manifest`` blob at the root of *root_tree_hash* into
+    ``{name: enabled}`` (design.md §2.8), or ``None`` if there is no manifest
+    entry / it is malformed.
+
+    The manifest is a root-level BLOB entry named ``sync-manifest`` (never a
+    skill subtree). This is how a device learns the cross-device opt-in state
+    written by another device's push.
+    """
+    try:
+        tree = client.get_tree_json(root_tree_hash)
+    except Exception as e:
+        logger.debug("skills_sync_client: manifest root read failed: %s", e)
+        return None
+    for e in tree.get("entries", []):
+        if e.get("name") == SYNC_MANIFEST_ENTRY_NAME and e.get("kind") == KIND_BLOB:
+            try:
+                _kind, data = client.get_object(e["hash"])
+            except Exception as ex:
+                logger.debug("skills_sync_client: manifest blob fetch failed: %s", ex)
+                return None
+            return parse_sync_manifest(data)
+    return None
 
 
 def _check_version(caps: Dict[str, Any]) -> None:
@@ -1056,10 +1201,34 @@ def pull_skills(
     root_tree = _root_tree_of_commit(client, head)
     remote_trees = _skill_trees_of_root(client, root_tree)
 
+    # §2.8: reconcile local opt-in intent FROM the plane manifest, so a skill the
+    # user opted in on another device becomes opted in here too (opt-in is
+    # cross-device content, not a device-local flag). We only ADOPT enables from
+    # the manifest for skills present in the remote tree; we never silently
+    # disable a locally-enabled skill on pull (that stays the user's local call
+    # until their next push reconciles it).
+    reconciled_from_manifest: List[str] = []
+    remote_manifest = read_manifest_of_root(client, root_tree)
+    if remote_manifest:
+        try:
+            from tools.skill_usage import set_sync, is_curation_eligible, is_sync_enabled
+
+            for sname, enabled in remote_manifest.items():
+                if not enabled:
+                    continue
+                if not is_curation_eligible(sname):
+                    continue
+                if not is_sync_enabled(sname):
+                    set_sync(sname, True)
+                    reconciled_from_manifest.append(sname)
+        except Exception as e:
+            logger.debug("skills_sync_client: manifest opt-in reconcile failed: %s", e)
+
     opted_in = set(_opted_in_rel_paths())
     updated = []
     for path, tree_hash in remote_trees.items():
-        # Opt-in gate on pull: only materialize skills the user chose to sync.
+        # Opt-in gate on pull: only materialize skills the user chose to sync
+        # (now including any adopted from the plane manifest above).
         if opted_in and path not in opted_in:
             continue
         dest = _skills_dir() / path
@@ -1068,7 +1237,12 @@ def pull_skills(
 
     manifest["head"] = head
     write_sync_manifest(manifest)
-    return {"ok": True, "head": head, "updated": sorted(updated)}
+    return {
+        "ok": True,
+        "head": head,
+        "updated": sorted(updated),
+        "opt_in_adopted": sorted(reconciled_from_manifest),
+    }
 
 
 def _opted_in_rel_paths() -> List[str]:

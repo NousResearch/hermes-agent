@@ -1268,6 +1268,8 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
+    _reassert_context_hermes_home = True
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)

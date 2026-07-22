@@ -64,6 +64,7 @@ class TestWrapCommand:
         wrapped = env._wrap_command("echo hello", "/tmp")
 
         assert "source" in wrapped
+        assert "export HERMES_HOME=" not in wrapped
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped

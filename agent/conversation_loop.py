@@ -4275,8 +4275,12 @@ def run_conversation(
                             final_response=_policy_response,
                             error_detail=_nonretryable_summary,
                         )
+                    _api_context = (
+                        f"(provider: {_provider}, model: {_model}, "
+                        f"endpoint: {_base})"
+                    )
                     return {
-                        "final_response": _nonretryable_summary,
+                        "final_response": f"{_nonretryable_summary}\n{_api_context}",
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
@@ -4440,7 +4444,11 @@ def run_conversation(
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"
                     else:
-                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                        _final_response = (
+                            f"API call failed after {max_retries} retries: {_final_summary}\n"
+                            f"(provider: {_provider}, model: {_model}, "
+                            f"endpoint: {_base})"
+                        )
                     if _is_thinking_timeout:
                         # Thinking-timeout guidance overrides the generic
                         # stream-drop guidance — the latter is wrong for

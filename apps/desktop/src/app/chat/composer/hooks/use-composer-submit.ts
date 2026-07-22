@@ -200,5 +200,14 @@ export function useComposerSubmit({
     })
   }
 
-  return { dispatchSubmit, steerDraft, submitDraft }
+  const queueDraft = () => {
+    if (disabled || !busy) {
+      return
+    }
+
+    queueCurrentDraft()
+    focusInput()
+  }
+
+  return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
 }

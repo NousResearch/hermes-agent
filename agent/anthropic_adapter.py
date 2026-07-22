@@ -2412,9 +2412,21 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
                 ]
 
 
-def _ensure_leading_user_turn(result: List[Dict[str, Any]], system: Any) -> None:
-    """Anthropic requires messages[0] to be user when system is extracted."""
-    if system is not None and result and result[0].get("role") != "user":
+def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
+    """Anthropic requires messages[0] to have role=user.
+
+    After a second context compaction on the auto path the summary can be
+    emitted as role=assistant with nothing in front of it (the system prompt
+    lives outside messages[] or is extracted into the separate ``system``
+    param), so messages[0] ends up assistant and the Messages API rejects
+    the request with HTTP 400 — often masked by a misleading
+    "tool_use ids were found without tool_result blocks" error (#52160).
+
+    Mirror the Bedrock Converse adapter, which unconditionally prepends a
+    minimal user turn when the first message is not user
+    (convert_messages_to_converse).
+    """
+    if result and result[0].get("role") != "user":
         result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
 
 
@@ -2476,7 +2488,7 @@ def convert_messages_to_anthropic(
 
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
-    _ensure_leading_user_turn(result, system)
+    _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
 

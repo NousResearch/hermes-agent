@@ -35,6 +35,7 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const ELECTRON_DIR = path.join(REPO_ROOT, 'apps', 'desktop', 'electron')
 const MAIN_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.plist')
 const INHERIT_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.inherit.plist')
+const DESKTOP_PACKAGE_JSON = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 
 const DEVICE_PREFIX = 'com.apple.security.device.'
 
@@ -89,3 +90,20 @@ for (const plist of [MAIN_PLIST, INHERIT_PLIST]) {
     )
   })
 }
+
+test('packaged macOS builds declare Reminders privacy usage strings', () => {
+  const pkg = JSON.parse(fs.readFileSync(DESKTOP_PACKAGE_JSON, 'utf-8'))
+  const extendInfo = pkg?.build?.mac?.extendInfo ?? {}
+  const missing = [
+    'NSRemindersFullAccessUsageDescription',
+    'NSRemindersUsageDescription',
+  ].filter((key) => typeof extendInfo[key] !== 'string' || !extendInfo[key].trim())
+
+  assert.deepEqual(
+    missing,
+    [],
+    'apps/desktop/package.json build.mac.extendInfo must set non-empty ' +
+      `${JSON.stringify(missing)}; without a Reminders usage string macOS TCC ` +
+      'denies the child MCP server Apple Reminders access with no permission prompt.'
+  )
+})

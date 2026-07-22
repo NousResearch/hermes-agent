@@ -212,7 +212,9 @@
         "CFBundleExecutable": "Hermes",
         "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
+        "NSRemindersFullAccessUsageDescription": "Hermes uses Reminders access when you ask it to read or manage Apple Reminders.",
+        "NSRemindersUsageDescription": "Hermes uses Reminders access when you ask it to read or manage Apple Reminders."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,

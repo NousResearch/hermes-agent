@@ -97,6 +97,25 @@ fallback_providers:
     key_env: MY_LOCAL_KEY            # env var name containing the API key
 ```
 
+### Endpoints That Cannot Stream
+
+Some OpenAI-compatible endpoints expose `/chat/completions` but do not serve
+usable SSE: they answer `stream=True` with a 200 that carries no deltas.
+Hermes detects this and retries without streaming, but that costs a wasted
+round-trip on every activation. Set `disable_streaming` on the entry to send
+plain completion requests from the start:
+
+```yaml
+fallback_providers:
+  - provider: custom
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+    disable_streaming: true
+```
+
+The flag is scoped to that entry. Other entries in the chain still stream, and
+streaming is restored when the primary provider comes back.
+
 ### When Fallback Triggers
 
 The fallback activates automatically when the primary model fails with:

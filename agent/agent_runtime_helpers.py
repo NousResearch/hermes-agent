@@ -1480,6 +1480,14 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # Undo a streaming opt-out that came from a fallback chain entry;
+        # the restored primary has its own streaming capability.  A reactive
+        # disable (provider signalled "stream not supported") carries no
+        # marker and is deliberately left in place.
+        if getattr(agent, "_streaming_disabled_by_fallback", False):
+            agent._disable_streaming = False
+            agent._streaming_disabled_by_fallback = False
+
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves
         # a fresh stream attempt before the breaker can trip again.

@@ -1307,32 +1307,43 @@ def test_gui_pack_success_discards_backup(tmp_path, monkeypatch):
 
 
 def test_gui_pack_success_without_artifact_restores_backup(tmp_path, monkeypatch, capsys):
-    """e2e: pack 返回 0 但无产出 → 恢复备份。（修复 no-artifact 漏洞）"""
+    """e2e: pack 返回 0 但无产出 → 恢复备份。（修复 no-artifact 漏洞）
+
+    模拟 before-pack.mjs 在 pack 期间把 exe rename 到 .rebuild-backup/，
+    但 pack 本身没有产出新的 exe（misconfigured targets）。
+    """
     import shutil as _shutil
 
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
     packaged_exe.write_text("good build", encoding="utf-8")
-
-    # Simulate: before-pack.mjs already renamed the good build into
-    # .rebuild-backup/ (as it does before every pack). The pack mock
-    # returns 0 but produces NO executable — misconfigured targets.
-    release_dir = root / "apps" / "desktop" / "release"
-    backup_dir = release_dir / ".rebuild-backup" / "win-unpacked"
-    backup_dir.mkdir(parents=True)
-    _shutil.move(str(packaged_exe), str(backup_dir / "Hermes.exe"))
+    app_dir = packaged_exe.parent  # win-unpacked/
+    release_dir = app_dir.parent  # release/
+    backup_dir = release_dir / ".rebuild-backup" / app_dir.name
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+
+    # Simulate: before-pack.mjs renames appDir → .rebuild-backup/ during pack,
+    # but pack itself produces no new exe at the original path.
+    def _pack(cmd, **kwargs):
+        if cmd[-1] in ("pack", "build"):
+            backup_dir.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _shutil.move(str(app_dir), str(backup_dir))
+            except FileNotFoundError:
+                pass  # already moved in retry
+        return subprocess.CompletedProcess(cmd, 0)
 
     with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main.subprocess.run", return_value=pack_ok):
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack):
         cli_main.cmd_gui(_ns(build_only=True))
 
     assert packaged_exe.read_text(encoding="utf-8") == "good build"
+    assert packaged_exe.exists()
     out = capsys.readouterr().out
     assert "restored the" in out.lower()

@@ -5651,14 +5651,32 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
-def _restore_desktop_backup(desktop_dir: Path) -> bool:
+def _snapshot_desktop_backup_entries(desktop_dir: Path) -> set[str]:
+    """Record the set of backup directory names that exist before a pack.
+
+    Used in tandem with ``_restore_desktop_backup`` to restore only the
+    entries created by this pack attempt — never stale leftovers from an
+    unrelated session.
+    """
+    release_dir = desktop_dir / "release"
+    backup_root = release_dir / ".rebuild-backup"
+    if not backup_root.is_dir():
+        return set()
+    return {p.name for p in backup_root.iterdir() if p.is_dir()}
+
+
+def _restore_desktop_backup(desktop_dir: Path, known_before: set[str] | None = None) -> bool:
     """Restore the pre-rebuild unpacked app backup on build failure.
 
-    ``before-pack.cjs`` renames ``release/<appOutDir>`` into
+    ``before-pack.mjs`` renames ``release/<appOutDir>`` into
     ``release/.rebuild-backup/<appOutDir>`` before electron-builder stages a
     new tree. When the build ultimately fails after all retries
     (corrupt-download → purge → mirror), this function puts the backup back
     so the desktop shortcut keeps working — no manual rename needed.
+
+    If ``known_before`` is provided, only entries that did NOT exist before
+    the pack are restored — this prevents restoring stale leftovers from a
+    previous session or platform.
 
     Best-effort: never raises. Returns ``True`` when a backup was restored.
     """
@@ -5671,6 +5689,8 @@ def _restore_desktop_backup(desktop_dir: Path) -> bool:
     for backup in sorted(backup_root.iterdir()):
         if not backup.is_dir():
             continue
+        if known_before is not None and backup.name in known_before:
+            continue  # was there before the pack — not ours to restore
         original = release_dir / backup.name
         try:
             # Discard the partial tree left by the failed build (if any) so the
@@ -6014,6 +6034,12 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+                # Snapshot pre-existing .rebuild-backup/ entries so we can
+                # restore only the ones created by *this* pack attempt on
+                # failure — never stale leftovers from another session.
+                known_backup_before = _snapshot_desktop_backup_entries(desktop_dir)
+            else:
+                known_backup_before = set()
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if (
                 build_result.returncode != 0
@@ -6059,7 +6085,7 @@ def cmd_gui(args: argparse.Namespace):
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
-                _restore_desktop_backup(desktop_dir)
+                _restore_desktop_backup(desktop_dir, known_backup_before)
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
@@ -6074,7 +6100,7 @@ def cmd_gui(args: argparse.Namespace):
             # successful-but-empty pack would leave the user with nothing.
             if not source_mode:
                 if _desktop_packaged_executable(desktop_dir) is None:
-                    _restore_desktop_backup(desktop_dir)
+                    _restore_desktop_backup(desktop_dir, known_backup_before)
                     print("  ⚠ Pack reported success but no executable found; restored the")
                     print("    previous build — the existing install (and its shortcuts)")
                     print("    keep working until a rebuild succeeds. Check the pack target")

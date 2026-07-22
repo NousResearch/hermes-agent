@@ -5950,8 +5950,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
+            has_media = bool(getattr(event, "media_urls", None))
+            if has_media:
+                # ``AIAgent.steer()`` is text-only.  Steering a document/photo
+                # event would inject the caption while discarding cached media
+                # paths on the MessageEvent.  Queue the full event instead so
+                # the normal dequeue path preserves attachment metadata.
+                effective_mode = "queue"
             can_steer = (
-                steer_text
+                effective_mode == "steer"
+                and steer_text
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
@@ -10715,6 +10723,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             if self._busy_input_mode == "steer":
+                # ``AIAgent.steer()`` is text-only.  A media-bearing event
+                # (e.g. a cached PDF/document/audio clip) would inject its
+                # caption while discarding the cached media paths on the
+                # MessageEvent.  Queue the full event instead so the normal
+                # dequeue path preserves attachment metadata.  PHOTO bursts
+                # are already queued above, so this catches documents/audio/
+                # video that would otherwise reach steer().
+                if bool(getattr(event, "media_urls", None)):
+                    logger.debug(
+                        "PRIORITY steer demoted to queue for media event, session %s",
+                        _quick_key,
+                    )
+                    self._queue_or_replace_pending_event(_quick_key, event)
+                    return None
                 # Steer mode: inject text into the running agent mid-run via
                 # agent.steer().  Falls back to queue semantics if the payload
                 # is empty, the agent lacks steer(), or steer() rejects.

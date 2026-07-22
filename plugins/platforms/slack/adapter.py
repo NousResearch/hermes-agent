@@ -17,7 +17,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any, Tuple, List
+from typing import Callable, Dict, Optional, Any, Tuple, List
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -727,7 +727,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
-        self._channel_team: Dict[str, str] = {}  # channel_id → team_id
+        # channel_id → team_id. Grows with every channel AND every DM the bot
+        # sees (DM channel IDs are per-user), so it must be bounded on busy
+        # multi-workspace installs. Eviction is safe: entries are re-learned
+        # from the next event on that channel, and _get_client falls back to
+        # the primary client meanwhile.
+        self._channel_team: Dict[str, str] = {}
+        self._CHANNEL_TEAM_MAX = 10000
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -736,11 +742,14 @@ class SlackAdapter(BasePlatformAdapter):
         # is safe.
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # Track pending approval message_ts → resolved flag to prevent
-        # double-clicks on approval buttons.
+        # double-clicks on approval buttons. Bounded: an approval prompt the
+        # user never clicks would otherwise leak its entry forever.
         self._approval_resolved: Dict[str, bool] = {}
+        self._APPROVAL_RESOLVED_MAX = 1000
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[str, bool] = {}
+        self._CLARIFY_RESOLVED_MAX = 1000
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set[str] = set()
@@ -773,10 +782,17 @@ class SlackAdapter(BasePlatformAdapter):
         self._thread_rehydration_checked: set = set()
         self._THREAD_REHYDRATION_CHECKED_MAX = 5000
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        # Entries are normally removed when the reaction completes, but an
+        # exception between add and finalize would leak them — keep it bounded.
         self._reacting_message_ids: set = set()
+        self._REACTING_MESSAGE_IDS_MAX = 5000
         # Track active Assistant statuses by (team_id, channel_id, thread_ts)
         # so cleanup cannot clear an overlapping Slack Connect workspace.
+        # Entries are popped when the status clears, but statuses abandoned
+        # by an error path would accumulate — bound with oldest-thread-first
+        # eviction (key[2] is the thread ts).
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
+        self._ACTIVE_STATUS_THREADS_MAX = 1000
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
@@ -865,6 +881,49 @@ class SlackAdapter(BasePlatformAdapter):
         self._discard_oldest_slack_timestamps(
             self._mentioned_threads, self._MENTIONED_THREADS_MAX // 2
         )
+
+    @staticmethod
+    def _trim_oldest_dict_entries(mapping: Dict[Any, Any], max_size: int) -> None:
+        """Evict the oldest-inserted entries once *mapping* exceeds *max_size*.
+
+        Python dicts preserve insertion order, so ``list(mapping)[:excess]``
+        is genuinely oldest-first (unlike sets, whose iteration order is
+        arbitrary — see #51019). Evicts down to half the cap so eviction
+        runs amortized-once per max_size//2 writes, matching the sibling
+        tracking structures.
+        """
+        if len(mapping) <= max_size:
+            return
+        excess = len(mapping) - max_size // 2
+        for old_key in list(mapping)[:excess]:
+            del mapping[old_key]
+
+    @classmethod
+    def _discard_oldest_by_thread_ts(
+        cls, entries: set, count: int, ts_getter: Callable[[Any], str]
+    ) -> None:
+        """Discard the *count* entries with the oldest embedded Slack ts.
+
+        For bounded tracking sets whose members are keys CONTAINING a Slack
+        timestamp (tuples or colon-joined strings) rather than bare ts
+        values. Sets iterate in arbitrary order, so a plain
+        ``list(entries)[:count]`` can evict the most ACTIVE entry (#51019);
+        sort chronologically by the embedded thread ts instead.
+        """
+        if count <= 0:
+            return
+        oldest = sorted(
+            entries, key=lambda e: cls._slack_timestamp_sort_key(ts_getter(e))
+        )[:count]
+        for entry in oldest:
+            entries.discard(entry)
+
+    def _remember_channel_team(self, channel_id: str, team_id: str) -> None:
+        """Record which workspace owns *channel_id*, bounded oldest-first."""
+        if not channel_id or not team_id:
+            return
+        self._channel_team[str(channel_id)] = str(team_id)
+        self._trim_oldest_dict_entries(self._channel_team, self._CHANNEL_TEAM_MAX)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1174,6 +1233,8 @@ class SlackAdapter(BasePlatformAdapter):
     _SLASH_CTX_TTL = 120.0  # seconds — response_url is valid for 30 min;
     # we use a much shorter TTL to avoid routing unrelated messages
     # as ephemeral if the command handler was slow or dropped.
+    _SLASH_CTX_MAX = 1000  # hard cap: TTL cleanup only runs on lookup, so
+    # contexts whose replies never arrive would otherwise accumulate.
 
     def _pop_slash_context(
         self,
@@ -2205,6 +2266,19 @@ class SlackAdapter(BasePlatformAdapter):
                 "thread_ts": str(thread_ts),
                 "team_id": str(team_id) if team_id else "",
             }
+            if len(self._active_status_threads) > self._ACTIVE_STATUS_THREADS_MAX:
+                # Evict abandoned statuses oldest-thread-first (key[2] is the
+                # thread ts) so an eviction never clears the newest status.
+                excess = (
+                    len(self._active_status_threads)
+                    - self._ACTIVE_STATUS_THREADS_MAX // 2
+                )
+                oldest = sorted(
+                    self._active_status_threads,
+                    key=lambda k: self._slack_timestamp_sort_key(k[2]),
+                )[:excess]
+                for old_key in oldest:
+                    self._active_status_threads.pop(old_key, None)
         try:
             _status = (
                 getattr(self, "_status_text", {}).get(str(chat_id))
@@ -3441,7 +3515,7 @@ class SlackAdapter(BasePlatformAdapter):
                 del self._assistant_threads[old_key]
 
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
     def _lookup_assistant_thread_metadata(
         self,
@@ -3587,8 +3661,11 @@ class SlackAdapter(BasePlatformAdapter):
                 len(self._titled_assistant_threads)
                 - self._TITLED_ASSISTANT_THREADS_MAX // 2
             )
-            for old_key in list(self._titled_assistant_threads)[:excess]:
-                self._titled_assistant_threads.discard(old_key)
+            # Keys are (team_id, channel_id, thread_ts) — evict the oldest
+            # threads first so recently titled threads keep their guard.
+            self._discard_oldest_by_thread_ts(
+                self._titled_assistant_threads, excess, lambda e: e[2]
+            )
 
     def _seed_assistant_thread_session(self, metadata: Dict[str, str]) -> None:
         """Prime the session store so assistant threads get stable user scoping."""
@@ -3705,7 +3782,7 @@ class SlackAdapter(BasePlatformAdapter):
         context_channel_id = self._context_channel_id(context)
 
         if team_id and channel_id:
-            self._channel_team[str(channel_id)] = str(team_id)
+            self._remember_channel_team(channel_id, team_id)
 
         metadata = {
             "channel_id": str(channel_id) if channel_id else "",
@@ -4103,7 +4180,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
@@ -4763,6 +4840,13 @@ class SlackAdapter(BasePlatformAdapter):
         _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
+            if len(self._reacting_message_ids) > self._REACTING_MESSAGE_IDS_MAX:
+                # Entries are bare Slack message ts values — evict oldest first.
+                self._discard_oldest_slack_timestamps(
+                    self._reacting_message_ids,
+                    len(self._reacting_message_ids)
+                    - self._REACTING_MESSAGE_IDS_MAX // 2,
+                )
 
         # App-context is per-turn, user-controlled Slack UI state. Surface it
         # with the inbound user message rather than storing it on SessionSource:
@@ -4875,6 +4959,9 @@ class SlackAdapter(BasePlatformAdapter):
             msg_ts = result.get("ts", "")
             if msg_ts:
                 self._approval_resolved[msg_ts] = False
+                self._trim_oldest_dict_entries(
+                    self._approval_resolved, self._APPROVAL_RESOLVED_MAX
+                )
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -5052,6 +5139,9 @@ class SlackAdapter(BasePlatformAdapter):
                 # Mark unresolved so the action handler's atomic-pop guard can
                 # reject double-clicks (mirrors _approval_resolved).
                 self._clarify_resolved[msg_ts] = False
+                self._trim_oldest_dict_entries(
+                    self._clarify_resolved, self._CLARIFY_RESOLVED_MAX
+                )
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -5933,7 +6023,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._remember_channel_team(channel_id, team_id)
 
         if slash_name in {"hermes", ""}:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
@@ -6028,6 +6118,27 @@ class SlackAdapter(BasePlatformAdapter):
                 "user_id": user_id,
                 "ts": time.monotonic(),
             }
+            if len(self._slash_command_contexts) > self._SLASH_CTX_MAX:
+                # TTL cleanup normally runs on lookup, but contexts stashed
+                # for replies that never happen (agent error, ephemeral-only
+                # command) are never looked up — purge expired entries, then
+                # fall back to oldest-stash-first eviction if still over cap.
+                now_ts = time.monotonic()
+                for stale_key in [
+                    k
+                    for k, v in self._slash_command_contexts.items()
+                    if now_ts - v["ts"] > self._SLASH_CTX_TTL
+                ]:
+                    del self._slash_command_contexts[stale_key]
+                if len(self._slash_command_contexts) > self._SLASH_CTX_MAX:
+                    excess = (
+                        len(self._slash_command_contexts) - self._SLASH_CTX_MAX // 2
+                    )
+                    for old_key in sorted(
+                        self._slash_command_contexts,
+                        key=lambda k: self._slash_command_contexts[k]["ts"],
+                    )[:excess]:
+                        del self._slash_command_contexts[old_key]
 
         # Set the ContextVar so send() can match the correct stashed
         # response_url even when multiple users slash concurrently.
@@ -6137,8 +6248,15 @@ class SlackAdapter(BasePlatformAdapter):
                 len(self._thread_rehydration_checked)
                 - self._THREAD_REHYDRATION_CHECKED_MAX // 2
             )
-            for old_key in list(self._thread_rehydration_checked)[:excess]:
-                self._thread_rehydration_checked.discard(old_key)
+            # Keys are "team:channel:thread_ts[:user]" — evict the oldest
+            # threads first. Evicting an ACTIVE thread's key would re-run its
+            # rehydration check and re-inject the missed delta (#51019-style
+            # arbitrary eviction), so never pop in set order.
+            self._discard_oldest_by_thread_ts(
+                self._thread_rehydration_checked,
+                excess,
+                lambda e: e.split(":")[2] if e.count(":") >= 2 else "",
+            )
 
     def _get_thread_watermark(
         self,

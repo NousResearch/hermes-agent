@@ -6551,3 +6551,188 @@ class TestThreadContextCacheBounded:
         # Fresh entries must survive — only stale entries are evicted
         for i in range(2):
             assert f"C_fresh:{i}:" in adapter._thread_context_cache
+
+
+# ---------------------------------------------------------------------------
+# TestTrackingStructureBounds (cluster C16 — unbounded/mis-evicting caches)
+# ---------------------------------------------------------------------------
+
+
+class TestTrackingStructureBounds:
+    """Every per-message/per-user tracking structure must be bounded, and
+    eviction must remove the OLDEST entries — arbitrary (set-order) eviction
+    can silently drop the most active thread (#51019)."""
+
+    def test_user_name_cache_cap_holds_under_churn(self, adapter):
+        adapter._USER_NAME_CACHE_MAX = 10
+        # Simulate the post-resolution write + trim path directly.
+        for i in range(50):
+            adapter._user_name_cache[("T1", f"U{i}")] = f"user{i}"
+            if len(adapter._user_name_cache) > adapter._USER_NAME_CACHE_MAX:
+                excess = (
+                    len(adapter._user_name_cache)
+                    - adapter._USER_NAME_CACHE_MAX // 2
+                )
+                for old_key in list(adapter._user_name_cache)[:excess]:
+                    del adapter._user_name_cache[old_key]
+        assert len(adapter._user_name_cache) <= adapter._USER_NAME_CACHE_MAX
+        # Newest entry survives; oldest was evicted.
+        assert ("T1", "U49") in adapter._user_name_cache
+        assert ("T1", "U0") not in adapter._user_name_cache
+
+    @pytest.mark.asyncio
+    async def test_user_name_cache_bounded_through_resolve(self, adapter):
+        """End-to-end: _resolve_user_name enforces the cap."""
+        adapter._USER_NAME_CACHE_MAX = 4
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=lambda user: {
+                "user": {"profile": {"display_name": f"name-{user}"}}
+            }
+        )
+        for i in range(10):
+            await adapter._resolve_user_name(f"U{i}")
+        assert len(adapter._user_name_cache) <= adapter._USER_NAME_CACHE_MAX
+        assert ("", "U9") in adapter._user_name_cache
+
+    def test_trim_oldest_dict_entries_evicts_insertion_order(self, adapter):
+        d = {f"k{i}": i for i in range(6)}
+        adapter._trim_oldest_dict_entries(d, 5)
+        # 6 > 5 → excess = 6 - 2 = 4 → oldest four evicted
+        assert "k0" not in d and "k3" not in d
+        assert "k4" in d and "k5" in d
+
+    def test_approval_and_clarify_resolved_bounded(self, adapter):
+        adapter._APPROVAL_RESOLVED_MAX = 4
+        adapter._CLARIFY_RESOLVED_MAX = 4
+        for i in range(10):
+            adapter._approval_resolved[f"{1000 + i}.0"] = False
+            adapter._trim_oldest_dict_entries(
+                adapter._approval_resolved, adapter._APPROVAL_RESOLVED_MAX
+            )
+            adapter._clarify_resolved[f"{1000 + i}.0"] = False
+            adapter._trim_oldest_dict_entries(
+                adapter._clarify_resolved, adapter._CLARIFY_RESOLVED_MAX
+            )
+        assert len(adapter._approval_resolved) <= 4
+        assert len(adapter._clarify_resolved) <= 4
+        # The most recent prompt (the one the user is about to click) survives.
+        assert "1009.0" in adapter._approval_resolved
+        assert "1009.0" in adapter._clarify_resolved
+
+    def test_titled_assistant_threads_evicts_oldest_thread_first(self, adapter):
+        adapter._TITLED_ASSISTANT_THREADS_MAX = 4
+        keys = [
+            ("T1", "D1", "1000.000002"),
+            ("T1", "D1", "999.999999"),
+            ("T1", "D1", "1000.000004"),
+            ("T1", "D1", "1000.000001"),
+            ("T1", "D1", "1000.000003"),
+        ]
+        adapter._titled_assistant_threads.update(keys)
+        excess = (
+            len(adapter._titled_assistant_threads)
+            - adapter._TITLED_ASSISTANT_THREADS_MAX // 2
+        )
+        adapter._discard_oldest_by_thread_ts(
+            adapter._titled_assistant_threads, excess, lambda e: e[2]
+        )
+        assert adapter._titled_assistant_threads == {
+            ("T1", "D1", "1000.000003"),
+            ("T1", "D1", "1000.000004"),
+        }
+
+    def test_rehydration_checked_evicts_oldest_thread_first(self, adapter):
+        """Regression shape for #51019: the ACTIVE (newest) thread key must
+        survive eviction pressure so its rehydration check does not re-run."""
+        adapter._THREAD_REHYDRATION_CHECKED_MAX = 4
+        for ts in [
+            "1000.000002",
+            "999.999999",
+            "1000.000004",
+            "1000.000001",
+            "1000.000003",
+        ]:
+            adapter._mark_thread_rehydration_checked("C1", ts, "U1", "T1")
+        assert adapter._thread_rehydration_checked == {
+            "T1:C1:1000.000003",
+            "T1:C1:1000.000004",
+        }
+
+    def test_active_status_threads_evicts_oldest_and_keeps_newest(self, adapter):
+        adapter._ACTIVE_STATUS_THREADS_MAX = 4
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        for i, ts in enumerate(
+            ["1000.000002", "999.999999", "1000.000004", "1000.000001", "1000.000003"]
+        ):
+            adapter._active_status_threads[("T1", f"D{i}", ts)] = {
+                "thread_ts": ts,
+                "team_id": "T1",
+            }
+        # Simulate the overflow trim from send_typing_indicator.
+        excess = (
+            len(adapter._active_status_threads)
+            - adapter._ACTIVE_STATUS_THREADS_MAX // 2
+        )
+        oldest = sorted(
+            adapter._active_status_threads,
+            key=lambda k: adapter._slack_timestamp_sort_key(k[2]),
+        )[:excess]
+        for old_key in oldest:
+            adapter._active_status_threads.pop(old_key, None)
+        remaining_ts = {k[2] for k in adapter._active_status_threads}
+        assert remaining_ts == {"1000.000003", "1000.000004"}
+
+    def test_reacting_message_ids_evicts_oldest_timestamps(self, adapter):
+        adapter._REACTING_MESSAGE_IDS_MAX = 4
+        adapter._reacting_message_ids.update(
+            {"1000.000002", "999.999999", "1000.000004", "1000.000001", "1000.000003"}
+        )
+        adapter._discard_oldest_slack_timestamps(
+            adapter._reacting_message_ids,
+            len(adapter._reacting_message_ids)
+            - adapter._REACTING_MESSAGE_IDS_MAX // 2,
+        )
+        assert adapter._reacting_message_ids == {"1000.000003", "1000.000004"}
+
+    def test_channel_team_bounded_via_remember_helper(self, adapter):
+        adapter._CHANNEL_TEAM_MAX = 4
+        for i in range(10):
+            adapter._remember_channel_team(f"C{i}", "T1")
+        assert len(adapter._channel_team) <= adapter._CHANNEL_TEAM_MAX
+        # Most recently seen channel survives.
+        assert "C9" in adapter._channel_team
+        assert "C0" not in adapter._channel_team
+
+    @pytest.mark.asyncio
+    async def test_slash_command_contexts_bounded(self, adapter):
+        adapter._SLASH_CTX_MAX = 4
+        adapter.handle_hermes_command = AsyncMock(return_value=None)
+        for i in range(10):
+            command = {
+                "command": "/hermes",
+                "text": "/status",
+                "user_id": f"U{i}",
+                "channel_id": "C1",
+                "team_id": "T1",
+                "response_url": f"https://hooks.slack.com/commands/{i}",
+            }
+            respond = AsyncMock()  # noqa: F841 — kept for shape clarity
+            await adapter._handle_slash_command(command)
+        assert len(adapter._slash_command_contexts) <= adapter._SLASH_CTX_MAX
+        # Newest stash survives.
+        assert ("C1", "U9") in adapter._slash_command_contexts
+
+    def test_bot_message_ts_active_thread_survives_churn(self, adapter):
+        """#51019 regression: an active thread registered early must survive
+        heavy churn of NEWER one-off messages... it will eventually age out,
+        but eviction must never remove the newest entries while older ones
+        remain (no arbitrary set-order pops)."""
+        adapter._BOT_TS_MAX = 100
+        for i in range(500):
+            adapter._bot_message_ts.add(f"{2000 + i}.000000")
+            adapter._trim_bot_message_timestamps()
+        assert len(adapter._bot_message_ts) <= adapter._BOT_TS_MAX
+        # The newest 50 timestamps must all be present (oldest-first eviction
+        # can never remove a newer entry while an older one remains).
+        for i in range(450, 500):
+            assert f"{2000 + i}.000000" in adapter._bot_message_ts

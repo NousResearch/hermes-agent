@@ -1254,6 +1254,16 @@ class CodexAuxiliaryClient:
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
+        # Mirror headers from the wrapped OpenAI SDK client. Fallback activation
+        # and async conversion inspect the outer CodexAuxiliaryClient, not the
+        # inner client; without this, a Responses-API fallback to a gateway that
+        # needs custom headers rebuilds request clients without those headers.
+        custom_headers = getattr(real_client, "_custom_headers", None)
+        if custom_headers:
+            self._custom_headers = dict(custom_headers)
+        default_headers = getattr(real_client, "default_headers", None)
+        if default_headers:
+            self.default_headers = dict(default_headers)
 
     def close(self):
         self._real_client.close()

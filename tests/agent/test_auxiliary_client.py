@@ -4928,6 +4928,40 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             with _client_cache_lock:
                 _client_cache.clear()
 
+    def test_codex_wrapper_preserves_inner_client_headers(self):
+        """Fallback activation reads headers from the Codex wrapper, not the inner client."""
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        real = SimpleNamespace(
+            api_key="k",
+            base_url="https://gateway.example.test/v1",
+            responses=SimpleNamespace(stream=lambda **k: None),
+            close=lambda: None,
+            _custom_headers={"User-Agent": "HermesAgent/1.0"},
+        )
+
+        wrapper = CodexAuxiliaryClient(real, "gpt-5.5")
+
+        assert wrapper._custom_headers == {"User-Agent": "HermesAgent/1.0"}
+        assert wrapper._custom_headers is not real._custom_headers
+
+    def test_codex_wrapper_preserves_inner_client_default_headers(self):
+        """Some fallback paths inspect default_headers instead of _custom_headers."""
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        real = SimpleNamespace(
+            api_key="k",
+            base_url="https://gateway.example.test/v1",
+            responses=SimpleNamespace(stream=lambda **k: None),
+            close=lambda: None,
+            default_headers={"User-Agent": "HermesAgent/1.0"},
+        )
+
+        wrapper = CodexAuxiliaryClient(real, "gpt-5.5")
+
+        assert wrapper.default_headers == {"User-Agent": "HermesAgent/1.0"}
+        assert wrapper.default_headers is not real.default_headers
+
     def test_evict_cached_client_instance_handles_none_and_misses(self):
         from agent.auxiliary_client import _evict_cached_client_instance
 

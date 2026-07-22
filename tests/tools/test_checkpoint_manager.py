@@ -1104,14 +1104,78 @@ class TestOrphanPruneRequiresObservableDeletion:
             "merely unmounted"
         )
 
+    def test_surviving_empty_mountpoint_keeps_its_checkpoints(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """The mount point outlives the volume as an empty dir → keep history.
+
+        The classic static layout (``/mnt/volume/proj``, an fstab entry, a
+        container bind-mount) does not remove the mount point on unmount: the
+        project disappears but ``/mnt/volume`` stays behind as an empty
+        directory. The parent being present is therefore not evidence on its
+        own — an empty parent looks exactly the same whether the volume was
+        detached or the project was deleted.
+        """
+        mount_point = tmp_path / "mnt" / "volume"
+        work_dir = mount_point / "proj"
+        work_dir.mkdir(parents=True)
+        (work_dir / "main.py").write_text("print('x')\n")
+        self._project_with_history(work_dir, checkpoint_base, monkeypatch)
+
+        # Unmount: contents go, the mount point itself remains.
+        shutil.rmtree(work_dir)
+        assert mount_point.is_dir() and not any(mount_point.iterdir())
+
+        prune_checkpoints(
+            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert self._history_survives(checkpoint_base, work_dir), (
+            "checkpoint history was deleted for a project whose mount point "
+            "merely survived the unmount as an empty directory"
+        )
+
+    def test_empty_parent_project_is_still_reclaimed_by_retention(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Skipping an ambiguous parent defers reclamation, it does not lose it.
+
+        A project deleted out of an otherwise-empty parent is indistinguishable
+        from an unmounted volume, so orphan pruning leaves it alone — but the
+        retention rule, which reads ``last_touch`` instead of probing the
+        filesystem, still reclaims it.
+        """
+        parent = tmp_path / "solo"
+        work_dir = parent / "proj"
+        work_dir.mkdir(parents=True)
+        (work_dir / "main.py").write_text("print('x')\n")
+        self._project_with_history(work_dir, checkpoint_base, monkeypatch)
+
+        shutil.rmtree(work_dir)
+        assert parent.is_dir() and not any(parent.iterdir())
+
+        store = _store_path(checkpoint_base)
+        meta_path = _project_meta_path(store, _project_hash(str(work_dir)))
+        meta = json.loads(meta_path.read_text())
+        meta["last_touch"] = time.time() - 60 * 86400
+        meta_path.write_text(json.dumps(meta))
+
+        result = prune_checkpoints(
+            retention_days=30, delete_orphans=True, checkpoint_base=checkpoint_base,
+        )
+
+        assert result["deleted_stale"] >= 1
+        assert not self._history_survives(checkpoint_base, work_dir)
+
     def test_genuinely_deleted_project_is_still_pruned(
         self, tmp_path, checkpoint_base, monkeypatch,
     ):
-        """Control: parent present, project gone → a real orphan, still pruned."""
+        """Control: a populated parent without the project → a real orphan."""
         parent = tmp_path / "projects"
         work_dir = parent / "proj"
         work_dir.mkdir(parents=True)
         (work_dir / "main.py").write_text("print('x')\n")
+        (parent / "other-project").mkdir()
         self._project_with_history(work_dir, checkpoint_base, monkeypatch)
 
         shutil.rmtree(work_dir)

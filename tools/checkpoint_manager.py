@@ -1266,12 +1266,25 @@ def _workdir_is_observably_gone(workdir: str) -> bool:
     "deleted" throws away the user's restore points over a transient mount
     state, unattended, at startup.
 
-    Require corroboration: the parent directory must be present, so the
-    absence of the project inside it is something we actually observed. When
-    the parent is missing too, the volume is not there and we know nothing —
-    leave the entry alone. Genuinely abandoned projects are still reclaimed by
-    the retention/stale rule, which runs off ``last_touch`` rather than a
-    filesystem probe.
+    Require corroboration, in two steps.
+
+    First, the parent directory must be present, so the absence of the project
+    inside it is something we actually observed. When the parent is missing
+    too, the volume is not there and we know nothing.
+
+    Second, the present parent must actually carry information. Detaching
+    storage removes the parent outright in some layouts (``/Volumes/Ext/proj``
+    on macOS, ``/media/<user>/<label>/proj``), but in the classic static
+    layout — ``/mnt/volume/proj``, a container bind-mount, an fstab entry —
+    unmounting leaves the mount point behind as an *empty* directory. An empty
+    parent is therefore the signature of a detached volume just as much as of
+    a deleted project, so it corroborates nothing. Prune only when the parent
+    holds something else (we observed a populated directory that does not
+    contain the project) or is itself a live mount point (the volume is
+    demonstrably attached and the project is demonstrably not on it).
+
+    Genuinely abandoned projects are still reclaimed by the retention/stale
+    rule, which runs off ``last_touch`` rather than a filesystem probe.
     """
     if not workdir:
         return False
@@ -1284,10 +1297,30 @@ def _workdir_is_observably_gone(workdir: str) -> bool:
         # to corroborate against.
         if parent == path:
             return False
-        return parent.is_dir()
+        if not parent.is_dir():
+            return False
+        if _dir_has_any_entry(parent):
+            return True
+        # Empty parent: only evidence if that directory is a mount point, i.e.
+        # the volume is attached right now and simply does not hold the
+        # project. An empty plain directory is an unmounted mount point as
+        # readily as an emptied project root.
+        return os.path.ismount(parent)
     except OSError:
         # Probe failed (permission, I/O error) — not evidence of deletion.
         return False
+
+
+def _dir_has_any_entry(directory: Path) -> bool:
+    """True when ``directory`` contains at least one entry.
+
+    Stops after the first entry rather than materializing the listing; a
+    project root can hold a large tree.
+    """
+    with os.scandir(directory) as entries:
+        for _ in entries:
+            return True
+    return False
 
 
 def prune_checkpoints(

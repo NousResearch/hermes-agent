@@ -23,12 +23,93 @@ unchanged.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 import urllib.request
 from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url
+
+
+def _no_proxy_matches_no_proxy_env(host: str) -> bool:
+    """Check ``NO_PROXY`` for a host, including CIDR entries the stdlib ignores.
+
+    Wraps ``urllib.request.proxy_bypass_environment(host)`` (which only honors
+    exact / suffix hostnames like ``localhost`` or ``.example.com``) and adds
+    support for:
+
+    * CIDR ranges — e.g. ``10.0.0.0/24``, ``2001:db8::/32``.
+    * Bare single-IP entries — e.g. ``192.168.1.5`` (matched exactly when the
+      resolved target host is an IP).
+
+    Many other tools (curl, browsers, ``requests-toolbelt``-style stacks,
+    Node's ``http-proxy-agent``) have honored CIDR in ``NO_PROXY`` for years;
+    Python's stdlib still does not, which makes
+    ``urllib.request.proxy_bypass_environment()`` silently route traffic
+    around an operator's expected bypass. See #59465.
+    """
+    try:
+        if urllib.request.proxy_bypass_environment(host):
+            return True
+    except Exception:
+        # Fall through to manual CIDR / exact-IP matching.
+        pass
+
+    no_proxy_value = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    if not no_proxy_value or not host:
+        return False
+
+    def _strip_brackets(token: str) -> str:
+        if token.startswith("[") and token.endswith("]"):
+            return token[1:-1]
+        return token
+
+    def _ip_version(token: str) -> int:
+        """Return the ipaddress version (4 or 6) of a bare IP literal; default 4."""
+        try:
+            return ipaddress.ip_address(token).version
+        except ValueError:
+            return 4
+
+    for raw_entry in no_proxy_value.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        # Hostname entries (e.g. ``.internal``, ``example.com``) and bare names
+        # (``localhost``) are already covered by ``proxy_bypass_environment``
+        # above; only the IP-flavored entries need additional parsing.
+        if "/" in entry:
+            # CIDR — e.g. ``10.0.0.0/24`` or ``2001:db8::/32``.
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                continue
+            try:
+                addr = ipaddress.ip_address(host)
+            except ValueError:
+                return False
+            if addr.version != network.version:
+                continue
+            if addr in network:
+                return True
+        else:
+            token = _strip_brackets(entry)
+            try:
+                ipaddress.ip_address(token)
+            except ValueError:
+                # Bare hostname like ``localhost`` already handled by stdlib
+                # branch above.
+                continue
+            try:
+                addr = ipaddress.ip_address(host)
+            except ValueError:
+                return False
+            if addr.version != _ip_version(token):
+                continue
+            if str(addr) == token:
+                return True
+    return False
 
 
 # Cached at module level so we only pay the OpenAI SDK import cost once
@@ -124,7 +205,12 @@ def _get_proxy_from_env() -> Optional[str]:
 
 
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
+    """Return an env-configured proxy unless NO_PROXY excludes this base URL.
+
+    Honors both stdlib ``no_proxy`` semantics (exact / suffix hostnames) and
+    CIDR / single-IP entries via :func:`_no_proxy_matches_no_proxy_env`. See
+    #59465 for why the CIDR support matters.
+    """
     proxy = _get_proxy_from_env()
     if not proxy or not base_url:
         return proxy
@@ -134,9 +220,11 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
         return proxy
 
     try:
-        if urllib.request.proxy_bypass_environment(host):
+        if _no_proxy_matches_no_proxy_env(host):
             return None
     except Exception:
+        # Match the previous fault-tolerance — a bad ``no_proxy`` entry must
+        # never break connectivity.
         pass
 
     return proxy

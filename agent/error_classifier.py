@@ -240,10 +240,16 @@ _IMAGE_TOO_LARGE_PATTERNS = [
 # (FailoverReason.image_corrupt), never to the shrink path.
 #
 # xAI wording: {"code":"invalid-argument","error":"...Invalid PNG image."}
+# xAI has a second wording for the same failure class depending on where
+# the truncation lands: "Invalid PNG image." for aligned truncation,
+# "base64 string of provided image cannot be decoded" for unaligned
+# truncation (confirmed by the issue reporter — same root cause, two wire
+# messages).
 # See: https://github.com/NousResearch/hermes-agent/issues/69078
 _IMAGE_CORRUPT_PATTERNS = [
     "invalid png image",
     "invalid jpeg image",
+    "base64 string of provided image cannot be decoded",
 ]
 
 # Providers that follow the OpenAI spec strictly require tool message

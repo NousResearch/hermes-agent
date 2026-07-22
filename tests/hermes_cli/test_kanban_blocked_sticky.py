@@ -49,8 +49,68 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Worker-initiated kanban_block must be sticky
+# Explicit human-review blocks must be sticky
 # ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_not_auto_promoted_by_recompute_ready(kanban_home: Path) -> None:
+    """A task created with ``initial_status='blocked'`` is a deliberate
+    creator/operator hold, not a transient circuit-breaker block.  It must
+    stay blocked until somebody explicitly unblocks it."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="hold for human review",
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, "initial blocked hold must not auto-promote"
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "blocked"
+
+
+def test_initial_status_blocked_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
+    """Even when dependency gates are satisfied, ``initial_status='blocked'``
+    must behave like a human-review hold rather than entering the dispatcher."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        kb.complete_task(conn, parent, result="ok")
+        child = kb.create_task(
+            conn,
+            title="child hold",
+            parents=[parent],
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+
+def test_unblock_clears_initial_status_blocked_hold(kanban_home: Path) -> None:
+    """The normal explicit unblock path is the escape hatch for tasks
+    initially parked in blocked status."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="parked hold",
+            initial_status="blocked",
+        )
+        assert kb.unblock_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
 
 
 def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path) -> None:

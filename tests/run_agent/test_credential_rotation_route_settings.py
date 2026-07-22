@@ -104,6 +104,8 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
 
 
 def test_credential_rotation_preserves_route_significant_trailing_segments():
+    """Route identity comparison uses normalize_route_base_url, but the stored
+    base_url is stripped like every other assignment site (__init__, switch_model)."""
     agent = SimpleNamespace(
         api_mode="chat_completions",
         provider="custom",
@@ -127,5 +129,5 @@ def test_credential_rotation_preserves_route_significant_trailing_segments():
     with patch("hermes_cli.config.load_config_readonly", return_value={}):
         AIAgent._swap_credential(agent, entry)
 
-    assert agent.base_url == "https://b.example/v1//"
-    assert agent._client_kwargs["base_url"] == "https://b.example/v1//"
+    assert agent.base_url == "https://b.example/v1"
+    assert agent._client_kwargs["base_url"] == "https://b.example/v1"

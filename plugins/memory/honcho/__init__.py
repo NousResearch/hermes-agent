@@ -190,8 +190,9 @@ CONCLUDE_SCHEMA = {
         "correction, a standing constraint) so future sessions carry it forward. "
         "You MUST pass exactly one of `conclusion` (to create), `delete_id` (to "
         "delete), or `list` (to list/search); any other combination is an error. "
-        "A deletion ID is an opaque server-generated string: first call with `list=true` "
-        "and optionally `query`, then pass the returned ID as `delete_id`. "
+        "Creation returns the opaque server-generated conclusion ID for immediate deletion. "
+        "To delete an older conclusion, first call with `list=true` and optionally `query`, "
+        "then pass the returned ID as `delete_id`. "
         "Deletion exists only for "
         "PII removal — for merely wrong facts, write a corrected conclusion instead; "
         "Honcho self-heals contradictions over time. This is a WRITE tool: to read "
@@ -207,7 +208,12 @@ CONCLUDE_SCHEMA = {
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion or list. Get this id from a prior `list` call — never guess it.",
+                "description": (
+                    "Conclusion ID to delete for PII removal. Provide this when deleting a "
+                    "conclusion. Do not send it together with conclusion or list. Use the "
+                    "`conclusion_id` from a successful creation response or an ID returned "
+                    "by `list=true`; never guess an ID."
+                ),
             },
             "list": {
                 "type": "boolean",
@@ -1525,9 +1531,15 @@ class HonchoMemoryProvider(MemoryProvider):
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
-                if ok:
-                    return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
+                conclusion_id = self._manager.create_conclusion(
+                    self._session_key, conclusion, peer=peer
+                )
+                if conclusion_id:
+                    return json.dumps({
+                        "result": f"Conclusion saved for {peer}: {conclusion}",
+                        "conclusion_id": conclusion_id,
+                        "peer": peer,
+                    })
                 return tool_error("Failed to save conclusion.")
 
             return tool_error(f"Unknown tool: {tool_name}")

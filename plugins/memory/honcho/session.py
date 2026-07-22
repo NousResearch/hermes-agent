@@ -1219,7 +1219,7 @@ class HonchoSessionManager:
             target_peer = self._get_or_create_peer(target_peer_id)
             return target_peer.conclusions_of(target_peer_id)
 
-    def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> bool:
+    def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> str | None:
         """Write a conclusion about a target peer back to Honcho.
 
         Conclusions are facts a peer observes about another peer or itself —
@@ -1232,32 +1232,36 @@ class HonchoSessionManager:
             peer: Peer alias or explicit peer ID. "user" is the default alias.
 
         Returns:
-            True on success, False on failure.
+            The server-generated conclusion ID on success, otherwise None.
         """
         if not content or not content.strip():
-            return False
+            return None
 
         session = self._cache.get(session_key)
         if not session:
             logger.warning("No session cached for '%s', skipping conclusion", session_key)
-            return False
+            return None
 
         try:
             target_peer_id = self._resolve_peer_id(session, peer)
             if target_peer_id is None:
                 logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
-                return False
+                return None
 
             conclusions_scope = self._conclusions_scope(session, target_peer_id)
-            conclusions_scope.create([{
+            created = conclusions_scope.create([{
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,
             }])
-            logger.info("Created conclusion about %s for %s: %s", target_peer_id, session_key, content[:80])
-            return True
+            if not created or not getattr(created[0], "id", None):
+                logger.error("Honcho created a conclusion without returning its ID")
+                return None
+            conclusion_id = str(created[0].id)
+            logger.info("Created conclusion %s about %s for %s: %s", conclusion_id, target_peer_id, session_key, content[:80])
+            return conclusion_id
         except Exception as e:
             logger.error("Failed to create conclusion: %s", e)
-            return False
+            return None
 
     def delete_conclusion(self, session_key: str, conclusion_id: str, peer: str = "user") -> bool:
         """Delete a conclusion by ID. Use only for PII removal.

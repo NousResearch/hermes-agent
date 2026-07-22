@@ -9123,6 +9123,34 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     else:
         commits_word = "commit" if behind == 1 else "commits"
         print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+        # Show a summary of pending commits using the same compare_branch that
+        # produced the count above, so the list is always consistent with the
+        # number (upstream/main when available, origin/main as fallback, or
+        # origin/<branch> for --branch). --max-count bounds the git process
+        # itself rather than fetching every pending commit and truncating in
+        # Python. Shallow clones reach this branch only when behind > 0 (not
+        # is_shallow), so no shallow-clone guard is needed here.
+        try:
+            log_result = subprocess.run(
+                git_cmd + [
+                    "log", "--oneline", "--no-decorate", "--max-count=10",
+                    f"HEAD..{compare_branch}", "--",
+                ],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if log_result.returncode == 0:
+                log_lines = [l for l in log_result.stdout.splitlines() if l.strip()]
+                if log_lines:
+                    print("  Pending changes:")
+                    for line in log_lines:
+                        print(f"    • {line}")
+                    if behind > len(log_lines):
+                        print(f"    … and {behind - len(log_lines)} more commit(s)")
+        except Exception:
+            pass  # Commit list is advisory — never block the check result
         from hermes_cli.config import recommended_update_command
 
         print(f"  Run '{recommended_update_command()}' to install.")

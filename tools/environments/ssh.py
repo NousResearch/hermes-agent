@@ -1,4 +1,4 @@
-"""SSH remote execution environment with ControlMaster connection persistence."""
+"""SSH remote execution environment with optional ControlMaster persistence."""
 
 import hashlib
 import logging
@@ -39,7 +39,9 @@ class SSHEnvironment(BaseEnvironment):
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
     Session snapshot preserves env vars across calls.
     CWD persists via in-band stdout markers.
-    Uses SSH ControlMaster for connection reuse.
+    Uses SSH ControlMaster for connection reuse on platforms where it works
+    reliably. On Windows, multiplexing is disabled because the local SSH client
+    often fails with ``Failed to connect to new control master``.
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
@@ -49,6 +51,7 @@ class SSHEnvironment(BaseEnvironment):
         self.user = user
         self.port = port
         self.key_path = key_path
+        self._use_controlmaster = os.name != "nt"
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -82,9 +85,10 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        if self._use_controlmaster:
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", "ControlMaster=auto"])
+            cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
@@ -157,7 +161,7 @@ class SSHEnvironment(BaseEnvironment):
     # _get_sync_files provided via iter_sync_files in FileSyncManager init
 
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
-        """Upload a single file via scp over ControlMaster."""
+        """Upload a single file via scp over SSH."""
         parent = str(Path(remote_path).parent)
         mkdir_cmd = self._build_ssh_command()
         mkdir_cmd.append(f"mkdir -p {shlex.quote(parent)}")
@@ -169,7 +173,9 @@ class SSHEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
         )
 
-        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        scp_cmd = ["scp"]
+        if self._use_controlmaster:
+            scp_cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:
@@ -357,10 +363,16 @@ class SSHEnvironment(BaseEnvironment):
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
 
-        if self.control_socket.exists():
+        if self._use_controlmaster and self.control_socket.exists():
             try:
-                cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
-                       "-O", "exit", f"{self.user}@{self.host}"]
+                cmd = [
+                    "ssh",
+                    "-o",
+                    f"ControlPath={self.control_socket}",
+                    "-O",
+                    "exit",
+                    f"{self.user}@{self.host}",
+                ]
                 subprocess.run(
                     cmd,
                     capture_output=True,

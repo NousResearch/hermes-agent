@@ -191,7 +191,11 @@ class TestSSHBulkUpload:
                 staging_dir = cmd[c_idx + 1]
                 assert not os.path.exists(os.path.join(staging_dir, "home"))
                 expected = os.path.join(staging_dir, "cache/nested.txt")
-                assert os.path.islink(expected)
+                assert os.path.exists(expected)
+                if os.name == "nt":
+                    assert os.path.islink(expected) or os.path.isfile(expected)
+                else:
+                    assert os.path.islink(expected)
 
             mock = MagicMock()
             mock.stdout = MagicMock()
@@ -277,7 +281,7 @@ class TestSSHBulkUpload:
                 mock_env._ssh_bulk_upload(files)
 
     def test_ssh_command_uses_control_socket(self, mock_env, tmp_path):
-        """SSH command for tar extract should reuse ControlMaster socket."""
+        """SSH command for tar extract should reuse ControlMaster socket when enabled."""
         f1 = tmp_path / "c.txt"
         f1.write_text("c")
         files = [(str(f1), "/home/testuser/.hermes/cache/c.txt")]
@@ -300,9 +304,12 @@ class TestSSHBulkUpload:
              patch.object(subprocess, "Popen", side_effect=capture_popen):
             mock_env._ssh_bulk_upload(files)
 
-        # The SSH command (second Popen call) should include ControlPath
         ssh_cmd = popen_cmds[1]
-        assert f"ControlPath={mock_env.control_socket}" in " ".join(ssh_cmd)
+        ssh_str = " ".join(ssh_cmd)
+        if mock_env._use_controlmaster:
+            assert f"ControlPath={mock_env.control_socket}" in ssh_str
+        else:
+            assert "ControlPath=" not in ssh_str
 
     def test_custom_port_and_key_in_ssh_command(self, monkeypatch, tmp_path):
         """Bulk upload SSH command should include custom port and key."""

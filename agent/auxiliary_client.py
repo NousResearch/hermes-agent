@@ -7196,6 +7196,53 @@ def call_llm(
                     raise
                 first_err = retry_err
 
+        # ── reasoning param compatibility retry (generic) ─────────────
+        # Many strict OpenAI-compatible endpoints (OpenAI Chat Completions,
+        # Azure, Meta's Llama API, custom proxies, etc.) reject the optional
+        # ``extra_body.reasoning`` control with 400 unknown/unsupported
+        # parameter. Title generation injects it to suppress thinking, but it
+        # is not required for correctness — stripping it and retrying once
+        # recovers a working title instead of falling back to the first-words
+        # heuristic. This generic retry is the safety net; the per-route
+        # allowlist in WebUI's _route_rejects_reasoning_extra is only an
+        # optimization to avoid the extra RTT for known-bad routes.
+        #
+        # Mirrors the existing temperature / max_tokens retry pattern above.
+        eb_for_reasoning_retry = kwargs.get("extra_body")
+        if (
+            isinstance(eb_for_reasoning_retry, dict)
+            and "reasoning" in eb_for_reasoning_retry
+            and _is_unsupported_parameter_error(first_err, "reasoning")
+        ):
+            retry_kwargs = dict(kwargs)
+            retry_eb = dict(eb_for_reasoning_retry)
+            retry_eb.pop("reasoning", None)
+            if retry_eb:
+                retry_kwargs["extra_body"] = retry_eb
+            else:
+                retry_kwargs.pop("extra_body", None)
+            logger.info(
+                "Auxiliary %s: provider rejected reasoning param; retrying without it",
+                task or "call",
+            )
+            try:
+                return _validate_llm_response(
+                    client.chat.completions.create(**retry_kwargs), task
+                )
+            except Exception as retry_err:
+                retry_err_str = str(retry_err)
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_auth_error(retry_err)
+                    or _is_rate_limit_error(retry_err)
+                    or "max_tokens" in retry_err_str
+                    or "unsupported_parameter" in retry_err_str
+                ):
+                    raise
+                first_err = retry_err
+                kwargs = retry_kwargs
+
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # A long-lived process can pin a Portal-recommended model that has
         # since been dropped from the Nous → OpenRouter catalog, so every
@@ -7759,6 +7806,44 @@ async def async_call_llm(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        # ── reasoning param compatibility retry (generic, async mirror) ─
+        # Same as sync path: strip extra_body.reasoning on 400. See sync
+        # block comment for rationale.
+        eb_for_reasoning_retry_async = kwargs.get("extra_body")
+        if (
+            isinstance(eb_for_reasoning_retry_async, dict)
+            and "reasoning" in eb_for_reasoning_retry_async
+            and _is_unsupported_parameter_error(first_err, "reasoning")
+        ):
+            retry_kwargs = dict(kwargs)
+            retry_eb = dict(eb_for_reasoning_retry_async)
+            retry_eb.pop("reasoning", None)
+            if retry_eb:
+                retry_kwargs["extra_body"] = retry_eb
+            else:
+                retry_kwargs.pop("extra_body", None)
+            logger.info(
+                "Auxiliary %s (async): provider rejected reasoning param; retrying without it",
+                task or "call",
+            )
+            try:
+                return _validate_llm_response(
+                    await client.chat.completions.create(**retry_kwargs), task
+                )
+            except Exception as retry_err:
+                retry_err_str = str(retry_err)
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_auth_error(retry_err)
+                    or _is_rate_limit_error(retry_err)
+                    or "max_tokens" in retry_err_str
+                    or "unsupported_parameter" in retry_err_str
+                ):
+                    raise
+                first_err = retry_err
+                kwargs = retry_kwargs
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # See the sync call_llm() path for the rationale: a long-lived process

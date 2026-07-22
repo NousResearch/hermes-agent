@@ -3857,14 +3857,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         server-side queue) from a watcher reconnect after a prolonged outage
         (preserve the queue so messages sent during the outage are delivered
         rather than silently dropped — #46621).
+
+        Third-party adapters (e.g. hermes-imessage 0.1.2) may not yet accept
+        ``is_reconnect``. We probe the signature first and fall back to a
+        bare ``connect()`` call so an older plugin never crashes the gateway
+        — the ``is_reconnect`` flag is an optimization, not a correctness
+        requirement for basic connectivity.
         """
         timeout = self._platform_connect_timeout_secs()
-        if timeout <= 0:
-            return await adapter.connect(is_reconnect=is_reconnect)
-        try:
-            return await asyncio.wait_for(
-                adapter.connect(is_reconnect=is_reconnect), timeout=timeout
+
+        def _connect_coro():
+            connect = adapter.connect
+            try:
+                sig = inspect.signature(connect)
+                params = sig.parameters.values()
+                accepts_reconnect = (
+                    "is_reconnect" in sig.parameters
+                    or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+                )
+            except (TypeError, ValueError):
+                # Builtins / Cython wrappers that don't expose a signature —
+                # assume they accept kwargs rather than crashing.
+                accepts_reconnect = True
+            if accepts_reconnect:
+                return connect(is_reconnect=is_reconnect)
+            logger.debug(
+                "%s adapter connect() does not accept is_reconnect; calling without it",
+                platform.value,
             )
+            return connect()
+
+        if timeout <= 0:
+            return await _connect_coro()
+        try:
+            return await asyncio.wait_for(_connect_coro(), timeout=timeout)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
                 f"{platform.value} connect timed out after {timeout:g}s"

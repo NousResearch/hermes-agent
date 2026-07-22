@@ -13,6 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
@@ -276,7 +277,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
-            state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+            state => {
+              const withPendingTurn = preserveLocalPendingTurnMessages(messages, state.messages)
+
+              return { ...state, messages: preserveLocalAssistantErrors(withPendingTurn, state.messages) }
+            },
             storedSessionId
           )
 
@@ -332,7 +337,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       updateSessionState(
         runtimeSessionId,
-        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+        state => {
+          const withPendingTurn = preserveLocalPendingTurnMessages(messages, state.messages)
+
+          return { ...state, messages: preserveLocalAssistantErrors(withPendingTurn, state.messages) }
+        },
         storedSessionId
       )
     } catch {

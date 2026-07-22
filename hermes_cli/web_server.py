@@ -16243,6 +16243,15 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
+
+        # Compute actual span of data for honest per-day averages
+        first_session = db._conn.execute(
+            "SELECT MIN(started_at) FROM sessions WHERE started_at > ?", (cutoff,)
+        ).fetchone()[0]
+        span_days = days
+        if first_session:
+            span_days = max(1, min(days, int((time.time() - first_session) / 86400) + 1))
+
         insights_report = InsightsEngine(db).generate(days=days)
         skills = insights_report.get("skills", {
             "summary": {
@@ -16262,6 +16271,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             "by_task": _aux_task_summary(aux_rows),
             "totals": totals,
             "period_days": days,
+            "span_days": span_days,
             "skills": skills,
             # Per-tool-name call counts (already computed by InsightsEngine);
             # the desktop Capabilities page aggregates these per toolset.

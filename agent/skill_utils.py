@@ -805,7 +805,14 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """
     skills_dir_str = str(skills_dir)
     matches: list[str] = []
+    visited_dirs: set[str] = set()
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+        real_root = os.path.realpath(root)
+        if real_root in visited_dirs:
+            dirs[:] = []
+            continue
+        visited_dirs.add(real_root)
+
         has_skill_md = "SKILL.md" in files
         dirs[:] = [
             d

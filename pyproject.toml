@@ -51,7 +51,7 @@ dependencies = [
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
+  "requests==2.34.2",  # CVE-2026-25645; 2.33.0 aarch64 wheel missing _types.py
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's

@@ -1128,6 +1128,66 @@ class TestWorktreeLockReaping:
         assert Path(info["path"]).exists()
         assert dirty.exists()
 
+    def test_exit_cleanup_preserves_write_arriving_after_clean_check(
+        self, git_repo, monkeypatch
+    ):
+        """Git gets the final dirty-state decision at the removal boundary."""
+        import cli
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+        worktree = Path(info["path"])
+        late = worktree / "late-write.txt"
+        real_run = subprocess.run
+
+        def inject_late_write(args, *pargs, **kwargs):
+            if list(args[:3]) == ["git", "worktree", "remove"]:
+                late.write_text("arrived after the clean check")
+            return real_run(args, *pargs, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", inject_late_write)
+
+        cli._cleanup_worktree(info)
+
+        assert worktree.exists()
+        assert late.read_text() == "arrived after the clean check"
+        branch = real_run(
+            ["git", "branch", "--list", info["branch"]],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert info["branch"] in branch.stdout
+
+    def test_stale_pruner_preserves_write_arriving_after_clean_check(
+        self, git_repo, monkeypatch
+    ):
+        """Startup pruning must not force-remove a newly dirtied worktree."""
+        import cli
+
+        worktree = self._mk(cli, git_repo, "hermes-late", pid=None, age_h=100)
+        late = worktree / "late-write.txt"
+        real_run = subprocess.run
+
+        def inject_late_write(args, *pargs, **kwargs):
+            if list(args[:3]) == ["git", "worktree", "remove"]:
+                late.write_text("arrived after the clean check")
+            return real_run(args, *pargs, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", inject_late_write)
+
+        cli._prune_stale_worktrees(str(git_repo))
+
+        assert worktree.exists()
+        assert late.read_text() == "arrived after the clean check"
+        branch = real_run(
+            ["git", "branch", "--list", "hermes/hermes-late"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "hermes/hermes-late" in branch.stdout
+
     def test_recent_worktree_untouched(self, git_repo):
         import cli
         wt = self._mk(cli, git_repo, "hermes-fresh", pid=None, age_h=1)

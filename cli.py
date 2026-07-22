@@ -1753,7 +1753,7 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     ``hermes -w`` locks each worktree with reason ``hermes pid=<pid>`` so a
     concurrent hermes process' startup prune leaves an in-use worktree alone.
     But a *crashed* session leaves the lock behind forever, and
-    ``git worktree remove --force`` (single ``-f``) refuses to remove a locked
+    ``git worktree remove`` refuses to remove a locked
     worktree — so dead-locked worktrees accumulate indefinitely. This lets the
     pruner tell the two apart:
 
@@ -1864,7 +1864,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
     try:
         remove_result = subprocess.run(
-            ["git", "worktree", "remove", wt_path, "--force"],
+            ["git", "worktree", "remove", wt_path],
             capture_output=True, text=True, timeout=15, cwd=repo_root,
         )
         if remove_result.returncode != 0:
@@ -1986,8 +1986,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     reason ``hermes pid=<pid>`` so a concurrent hermes process leaves an in-use
     worktree alone. A *live*-locked worktree is skipped at any age; a
     *dead*-locked one (owning pid gone — a crashed session) is unlocked first
-    so ``git worktree remove --force`` can actually reap it, otherwise those
-    leftovers accumulate forever (``remove --force`` refuses a locked tree).
+    so ``git worktree remove`` can actually reap it, otherwise those
+    leftovers accumulate forever (``remove`` refuses a locked tree).
 
     Branch deletion is gated on ``git worktree remove`` succeeding, so a failed
     removal never orphans the branch (which would drop easy reachability of any
@@ -2034,7 +2034,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # Respect git-native session locks. A lock owned by a still-running
         # hermes process means the worktree is actively in use — never touch
         # it. A lock whose owning pid is gone is a crashed session's leftover:
-        # unlock it so `git worktree remove --force` (single -f) can reap it,
+        # unlock it so `git worktree remove` can reap it,
         # otherwise dead-locked worktrees pile up indefinitely.
         lock_state = _worktree_lock_is_live(repo_root, str(entry), timeout=5)
         if lock_state in {"live", "unknown"}:
@@ -2058,7 +2058,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             branch = branch_result.stdout.strip()
 
             remove_result = subprocess.run(
-                ["git", "worktree", "remove", str(entry), "--force"],
+                ["git", "worktree", "remove", str(entry)],
                 capture_output=True, text=True, timeout=15, cwd=repo_root,
             )
             if remove_result.returncode != 0:

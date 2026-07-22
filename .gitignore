@@ -44,7 +44,10 @@ run_datagen_sonnet.sh
 source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
-node_modules/
+# No trailing slash: also matches node_modules SYMLINKS (worktrees often
+# symlink node_modules to the main checkout; the dir-only pattern let one
+# slip into a commit and break `npm ci` on CI with ENOTDIR).
+node_modules
 browser-use/
 agent-browser/
 # Private keys

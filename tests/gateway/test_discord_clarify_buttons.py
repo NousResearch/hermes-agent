@@ -30,7 +30,23 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     DiscordAdapter,
 )
 from gateway.config import PlatformConfig  # noqa: E402
-from gateway.platforms.base import utf16_len  # noqa: E402
+
+
+def _choices_field_value(embed) -> str:
+    """Pull the 'Choices' embed field's rendered text (full option list).
+
+    The test conftest's ``_FakeEmbed.add_field`` stores fields as plain
+    dicts (``{"name": ..., "value": ..., "inline": ...}``); support both
+    that shape and objects with ``.name``/``.value`` attributes in case a
+    real ``discord.Embed`` is ever passed in.
+    """
+    for field in embed.fields:
+        if isinstance(field, dict):
+            if field.get("name") == "Choices":
+                return field.get("value") or ""
+        elif getattr(field, "name", None) == "Choices":
+            return field.value
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +110,13 @@ class TestClarifyChoiceViewConstruction:
         # 3 numeric + 1 "Other"
         assert len(view.children) == 4
         labels = [b.label for b in view.children]
-        assert labels[0].startswith("1. apple")
-        assert labels[1].startswith("2. banana")
-        assert labels[2].startswith("3. cherry")
+        # Buttons are short numeric indices — the full choice text is
+        # mirrored in the message body / embed field instead (see
+        # send_clarify), since Discord's 80-char label cap is already wider
+        # than what mobile clients render before truncating/wrapping.
+        assert labels[0] == "1"
+        assert labels[1] == "2"
+        assert labels[2] == "3"
         assert "Other" in labels[3]
         # custom_ids encode clarify_id + index/other
         ids = [b.custom_id for b in view.children]
@@ -116,37 +136,30 @@ class TestClarifyChoiceViewConstruction:
         assert len(view.children) == 25
         assert "Other" in view.children[-1].label
 
-    def test_truncates_long_choice_label(self):
+    def test_button_label_is_short_index_regardless_of_choice_length(self):
+        # Button labels never carry choice text anymore — they're always
+        # just the option number, so length/truncation of the underlying
+        # choice text can never affect button legibility.
         long_choice = "x" * 200
         view = ClarifyChoiceView(
             choices=[long_choice],
             clarify_id="cidZ",
             allowed_user_ids=set(),
         )
-        # 78 chars + single-char ellipsis in the body, plus "1. " prefix.
-        # Uses U+2026 (…) instead of "..." to fit the 80-char Discord cap.
         first_label = view.children[0].label
-        assert first_label.startswith("1. ")
-        assert first_label.endswith("\u2026")
-        # Final label total <= 80 (Discord cap on button labels)
-        assert len(first_label) <= 80
+        assert first_label == "1"
 
-    def test_truncates_emoji_choice_label_by_utf16_limit(self):
+    def test_button_label_short_for_emoji_choice(self):
         long_choice = "\U0001f600" * 80
         view = ClarifyChoiceView(
             choices=[long_choice],
             clarify_id="cidEmoji",
             allowed_user_ids=set(),
         )
-
         first_label = view.children[0].label
-        assert first_label.startswith("1. ")
-        assert first_label.endswith("\u2026")
-        assert utf16_len(first_label) <= 80
+        assert first_label == "1"
 
-    def test_truncates_long_choice_label_breaks_on_word_boundary(self):
-        # Long choice with spaces — should cut at the last whole word so the
-        # trailing text stays readable on Discord mobile.
+    def test_button_label_short_for_multiword_choice(self):
         long_choice = (
             "Tight, well-illustrated, covers all 3 audiences "
             "(patients, families, curious general readers)"
@@ -157,34 +170,7 @@ class TestClarifyChoiceViewConstruction:
             allowed_user_ids=set(),
         )
         first_label = view.children[0].label
-        assert first_label.startswith("1. ")
-        assert first_label.endswith("\u2026")
-        # No mid-word fragment before the ellipsis.
-        assert not first_label.rstrip("\u2026").endswith("(")
-
-    def test_truncates_long_no_space_choice_on_soft_boundary(self):
-        # A long choice with soft boundaries (commas, hyphens) but no spaces
-        # should still cut on a soft boundary, not mid-word. We use an input
-        # where position 76 is NOT a soft boundary — the test only passes
-        # if the renderer actively searches backward for a soft char
-        # rather than blindly cutting at the budget limit.
-        long_choice = "a" * 30 + "-" + "b" * 30 + "-" + "c" * 30 + "-" + "d" * 30
-        # 30a-30b-30c-30d = 30 + 1 + 30 + 1 + 30 + 1 + 30 = 123 chars
-        # Position 76 is 'b' (a mid-word alpha). The renderer must look back
-        # for a '-' to cut on.
-        view = ClarifyChoiceView(
-            choices=[long_choice],
-            clarify_id="cidSB",
-            allowed_user_ids=set(),
-        )
-        first_label = view.children[0].label
-        assert first_label.endswith("\u2026")
-        assert len(first_label) <= 80
-        body = first_label[len("1. "):].rstrip("\u2026")
-        last_char = body[-1]
-        assert last_char in {"-", ",", ".", ")", " "}, (
-            f"Label cuts mid-word at {last_char!r}: {first_label!r}"
-        )
+        assert first_label == "1"
 
 
 # ===========================================================================
@@ -460,13 +446,16 @@ class TestDiscordSendClarify:
         view = kwargs["view"]
         # Only 1 real choice + 1 Other = 2 children
         assert len(view.children) == 2
-        assert "real-choice" in view.children[0].label
+        # Button label is just the index; full text lives in the embed.
+        assert view.children[0].label == "1"
+        embed = kwargs["embed"]
+        assert "real-choice" in _choices_field_value(embed)
 
     @pytest.mark.asyncio
     async def test_unwraps_dict_choices_to_description(self):
         # LLMs sometimes emit [{"description": "..."}] instead of bare strings
         # — the renderer must unwrap common dict shapes, not str() the whole
-        # dict into a Python repr on the button label.
+        # dict into a Python repr anywhere user-facing (embed field text).
         adapter = _make_adapter()
         channel = MagicMock()
         sent_msg = MagicMock()
@@ -488,24 +477,26 @@ class TestDiscordSendClarify:
             session_key="sk-U",
         )
         kwargs = channel.send.call_args.kwargs
-        view = kwargs["view"]
-        labels = [b.label for b in view.children[:-1]]  # exclude Other
-        # No raw Python repr should leak onto any label.
-        for label in labels:
-            assert "{'" not in label
-            assert "':" not in label
+        embed = kwargs["embed"]
+        option_text = _choices_field_value(embed)
+        # No raw Python repr should leak into the rendered choice text.
+        assert "{'" not in option_text
+        assert "':" not in option_text
         # Each dict unwrapped to its inner string.
-        assert any("Tight, well-illustrated" in lbl for lbl in labels)
-        assert any("Use label key" in lbl for lbl in labels)
-        assert any("Use text key" in lbl for lbl in labels)
-        assert any("normal-string" in lbl for lbl in labels)
+        assert "Tight, well-illustrated" in option_text
+        assert "Use label key" in option_text
+        assert "Use text key" in option_text
+        assert "normal-string" in option_text
+        # Button labels remain short numeric indices regardless.
+        labels = [b.label for b in kwargs["view"].children[:-1]]
+        assert labels == ["1", "2", "3", "4"]
 
     @pytest.mark.asyncio
     async def test_unwrap_prefers_description_over_name_in_multi_key_dict(self):
         # When the LLM emits both 'name' (often a short identifier in
         # OpenAI-style tool calls) and 'description' (the user-facing text),
         # the renderer must surface 'description'. The user should never see
-        # a 4-char model identifier on a button label.
+        # a 4-char model identifier in the rendered choice text.
         adapter = _make_adapter()
         channel = MagicMock()
         sent_msg = MagicMock()
@@ -521,12 +512,14 @@ class TestDiscordSendClarify:
             session_key="sk-N",
         )
         kwargs = channel.send.call_args.kwargs
-        view = kwargs["view"]
-        choice_label = view.children[0].label
-        assert "Tight, well-illustrated" in choice_label
-        # The 'name' value (a short identifier) must NOT have leaked.
-        body = choice_label.split("1. ", 1)[1].rstrip("\u2026")
-        assert "tight" not in body, f"'name' leaked onto button: {choice_label!r}"
+        embed = kwargs["embed"]
+        option_text = _choices_field_value(embed)
+        assert "Tight, well-illustrated" in option_text
+        # The 'name' value (a short identifier) must NOT have leaked as its
+        # own standalone token (it's fine that "tight" is a substring of
+        # "Tight" case-insensitively — check the literal lowercase form
+        # isn't present as a separate word).
+        assert "\ntight\n" not in option_text.lower()
 
     @pytest.mark.asyncio
     async def test_unwrap_prefers_label_over_description(self):
@@ -548,12 +541,12 @@ class TestDiscordSendClarify:
             session_key="sk-L",
         )
         kwargs = channel.send.call_args.kwargs
-        view = kwargs["view"]
-        choice_label = view.children[0].label
-        assert "Short" in choice_label
+        embed = kwargs["embed"]
+        option_text = _choices_field_value(embed)
+        assert "Short" in option_text
         # The longer description must NOT have leaked.
-        assert "Long verbose" not in choice_label, (
-            f"'description' leaked over 'label': {choice_label!r}"
+        assert "Long verbose" not in option_text, (
+            f"'description' leaked over 'label': {option_text!r}"
         )
 
     @pytest.mark.asyncio
@@ -561,8 +554,8 @@ class TestDiscordSendClarify:
         # 'name' and 'value' are Discord-component-shaped fields that could
         # accidentally appear in dicts not intended as choices (e.g., a
         # developer-error in the gateway wiring). The renderer should not
-        # surface them as button labels — only the well-known LLM tool-call
-        # keys (label, description, text, title) should win.
+        # surface them in the rendered choice text — only the well-known
+        # LLM tool-call keys (label, description, text, title) should win.
         adapter = _make_adapter()
         channel = MagicMock()
         sent_msg = MagicMock()
@@ -583,12 +576,57 @@ class TestDiscordSendClarify:
         )
         kwargs = channel.send.call_args.kwargs
         view = kwargs["view"]
-        choice_labels = [b.label for b in view.children[:-1]]  # exclude Other
-        # Only the well-formed dict survives.
-        assert len(choice_labels) == 1, (
-            f"Expected 1 choice, got {len(choice_labels)}: {choice_labels!r}"
+        # Only the well-formed dict survives as an actual button.
+        choice_buttons = view.children[:-1]  # exclude Other
+        assert len(choice_buttons) == 1, (
+            f"Expected 1 choice, got {len(choice_buttons)}"
         )
-        assert "real choice" in choice_labels[0]
-        for label in choice_labels:
-            assert "only_name_here" not in label, f"name leaked: {label!r}"
-            assert "only_value_here" not in label, f"value leaked: {label!r}"
+        embed = kwargs["embed"]
+        option_text = _choices_field_value(embed)
+        assert "real choice" in option_text
+        assert "only_name_here" not in option_text
+        assert "only_value_here" not in option_text
+
+    @pytest.mark.asyncio
+    async def test_choices_field_value_never_exceeds_discord_embed_field_cap(self):
+        # Regression test: the "Choices" embed field value is the numbered
+        # option list PLUS a fixed instruction suffix ("Pick a button
+        # below, or click..."). Truncating only the option list to 1024
+        # chars and then appending the suffix can push the *combined*
+        # value over Discord's real 1024-char embed-field cap, which
+        # causes channel.send() to raise and send_clarify() to report a
+        # failed send on exactly the long-choice-list case this feature
+        # exists to handle.
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 999
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        # 24 choices (the max allowed) of substantial length guarantees the
+        # raw numbered option list alone is well over 1024 chars, forcing
+        # the truncation path to run.
+        long_choices = [f"Option number {i} with some extra descriptive text" for i in range(24)]
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick one",
+            choices=long_choices,
+            clarify_id="cidCap",
+            session_key="sk-Cap",
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        embed = kwargs["embed"]
+        option_text = _choices_field_value(embed)
+        assert len(option_text) <= 1024, (
+            f"Choices embed field value is {len(option_text)} chars, "
+            "exceeding Discord's 1024-char embed field cap"
+        )
+        # The instruction suffix must still be present and intact even when
+        # the option list had to be truncated to make room for it.
+        assert option_text.endswith(
+            "Pick a button below, or click ✏️ Other to type a custom answer."
+        )

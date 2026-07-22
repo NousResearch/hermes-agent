@@ -1958,7 +1958,20 @@ def init_agent(
             _user_providers = _agent_cfg.get("providers")
             _disabled_custom_provider_ids: set[str] = set()
             if isinstance(_user_providers, dict):
-                from hermes_cli.config import is_provider_enabled
+                try:
+                    from hermes_cli.config import is_provider_enabled
+                except ImportError:
+                    # Fallback for older packaged versions (Desktop 0.19.0)
+                    # where the function may not be bundled yet (#68379).
+                    def is_provider_enabled(cfg):
+                        if not isinstance(cfg, dict):
+                            return True
+                        flag = cfg.get("enabled", True)
+                        if isinstance(flag, bool):
+                            return flag
+                        if isinstance(flag, str):
+                            return flag.strip().lower() not in {"false", "0", "no", "off"}
+                        return bool(flag)
 
                 for _provider_key, _provider_entry in _user_providers.items():
                     if not isinstance(_provider_entry, dict):

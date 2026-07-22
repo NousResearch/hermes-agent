@@ -2023,7 +2023,6 @@ def init_agent(
         _active_base_url = _normalize_route_base_url(_active_route_url)
         _route_mismatch = bool(
             _configured_base_url
-            and _active_base_url
             and _configured_base_url != _active_base_url
         )
         if not _configured_base_url:

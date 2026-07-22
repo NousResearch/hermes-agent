@@ -30,6 +30,8 @@ landed via #28754 / #28781 ahead of this fix.
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -150,6 +152,118 @@ def test_initial_gate_idempotent_retry_accepts_existing_gate(
             "human_gate_created",
             "blocked",
         ]
+
+
+def test_initial_gate_idempotency_rejects_ambiguous_legacy_duplicates(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        ordinary = kb.create_task(
+            conn,
+            title="ordinary task",
+            assignee="worker",
+            idempotency_key="shared-operation",
+        )
+        gate = kb.create_task(
+            conn,
+            title="approval required",
+            assignee="worker",
+            initial_status="blocked",
+            idempotency_key="gate-operation",
+        )
+        conn.execute(
+            "UPDATE tasks SET idempotency_key=?, created_at=created_at+1 "
+            "WHERE id=?",
+            ("shared-operation", gate),
+        )
+        conn.commit()
+
+        with pytest.raises(ValueError, match="not a human gate"):
+            kb.create_task(
+                conn,
+                title="approval retry",
+                assignee="worker",
+                initial_status="blocked",
+                idempotency_key="shared-operation",
+            )
+
+        ordinary_task = kb.get_task(conn, ordinary)
+        gate_task = kb.get_task(conn, gate)
+        assert ordinary_task is not None and ordinary_task.status == "ready"
+        assert gate_task is not None and gate_task.status == "blocked"
+
+
+def test_idempotent_gate_and_runnable_creators_serialize(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_lookup = getattr(kb, "_lookup_idempotent_task")
+    first_lookup_barrier = threading.Barrier(2)
+    local = threading.local()
+
+    def synchronized_lookup(conn, idempotency_key, *, require_human_gate):
+        result = original_lookup(
+            conn,
+            idempotency_key,
+            require_human_gate=require_human_gate,
+        )
+        if not getattr(local, "passed_fast_path", False):
+            local.passed_fast_path = True
+            first_lookup_barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(kb, "_lookup_idempotent_task", synchronized_lookup)
+    outcomes: list[tuple[str, str]] = []
+    outcomes_lock = threading.Lock()
+
+    def create(initial_status: str | None) -> None:
+        try:
+            with kb.connect() as conn:
+                if initial_status is None:
+                    task_id = kb.create_task(
+                        conn,
+                        title="same logical operation",
+                        assignee="worker",
+                        idempotency_key="racing-operation",
+                    )
+                else:
+                    task_id = kb.create_task(
+                        conn,
+                        title="same logical operation",
+                        assignee="worker",
+                        initial_status=initial_status,
+                        idempotency_key="racing-operation",
+                    )
+            outcome = ("task", task_id)
+        except ValueError as exc:
+            outcome = ("error", str(exc))
+        except Exception as exc:  # pragma: no cover - asserted below
+            outcome = ("unexpected", repr(exc))
+        with outcomes_lock:
+            outcomes.append(outcome)
+
+    threads = [
+        threading.Thread(target=create, args=(None,)),
+        threading.Thread(target=create, args=("blocked",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, status FROM tasks WHERE idempotency_key=?",
+            ("racing-operation",),
+        ).fetchall()
+    assert len(rows) == 1
+    assert len(outcomes) == 2
+    assert all(kind != "unexpected" for kind, _value in outcomes)
+    if rows[0]["status"] == "blocked":
+        assert outcomes[0][1] == outcomes[1][1]
+    else:
+        assert sorted(kind for kind, _value in outcomes) == ["error", "task"]
 
 
 def test_authorization_is_bound_to_task_execution_content(

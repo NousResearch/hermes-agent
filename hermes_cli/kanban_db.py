@@ -2718,6 +2718,35 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _lookup_idempotent_task(
+    conn: sqlite3.Connection,
+    idempotency_key: str,
+    *,
+    require_human_gate: bool,
+) -> Optional[str]:
+    """Return the existing task for a key, rejecting unsafe gate reuse.
+
+    Older databases can contain duplicate keys because the lookup historically
+    ran only before the write transaction. A blocked create must not return one
+    gate while another task for the same logical operation remains runnable.
+    """
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "ORDER BY created_at DESC, rowid DESC",
+        (idempotency_key,),
+    ).fetchall()
+    if not rows:
+        return None
+    if require_human_gate and any(
+        not _is_human_gate(conn, row["id"]) for row in rows
+    ):
+        raise ValueError(
+            "idempotency_key already belongs to a task that is not a human gate"
+        )
+    return rows[0]["id"]
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2871,27 +2900,18 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path — return existing non-archived task.
+    # There is no DB-level UNIQUE constraint (migration complexity), so this
+    # early lookup is an optimization. It is repeated under BEGIN IMMEDIATE
+    # below so concurrent creators cannot insert duplicate logical operations.
     if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            if initial_status == "blocked" and not _is_human_gate(
-                conn, row["id"]
-            ):
-                raise ValueError(
-                    "idempotency_key already belongs to a task that is not a "
-                    "human gate"
-                )
-            return row["id"]
+        existing_id = _lookup_idempotent_task(
+            conn,
+            idempotency_key,
+            require_human_gate=initial_status == "blocked",
+        )
+        if existing_id is not None:
+            return existing_id
 
     now = int(time.time())
 
@@ -2920,9 +2940,17 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
-                # Determine task status from parent status, unless the caller
-                # parks it directly in blocked for human-ops review or in
-                # triage for a specifier.
+                if idempotency_key:
+                    existing_id = _lookup_idempotent_task(
+                        conn,
+                        idempotency_key,
+                        require_human_gate=initial_status == "blocked",
+                    )
+                    if existing_id is not None:
+                        return existing_id
+                # Resolve parent statuses while the write lock is held. The
+                # caller can instead park the task directly in blocked for
+                # human review or in triage for a specifier.
                 if initial_status == "blocked":
                     task_status = "blocked"
                     if parents:

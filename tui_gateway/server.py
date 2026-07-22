@@ -1062,6 +1062,15 @@ def _get_db():
     return _db
 
 
+def _open_session_db(home: Path | None = None):
+    from hermes_state import SessionDB
+
+    try:
+        return SessionDB(db_path=Path(home or _hermes_home) / "state.db")
+    except Exception:
+        return None
+
+
 def _db_unavailable_error(rid, *, code: int):
     detail = _db_error or "state.db unavailable"
     return _err(rid, code, f"state.db unavailable: {detail}")
@@ -1601,14 +1610,13 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # HERMES_HOME so config/skills/model resolve to it, and hand the
             # agent that profile's db so turns persist to the right state.db.
             session_db = None
+            db_home = Path(profile_home) if profile_home else Path(_hermes_home)
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
-                try:
-                    from hermes_state import SessionDB
-
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                except Exception:
-                    session_db = None
+            try:
+                session_db = _open_session_db(db_home)
+            except Exception:
+                session_db = None
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
@@ -1949,22 +1957,16 @@ def _ensure_session_db_row(session: dict) -> None:
     key = session.get("session_key")
     if not key:
         return
-    # Persist into the session's own profile db (global remote mode), not the
-    # launch profile's — otherwise the row lands in the wrong state.db, the
-    # unified list mis-tags it, and resume 404s ("session not found").
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
-        close_db = True
-    else:
-        db = _get_db()
-        close_db = False
+    # Persist into the session's owning state.db. Profile sessions use their
+    # profile home; default sessions use the gateway launch home explicitly so
+    # they cannot inherit a stale global SessionDB handle.
+    db_home = Path(session.get("profile_home") or _hermes_home)
+    try:
+        db = _open_session_db(db_home)
+    except Exception:
+        logger.debug("failed to open session db for session row", exc_info=True)
+        return
+    close_db = True
     if db is None:
         return
     # The session's own model/effort/fast pick — the composer override shipped on
@@ -2086,21 +2088,15 @@ def _session_db(session: dict):
     """Yield the SessionDB that owns this session's row (profile-aware).
 
     Mirrors :func:`_ensure_session_db_row`: a remote/profile session persists
-    into its own profile's ``state.db`` (a fresh handle we close on exit);
-    everything else borrows the shared ``_get_db()`` handle (left open). Yields
-    None when the db is unavailable.
+    into its own profile's ``state.db``; default sessions persist into the
+    gateway launch home's ``state.db``. Yields None when the db is unavailable.
     """
     db, close_db = None, False
-    profile_home = session.get("profile_home")
-    if profile_home:
-        from hermes_state import SessionDB
-
-        try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
-        except Exception:
-            logger.debug("failed to open profile db for session", exc_info=True)
-    else:
-        db = _get_db()
+    db_home = Path(session.get("profile_home") or _hermes_home)
+    try:
+        db, close_db = _open_session_db(db_home), True
+    except Exception:
+        logger.debug("failed to open session db for session", exc_info=True)
     try:
         yield db
     finally:
@@ -6025,7 +6021,7 @@ def _(rid, params: dict) -> dict:
 
 @method("session.list")
 def _(rid, params: dict) -> dict:
-    db = _get_db()
+    db = _open_session_db()
     if db is None:
         return _db_unavailable_error(rid, code=5006)
     try:
@@ -6067,7 +6063,8 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5006, str(e))
-
+    finally:
+        getattr(db, "close", lambda: None)()
 
 @method("session.most_recent")
 def _(rid, params: dict) -> dict:
@@ -6084,7 +6081,7 @@ def _(rid, params: dict) -> dict:
     null-result shape (and logged) so callers don't have to special-
     case JSON-RPC error envelopes for what is a normal "no answer".
     """
-    db = _get_db()
+    db = _open_session_db()
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
@@ -6111,7 +6108,8 @@ def _(rid, params: dict) -> dict:
     except Exception:
         logger.exception("session.most_recent failed")
         return _ok(rid, {"session_id": None})
-
+    finally:
+        getattr(db, "close", lambda: None)()
 
 @method("project.facts")
 def _(rid, params: dict) -> dict:
@@ -6277,11 +6275,9 @@ def _(rid, params: dict) -> dict:
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
     if profile_home is not None:
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=profile_home / "state.db")
+        db = _open_session_db(profile_home)
     else:
-        db = _get_db()
+        db = _open_session_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
 

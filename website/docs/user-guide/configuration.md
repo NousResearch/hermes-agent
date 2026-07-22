@@ -63,6 +63,35 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+## Skill Prompt Tiers
+
+Large skill libraries can make the default system prompt noisy. `skills.tiers`
+lets you keep skills installed and discoverable while rendering a smaller skills
+index in new sessions:
+
+```yaml
+skills:
+  tiers:
+    enabled: true
+    hot:
+      - hermes-agent       # shown normally in the system prompt
+    warm:
+      - github-operations  # compact reminder; load only on explicit match
+      - writing-plans
+    cold:
+      - pixel-art          # name shown; description omitted
+```
+
+Skill tiers are **prompt-rendering hints, not access control**. Cold skill names
+remain in the system-prompt index so the model can recall them, but their
+descriptions are omitted. They remain available through `skills_list`,
+`skill_view`, and explicit skill loads. When tiers are enabled, skills not named
+in `hot` or `cold` default to warm so newly-created skills keep a compact
+description instead of being silently demoted.
+
+Leave `skills.tiers.enabled: false` or omit the block to keep the classic full
+skills index.
+
 :::tip Org deployments
 An administrator can pin specific config and secret values that a standard user
 cannot override, via a system-level managed directory. See

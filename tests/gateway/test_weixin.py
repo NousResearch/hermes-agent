@@ -1205,3 +1205,84 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+
+class TestWeixinLockContentionSyncBuf:
+    """Regression: stale sync_buf must be cleared after lock contention recovery."""
+
+    def test_lock_contention_flag_set_on_acquire_failure(self):
+        """When platform lock fails, _lock_contention_detected is set."""
+        adapter = _make_adapter()
+        assert adapter._lock_contention_detected is False
+
+        # Simulate lock failure
+        adapter._acquire_platform_lock = lambda *a, **k: False
+        result = asyncio.run(adapter.connect())
+        assert result is False
+        assert adapter._lock_contention_detected is True
+
+    def test_poll_loop_clears_sync_buf_on_contention_flag(self, tmp_path):
+        """_poll_loop with clear_sync_buf=True clears the persisted file."""
+        adapter = _make_adapter()
+        adapter._hermes_home = str(tmp_path)
+
+        # Pre-populate sync_buf file
+        weixin._save_sync_buf(str(tmp_path), "test-account", "stale-buf-value")
+        assert weixin._load_sync_buf(str(tmp_path), "test-account") == "stale-buf-value"
+
+        # Set up a minimal poll_session mock so _poll_loop can start
+        mock_session = Mock()
+        mock_session.closed = False
+
+        # _poll_loop will call _get_updates which we mock to cancel immediately
+        async def _fake_get_updates(*a, **kw):
+            raise asyncio.CancelledError()
+
+        adapter._poll_session = mock_session
+        adapter._running = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            with patch("gateway.platforms.weixin._get_updates", side_effect=_fake_get_updates):
+                loop.run_until_complete(adapter._poll_loop(clear_sync_buf=True))
+        except asyncio.CancelledError:
+            pass
+        finally:
+            loop.close()
+
+        # Verify sync_buf file was cleared
+        saved = weixin._load_sync_buf(str(tmp_path), "test-account")
+        assert saved == "", f"sync_buf should be empty after contention recovery, got: {saved!r}"
+
+    def test_poll_loop_preserves_sync_buf_without_contention(self, tmp_path):
+        """_poll_loop without clear_sync_buf loads existing sync_buf."""
+        adapter = _make_adapter()
+        adapter._hermes_home = str(tmp_path)
+
+        # Pre-populate sync_buf
+        weixin._save_sync_buf(str(tmp_path), "test-account", "valid-cursor")
+
+        mock_session = Mock()
+        mock_session.closed = False
+
+        captured_sync_buf = {}
+
+        async def _fake_get_updates(*a, **kw):
+            captured_sync_buf["value"] = kw.get("sync_buf") or a[3] if len(a) > 3 else kw.get("sync_buf")
+            raise asyncio.CancelledError()
+
+        adapter._poll_session = mock_session
+        adapter._running = True
+
+        loop = asyncio.new_event_loop()
+        try:
+            with patch("gateway.platforms.weixin._get_updates", side_effect=_fake_get_updates):
+                loop.run_until_complete(adapter._poll_loop(clear_sync_buf=False))
+        except asyncio.CancelledError:
+            pass
+        finally:
+            loop.close()
+
+        # sync_buf should still be the original value
+        saved = weixin._load_sync_buf(str(tmp_path), "test-account")
+        assert saved == "valid-cursor", f"sync_buf should be preserved, got: {saved!r}"

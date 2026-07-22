@@ -3667,16 +3667,49 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(
+        media_files,
+        max_age_seconds: Optional[float] = None,
+    ) -> List[Tuple[str, bool]]:
+        """Drop unsafe or stale MEDIA paths and normalize accepted paths.
+
+        Files older than max_age_seconds are rejected as stale re-deliveries:
+        when the agent quotes session history or memory containing a MEDIA: tag,
+        extract_media() picks it up and this filter prevents the old file from
+        being re-sent to the user (issue #39607).
+
+        TTL defaults to trust_recent_files_seconds config (default 600s/10min).
+        Set to 0 to disable TTL filtering entirely.
+        """
+        import time as _time
+        if max_age_seconds is None:
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config()
+                _gateway_cfg = _cfg.get('gateway', {})
+                max_age_seconds = float(_gateway_cfg.get('trust_recent_files_seconds', 600))
+            except Exception:
+                max_age_seconds = 600.0
         safe_media: List[Tuple[str, bool]] = []
+        now = _time.time()
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
             safe_path = validate_media_delivery_path(raw)
-            if safe_path:
-                safe_media.append((safe_path, bool(is_voice)))
-            else:
+            if not safe_path:
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
+                continue
+            if max_age_seconds > 0:
+                try:
+                    age = now - os.path.getmtime(safe_path)
+                    if age > max_age_seconds:
+                        logger.info(
+                            "Skipping stale MEDIA file (age=%.0fs > %.0fs TTL): %s",
+                            age, max_age_seconds, _log_safe_path(safe_path),
+                        )
+                        continue
+                except OSError:
+                    pass
+            safe_media.append((safe_path, bool(is_voice)))
         return safe_media
 
     @staticmethod

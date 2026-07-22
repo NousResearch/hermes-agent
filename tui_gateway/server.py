@@ -6289,7 +6289,20 @@ def _(rid, params: dict) -> dict:
         # A delegated child mid-run emits no session events of its own — report
         # its liveness from the relay registry so the window shows a busy turn.
         child_running = _child_run_active(target)
-        messages = _history_to_messages(history)
+        # User-visible messages use the VERBATIM display projection (child-only,
+        # no ancestors — matching the repaired read above), so model-invisible
+        # rows persisted by #65919 (verification candidates collapsed by
+        # repair_message_sequence) survive in the watch window just as they do
+        # on the eager resume + REST paths. The repaired ``history`` above still
+        # feeds live replay. Fall back to it if the display read fails.
+        try:
+            display_history = db.get_messages_as_conversation(
+                target, repair_alternation=False
+            )
+        except Exception:
+            logger.debug("child-watch display projection read failed", exc_info=True)
+            display_history = history
+        messages = _history_to_messages(display_history)
         return _ok(
             rid,
             {

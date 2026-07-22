@@ -1582,6 +1582,120 @@ def test_reconcile_display_with_live_trusts_db_when_tail_absent():
     assert server._reconcile_display_with_live(db_display, []) == db_display
 
 
+def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
+    """E2E cross-builder consistency against a real SessionDB.
+
+    A persisted verification candidate (finish_reason=verification_required)
+    is collapsed out of the model history by repair_message_sequence but kept
+    in the display lineage (#65919). The warm/live projection
+    (_live_visible_history) must equal the eager session.resume display
+    projection — both keeping the candidate — so switching to a live session
+    shows the same substantive answer a cold resume would.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="do the thing")
+    db.append_message(
+        "s1", role="assistant", content="long substantive answer",
+        finish_reason="verification_required",
+    )
+    db.append_message(
+        "s1", role="assistant", content="terse verified reply", finish_reason="stop",
+    )
+
+    model_history, display_history = db.get_resume_conversations("s1")
+
+    # The divergence #65919 introduced: candidate absent from the model
+    # projection, present in the display projection.
+    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert any("long substantive" in (m.get("content") or "") for m in display_history)
+
+    # Eager session.resume serves the display projection.
+    eager_messages = server._history_to_messages(display_history)
+    # Warm/live reuse: in-memory history is the collapsed model projection.
+    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    # They must agree — the candidate survives the warm switch.
+    assert server._history_to_messages(live_history) == eager_messages
+    assert any(m.get("text") == "long substantive answer" for m in eager_messages)
+
+
+def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_path):
+    """Real-DB variant of the combined case: a candidate from turn 1 AND a
+    fully-flushed turn 2 both appear once."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="turn 1")
+    db.append_message(
+        "s1", role="assistant", content="candidate answer",
+        finish_reason="verification_required",
+    )
+    db.append_message("s1", role="assistant", content="verified reply", finish_reason="stop")
+    db.append_message("s1", role="user", content="turn 2")
+    db.append_message("s1", role="assistant", content="turn 2 reply", finish_reason="stop")
+
+    model_history, display_history = db.get_resume_conversations("s1")
+    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    texts = [m.get("text") for m in server._history_to_messages(live_history)]
+
+    assert texts == [
+        "turn 1",
+        "candidate answer",
+        "verified reply",
+        "turn 2",
+        "turn 2 reply",
+    ]
+
+
+def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch, tmp_path):
+    """The delegated-child watch-window cold resume (lazy=True) must serve the
+    verbatim display projection so a persisted verification candidate is not
+    collapsed out of the watch window (#65919 sibling of the warm-payload fix).
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("child1", source="tui")
+    db.append_message("child1", role="user", content="child prompt")
+    db.append_message(
+        "child1", role="assistant", content="child substantive answer",
+        finish_reason="verification_required",
+    )
+    db.append_message(
+        "child1", role="assistant", content="child terse reply", finish_reason="stop",
+    )
+
+    lease = types.SimpleNamespace(session_id="child1", release=lambda: None)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *a, **k: (lease, None)
+    )
+    monkeypatch.setattr(
+        server, "_deferred_session_record", lambda *a, **k: {"created_at": 123.0}
+    )
+    monkeypatch.setattr(server, "_claim_or_reuse_live", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "child1", "lazy": True},
+        }
+    )
+
+    assert "error" not in resp, resp
+    texts = [m.get("text") for m in resp["result"]["messages"]]
+    assert "child substantive answer" in texts
+    assert texts == ["child prompt", "child substantive answer", "child terse reply"]
+
+
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     """Resuming a rotated-out parent id must load the continuation's messages.
 

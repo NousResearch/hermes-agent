@@ -275,7 +275,15 @@ def finalize_turn(
         # Compare content (not just role) so a verification candidate that
         # matches the final response is not duplicated at budget
         # exhaustion. (#65919 §7)
-        if final_response and not interrupted:
+        #
+        # Skip the literal ``"(empty)"`` failure sentinel. The empty-response
+        # exhaustion path stamps a marked assistant("(empty)") that
+        # ``_drop_trailing_empty_response_scaffolding`` just removed so it
+        # would not poison SessionDB / resume. Re-appending an unmarked copy
+        # here because ``final_response`` is still ``"(empty)"`` undoes that
+        # contract and can re-enter empty-response loops on "continue".
+        _is_empty_failure_sentinel = final_response == "(empty)"
+        if final_response and not interrupted and not _is_empty_failure_sentinel:
             try:
                 _tail = messages[-1] if messages else None
             except Exception:

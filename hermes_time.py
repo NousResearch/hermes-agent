@@ -133,3 +133,18 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+def current_time_line() -> str:
+    """Return a human-readable current-time line for system prompt injection.
+
+    Format: ``Current time: YYYY-MM-DD HH:MM:SS TZ (Weekday)``
+
+    Called at API-call time so the agent always sees a fresh timestamp
+    rather than whatever was captured at session start.
+    """
+    n = now()
+    return (
+        f"Current time: {n.strftime('%Y-%m-%d %H:%M:%S')} "
+        f"{n.strftime('%Z')} ({n.strftime('%A')})"
+    )
+
+

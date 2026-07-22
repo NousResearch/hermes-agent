@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   enumOptionsFor,
@@ -15,18 +16,26 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
-  it('lists the desktop memory provider options in their declared order', () => {
-    const options = enumOptionsFor('memory.provider', '', {})
+  it('surfaces repository discovery config in Workspace with user-facing copy', () => {
+    const workspace = SECTIONS.find(section => section.id === 'workspace')
 
-    // Built-in memory is not a provider plugin; the empty sentinel is the
-    // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
+    expect(workspace?.keys).toEqual(
+      expect.arrayContaining([
+        'desktop.repo_scan_enabled',
+        'desktop.repo_scan_roots',
+        'desktop.repo_scan_exclude_paths'
+      ])
+    )
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.repo_scan_enabled')).toBeTruthy()
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
-  it('keeps a legacy literal builtin value visible as the current selection', () => {
-    const options = enumOptionsFor('memory.provider', 'builtin', {})
-
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+  it('does not shadow the backend schema options for memory.provider', () => {
+    // memory.provider options are discovery-driven and served by the backend
+    // config schema (merged per-request); enumOptionsFor must return undefined
+    // so config-field consumes schema.options instead of a stale static list.
+    expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
+    expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
   describe('isExternalMemoryProvider', () => {

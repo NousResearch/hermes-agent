@@ -456,7 +456,7 @@ class HermesACPAgent(acp.Agent):
         "tools": "List available tools",
         "context": "Show conversation context info",
         "reset": "Clear conversation history",
-        "compact": "Compress conversation context",
+        "compress": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
         "version": "Show Hermes version",
@@ -485,7 +485,7 @@ class HermesACPAgent(acp.Agent):
             "description": "Clear conversation history",
         },
         {
-            "name": "compact",
+            "name": "compress",
             "description": "Compress conversation context",
         },
         {
@@ -1218,12 +1218,19 @@ class HermesACPAgent(acp.Agent):
             with state.runtime_lock:
                 if state.is_running and state.current_prompt_text:
                     state.interrupted_prompt_text = state.current_prompt_text
-            state.cancel_event.set()
-            try:
-                if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
-                    state.agent.interrupt()
-            except Exception:
-                logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
+                # Publish cancellation and hard-stop the agent before another
+                # prompt can acquire this lock and mistake the turn for
+                # redirectable work.
+                state.cancel_event.set()
+                try:
+                    if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
+                        state.agent.interrupt()
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt ACP session %s",
+                        session_id,
+                        exc_info=True,
+                    )
             logger.info("Cancelled session %s", session_id)
 
     async def fork_session(
@@ -1352,6 +1359,26 @@ class HermesACPAgent(acp.Agent):
             elif rewrite_idle:
                 user_text = steer_text
                 user_content = steer_text
+        elif (
+            text_only_prompt
+            and isinstance(user_content, str)
+            and not user_text.startswith("/")
+        ):
+            # Some ACP clients implement "stop and send" as two protocol calls:
+            # cancel the active prompt, then submit plain correction text. Keep
+            # the cancelled request attached so deictic follow-ups ("not that
+            # file") still have an explicit target.
+            interrupted_prompt = ""
+            with state.runtime_lock:
+                if not state.is_running and state.interrupted_prompt_text:
+                    interrupted_prompt = state.interrupted_prompt_text
+                    state.interrupted_prompt_text = ""
+            if interrupted_prompt:
+                user_text = (
+                    f"{interrupted_prompt}\n\n"
+                    f"User correction/guidance after interrupt: {user_text}"
+                )
+                user_content = user_text
 
         # Intercept slash commands — handle locally without calling the LLM.
         # Slash commands are text-only; if the client included images/resources,
@@ -1366,23 +1393,54 @@ class HermesACPAgent(acp.Agent):
                     await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
-        # If Zed sends another regular prompt while the same ACP session is
-        # still running, queue it instead of racing two AIAgent loops against
-        # the same state.history. /steer and /queue are handled above and can
-        # land immediately.
+        # If the client sends another regular text prompt while this ACP session
+        # is running, route it through the core active-turn redirect. Rich media
+        # and older runtimes retain the proven next-turn queue fallback.
+        redirected = False
+        queued_depth: int | None = None
         with state.runtime_lock:
             if state.is_running:
-                queued_text = user_text or "[Image attachment]"
-                state.queued_prompts.append(queued_text)
-                depth = len(state.queued_prompts)
-                if self._conn:
-                    update = acp.update_agent_message_text(
-                        f"Queued for the next turn. ({depth} queued)"
+                if (
+                    text_only_prompt
+                    and isinstance(user_content, str)
+                    and getattr(
+                        state.agent,
+                        "_supports_active_turn_redirect",
+                        False,
                     )
-                    await self._conn.session_update(session_id, update)
-                return PromptResponse(stop_reason="end_turn")
-            state.is_running = True
-            state.current_prompt_text = user_text or "[Image attachment]"
+                    is True
+                    and hasattr(state.agent, "redirect")
+                ):
+                    try:
+                        redirected = bool(state.agent.redirect(user_content))
+                    except Exception:
+                        logger.debug(
+                            "ACP active-turn redirect failed for %s",
+                            session_id,
+                            exc_info=True,
+                        )
+                if not redirected:
+                    queued_text = user_text or "[Image attachment]"
+                    state.queued_prompts.append(queued_text)
+                    queued_depth = len(state.queued_prompts)
+            else:
+                state.is_running = True
+                state.current_prompt_text = user_text or "[Image attachment]"
+
+        if redirected:
+            if self._conn:
+                update = acp.update_agent_message_text(
+                    "Redirected the active turn with your correction."
+                )
+                await self._conn.session_update(session_id, update)
+            return PromptResponse(stop_reason="end_turn")
+        if queued_depth is not None:
+            if self._conn:
+                update = acp.update_agent_message_text(
+                    f"Queued for the next turn. ({queued_depth} queued)"
+                )
+                await self._conn.session_update(session_id, update)
+            return PromptResponse(stop_reason="end_turn")
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1756,7 +1814,7 @@ class HermesACPAgent(acp.Agent):
             "tools": self._cmd_tools,
             "context": self._cmd_context,
             "reset": self._cmd_reset,
-            "compact": self._cmd_compact,
+            "compress": self._cmd_compress,
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
             "version": self._cmd_version,
@@ -1898,7 +1956,7 @@ class HermesACPAgent(acp.Agent):
                     lines.append(
                         f"Compression: due now (threshold ~{threshold_tokens:,}"
                         + (f", {threshold_pct:.0f}%" if threshold_pct else "")
-                        + "). Run /compact."
+                        + "). Run /compress."
                     )
                 else:
                     lines.append(
@@ -1913,7 +1971,7 @@ class HermesACPAgent(acp.Agent):
         if getattr(agent, "compression_enabled", True) is False:
             lines.append("Compression is disabled for this agent.")
         else:
-            lines.append("Tip: run /compact to compress manually before the threshold.")
+            lines.append("Tip: run /compress to compress manually before the threshold.")
 
         return "\n".join(lines)
 
@@ -1933,7 +1991,7 @@ class HermesACPAgent(acp.Agent):
             return "Conversation history cleared. Agent session state reset failed; see logs."
         return "Conversation history cleared."
 
-    def _cmd_compact(self, args: str, state: SessionState) -> str:
+    def _cmd_compress(self, args: str, state: SessionState) -> str:
         if not state.history:
             return "Nothing to compress — conversation is empty."
         try:

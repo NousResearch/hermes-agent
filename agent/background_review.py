@@ -794,17 +794,22 @@ def _run_review_in_thread(
             # conversation (the review fires every ~10 turns). Leave session
             # finalization to the real owner (CLI close / gateway reset / cron).
             review_agent._end_session_on_close = False
-            # Never let the review fork compress. It shares the parent's
-            # session_id, so if it won a compression race it would rotate the
-            # parent into a NEW child that the gateway never adopts (the fork
-            # is single-lifecycle and dies right after this run_conversation).
-            # The foreground turn would then start from the stale parent and
-            # compress it again, leaving the same parent with two sibling
-            # children (issue #38727). Review also needs full context to
-            # produce a good memory/skill summary — compressing would strip
-            # detail. Both compression triggers in conversation_loop.py gate on
-            # agent.compression_enabled, so this short-circuits both paths.
-            review_agent.compression_enabled = False
+            # Allow the review fork to compact an oversized snapshot before its
+            # first provider call.  Persistence is disabled above, so compaction
+            # remains in-memory and cannot rotate/archive the parent's session.
+            #
+            # AIAgent.__init__ already bound ContextCompressor to the parent's
+            # SessionDB/session_id before we nulled review_agent._session_db.
+            # Detach that hidden binding too: otherwise the review could still
+            # contend for the parent's compression lock or persist compression
+            # cooldown/streak state despite _persist_disabled=True.
+            _review_compressor = getattr(review_agent, "context_compressor", None)
+            _bind_review_compressor = getattr(
+                _review_compressor, "bind_session_state", None
+            )
+            if callable(_bind_review_compressor):
+                _bind_review_compressor(session_db=None, session_id="")
+            setattr(review_agent, "compression_enabled", True)
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (

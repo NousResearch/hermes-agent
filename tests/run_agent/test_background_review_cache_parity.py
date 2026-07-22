@@ -73,6 +73,11 @@ def _make_recorder_class(captured=None, record_on_run=()):
     after construction.
     """
 
+    class _Compressor:
+        def bind_session_state(self, *, session_db=None, session_id=""):
+            if captured is not None:
+                captured["compressor_binding"] = (session_db, session_id)
+
     class _Recorder:
         def __init__(self, *args, **kwargs):
             if captured is not None:
@@ -88,6 +93,8 @@ def _make_recorder_class(captured=None, record_on_run=()):
             self.suppress_status_output = None
             self.session_start = None
             self.session_id = None
+            self.context_compressor = _Compressor()
+            self.compression_enabled = None
 
         def run_conversation(self, *args, **kwargs):
             if captured is not None:
@@ -185,6 +192,28 @@ def test_review_fork_pins_session_start_and_session_id():
         "Review fork did not inherit parent's session_id — "
         "system-prompt rebuild paths would diverge."
     )
+
+
+def test_review_fork_enables_only_detached_in_memory_compression():
+    """Review compaction must not retain the parent SessionDB binding."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    _Recorder = _make_recorder_class(
+        captured, record_on_run=("compression_enabled",)
+    )
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured.get("compressor_binding") == (None, "")
+    assert captured.get("compression_enabled") is True
 
 
 def test_review_fork_inherits_parent_toolset_config():

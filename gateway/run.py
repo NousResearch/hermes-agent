@@ -7658,7 +7658,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
+        # Reconcile explicitly-disabled platforms up front: mark each as
+        # "disabled" and clear any stale connected/paused/error metadata a
+        # previous run left in gateway_state.json. The connect loop below skips
+        # disabled platforms, so without this their old status would persist and
+        # mislead `hermes status` / readiness probes into reporting a turned-off
+        # platform as live. See gateway.status.write_runtime_status.
+        try:
+            disabled_platform_values = [
+                p.value
+                for p, pc in self.config.platforms.items()
+                if not getattr(pc, "enabled", False)
+            ]
+            if disabled_platform_values:
+                from gateway.status import write_runtime_status
+                write_runtime_status(disabled_platforms=disabled_platform_values)
+        except Exception:
+            logger.debug("disabled-platform status reconcile failed", exc_info=True)
+
         # Initialize and connect each configured platform
         _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))
         _multiplex_skipped_platforms: list[Platform] = []

@@ -203,6 +203,40 @@ async def test_wait_keeps_push_waiter_when_pull_is_unsupported(
 
 
 @pytest.mark.asyncio
+async def test_protocol_rejected_pull_accepts_delayed_unversioned_push(
+    tmp_path: Path,
+):
+    """Exercise rejection-first ordering through the real subprocess reader."""
+    path = tmp_path / "x.ts"
+    path.write_text("const value = 1;\n")
+    client = _client(tmp_path, "reject_then_unversioned_push")
+    assert client._env is not None
+    client._env["MOCK_LSP_PUSH_DELAY"] = "0.05"
+    await client.start()
+    try:
+        version_zero = await client.open_file(str(path), language_id="typescript")
+        assert await client.wait_for_diagnostics(
+            str(path), version_zero, mode="document", timeout=1.0
+        )
+        key = uri_to_path(file_uri(str(path)))
+        assert client._docs[key].push_version == version_zero
+
+        path.write_text("const value = 2;\n")
+        version_one = await client.open_file(str(path), language_id="typescript")
+        assert await client.wait_for_diagnostics(
+            str(path), version_one, mode="document", timeout=1.0
+        )
+
+        assert client._docs[key].push_version == version_one
+        diagnostics = client.diagnostics_for(str(path), fresh_only=True)
+        assert [diagnostic["code"] for diagnostic in diagnostics] == [
+            "MOCK_UNVERSIONED"
+        ]
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_wait_cancellation_stops_preserved_push_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

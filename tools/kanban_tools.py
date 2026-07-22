@@ -56,6 +56,7 @@ _KANBAN_SHOW_MAX_EVENTS = 5
 _KANBAN_SHOW_MAX_RUNS = 3
 _KANBAN_SHOW_MAX_PARENT_HANDOFFS = 10
 _KANBAN_SHOW_MAX_ATTACHMENTS = 3
+_KANBAN_SHOW_MAX_GRAPH_IDS = 100
 _KANBAN_SHOW_BODY_PREVIEW_CHARS = 500
 _KANBAN_SHOW_FIELD_PREVIEW_CHARS = 300
 
@@ -93,6 +94,23 @@ def _put_bounded_json(target: dict[str, Any], key: str, value: Any) -> None:
     if full_chars is not None:
         target[f"{key}_truncated"] = True
         target[f"{key}_full_chars"] = full_chars
+
+
+def _kanban_show_error(message: Any) -> str:
+    """Keep every kanban_show return bounded while preserving small errors."""
+    error = str(message)
+    if len(error) <= 1_000:
+        return tool_error(error)
+    preview, full_chars = _bounded_preview(error, 1_000)
+    return json.dumps({
+        "error": preview,
+        "error_truncated": True,
+        "error_full_chars": full_chars,
+        "recovery": (
+            "Canonical board data is unchanged. Retry with a valid task_id/board, "
+            "or inspect the dashboard and `hermes kanban list`."
+        ),
+    }, ensure_ascii=False)
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -414,7 +432,7 @@ def _handle_show(args: dict, **kw) -> str:
     """Return a bounded model-facing orientation view of one canonical task."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
-        return tool_error(
+        return _kanban_show_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
     board = args.get("board")
@@ -423,7 +441,7 @@ def _handle_show(args: dict, **kw) -> str:
         try:
             task = kb.get_task(conn, tid)
             if task is None:
-                return tool_error(f"task {tid} not found")
+                return _kanban_show_error(f"task {tid} not found")
             all_comments = kb.list_comments(conn, tid)
             all_events = kb.list_events(conn, tid)
             all_runs = kb.list_runs(conn, tid)
@@ -498,10 +516,10 @@ def _handle_show(args: dict, **kw) -> str:
                 latest = completed[-1] if completed else None
                 handoff = {
                     "task_id": parent_id,
-                    "title": parent.title,
                     "completed_at": parent.completed_at,
                     "run_id": latest.id if latest else None,
                 }
+                _put_bounded_text(handoff, "title", parent.title)
                 _put_bounded_text(
                     handoff, "summary",
                     latest.summary if latest and latest.summary else parent.result,
@@ -517,11 +535,15 @@ def _handle_show(args: dict, **kw) -> str:
             )
 
             shown_parent_handoffs = parent_handoffs[-_KANBAN_SHOW_MAX_PARENT_HANDOFFS:]
+            shown_parents = parents[-_KANBAN_SHOW_MAX_GRAPH_IDS:]
+            shown_children = children[-_KANBAN_SHOW_MAX_GRAPH_IDS:]
             shown_comments = all_comments[-_KANBAN_SHOW_MAX_COMMENTS:]
             shown_events = all_events[-_KANBAN_SHOW_MAX_EVENTS:]
             shown_runs = all_runs[-_KANBAN_SHOW_MAX_RUNS:]
             shown_attachments = all_attachments[-_KANBAN_SHOW_MAX_ATTACHMENTS:]
             omitted = {
+                "parents": len(parents) - len(shown_parents),
+                "children": len(children) - len(shown_children),
                 "parent_handoffs": len(parent_handoffs) - len(shown_parent_handoffs),
                 "attachments": len(all_attachments) - len(shown_attachments),
                 "comments": len(all_comments) - len(shown_comments),
@@ -531,14 +553,16 @@ def _handle_show(args: dict, **kw) -> str:
 
             return json.dumps({
                 "task": _task_dict(task),
-                "parents": parents,
-                "children": children,
+                "parents": shown_parents,
+                "children": shown_children,
                 "parent_handoffs": shown_parent_handoffs,
                 "attachments": [_attachment_dict(a) for a in shown_attachments],
                 "comments": [_comment_dict(c) for c in shown_comments],
                 "events": [_event_dict(e) for e in shown_events],
                 "runs": [_run_dict(r) for r in shown_runs],
                 "totals": {
+                    "parents": len(parents),
+                    "children": len(children),
                     "parent_handoffs": len(parent_handoffs),
                     "attachments": len(all_attachments),
                     "comments": len(all_comments),
@@ -569,10 +593,10 @@ def _handle_show(args: dict, **kw) -> str:
             conn.close()
     except ValueError as e:
         # Invalid board slug surfaces as ValueError from _normalize_board_slug.
-        return tool_error(f"kanban_show: {e}")
+        return _kanban_show_error(f"kanban_show: {e}")
     except Exception as e:
         logger.exception("kanban_show failed")
-        return tool_error(f"kanban_show: {e}")
+        return _kanban_show_error(f"kanban_show: {e}")
 
 
 def _handle_list(args: dict, **kw) -> str:

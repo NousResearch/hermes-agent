@@ -566,6 +566,19 @@ class TestReadShape:
         result = json.loads(session_search(session_id="ghost", db=db))
         assert result["success"] is False
 
+    def test_adversarial_unknown_session_error_is_bounded_and_diagnostic(self, db):
+        session_id = "missing-" + ("S" * 200_000)
+
+        raw = session_search(session_id=session_id, db=db)
+        result = json.loads(raw)
+
+        assert len(raw) < 100_000
+        assert result["success"] is False
+        assert result["error"].startswith("session_id not found: missing-")
+        assert result["error_truncated"] is True
+        assert result["error_full_chars"] == len("session_id not found: ") + len(session_id)
+        assert "recovery" in result
+
     def test_read_truncates_large_session(self, db):
         db.create_session("s_big", source="cli")
         for i in range(50):

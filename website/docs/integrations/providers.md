@@ -1186,6 +1186,29 @@ custom_providers:
 
 `hermes model` will prompt for context length when configuring a custom endpoint. Leave it blank for auto-detection.
 
+#### Per-model thinking field override
+
+Some models behind custom endpoints use a different field name to disable
+thinking. For example, Qwen3 served via oMLX expects
+`chat_template_kwargs.enable_thinking` instead of the default `think`.
+You can configure this per model:
+
+```yaml
+custom_providers:
+  - name: "oMLX"
+    base_url: "http://127.0.0.1:8000/v1"
+    models:
+      Qwen3.6-35B-A3B-bf16:
+        thinking_field: chat_template_kwargs
+        thinking_subkey: enable_thinking
+```
+
+When `thinking_subkey` is set, Hermes emits
+`extra_body[thinking_field] = {thinking_subkey: false}`.
+When only `thinking_field` is set (no subkey), it emits
+`extra_body[thinking_field] = false`.
+Models without an override keep the default `think = false`.
+
 :::tip When to set this manually
 - You're using Ollama with a custom `num_ctx` that's lower than the model's maximum
 - You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)

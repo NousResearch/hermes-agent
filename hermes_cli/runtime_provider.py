@@ -1892,6 +1892,17 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if provider == "cursor":
+        api_key = (_getenv("CURSOR_API_KEY", "") or "").strip()
+        return {
+            "provider": "cursor",
+            "api_mode": "chat_completions",
+            "base_url": "cursor://agent",
+            "api_key": api_key,
+            "source": "env:CURSOR_API_KEY" if api_key else "missing",
+            "requested_provider": requested_provider,
+        }
+
     # Anthropic (native Messages API)
     if provider == "anthropic":
         # Allow base URL override from config.yaml model.base_url, but only

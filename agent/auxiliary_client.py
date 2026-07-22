@@ -201,6 +201,15 @@ def _openai_http_client_kwargs(
     return {"http_client": client}
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    base = str(base_url or "").strip()
+    if base.startswith("acp://copilot"):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        return CopilotACPClient(api_key=api_key, base_url=base, **kwargs)
+    if base.startswith("cursor://"):
+        from agent.cursor_agent_client import CursorAgentClient
+
+        return CursorAgentClient(api_key=api_key, base_url=base, **kwargs)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
@@ -2549,7 +2558,7 @@ def _validate_base_url(base_url: str) -> None:
     from urllib.parse import urlparse
 
     candidate = str(base_url or "").strip()
-    if not candidate or candidate.startswith("acp://"):
+    if not candidate or candidate.startswith("acp://") or candidate.startswith("cursor://"):
         return
     try:
         parsed = urlparse(candidate)

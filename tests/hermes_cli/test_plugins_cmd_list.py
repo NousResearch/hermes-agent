@@ -2,7 +2,10 @@ import argparse
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli import plugins_cmd
+from hermes_cli.subcommands.plugins import build_plugins_parser
 
 
 def _args(**kwargs):
@@ -12,6 +15,7 @@ def _args(**kwargs):
         "no_bundled": False,
         "plain": False,
         "json": False,
+        "no_pager": False,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -158,3 +162,59 @@ def test_cmd_list_json_output_includes_entrypoint_source(monkeypatch, capsys):
             "source": "entrypoint",
         }
     ]
+
+
+def test_should_page_long_plugin_list_in_tty():
+    console = argparse.Namespace(is_terminal=True, height=10)
+
+    assert plugins_cmd._should_page_plugin_list(
+        _args(), console, table=object(), entry_count=20
+    )
+
+
+def test_should_page_wrapped_table_using_rendered_height():
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console(width=30, height=14, force_terminal=True)
+    table = Table(title="Plugins")
+    table.add_column("Name")
+    table.add_column("Description")
+    table.add_row(
+        "demo",
+        "a long description that wraps across several narrow terminal rows",
+    )
+
+    assert plugins_cmd._should_page_plugin_list(
+        _args(), console, table=table, entry_count=1
+    )
+
+
+def test_plugin_list_pager_can_be_disabled_or_bypassed_for_streams():
+    tty_console = argparse.Namespace(is_terminal=True, height=10)
+    pipe_console = argparse.Namespace(is_terminal=False, height=10)
+
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(no_pager=True), tty_console, table=object(), entry_count=20
+    )
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(plain=True), tty_console, table=object(), entry_count=20
+    )
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(json=True), tty_console, table=object(), entry_count=20
+    )
+    assert not plugins_cmd._should_page_plugin_list(
+        _args(), pipe_console, table=object(), entry_count=20
+    )
+
+
+def test_plugins_list_no_pager_is_owned_by_list_parser():
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    build_plugins_parser(subparsers, cmd_plugins=lambda args: None)
+
+    args = parser.parse_args(["plugins", "list", "--no-pager"])
+    assert args.no_pager is True
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["plugins", "enable", "demo", "--no-pager"])

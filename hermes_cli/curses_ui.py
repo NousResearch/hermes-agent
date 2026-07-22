@@ -203,6 +203,24 @@ def _scroll_for_cursor(
     return max(0, min(scroll_offset, max(0, total_rows - visible_rows)))
 
 
+def _scroll_status_text(
+    cursor_pos: int, scroll_offset: int, visible_rows: int, total_rows: int
+) -> str:
+    """Return compact position and overflow hints for a scrollable list."""
+    if total_rows <= 0:
+        return ""
+
+    cursor_pos = max(0, min(cursor_pos, total_rows - 1))
+    visible_rows = max(1, visible_rows)
+    parts: list[str] = []
+    if scroll_offset > 0:
+        parts.append("↑ more")
+    parts.append(f"{cursor_pos + 1}/{total_rows}")
+    if scroll_offset + visible_rows < total_rows:
+        parts.append("↓ more")
+    return "  ".join(parts)
+
+
 def _handle_active_search_key(
     curses_mod, key: int, search: _SearchState
 ) -> tuple[bool, bool, bool]:
@@ -267,6 +285,10 @@ def flush_stdin() -> None:
 # every menu's key-handling branch identical and free of raw escape-byte logic.
 NAV_UP = "up"
 NAV_DOWN = "down"
+NAV_PAGE_UP = "page_up"
+NAV_PAGE_DOWN = "page_down"
+NAV_HOME = "home"
+NAV_END = "end"
 NAV_SELECT = "select"
 NAV_TOGGLE = "toggle"
 NAV_CANCEL = "cancel"
@@ -304,6 +326,14 @@ def _decode_menu_key(stdscr, key: int) -> str:
         return NAV_UP
     if key in (curses.KEY_DOWN, ord("j")):
         return NAV_DOWN
+    if key in (curses.KEY_PPAGE, ord("b")):
+        return NAV_PAGE_UP
+    if key in (curses.KEY_NPAGE, ord("f")):
+        return NAV_PAGE_DOWN
+    if key == curses.KEY_HOME:
+        return NAV_HOME
+    if key == curses.KEY_END:
+        return NAV_END
     if key in (curses.KEY_ENTER, 10, 13):
         return NAV_SELECT
     if key == ord(" "):
@@ -364,13 +394,11 @@ def _run_curses_menu(
 ):
     """Shared curses single-/multi-select event loop.
 
-    Owns every piece the three public menus used to duplicate verbatim:
-    the non-TTY guard, ``curses.wrapper`` setup (cursor hide + color pairs),
-    the per-frame ``clear``/``getmaxyx``/``refresh`` cycle, scroll-offset math,
-    row iteration, the ``read_menu_key`` dispatch with ``NAV_UP``/``NAV_DOWN``
-    cursor wrap, ``flush_stdin``, and the ``KeyboardInterrupt`` / curses-
-    unavailable fallback. Per-menu behavior is supplied as callbacks so the
-    rendered output stays byte-identical to the old hand-rolled loops.
+    Owns the non-TTY guard, ``curses.wrapper`` setup (cursor hide + color
+    pairs), per-frame rendering, filtered scrolling, extended navigation,
+    position hints, ``flush_stdin``, and the ``KeyboardInterrupt`` / curses-
+    unavailable fallback. Per-menu behavior is supplied as callbacks so
+    checklist, radio-list, and single-select menus share one driver.
 
     Callbacks / params:
         draw_header(stdscr, max_y, max_x) -> int
@@ -469,6 +497,21 @@ def _run_curses_menu(
                         break
                     draw_row(stdscr, y, i, i == cursor, max_x)
 
+                scroll_status = _scroll_status_text(
+                    cursor_pos, scroll_offset, visible_rows, len(filtered)
+                )
+                if scroll_status:
+                    try:
+                        stdscr.addnstr(
+                            max_y - reserve_bottom,
+                            0,
+                            scroll_status,
+                            max_x - 1,
+                            curses.A_DIM,
+                        )
+                    except curses.error:
+                        pass
+
                 if draw_footer is not None:
                     draw_footer(stdscr, max_y, max_x)
 
@@ -510,6 +553,14 @@ def _run_curses_menu(
                     cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, -1)
                 elif action == NAV_DOWN:
                     cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, 1)
+                elif action == NAV_PAGE_UP and filtered:
+                    cursor = filtered[max(0, cursor_pos - visible_rows)]
+                elif action == NAV_PAGE_DOWN and filtered:
+                    cursor = filtered[min(len(filtered) - 1, cursor_pos + visible_rows)]
+                elif action == NAV_HOME and filtered:
+                    cursor = filtered[0]
+                elif action == NAV_END and filtered:
+                    cursor = filtered[-1]
                 elif action in (NAV_SELECT, NAV_TOGGLE, NAV_CANCEL):
                     if action == NAV_SELECT and use_search and not filtered:
                         continue
@@ -561,7 +612,7 @@ def curses_checklist(
             stdscr.addnstr(0, 0, title, max_x - 1, hattr)
             stdscr.addnstr(
                 1, 0,
-                "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
+                "  ↑↓/j/k navigate  PgUp/PgDn page  Home/End jump  SPACE toggle  ENTER confirm  ESC cancel",
                 max_x - 1, curses.A_DIM,
             )
         except curses.error:
@@ -669,9 +720,9 @@ def curses_radiolist(
             if searchable and search is not None and search.active:
                 hint = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop"
             elif searchable:
-                hint = "  \u2191\u2193 navigate  ENTER/SPACE select  / search  ESC cancel"
+                hint = "  \u2191\u2193/j/k navigate  PgUp/PgDn page  Home/End jump  ENTER/SPACE select  / search  ESC cancel"
             else:
-                hint = "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel"
+                hint = "  \u2191\u2193/j/k navigate  PgUp/PgDn page  Home/End jump  ENTER/SPACE select  ESC cancel"
             stdscr.addnstr(row, 0, hint, max_x - 1, curses.A_DIM)
             row += 1
         except curses.error:
@@ -768,9 +819,9 @@ def curses_single_select(
             if searchable and search is not None and search.active:
                 hint = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop"
             elif searchable:
-                hint = "  ↑↓ navigate  ENTER confirm  / search  ESC/q cancel"
+                hint = "  ↑↓/j/k navigate  PgUp/PgDn page  Home/End jump  ENTER confirm  / search  ESC/q cancel"
             else:
-                hint = "  ↑↓ navigate  ENTER confirm  ESC/q cancel"
+                hint = "  ↑↓/j/k navigate  PgUp/PgDn page  Home/End jump  ENTER confirm  ESC/q cancel"
             stdscr.addnstr(1, 0, hint, max_x - 1, curses.A_DIM)
         except curses.error:
             pass

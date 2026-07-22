@@ -596,6 +596,23 @@ class AIAgent:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 
+    def _derive_orphan_user_id(self) -> Optional[str]:
+        """Derive a namespaced user_id for sessions created outside the gateway.
+
+        Gateway-registered sessions already have a user_id set by
+        SessionStore.get_or_create_session().  Fire-and-forget paths
+        (/background, /branch, delegate, cron, oneshot) reach
+        _ensure_db_session() without one.  We namespace these so listing
+        UIs can distinguish background tasks from user chats.
+        """
+        if self._user_id is None:
+            return None
+        sid = self.session_id or ""
+        for prefix in ("bg_", "cron_", "delegate_"):
+            if sid.startswith(prefix):
+                return f"{prefix.rstrip('_')}:{self._user_id}"
+        return self._user_id
+
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
         if getattr(self, "_persist_disabled", False):
@@ -617,7 +634,7 @@ class AIAgent:
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=self._derive_orphan_user_id(),
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
                 profile_name=_profile_for_session,

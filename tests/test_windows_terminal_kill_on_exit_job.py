@@ -310,6 +310,7 @@ def test_job_owned_create_process_closes_handles_via_close_handle_on_resume_fail
         _subprocess_compat.subprocess,
         "_winapi",
         type("W", (), {"CloseHandle": staticmethod(fake_close_handle)})(),
+        raising=False,
     )
     _subprocess_compat._spawn_owner.job = fake_job
     try:
@@ -357,6 +358,7 @@ def test_job_owned_create_process_warns_but_still_raises_when_terminate_also_fai
         _subprocess_compat.subprocess,
         "_winapi",
         type("W", (), {"CloseHandle": staticmethod(lambda h: None)})(),
+        raising=False,
     )
     _subprocess_compat._spawn_owner.job = fake_job
     try:
@@ -405,6 +407,7 @@ def test_install_job_owned_create_process_once_is_idempotent(monkeypatch):
         _subprocess_compat.subprocess,
         "_winapi",
         type("W", (), {"CreateProcess": real_cp})(),
+        raising=False,
     )
 
     _subprocess_compat._install_job_owned_create_process_once()
@@ -447,7 +450,7 @@ def test_install_job_owned_create_process_once_concurrent_first_callers(monkeypa
         def CreateProcess(self, value):
             self._cp = value
 
-    monkeypatch.setattr(_subprocess_compat.subprocess, "_winapi", _WinApi())
+    monkeypatch.setattr(_subprocess_compat.subprocess, "_winapi", _WinApi(), raising=False)
 
     def call():
         _subprocess_compat._install_job_owned_create_process_once()
@@ -466,6 +469,10 @@ def test_install_job_owned_create_process_once_concurrent_first_callers(monkeypa
     assert _subprocess_compat._original_create_process is real_cp
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="end-to-end against the real subprocess._winapi, which only exists on Windows",
+)
 def test_install_job_owned_create_process_once_is_reload_safe():
     """importlib.reload(hermes_cli._subprocess_compat) re-executes the
     module's top-level code in place, which resets _original_create_process

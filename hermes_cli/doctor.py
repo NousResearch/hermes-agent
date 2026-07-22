@@ -1563,6 +1563,67 @@ def run_doctor(args):
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
 
+        # Command hijacking detection: the symlink at the install location may
+        # be correct, yet `hermes` on the user's PATH can still resolve to a
+        # *different* binary if another package (e.g. an unrelated npm package
+        # named `hermes` / `hermes-cli`) is installed in a directory that comes
+        # earlier on PATH. The checks above only inspect a fixed location; this
+        # check asks the same question the shell does — "what runs when I type
+        # `hermes`?" — and flags a mismatch.
+        _resolved_hermes = _safe_which("hermes")
+        if _resolved_hermes is not None:
+            _resolved_path = Path(_resolved_hermes)
+            # The legitimate command is either our managed command link or a
+            # path that resolves into the project venv. Accept both.
+            _expected_targets = []
+            if _venv_bin is not None:
+                _expected_targets.append(_venv_bin.resolve())
+            try:
+                _expected_targets.append(_cmd_link.resolve())
+            except OSError:
+                pass
+            try:
+                _resolved_real = _resolved_path.resolve()
+            except OSError:
+                _resolved_real = _resolved_path
+
+            _is_legit = _resolved_real in _expected_targets
+            # Also accept when the resolved binary lives inside the project
+            # tree (covers `pip install -e` console scripts not symlinked
+            # through ~/.local/bin, and editable installs).
+            if not _is_legit:
+                try:
+                    _resolved_real.relative_to(PROJECT_ROOT.resolve())
+                    _is_legit = True
+                except (ValueError, OSError):
+                    _is_legit = False
+
+            if _is_legit:
+                check_ok("PATH resolves `hermes` to the Hermes binary")
+            else:
+                check_warn(
+                    "`hermes` on your PATH points to a different binary",
+                    f"(which hermes → {_resolved_hermes}; expected the Hermes "
+                    f"command at {_cmd_link_display}/hermes or the project venv)",
+                )
+                # Best-effort actionable suggestion. If the hijacking binary
+                # looks like an npm-global install, suggest uninstalling the
+                # likely culprits; otherwise suggest a PATH reorder.
+                _parts = _resolved_real.parts
+                if any(p == "node_modules" for p in _parts) or "npm" in str(_resolved_real).lower():
+                    manual_issues.append(
+                        "`hermes` is shadowed by an npm package. If you did not "
+                        "mean to install it, remove it (e.g. `npm uninstall -g "
+                        "hermes` / `npm uninstall -g hermes-cli`), or move "
+                        f"{_cmd_link_display} earlier on your PATH."
+                    )
+                else:
+                    manual_issues.append(
+                        f"`hermes` resolves to {_resolved_hermes} instead of "
+                        f"the Hermes command. Put {_cmd_link_display} earlier on "
+                        "your PATH, or remove the conflicting binary."
+                    )
+
     _section("External Tools")
     # Git
     if _safe_which("git"):

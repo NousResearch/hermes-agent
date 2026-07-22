@@ -239,6 +239,57 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_hijacked_path_npm_shows_warn(self, monkeypatch, tmp_path):
+        """When `which hermes` resolves to an npm package, doctor warns + suggests uninstall."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+
+        # Correct managed symlink is in place...
+        cmd_link_dir = tmp_path / ".local" / "bin"
+        cmd_link_dir.mkdir(parents=True)
+        cmd_link = cmd_link_dir / "hermes"
+        cmd_link.symlink_to(hermes_bin)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # ...but PATH resolves `hermes` to a foreign npm binary.
+        hijack = tmp_path / "npm-global" / "lib" / "node_modules" / "hermes-cli" / "bin" / "hermes"
+        hijack.parent.mkdir(parents=True)
+        hijack.write_text("#!/usr/bin/env node\n// not hermes agent\n")
+        hijack.chmod(0o755)
+
+        _orig_which = doctor_mod._safe_which
+        monkeypatch.setattr(
+            doctor_mod,
+            "_safe_which",
+            lambda cmd: str(hijack) if cmd == "hermes" else _orig_which(cmd),
+        )
+
+        out = _run_doctor(fix=False)
+        assert "points to a different binary" in out
+        assert "hermes-cli" in out or str(hijack) in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
+    def test_path_resolves_to_venv_shows_ok(self, monkeypatch, tmp_path):
+        """When `which hermes` resolves to the project venv binary, doctor is happy."""
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
+
+        cmd_link_dir = tmp_path / ".local" / "bin"
+        cmd_link_dir.mkdir(parents=True)
+        cmd_link = cmd_link_dir / "hermes"
+        cmd_link.symlink_to(hermes_bin)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        _orig_which = doctor_mod._safe_which
+        monkeypatch.setattr(
+            doctor_mod,
+            "_safe_which",
+            lambda cmd: str(hermes_bin) if cmd == "hermes" else _orig_which(cmd),
+        )
+
+        out = _run_doctor(fix=False)
+        assert "PATH resolves `hermes` to the Hermes binary" in out
+        assert "points to a different binary" not in out
+
     def test_windows_skips_check(self, monkeypatch, tmp_path):
         """On Windows, the Command Installation section is skipped."""
         home = tmp_path / ".hermes"

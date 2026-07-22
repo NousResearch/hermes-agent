@@ -402,3 +402,196 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+# ── Background ticker unit tests (#67102) ────────────────────────────────────
+
+
+def _wait_until_cron(predicate, timeout=10.0, interval=0.005):
+    """Block until ``predicate()`` is truthy or ``timeout`` elapses.
+
+    Returns the predicate's final value. Used instead of a fixed
+    ``time.sleep`` before asserting that a background ticker thread has called
+    tick() at least N times — under loaded CI the worker thread may not be
+    scheduled within a short fixed sleep, which made these tests flake.
+    """
+    import time as _t
+
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        _t.sleep(interval)
+    return predicate()
+
+
+class TestCronTickerBackground:
+    """Dedicated unit tests for the InProcessCronScheduler background ticker
+    loop — the in-process cron trigger that fires due jobs every N seconds
+    inside the gateway.
+
+    These test the ticker's core loop contract: interval-based firing,
+    graceful shutdown via stop_event, adapter pass-through, and error
+    resilience (the ticker must keep looping even when tick() raises).
+    """
+
+    def test_cron_ticker_fires_at_interval(self):
+        """The ticker fires tick() repeatedly at the configured interval, and
+        successive calls are spaced at least ``interval`` seconds apart."""
+        import time as _t
+        import threading
+        from unittest.mock import patch
+
+        from cron.scheduler_provider import InProcessCronScheduler
+
+        timestamps = []
+        stop = threading.Event()
+
+        def _fake_tick(*_a, **_k):
+            timestamps.append(_t.monotonic())
+            return 0
+
+        with patch("cron.scheduler.tick", side_effect=_fake_tick), \
+             patch("cron.jobs.record_ticker_heartbeat"):
+            prov = InProcessCronScheduler()
+            interval = 0.01  # 10 ms — fast but measurable
+            t = threading.Thread(
+                target=prov.start,
+                args=(stop,),
+                kwargs={"interval": interval},
+                daemon=True,
+            )
+            t.start()
+
+            assert _wait_until_cron(
+                lambda: len(timestamps) >= 3
+            ), f"Expected ≥3 ticks, got {len(timestamps)}"
+
+            stop.set()
+            t.join(timeout=5)
+
+        assert not t.is_alive(), "ticker did not exit after stop_event was set"
+        assert len(timestamps) >= 3, f"Expected ≥3 ticks, got {len(timestamps)}"
+
+        # Each successive tick must be at least ~half the interval apart
+        # (allows a tiny bit of scheduling jitter but catches a tight loop).
+        for i in range(1, len(timestamps)):
+            gap = timestamps[i] - timestamps[i - 1]
+            assert gap >= interval * 0.5, (
+                f"Tick {i} came too soon after tick {i - 1} "
+                f"(gap={gap:.4f}s, expected ≥{interval * 0.5:.4f}s)"
+            )
+
+    def test_cron_ticker_stop_event(self):
+        """The ticker exits cleanly (thread terminates) when stop_event is
+        set, even if tick() was in the middle of a cycle."""
+        import threading
+        from unittest.mock import patch
+
+        from cron.scheduler_provider import InProcessCronScheduler
+
+        calls = []
+        stop = threading.Event()
+
+        with patch("cron.scheduler.tick",
+                   side_effect=lambda *_a, **_k: calls.append(1) or 0), \
+             patch("cron.jobs.record_ticker_heartbeat"):
+            prov = InProcessCronScheduler()
+            t = threading.Thread(
+                target=prov.start,
+                args=(stop,),
+                kwargs={"interval": 0},
+                daemon=True,
+            )
+            t.start()
+
+            assert _wait_until_cron(
+                lambda: len(calls) >= 1
+            ), "ticker never called tick()"
+
+            stop.set()
+            t.join(timeout=5)
+
+        assert not t.is_alive(), "ticker did not exit after stop_event was set"
+        assert len(calls) >= 1, "ticker never called tick()"
+
+    def test_cron_ticker_with_adapter(self):
+        """Adapters are passed through to tick() on every iteration so the
+        gateway can deliver cron results to live messaging platforms."""
+        import threading
+        from unittest.mock import patch
+
+        from cron.scheduler_provider import InProcessCronScheduler
+
+        tick_kwargs = []
+        stop = threading.Event()
+        fake_adapters = {"slack": object(), "telegram": object()}
+
+        def _fake_tick(**kwargs):
+            tick_kwargs.append(kwargs)
+            return 0
+
+        with patch("cron.scheduler.tick", side_effect=_fake_tick), \
+             patch("cron.jobs.record_ticker_heartbeat"):
+            prov = InProcessCronScheduler()
+            t = threading.Thread(
+                target=prov.start,
+                args=(stop,),
+                kwargs={"interval": 0, "adapters": fake_adapters},
+                daemon=True,
+            )
+            t.start()
+
+            assert _wait_until_cron(
+                lambda: len(tick_kwargs) >= 1
+            ), "ticker never called tick() with adapters"
+
+            stop.set()
+            t.join(timeout=5)
+
+        assert len(tick_kwargs) >= 1
+        # The adapter dict should be passed through verbatim
+        assert tick_kwargs[0].get("adapters") is fake_adapters
+
+    def test_cron_ticker_handles_adapter_error(self):
+        """When tick() raises an exception (e.g. an adapter is unreachable),
+        the ticker logs the error and continues looping — it does NOT exit."""
+        import threading
+        from unittest.mock import patch
+
+        from cron.scheduler_provider import InProcessCronScheduler
+
+        calls = []
+        stop = threading.Event()
+
+        def _failing_tick(*_a, **_k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("simulated adapter failure")
+            return 0
+
+        with patch("cron.scheduler.tick", side_effect=_failing_tick), \
+             patch("cron.jobs.record_ticker_heartbeat"):
+            prov = InProcessCronScheduler()
+            t = threading.Thread(
+                target=prov.start,
+                args=(stop,),
+                kwargs={"interval": 0},
+                daemon=True,
+            )
+            t.start()
+
+            # First call raises → second call must still happen (survival).
+            assert _wait_until_cron(
+                lambda: len(calls) >= 2
+            ), f"Ticker stopped after error instead of continuing (got {len(calls)} ticks)"
+
+            stop.set()
+            t.join(timeout=5)
+
+        assert len(calls) >= 2, (
+            f"Ticker should keep looping after an error, "
+            f"but only got {len(calls)} tick(s)"
+        )
+        assert not t.is_alive(), "ticker did not exit after stop_event was set"

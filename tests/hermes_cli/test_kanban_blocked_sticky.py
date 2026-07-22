@@ -478,6 +478,79 @@ def test_init_backfills_recovered_reblock_with_missing_latest_event(
         assert kb.claim_task(conn, tid, claimer="test:claim") is None
 
 
+@pytest.mark.parametrize(
+    "clear_event",
+    ["bridge_requeued", "bridge_dispatched"],
+)
+def test_init_fail_closes_replayed_block_over_stale_crash_run(
+    kanban_home: Path,
+    clear_event: str,
+) -> None:
+    """A stale crash run cannot erase a later status-replay operator gate.
+
+    This is the selected-recovery shape of incident task ``t_fb8f9f0f``:
+    replay restored ``blocked``/``needs_input`` with no current failure fields,
+    while an older pre-recovery run remained ``crashed``. The run alone is not
+    current circuit-breaker evidence, so ambiguous recovery must fail closed.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title=f"replayed gate vs {clear_event}")
+        claimed = kb.claim_task(conn, tid, claimer="test:pre-recovery")
+        assert claimed is not None
+        with kb.write_txn(conn):
+            assert kb._end_run(
+                conn,
+                tid,
+                outcome="crashed",
+                status="crashed",
+                error="older pre-recovery crash",
+            ) is not None
+            conn.execute(
+                """UPDATE tasks
+                      SET status = 'blocked', block_kind = 'needs_input',
+                          operator_blocked = 0, consecutive_failures = 0,
+                          last_failure_error = NULL, claim_lock = NULL,
+                          claim_expires = NULL, worker_pid = NULL
+                    WHERE id = ?""",
+                (tid,),
+            )
+            conn.execute(
+                "DELETE FROM task_events WHERE task_id=? AND kind IN "
+                "('blocked', 'unblocked', 'bridge_blocked', "
+                "'bridge_requeued', 'bridge_dispatched', 'gave_up')",
+                (tid,),
+            )
+        conn.execute(f"DROP TRIGGER IF EXISTS {kb._OPERATOR_BLOCK_GUARD_TRIGGER}")
+        conn.commit()
+        row = conn.execute(
+            "SELECT status, block_kind, consecutive_failures, last_failure_error "
+            "FROM tasks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        assert (
+            row["status"], row["block_kind"], row["consecutive_failures"],
+            row["last_failure_error"],
+        ) == ("blocked", "needs_input", 0, None)
+        assert conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()["outcome"] == "crashed"
+
+    kb.init_db()
+    with kb.connect() as conn:
+        assert conn.execute(
+            "SELECT operator_blocked FROM tasks WHERE id=?", (tid,),
+        ).fetchone()["operator_blocked"] == 1
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="operator-blocked task requires authoritative unblock",
+        ):
+            _apply_real_bridge_transition(conn, tid, clear_event)
+        assert kb.recompute_ready(conn) == 0
+        assert kb.claim_task(conn, tid, claimer="test:claim") is None
+
+
 def test_init_does_not_claim_stale_block_kind_after_circuit_breaker(
     kanban_home: Path,
 ) -> None:
@@ -518,6 +591,13 @@ def test_init_does_not_claim_stale_block_kind_after_circuit_breaker(
             "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
             (tid,),
         ).fetchone()["outcome"] == "gave_up"
+        # Prove current task-row failure state plus the failure run is enough to
+        # retain automatic circuit-breaker recovery even if its gave_up event
+        # was lost from the recovered event tail.
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,),
+        )
+        conn.commit()
 
     kb.init_db()
     with kb.connect() as conn:

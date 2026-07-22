@@ -2137,7 +2137,9 @@ def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
     lifecycle or by circuit-breaker failure evidence. In particular, a latest
     ``task_runs.outcome='blocked'`` preserves a canonical re-block when recovery
     lost only its newest ``blocked`` event but older block/unblock history
-    survived.
+    survived. A failure run is considered current only when the task row still
+    carries a matching failure counter and error; a stale crash run alone is
+    ambiguous and therefore remains an operator gate.
     """
     task_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
@@ -2155,6 +2157,8 @@ def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
             SELECT
                 t.id,
                 t.block_kind,
+                t.consecutive_failures,
+                t.last_failure_error,
                 COALESCE(MAX(CASE WHEN e.kind = 'blocked' THEN e.id END), 0)
                     AS canonical_block,
                 COALESCE(MAX(CASE WHEN e.kind = 'unblocked' THEN e.id END), 0)
@@ -2172,7 +2176,14 @@ def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
                      WHERE r.task_id = t.id
                      ORDER BY r.id DESC
                      LIMIT 1
-                ) AS latest_run_outcome
+                ) AS latest_run_outcome,
+                (
+                    SELECT r.error
+                      FROM task_runs r
+                     WHERE r.task_id = t.id
+                     ORDER BY r.id DESC
+                     LIMIT 1
+                ) AS latest_run_error
               FROM tasks t
               LEFT JOIN task_events e
                 ON e.task_id = t.id
@@ -2182,7 +2193,9 @@ def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
                )
              WHERE t.status = 'blocked'
                AND t.operator_blocked = 0
-             GROUP BY t.id, t.block_kind
+             GROUP BY
+                 t.id, t.block_kind, t.consecutive_failures,
+                 t.last_failure_error
         )
         UPDATE tasks
            SET operator_blocked = 1
@@ -2193,16 +2206,18 @@ def _install_operator_block_guard(conn: sqlite3.Connection) -> None:
                  OR (
                      block_kind IN ('needs_input', 'capability', 'transient')
                      AND bridge_block <= MAX(bridge_clear, canonical_unblock)
-                     AND (
-                         latest_run_outcome = 'blocked'
+                     AND NOT (
+                         gave_up > MAX(
+                             canonical_block, canonical_unblock,
+                             bridge_block, bridge_clear
+                         )
                          OR (
-                             COALESCE(latest_run_outcome, '') NOT IN (
+                             COALESCE(consecutive_failures, 0) > 0
+                             AND last_failure_error IS NOT NULL
+                             AND latest_run_error = last_failure_error
+                             AND latest_run_outcome IN (
                                  'gave_up', 'spawn_failed', 'crashed',
                                  'timed_out', 'failed'
-                             )
-                             AND gave_up <= MAX(
-                                 canonical_block, canonical_unblock,
-                                 bridge_block, bridge_clear
                              )
                          )
                      )
@@ -3513,7 +3528,9 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     the pre-#28712 auto-recover semantics.
     """
     task = conn.execute(
-        "SELECT status, block_kind, operator_blocked FROM tasks WHERE id = ?",
+        "SELECT status, block_kind, operator_blocked, "
+        "consecutive_failures, last_failure_error "
+        "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if task and bool(task["operator_blocked"]):
@@ -3553,18 +3570,22 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         return False
 
     latest_run = conn.execute(
-        "SELECT outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT outcome, error FROM task_runs WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     latest_outcome = latest_run["outcome"] if latest_run else None
-    if latest_outcome == "blocked":
-        return True
-    if latest_outcome in {
-        "gave_up", "spawn_failed", "crashed", "timed_out", "failed",
-    }:
-        return False
     if gave_up > max(
         canonical_block, canonical_unblock, bridge_block, bridge_clear,
+    ):
+        return False
+    if (
+        latest_outcome in {
+            "gave_up", "spawn_failed", "crashed", "timed_out", "failed",
+        }
+        and int(task["consecutive_failures"] or 0) > 0
+        and task["last_failure_error"] is not None
+        and latest_run["error"] == task["last_failure_error"]
     ):
         return False
 

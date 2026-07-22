@@ -7,6 +7,7 @@ Default model is ``auto`` (server-selected; survives usage-limit lockouts).
 
 from __future__ import annotations
 
+from agent.cursor_agent_client import list_cursor_model_ids
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -21,7 +22,7 @@ class CursorProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        return ["auto", "composer-2.5", "default"]
+        return list_cursor_model_ids(api_key=api_key)
 
 
 cursor = CursorProfile(

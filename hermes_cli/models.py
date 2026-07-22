@@ -273,8 +273,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "cursor": [
         "auto",
-        "composer-2.5",
         "default",
+        "composer-2.5",
+        "composer-2",
+        "composer-1.5",
     ],
     "copilot": [
         "gpt-5.4",
@@ -2469,6 +2471,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "cursor":
+        try:
+            from agent.cursor_agent_client import list_cursor_model_ids
+
+            live = list_cursor_model_ids()
+            if live:
+                return list(live)
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("cursor", []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

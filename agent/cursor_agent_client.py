@@ -18,6 +18,50 @@ from typing import Any
 CURSOR_MARKER_BASE_URL = "cursor://agent"
 _DEFAULT_MODEL = "auto"
 
+# Curated picker catalog — Auto first (survives named-model usage lockouts).
+CURSOR_CURATED_MODELS = (
+    "auto",
+    "default",
+    "composer-2.5",
+    "composer-2",
+    "composer-1.5",
+)
+
+
+def list_cursor_model_ids(*, api_key: str | None = None) -> list[str]:
+    """Return Cursor model ids for ``/model`` / ``hermes model`` pickers.
+
+    Prefers a live ``Cursor.models.list()`` catalog when ``CURSOR_API_KEY``
+    works, always keeping curated Auto/default/Composer ids at the front.
+    """
+    curated = list(CURSOR_CURATED_MODELS)
+    key = (api_key or "").strip() or (os.environ.get("CURSOR_API_KEY") or "").strip()
+    if not key:
+        return curated
+    try:
+        from cursor_sdk import Cursor  # type: ignore
+
+        live_models = Cursor.models.list(api_key=key) or []
+    except Exception:
+        return curated
+
+    live_ids: list[str] = []
+    for item in live_models:
+        mid = str(getattr(item, "id", "") or "").strip()
+        if mid:
+            live_ids.append(mid)
+
+    if not live_ids:
+        return curated
+
+    merged = list(curated)
+    seen = {m.lower() for m in merged}
+    for mid in live_ids:
+        if mid.lower() not in seen:
+            merged.append(mid)
+            seen.add(mid.lower())
+    return merged
+
 
 def _estimate_usage(messages, tools, response_text, reasoning_text=""):
     from agent.copilot_acp_client import _estimate_usage as _est

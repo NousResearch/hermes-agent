@@ -782,6 +782,21 @@ class TestExternalDriftGuard:
         result = store.replace("memory", "Entry two", "Entry two replaced.")
         assert result["success"] is True
 
+    def test_delimiter_adjacent_whitespace_does_not_trigger_drift(self, store):
+        """Blank lines around § are cosmetic because entries are stripped."""
+        path = store._path_for("memory")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("First entry.\n\n§\nSecond entry.\n", encoding="utf-8")
+        store.load_from_disk()
+
+        result = store.replace("memory", "Second entry", "Second entry updated.")
+
+        assert result["success"] is True
+        assert "drift_backup" not in result
+        assert path.read_text(encoding="utf-8") == (
+            "First entry.\n§\nSecond entry updated."
+        )
+
     def test_error_message_points_at_remediation(self, store):
         """The error string must reference the backup AND remediation steps."""
         store.add("memory", "Initial.")

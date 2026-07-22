@@ -115,7 +115,7 @@ class WSTransport:
         if self._closed:
             return False
 
-        line = json.dumps(obj, ensure_ascii=False)
+        line = json.dumps(obj, ensure_ascii=False) + "\n"
 
         try:
             on_loop = asyncio.get_running_loop() is self._loop
@@ -217,7 +217,7 @@ class WSTransport:
             self._pending_tokens = []
         if pending:
             await self._safe_send_many(pending)
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+        await self._safe_send(json.dumps(obj, ensure_ascii=False) + "\n")
         return not self._closed
 
     async def _safe_send(self, line: str) -> None:

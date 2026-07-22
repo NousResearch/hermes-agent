@@ -480,7 +480,25 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
 
-    if agent._memory_store:
+    # External memory provider system prompt block.
+    # Built ahead of the built-in block so we can suppress built-in injection
+    # when an external provider with content is configured AND the user opted
+    # in via ``memory.suppress_builtin_when_external`` — this avoids
+    # double-injecting the same information into every system prompt
+    # (see #28796). The default keeps the historical additive behavior.
+    _ext_mem_block = ""
+    if agent._memory_manager:
+        try:
+            _ext_mem_block = agent._memory_manager.build_system_prompt() or ""
+        except Exception:
+            _ext_mem_block = ""
+
+    _suppress_builtin = bool(
+        getattr(agent, "_memory_suppress_builtin_when_external", False)
+        and _ext_mem_block
+    )
+
+    if agent._memory_store and not _suppress_builtin:
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:
@@ -491,14 +509,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
-    # External memory provider system prompt block (additive to built-in)
-    if agent._memory_manager:
-        try:
-            _ext_mem_block = agent._memory_manager.build_system_prompt()
-            if _ext_mem_block:
-                volatile_parts.append(_ext_mem_block)
-        except Exception:
-            pass
+    if _ext_mem_block:
+        volatile_parts.append(_ext_mem_block)
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()

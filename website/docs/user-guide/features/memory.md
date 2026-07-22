@@ -327,7 +327,17 @@ Full details in [Gating agent skill writes](/user-guide/features/skills#gating-a
 
 For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.
 
-External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
+External providers run **alongside** built-in memory by default (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
+
+If you've migrated existing notes into the external provider and don't want the built-in MEMORY.md / USER.md blocks injected into the system prompt on top of the provider's own context, opt in to suppression:
+
+```yaml
+memory:
+  provider: openviking          # or honcho, mem0, hindsight, ...
+  suppress_builtin_when_external: true
+```
+
+When set, the built-in memory and user-profile blocks are skipped whenever the external provider returns a non-empty system-prompt block. If the external provider has no content yet (or temporarily errors out), the built-in blocks are still injected so you don't silently lose your notes.
 
 ```bash
 hermes memory setup      # pick a provider and configure it

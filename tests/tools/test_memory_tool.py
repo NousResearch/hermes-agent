@@ -7,6 +7,8 @@ from pathlib import Path
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
+    load_on_disk_store,
+    safe_user_key,
     _scan_memory_content,
     MEMORY_SCHEMA,
 )
@@ -915,3 +917,130 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# =========================================================================
+# Per-user USER.md isolation (#27182)
+#
+# When a platform user identity is present, USER.md is partitioned at
+# memories/users/<safe_key>/USER.md so one gateway user's preferences never
+# leak into another user's conversations. MEMORY.md stays global. No
+# identity (TUI, one-shot, single-user default) keeps the global USER.md —
+# byte-for-byte the old behavior.
+# =========================================================================
+
+
+def _make_store(tmp_path, monkeypatch, **kwargs):
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    s = MemoryStore(memory_char_limit=500, user_char_limit=300, **kwargs)
+    s.load_from_disk()
+    return s
+
+
+class TestSafeUserKey:
+    def test_safe_token_passes_through(self):
+        assert safe_user_key("U03G89W2A10") == "U03G89W2A10"
+        assert safe_user_key("123456789") == "123456789"
+
+    def test_platform_qualification(self):
+        assert safe_user_key("12345", "telegram") == "telegram-12345"
+        assert safe_user_key("12345", "discord") == "discord-12345"
+        # Same raw ID on two platforms → distinct keys (no collision).
+        assert safe_user_key("12345", "telegram") != safe_user_key("12345", "discord")
+
+    def test_traversal_and_separator_ids_are_hashed(self):
+        for hostile in ("../../etc/passwd", "..", ".", "a/b", "a\\b",
+                        "user:with:colons", "name with spaces", "e@mail.com"):
+            key = safe_user_key(hostile)
+            assert key.startswith("h-"), hostile
+            assert "/" not in key and "\\" not in key and ".." not in key
+
+    def test_unicode_id_is_hashed(self):
+        key = safe_user_key("\u7528\u6237\u540d")
+        assert key.startswith("h-")
+
+    def test_hashing_is_stable(self):
+        assert safe_user_key("a/b", "slack") == safe_user_key("a/b", "slack")
+
+    def test_hostile_platform_forces_hash_even_with_safe_id(self):
+        key = safe_user_key("U123", "../evil")
+        assert key.startswith("h-")
+
+    def test_overlong_id_is_hashed(self):
+        key = safe_user_key("x" * 65)
+        assert key.startswith("h-")
+        assert len(key) <= 64
+
+
+class TestPerUserIsolation:
+    def test_no_user_id_uses_global_paths(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path, monkeypatch)
+        assert store._path_for("user") == tmp_path / "USER.md"
+        assert store._path_for("memory") == tmp_path / "MEMORY.md"
+
+    def test_user_id_partitions_user_md_only(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path, monkeypatch, user_id="U_ALICE", platform="slack")
+        assert store._path_for("user") == tmp_path / "users" / "slack-U_ALICE" / "USER.md"
+        # MEMORY.md stays global regardless of identity.
+        assert store._path_for("memory") == tmp_path / "MEMORY.md"
+
+    def test_empty_user_id_falls_back_to_global(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path, monkeypatch, user_id="")
+        assert store._path_for("user") == tmp_path / "USER.md"
+
+    def test_two_users_are_isolated_round_trip(self, tmp_path, monkeypatch):
+        alice = _make_store(tmp_path, monkeypatch, user_id="U_ALICE")
+        assert alice.add("user", "Prefers metric units.")["success"] is True
+
+        bob = _make_store(tmp_path, monkeypatch, user_id="U_BOB")
+        assert bob.user_entries == []
+        assert bob.add("user", "Prefers imperial units.")["success"] is True
+
+        # Reload each from disk — entries stayed in their own partitions.
+        alice2 = _make_store(tmp_path, monkeypatch, user_id="U_ALICE")
+        assert alice2.user_entries == ["Prefers metric units."]
+        bob2 = _make_store(tmp_path, monkeypatch, user_id="U_BOB")
+        assert bob2.user_entries == ["Prefers imperial units."]
+
+        # Global USER.md untouched by either user's writes.
+        no_id = _make_store(tmp_path, monkeypatch)
+        assert no_id.user_entries == []
+
+    def test_global_memory_shared_across_users(self, tmp_path, monkeypatch):
+        alice = _make_store(tmp_path, monkeypatch, user_id="U_ALICE")
+        alice.add("memory", "Project uses Python 3.12.")
+        bob = _make_store(tmp_path, monkeypatch, user_id="U_BOB")
+        assert "Project uses Python 3.12." in bob.memory_entries
+
+    def test_traversal_id_stays_inside_memory_dir(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path, monkeypatch, user_id="../../escape")
+        user_path = store._path_for("user").resolve()
+        assert user_path.is_relative_to(tmp_path.resolve())
+        assert user_path.parent.parent == (tmp_path / "users").resolve()
+        # Writes land inside the partition, not at the escaped location.
+        assert store.add("user", "Safe entry.")["success"] is True
+        assert user_path.exists()
+
+    def test_load_from_disk_creates_partition_dir(self, tmp_path, monkeypatch):
+        _make_store(tmp_path, monkeypatch, user_id="U_NEW")
+        assert (tmp_path / "users" / "U_NEW").is_dir()
+
+
+class TestLoadOnDiskStoreIdentity:
+    """The gateway /memory approval path must write to the same per-user
+    partition the live agent uses (review blocker on #27183)."""
+
+    def test_identity_scoped_store_matches_agent_partition(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        agent_store = MemoryStore(user_id="U_CARL", platform="slack")
+        agent_store.load_from_disk()
+        agent_store.add("user", "Wants weekly summaries.")
+
+        approval_store = load_on_disk_store(user_id="U_CARL", platform="slack")
+        assert approval_store._path_for("user") == agent_store._path_for("user")
+        assert "Wants weekly summaries." in approval_store.user_entries
+
+    def test_no_identity_store_keeps_global_behavior(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = load_on_disk_store()
+        assert store._path_for("user") == tmp_path / "USER.md"

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -276,6 +277,36 @@ def _is_trivial_message(text: str) -> bool:
     return bool(_TRIVIAL_RE.match((text or "").strip()))
 
 
+def _error_status(exc: Exception) -> Optional[int]:
+    for attr in ("status_code", "status"):
+        status = getattr(exc, attr, None)
+        if isinstance(status, int):
+            return status
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            status = getattr(response, attr, None)
+            if isinstance(status, int):
+                return status
+    return None
+
+
+def _is_not_found_error(exc: Exception) -> bool:
+    """Return True for SDK exceptions that represent HTTP 404/not-found."""
+    if _error_status(exc) == 404:
+        return True
+    text = str(exc).lower()
+    return "404" in text and "not found" in text
+
+
+def _is_document_processing_error(exc: Exception) -> bool:
+    """Return True when Supermemory rejects document deletion while indexing."""
+    if _error_status(exc) != 409:
+        return False
+    text = str(exc).lower()
+    return "processing" in text
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
@@ -378,9 +409,35 @@ class _SupermemoryClient:
                     })
         return {"static": static, "dynamic": dynamic, "search_results": search_results}
 
-    def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None) -> None:
+    def _delete_document_with_retry(self, document_id: str) -> None:
+        delays = (2.0, 5.0, 10.0, 15.0)
+        last_error: Exception | None = None
+        for attempt in range(len(delays) + 1):
+            try:
+                self._client.documents.delete(document_id)
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= len(delays) or not _is_document_processing_error(exc):
+                    raise
+                time.sleep(delays[attempt])
+        if last_error is not None:
+            raise last_error
+
+    def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None,
+                      allow_document_fallback: bool = True) -> None:
         tag = container_tag or self._container_tag
-        self._client.memories.forget(container_tag=tag, id=memory_id)
+        try:
+            self._client.memories.forget(container_tag=tag, id=memory_id)
+            return
+        except Exception as exc:
+            if not allow_document_fallback or not _is_not_found_error(exc):
+                raise
+            logger.debug(
+                "Supermemory memory-id forget returned not-found; trying document delete fallback",
+                exc_info=True,
+            )
+        self._delete_document_with_retry(memory_id)
 
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
         results = self.search_memories(query, limit=5, container_tag=container_tag)
@@ -390,7 +447,7 @@ class _SupermemoryClient:
         memory_id = target.get("id", "")
         if not memory_id:
             return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id, container_tag=container_tag)
+        self.forget_memory(memory_id, container_tag=container_tag, allow_document_fallback=False)
         preview = (target.get("memory") or "")[:100]
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 

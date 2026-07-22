@@ -1,12 +1,15 @@
 import json
 import os
 import stat
+import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _SupermemoryClient,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -297,6 +300,108 @@ def test_forget_tool_by_query(provider):
     result = json.loads(provider.handle_tool_call("supermemory_forget", {"query": "that thing"}))
     assert result["success"] is True
     assert result["id"] == "m7"
+
+
+class FakeSupermemoryNotFound(Exception):
+    status_code = 404
+
+
+class FakeSupermemoryMemories:
+    def __init__(self, *, raise_not_found=False):
+        self.raise_not_found = raise_not_found
+        self.forget_calls = []
+
+    def forget(self, **kwargs):
+        self.forget_calls.append(kwargs)
+        if self.raise_not_found:
+            raise FakeSupermemoryNotFound("Error code: 404 - {'error': 'Memory not found'}")
+
+
+class FakeSupermemoryProcessing(Exception):
+    status_code = 409
+
+
+class FakeSupermemoryDocuments:
+    def __init__(self, *, processing_failures=0):
+        self.delete_calls = []
+        self.processing_failures = processing_failures
+
+    def delete(self, document_id):
+        self.delete_calls.append(document_id)
+        if self.processing_failures > 0:
+            self.processing_failures -= 1
+            raise FakeSupermemoryProcessing("Error code: 409 - {'error': 'Document is still processing'}")
+
+
+class FakeSupermemorySearch:
+    def __init__(self, results):
+        self._results = results
+
+    def memories(self, **kwargs):
+        return SimpleNamespace(results=self._results)
+
+
+class FakeSupermemorySDK:
+    def __init__(self, *, raise_not_found=False, search_results=None, processing_failures=0):
+        self.memories = FakeSupermemoryMemories(raise_not_found=raise_not_found)
+        self.documents = FakeSupermemoryDocuments(processing_failures=processing_failures)
+        self.search = FakeSupermemorySearch(search_results or [])
+
+
+class FakeSupermemoryFactory:
+    def __init__(self, sdk):
+        self.sdk = sdk
+
+    def __call__(self, **kwargs):
+        return self.sdk
+
+
+def test_raw_client_forget_falls_back_to_document_delete_for_document_ids(monkeypatch):
+    sdk = FakeSupermemorySDK(raise_not_found=True)
+    monkeypatch.setitem(sys.modules, "supermemory", SimpleNamespace(Supermemory=FakeSupermemoryFactory(sdk)))
+    client = _SupermemoryClient("test-key", 1.0, "hermes")
+
+    client.forget_memory("doc_123")
+
+    assert sdk.memories.forget_calls == [{"container_tag": "hermes", "id": "doc_123"}]
+    assert sdk.documents.delete_calls == ["doc_123"]
+
+
+def test_raw_client_forget_keeps_memory_id_path_when_it_exists(monkeypatch):
+    sdk = FakeSupermemorySDK(raise_not_found=False)
+    monkeypatch.setitem(sys.modules, "supermemory", SimpleNamespace(Supermemory=FakeSupermemoryFactory(sdk)))
+    client = _SupermemoryClient("test-key", 1.0, "hermes")
+
+    client.forget_memory("memory_123")
+
+    assert sdk.memories.forget_calls == [{"container_tag": "hermes", "id": "memory_123"}]
+    assert sdk.documents.delete_calls == []
+
+
+def test_raw_client_forget_retries_document_delete_while_processing(monkeypatch):
+    sdk = FakeSupermemorySDK(raise_not_found=True, processing_failures=2)
+    monkeypatch.setitem(sys.modules, "supermemory", SimpleNamespace(Supermemory=FakeSupermemoryFactory(sdk)))
+    monkeypatch.setattr("plugins.memory.supermemory.time.sleep", lambda delay: None)
+    client = _SupermemoryClient("test-key", 1.0, "hermes")
+
+    client.forget_memory("doc_processing")
+
+    assert sdk.documents.delete_calls == ["doc_processing", "doc_processing", "doc_processing"]
+
+
+def test_forget_by_query_does_not_document_delete_memory_search_ids(monkeypatch):
+    sdk = FakeSupermemorySDK(
+        raise_not_found=True,
+        search_results=[SimpleNamespace(id="memory_missing", memory="fact", similarity=0.91)],
+    )
+    monkeypatch.setitem(sys.modules, "supermemory", SimpleNamespace(Supermemory=FakeSupermemoryFactory(sdk)))
+    client = _SupermemoryClient("test-key", 1.0, "hermes")
+
+    with pytest.raises(FakeSupermemoryNotFound):
+        client.forget_by_query("fact")
+
+    assert sdk.memories.forget_calls == [{"container_tag": "hermes", "id": "memory_missing"}]
+    assert sdk.documents.delete_calls == []
 
 
 def test_profile_tool_formats_sections(provider):

@@ -1,0 +1,46 @@
+{
+  "id": "fastbackgroundcheck",
+  "name": "FastBackgroundCheck",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["US"],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.fastbackgroundcheck.com/",
+    "fetch": "web_extract",
+    "match_signal": "result",
+    "by": ["name", "phone", "address"],
+    "url_format_quirks": [
+      "Person records use /people/{first-last}/id/{opaque-id}. Search engines often expose the exact record URL even when the site's own search flow is JavaScript-heavy.",
+      "Confirm a match with the full name plus a phone number or address. Do not treat a same-name result alone as the subject."
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://www.fastbackgroundcheck.com/optout",
+    "requires": {
+      "profile_url": false,
+      "email_verification": true,
+      "captcha": true,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "contact_email"],
+    "notes": "Official authorized-agent flow: enter agent and subject names/emails, accept the privacy-request certification, complete CAPTCHA, open the emailed link within 24 hours, and complete the matching form. The site states processing may take 3 days. It may request signed authorization or direct subject verification.",
+    "playbook": [
+      "Open the official opt-out form at https://www.fastbackgroundcheck.com/optout.",
+      "Choose the authorized-agent option when acting for another subject; provide only the fields the official form requires.",
+      "Complete the CAPTCHA manually if the configured browser cannot clear it; never bypass it.",
+      "Open the emailed link within 24 hours in the same browser, complete the matching form, and retain the confirmation.",
+      "Re-scan the exact listing after 3 days before marking confirmed_removed."
+    ],
+    "est_processing_days": 3,
+    "reappearance_risk": "high"
+  },
+  "last_verified": "2026-07-17",
+  "source": "official opt-out and privacy pages"
+}
+

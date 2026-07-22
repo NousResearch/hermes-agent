@@ -90,6 +90,9 @@ verifying re-scan.
       `EMAIL_IMAP_HOST` for non-mainstream providers; gmail/outlook/yahoo/icloud/fastmail inferred).
       The CLI sends via `send-email` and reads verify links via `poll-verification`. The `agentmail`
       skill (per-broker aliases) also counts.
+      Inbox polling is observation-only: IMAP message bodies must be fetched with
+      `BODY.PEEK[]`, never `RFC822`, so verification scans cannot mark the operator's
+      personal mail as read.
   - Google Sheets tracker: the `google-workspace` skill.
   - The `scrapling` skill for stealth/Cloudflare-protected pages.
 

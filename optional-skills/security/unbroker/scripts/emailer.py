@@ -295,7 +295,10 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
         ids = (data[0].split() if data and data[0] else [])[-limit:]
         out: list[dict] = []
         for mid in reversed(ids):  # newest first
-            _typ, msg_data = conn.fetch(mid, "(RFC822)")
+            # RFC822 implicitly sets the IMAP \Seen flag on Gmail even when the
+            # mailbox was selected readonly. BODY.PEEK[] retrieves the same
+            # complete message without changing the operator's read state.
+            _typ, msg_data = conn.fetch(mid, "(BODY.PEEK[])")
             raw = next((p[1] for p in msg_data or [] if isinstance(p, tuple)), None)
             if not raw:
                 continue

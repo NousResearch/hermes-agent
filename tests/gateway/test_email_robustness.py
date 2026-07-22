@@ -46,7 +46,10 @@ class TestImapResponseGuard(unittest.TestCase):
         )
         fetch_iter = iter(fetch_responses)
 
+        commands = []
+
         def uid_handler(command, *args):
+            commands.append((command, args))
             if command == "search":
                 return ("OK", [uids])
             if command == "fetch":
@@ -56,7 +59,19 @@ class TestImapResponseGuard(unittest.TestCase):
         mock_imap = MagicMock()
         mock_imap.uid.side_effect = uid_handler
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            return adapter._fetch_new_messages()
+            results = adapter._fetch_new_messages()
+        self.last_imap = mock_imap
+        self.last_commands = commands
+        return results
+
+    def test_mailbox_is_examined_read_only(self):
+        self._fetch_with([("OK", [(b"1 (BODY[] {123}", _raw_email())])])
+        self.last_imap.select.assert_called_once_with("INBOX", readonly=True)
+
+    def test_message_fetch_uses_body_peek(self):
+        self._fetch_with([("OK", [(b"1 (BODY[] {123}", _raw_email())])])
+        fetches = [args for command, args in self.last_commands if command == "fetch"]
+        self.assertEqual(fetches, [(b"1", "(BODY.PEEK[])")])
 
     def test_normal_response_parses(self):
         results = self._fetch_with([("OK", [(b"1 (RFC822 {123}", _raw_email())])])

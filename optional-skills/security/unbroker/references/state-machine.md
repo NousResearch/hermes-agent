@@ -32,9 +32,9 @@ indirect_exposure    -> submitted | human_task_queued | not_found | found | bloc
 action_selected      -> submitted | human_task_queued | blocked
 submitted            -> verification_pending | awaiting_processing | human_task_queued | blocked
 verification_pending -> awaiting_processing | confirmed_removed | human_task_queued | blocked
-awaiting_processing  -> confirmed_removed | human_task_queued | blocked
+awaiting_processing  -> confirmed_removed | reappeared | human_task_queued | blocked
 confirmed_removed    -> reappeared | confirmed_removed   (recheck refreshes the date)
-reappeared           -> found | indirect_exposure
+reappeared           -> found | indirect_exposure | action_selected | submitted | human_task_queued | blocked
 human_task_queued    -> found | indirect_exposure | action_selected | submitted | verification_pending
                         | awaiting_processing | confirmed_removed | blocked
 blocked              -> searching | found | not_found | indirect_exposure | action_selected

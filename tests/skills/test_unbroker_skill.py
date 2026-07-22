@@ -354,6 +354,24 @@ def test_ledger_valid_transition_and_audit():
         assert any(e["to"] == "found" for e in audit)
 
 
+def test_processing_window_can_requeue_a_listing_that_is_still_live():
+    with temp_env():
+        sid = "sub_test01"
+        ledger.transition(sid, "spokeo", "found", found=True)
+        ledger.transition(sid, "spokeo", "submitted")
+        ledger.transition(sid, "spokeo", "awaiting_processing")
+        case = ledger.transition(
+            sid,
+            "spokeo",
+            "reappeared",
+            found=True,
+            evidence={"verification": "listing still live after processing window"},
+        )
+        assert case["state"] == "reappeared"
+        assert case["found"] is True
+        assert ledger.transition(sid, "spokeo", "submitted")["state"] == "submitted"
+
+
 def test_new_can_record_scan_outcome_directly():
     with temp_env():
         assert ledger.transition("sub_test01", "thatsthem", "found", found=True)["state"] == "found"
@@ -794,6 +812,50 @@ def test_emailer_send_requires_config_and_broker_address():
         pass
     else:
         raise AssertionError("broker without a declared address must raise")
+
+
+class _FakeIMAP:
+    fetch_queries: list[str] = []
+
+    def __init__(self, host, port):
+        self.host, self.port = host, port
+
+    def login(self, user, password):
+        self.user = user
+
+    def select(self, folder, readonly=False):
+        assert folder == "INBOX"
+        assert readonly is True
+        return "OK", [b""]
+
+    def search(self, charset, *criteria):
+        return "OK", [b"1"]
+
+    def fetch(self, message_id, query):
+        _FakeIMAP.fetch_queries.append(query)
+        raw = (
+            b"From: no-reply@spokeo.com\r\n"
+            b"Subject: Confirm your opt out\r\n"
+            b"Date: Thu, 16 Jul 2026 09:00:00 -0400\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"\r\n"
+            b"Confirm here."
+        )
+        return "OK", [(b"1 (BODY[] {123}", raw), b")"]
+
+    def logout(self):
+        return "BYE", [b""]
+
+
+def test_emailer_imap_fetch_does_not_mark_messages_seen():
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    _FakeIMAP.fetch_queries = []
+
+    messages = emailer.fetch_recent(env=env, _imap_factory=_FakeIMAP)
+
+    assert messages[0]["subject"] == "Confirm your opt out"
+    assert _FakeIMAP.fetch_queries == ["(BODY.PEEK[])"]
+    assert all("RFC822" not in query for query in _FakeIMAP.fetch_queries)
 
 
 def test_browser_send_payload_is_recipient_locked():

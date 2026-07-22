@@ -36,9 +36,11 @@ TRANSITIONS: dict[str, set[str]] = {
     # broker is now processing the removal (their stated window). confirmed_removed still requires a
     # verifying re-scan, never the submission flow's own say-so.
     "verification_pending": {"awaiting_processing", "confirmed_removed", "human_task_queued", "blocked"},
-    "awaiting_processing": {"confirmed_removed", "human_task_queued", "blocked"},
+    # A verification scan after the processing window may prove the listing is still live.
+    # Requeue that result through `reappeared` so the opt-out can be submitted again.
+    "awaiting_processing": {"confirmed_removed", "reappeared", "human_task_queued", "blocked"},
     "confirmed_removed": {"reappeared", "confirmed_removed"},
-    "reappeared": {"found", "indirect_exposure"},
+    "reappeared": {"found", "indirect_exposure", "action_selected", "submitted", "human_task_queued", "blocked"},
     "human_task_queued": {
         "found", "indirect_exposure", "action_selected", "submitted", "verification_pending",
         "awaiting_processing", "confirmed_removed", "blocked",

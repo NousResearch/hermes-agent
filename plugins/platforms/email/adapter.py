@@ -586,7 +586,10 @@ class EmailAdapter(BasePlatformAdapter):
             imap.login(self._address, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
+            # EXAMINE the mailbox instead of opening it read-write.  The gateway
+            # only needs to discover UIDs here; it must never change a user's
+            # Gmail flags as a side effect of startup.
+            imap.select("INBOX", readonly=True)
             status, data = imap.uid("search", None, "ALL")
             if status == "OK" and data and data[0]:
                 for uid in data[0].split():
@@ -655,7 +658,10 @@ class EmailAdapter(BasePlatformAdapter):
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
-                imap.select("INBOX")
+                # Keep the mailbox read-only and use BODY.PEEK below.  A normal
+                # RFC822 fetch implicitly sets the IMAP \\Seen flag, which caused
+                # the legacy gateway to mark every inspected Gmail message read.
+                imap.select("INBOX", readonly=True)
 
                 status, data = imap.uid("search", None, "UNSEEN")
                 if status != "OK" or not data or not data[0]:
@@ -669,7 +675,7 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue
 

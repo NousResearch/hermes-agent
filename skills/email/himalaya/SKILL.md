@@ -142,11 +142,15 @@ himalaya envelope list from john@example.com subject meeting
 
 ### Read an Email
 
-Read email by ID (shows plain text):
+Preview email by ID without changing its read state:
 
 ```bash
-himalaya message read 42
+himalaya message read --preview 42
 ```
+
+`himalaya message read 42` without `--preview` automatically applies the
+`\Seen` flag. Never use the non-preview form while triaging the operator's
+personal inbox unless they explicitly asked to mark that message read.
 
 Export raw MIME:
 

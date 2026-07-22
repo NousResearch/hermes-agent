@@ -37,6 +37,7 @@ OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{vid}"
 OSV_BATCH_MAX = 1000  # OSV documented hard cap per request
 HTTP_TIMEOUT = 20
 DETAIL_PARALLELISM = 8
+_HTTP_JSON_RESPONSE_BODY_MAX_BYTES = 16 * 1024 * 1024
 
 # Severity ordering for --fail-on gating. UNKNOWN sits below LOW so it
 # never blocks unless --fail-on is passed something even lower (we don't
@@ -288,13 +289,22 @@ def _http_post_json(url: str, payload: dict) -> dict:
         url, data=data, headers={"Content-Type": "application/json"}, method="POST"
     )
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return json.loads(_read_http_json_response(resp))
 
 
 def _http_get_json(url: str) -> dict:
     req = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return json.loads(_read_http_json_response(resp))
+
+
+def _read_http_json_response(resp) -> str:
+    body = resp.read(_HTTP_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(body) > _HTTP_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise urllib.error.URLError(
+            f"response body exceeded {_HTTP_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return body.decode("utf-8")
 
 
 def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:

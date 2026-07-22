@@ -16,13 +16,14 @@ Import chain (circular-import safe):
 
 import ast
 import importlib
+import inspect
 import json
 import logging
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Protocol, Set
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,25 @@ def invalidate_check_fn_cache() -> None:
         _check_fn_last_good.clear()
 
 
+class EnforcementDenied(Exception):
+    """Raise this from set_enforcement_fn callbacks to signal an authorization denial.
+
+    Any other exception is treated as a bug in the enforcement fn itself (fail-closed):
+    the tool call is still blocked, but the error message surfaces as an operator-visible
+    internal error rather than a policy message.
+    """
+
+
+class EnforcementFn(Protocol):
+    """Callback signature for ToolRegistry.set_enforcement_fn.
+
+    Called synchronously inside ``dispatch()`` before any handler runs.
+    Raise :exc:`EnforcementDenied` to block the call; return value is ignored.
+    """
+
+    def __call__(self, tool_name: str, args: dict, **kwargs: Any) -> None: ...
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
@@ -237,6 +257,79 @@ class ToolRegistry:
         # against it: a cache entry keyed on the generation is valid for as
         # long as the generation hasn't changed.
         self._generation: int = 0
+        # Optional enforcement hook — called before every dispatch.
+        # Raise EnforcementDenied to deny the call; other exceptions are treated
+        # as bugs in the enforcement fn (fail-closed with an operator log).
+        # Set via set_enforcement_fn(). Designed for authorization layers
+        # that need universal coverage including the execute_code sandbox.
+        self._enforcement_fn: Optional[EnforcementFn] = None
+
+    def set_enforcement_fn(self, fn: Optional[EnforcementFn]) -> None:
+        """Register a synchronous function called before every tool dispatch.
+
+        ``fn(tool_name, args, **kwargs)`` — raise :exc:`EnforcementDenied` to
+        deny the call; the exception message becomes the tool error result.
+        Any other exception is treated as a bug (logged, fail-closed).
+        Pass ``None`` to remove a previously registered fn.
+
+        Forwarded kwargs:
+            The fn receives every keyword argument that ``dispatch()`` is
+            invoked with.  Today that includes ``task_id``, ``session_id``,
+            ``tool_call_id``, and (for ``execute_code``) ``enabled_tools``.
+            Additional kwargs may be added by future dispatch sites — write
+            the fn defensively (``def fn(name, args, **kwargs): ...``) so
+            new fields don't break it.
+
+        Invocation timing:
+            The fn fires *before* tool lookup, so it is called for every
+            name passed to ``dispatch()`` — including unregistered tool
+            names.  An allowing fn still receives the standard
+            ``"Unknown tool: ..."`` error response.  A denying fn's message
+            replaces the "Unknown tool" error.  This is deliberate:
+            enforcement observes every attempted dispatch, including
+            probes for tools that do not exist, so an audit log captures
+            the model's intent rather than only the calls that would have
+            succeeded.
+
+        Caveats:
+        - The fn runs **synchronously on the dispatch thread** — keep it fast
+          or dispatch will block.
+        - Register before the agent loop starts; concurrent re-registration
+          during dispatch is not coordinated (not enforced; a late registration
+          during dispatch is a silent race, not a RuntimeError).
+        - **Re-entrant infinite recursion**: if the enforcement fn calls
+          ``dispatch`` for the *same* tool it is protecting, the enforcement fn
+          fires again, which calls dispatch again — unbounded recursion.
+          Dispatching a *different* tool (e.g. a probe) is safe and tested.
+          A depth counter would protect against this, but the scenario is
+          self-inflicted; a docstring warning is the chosen trade-off.
+        - Tools intercepted by ``run_agent.py`` before reaching the registry
+          (``todo``, ``memory``, ``session_search``, ``delegate_task``) are
+          not gated by this hook.
+
+        Because ``dispatch`` is the single call site for every tool execution
+        path (main agent loop, execute_code sandbox, MCP, background tasks),
+        this hook provides universal enforcement coverage across the
+        dispatch surface — unlike ``pre_tool_call``, which can be skipped
+        via ``skip_pre_tool_call_hook=True`` and is bypassed by callers
+        that invoke ``registry.dispatch()`` directly.
+
+        Raises:
+            TypeError: if ``fn`` is an async (coroutine) function.  Dispatch is
+                synchronous; an async enforcement fn would silently bypass
+                enforcement because the returned coroutine is never awaited.
+        """
+        # Note: inspect.iscoroutinefunction has known gaps — it returns False for
+        # functools.partial wrapping an async fn, Callable classes whose __call__
+        # is async, and sync functions that happen to return a coroutine.  These
+        # are uncommon footguns; the guard catches the obvious async def case only.
+        if fn is not None and inspect.iscoroutinefunction(fn):
+            raise TypeError(
+                "enforcement fn must be synchronous — dispatch is synchronous "
+                "and an async fn would silently bypass enforcement (the coroutine "
+                "would never be awaited). Wrap in asyncio.run() or use a sync wrapper."
+            )
+        self._enforcement_fn = fn
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
@@ -619,7 +712,38 @@ class ToolRegistry:
           envelope before leaving the registry.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * If ``set_enforcement_fn`` was called, the enforcement function is
+          invoked first.  Raise :exc:`EnforcementDenied` to block the call;
+          any other exception is treated as a bug (logged, fail-closed).
         """
+        # Enforcement hook — universal coverage including execute_code sandbox.
+        # EnforcementDenied → policy denial (message forwarded to model).
+        # Any other exception → bug in the enforcement fn; fail-closed with an
+        # operator-visible error so a misconfigured fn doesn't silently allow.
+        if self._enforcement_fn is not None:
+            try:
+                self._enforcement_fn(name, args, **kwargs)
+            except EnforcementDenied as e:
+                logger.debug("registry enforcement denied %s: %s", name, e)
+                # Lazy import: model_tools imports tools.registry at module
+                # level, so importing _sanitize_tool_error here avoids a
+                # circular dependency. Python caches the import after the
+                # first denial, so the lookup is amortised across the
+                # process lifetime.
+                try:
+                    from model_tools import _sanitize_tool_error
+                    msg = _sanitize_tool_error(str(e))
+                except Exception:
+                    msg = str(e)
+                return json.dumps({"error": msg})
+            except Exception:
+                logger.exception(
+                    "enforcement_fn raised a non-denial exception for tool %s "
+                    "(bug in enforcement fn — failing closed)",
+                    name,
+                )
+                return json.dumps({"error": f"Tool '{name}' authorization unavailable (see logs)"})
+
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})

@@ -674,6 +674,19 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moa: {
+        sectionTitle: string
+        description: string
+        presetPlaceholder: string
+        setDefault: string
+        deletePreset: string
+        newPresetPlaceholder: string
+        addPreset: string
+        defaultLabel: string
+        referenceLabel: (n: number) => string
+        addReferenceModel: string
+        aggregatorTitle: string
+      }
       tasks: Record<string, AuxTaskCopy>
     }
     providers: {

@@ -1057,6 +1057,19 @@ export const fr = defineLocale({
       fallbackAdd: 'Ajouter un modèle de secours',
       fallbackEmpty: 'Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d\'échec.',
       notInCatalog: 'ne figure pas dans la liste du fournisseur — les appels pourraient basculer sur un modèle de secours.',
+      moa: {
+        sectionTitle: 'Mélange d\'agents',
+        description: 'Configurez des préréglages nommés qui apparaissent comme modèles sous le fournisseur Mixture of Agents. L\'agrégateur est le modèle actif.',
+        presetPlaceholder: 'Préréglage',
+        setDefault: 'Définir par défaut',
+        deletePreset: 'Supprimer',
+        newPresetPlaceholder: 'nouveau préréglage',
+        addPreset: 'Ajouter un préréglage',
+        defaultLabel: 'Par défaut :',
+        referenceLabel: (n) => `Référence ${n}`,
+        addReferenceModel: 'Ajouter un modèle de référence',
+        aggregatorTitle: 'Agrégateur'
+      },
       tasks: {
         vision: { label: 'Vision', hint: 'Analyse d\'image' },
         web_extract: { label: 'Extraction web', hint: 'Résumé de page' },

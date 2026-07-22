@@ -392,6 +392,21 @@ describe('preserveLocalAssistantErrors', () => {
 })
 
 describe('upsertToolPart', () => {
+  it('reuses a pending clarify request when tool.start arrives later', () => {
+    const args = { choices: ['Use this chat', 'Start a new one'], question: 'Where should I continue?' }
+    let parts = upsertToolPart([], { args, name: 'clarify' }, 'running')
+
+    parts = upsertToolPart(parts, { args, name: 'clarify', tool_id: 'clarify-tool-1' }, 'running')
+
+    expect(parts).toHaveLength(1)
+    expect(parts[0]).toMatchObject({
+      args,
+      toolCallId: 'clarify-tool-1',
+      toolName: 'clarify',
+      type: 'tool-call'
+    })
+  })
+
   it('preserves inline diffs from tool completion events', () => {
     const parts = upsertToolPart(
       [],

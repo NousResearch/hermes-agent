@@ -482,9 +482,9 @@ class TestEndToEnd:
         dev2 = tmp_path / "hermes2" / "skills"
         dev2.mkdir(parents=True)
         monkeypatch.setattr(ssc, "_skills_dir", lambda: dev2)
-        monkeypatch.setattr(ssc, "read_sync_manifest", lambda: {"head": None, "skills": {}})
+        monkeypatch.setattr(ssc, "read_sync_state", lambda: {"head": None, "skills": {}})
         saved = {}
-        monkeypatch.setattr(ssc, "write_sync_manifest", lambda d: saved.update(d))
+        monkeypatch.setattr(ssc, "write_sync_state", lambda d: saved.update(d))
 
         result = ssc.pull_skills(client, identity=identity)
         assert result["ok"] is True
@@ -657,8 +657,8 @@ class TestSyncManifest:
         monkeypatch.setattr(su, "is_sync_enabled", lambda name: False)
         monkeypatch.setattr(su, "set_sync", lambda name, val: adopted.__setitem__(name, val))
         # Local head unknown so the pull actually runs.
-        monkeypatch.setattr(ssc, "read_sync_manifest", lambda: {"head": None, "skills": {}})
-        monkeypatch.setattr(ssc, "write_sync_manifest", lambda d: None)
+        monkeypatch.setattr(ssc, "read_sync_state", lambda: {"head": None, "skills": {}})
+        monkeypatch.setattr(ssc, "write_sync_state", lambda d: None)
         # No local opt-in gate (so materialize isn't the thing under test).
         monkeypatch.setattr(ssc, "_opted_in_rel_paths", lambda: [])
 
@@ -667,3 +667,73 @@ class TestSyncManifest:
         # Both skills from the plane manifest were adopted into local opt-in.
         assert adopted == {"alpha": True, "beta": True}
         assert set(result["opt_in_adopted"]) == {"alpha", "beta"}
+
+
+# ---------------------------------------------------------------------------
+# Env-var configuration (Hermes Cloud "on by default" via environment)
+# ---------------------------------------------------------------------------
+
+class TestEnvConfig:
+    def test_base_url_env_wins(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SYNC_BASE_URL", "https://plane.example/")
+        assert ssc.resolve_sync_base_url() == "https://plane.example"
+
+    def test_feature_enabled_env(self, monkeypatch):
+        # Default off.
+        monkeypatch.delenv("HERMES_SYNC_ENABLED", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {}, raising=False)
+        assert ssc.sync_feature_enabled() is False
+        for truthy in ("1", "true", "YES", "on"):
+            monkeypatch.setenv("HERMES_SYNC_ENABLED", truthy)
+            assert ssc.sync_feature_enabled() is True
+        for falsy in ("0", "false", "off"):
+            monkeypatch.setenv("HERMES_SYNC_ENABLED", falsy)
+            assert ssc.sync_feature_enabled() is False
+
+    def test_default_opt_in_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SYNC_DEFAULT_OPT_IN", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {}, raising=False)
+        assert ssc.sync_default_opt_in() is False
+        monkeypatch.setenv("HERMES_SYNC_DEFAULT_OPT_IN", "true")
+        assert ssc.sync_default_opt_in() is True
+
+    def test_config_yaml_fallback_when_no_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SYNC_ENABLED", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"sync": {"enabled": True}},
+            raising=False,
+        )
+        assert ssc.sync_feature_enabled() is True
+
+    def test_env_overrides_config_yaml(self, monkeypatch):
+        # Env wins over config.yaml (operator override precedence).
+        monkeypatch.setenv("HERMES_SYNC_ENABLED", "false")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"sync": {"enabled": True}},
+            raising=False,
+        )
+        assert ssc.sync_feature_enabled() is False
+
+    def test_opt_out_policy_syncs_all_eligible(self, monkeypatch):
+        # With opt-out on, every eligible skill syncs even with no `sync:true`
+        # flag; an explicit `sync:false` still excludes.
+        monkeypatch.setattr(ssc, "sync_default_opt_in", lambda: True)
+        monkeypatch.setattr(ssc, "_all_local_skill_names", lambda: ["alpha", "beta", "gamma"])
+        monkeypatch.setattr(ssc, "is_sync_eligible", lambda n: n in {"alpha", "beta", "gamma"})
+        import tools.skill_usage as su
+        # gamma explicitly opted out; alpha/beta have no flag.
+        monkeypatch.setattr(su, "load_usage", lambda: {"gamma": {"sync": False}})
+        assert ssc.list_synced_skill_names() == ["alpha", "beta"]
+
+    def test_opt_in_policy_requires_flag(self, monkeypatch):
+        # With opt-out OFF (default opt-in), only explicitly-enabled skills sync.
+        monkeypatch.setattr(ssc, "sync_default_opt_in", lambda: False)
+        monkeypatch.setattr(ssc, "is_sync_eligible", lambda n: True)
+        import tools.skill_usage as su
+        monkeypatch.setattr(
+            su, "load_usage",
+            lambda: {"alpha": {"sync": True}, "beta": {}, "gamma": {"sync": False}},
+        )
+        assert ssc.list_synced_skill_names() == ["alpha"]

@@ -4354,6 +4354,12 @@ def cmd_sync(args):
                 "Sync is inert during the dev rollout.",
                 file=sys.stderr,
             )
+        elif not status.get("feature_enabled"):
+            print(
+                "\nSync feature is off for this instance (set HERMES_SYNC_ENABLED=1 "
+                "or config.yaml sync.enabled: true). Sync is inert.",
+                file=sys.stderr,
+            )
         elif not status.get("base_url"):
             print(
                 "\nNo sync base URL configured (config.yaml sync.base_url or "

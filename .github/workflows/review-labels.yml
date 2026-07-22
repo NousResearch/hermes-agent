@@ -87,6 +87,7 @@ jobs:
           SUPPLY_CHAIN: ${{ inputs.supply_chain }}
           LABEL_PRESENT: ${{ steps.label-check.outputs.ci_reviewed }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
@@ -98,7 +99,8 @@ jobs:
           if [ "$LABEL_PRESENT" = "true" ]; then args+=(--label-present); fi
 
           python3 scripts/ci/emit_review_status.py "${args[@]}" \
-            --repo-url "$REPO_URL" --head-sha "$HEAD_SHA" --output "$GITHUB_OUTPUT"
+            --repo-url "$REPO_URL" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
+            --output "$GITHUB_OUTPUT"
 
       - name: Fail on missing label
         if: steps.label-check.outputs.ci_reviewed != 'true'

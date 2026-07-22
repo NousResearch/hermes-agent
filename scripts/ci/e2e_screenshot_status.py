@@ -58,7 +58,10 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    args.output.write_text(json.dumps(build_status(args.results_dir, args.artifact_url)), encoding="utf-8")
+    args.output.write_text(
+        json.dumps(build_status(args.results_dir, args.artifact_url)) + "\n",
+        encoding="utf-8",
+    )
     return 0
 
 

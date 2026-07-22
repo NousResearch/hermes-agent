@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "e2e_screenshot_status.py"
@@ -33,3 +34,15 @@ def test_status_includes_only_explicit_screenshots_and_counts_diffs(tmp_path):
     assert "test-finished-1.png" not in result["detail"]
     assert "visual-actual.png" not in result["detail"]
     assert "https://github.test/artifacts/1" in result["detail"]
+
+
+def test_cli_output_ends_with_newline_for_github_output_delimiter(tmp_path, monkeypatch):
+    output = tmp_path / "review-status.json"
+    monkeypatch.setattr(sys, "argv", [
+        "e2e_screenshot_status.py",
+        "--results-dir", str(tmp_path),
+        "--output", str(output),
+    ])
+
+    assert _mod.main() == 0
+    assert output.read_text(encoding="utf-8") == "[]\n"

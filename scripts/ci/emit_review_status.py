@@ -27,6 +27,7 @@ with the verification checklist.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from urllib.parse import quote
@@ -42,13 +43,15 @@ from urllib.parse import quote
 SOURCE = "review-label-gate"
 
 
-def _ci_review_detail(files_json: str, repo_url: str, head_sha: str) -> str:
-    """Render links to the CI-sensitive files that triggered the review."""
+def _ci_review_detail(
+    files_json: str, repo_url: str, base_sha: str, head_sha: str,
+) -> str:
+    """Render links to the changed CI-sensitive files that triggered review."""
     try:
         files = json.loads(files_json)
     except (json.JSONDecodeError, TypeError):
         return ""
-    if not isinstance(files, list) or not repo_url or not head_sha:
+    if not isinstance(files, list) or not repo_url or not base_sha or not head_sha:
         return ""
 
     links = []
@@ -56,9 +59,13 @@ def _ci_review_detail(files_json: str, repo_url: str, head_sha: str) -> str:
         if not isinstance(path, str) or not path:
             continue
         label = path.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
-        url = f"{repo_url}/blob/{quote(head_sha, safe='')}/{quote(path, safe='/')}"
+        path_hash = hashlib.sha256(path.encode()).hexdigest()
+        url = (
+            f"{repo_url}/compare/{quote(base_sha, safe='')}...{quote(head_sha, safe='')}"
+            f"#diff-{path_hash}"
+        )
         links.append(f"- [`{label}`]({url})")
-    return "**Sensitive files:**\n" + "\n".join(links) if links else ""
+    return "**Sensitive files changed:**\n" + "\n".join(links) if links else ""
 
 
 def build_results(
@@ -68,18 +75,22 @@ def build_results(
     label_present: bool,
     ci_review_files: str = "[]",
     repo_url: str = "",
+    base_sha: str = "",
     head_sha: str = "",
 ) -> list[dict]:
     """Build the list of result objects for this source."""
     results: list[dict] = []
 
     if ci_review:
-        detail = _ci_review_detail(ci_review_files, repo_url, head_sha)
+        detail = _ci_review_detail(ci_review_files, repo_url, base_sha, head_sha)
         if label_present:
             result = {
                 "kind": "info",
                 "title": "CI-sensitive file review",
-                "summary": "`ci-reviewed` label is present.",
+                "summary": (
+                    "PR touches sensitive files, but the `ci-reviewed` label has been "
+                    "added, approving them."
+                ),
             }
         else:
             result = {
@@ -148,12 +159,13 @@ def build_statuses(
     label_present: bool,
     ci_review_files: str = "[]",
     repo_url: str = "",
+    base_sha: str = "",
     head_sha: str = "",
 ) -> list[dict]:
     """Build the full review_status array (one entry with a results list)."""
     results = build_results(
         ci_review, mcp_catalog, supply_chain, label_present,
-        ci_review_files, repo_url, head_sha,
+        ci_review_files, repo_url, base_sha, head_sha,
     )
     if not results:
         return []
@@ -173,16 +185,18 @@ def main() -> int:
     parser.add_argument("--label-present", action="store_true",
                         help="Whether the ci-reviewed label is present.")
     parser.add_argument("--repo-url", default="",
-                        help="Repository URL used for file links.")
+                        help="Repository URL used for changed-file links.")
+    parser.add_argument("--base-sha", default="",
+                        help="Pull request base SHA used for changed-file links.")
     parser.add_argument("--head-sha", default="",
-                        help="Pull request head SHA used for file links.")
+                        help="Pull request head SHA used for changed-file links.")
     parser.add_argument("--output", default="-",
                         help="Output file ('-' for stdout, or a GITHUB_OUTPUT path).")
     args = parser.parse_args()
 
     statuses = build_statuses(
         args.ci_review, args.mcp_catalog, args.supply_chain, args.label_present,
-        args.ci_review_files, args.repo_url, args.head_sha,
+        args.ci_review_files, args.repo_url, args.base_sha, args.head_sha,
     )
     json_str = json.dumps(statuses)
 

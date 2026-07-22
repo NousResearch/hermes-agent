@@ -373,6 +373,16 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
 # watcher can outlive Electron/Tauri. Here we deliberately attach the child so
 # it *cannot* outlive Hermes. Do not reuse ``windows_detach_flags()`` for this
 # path — the two are opposite intents for different callers.
+# Module-level placeholders so ``win32*`` are always attributes of this module,
+# even on non-Windows. The real pywin32 modules overwrite them on Windows; on
+# other platforms they stay ``None`` (guarded by ``_WIN32_JOB_AVAILABLE``).
+# Keeping the names defined lets the platform-independent unit tests
+# ``monkeypatch.setattr(_subprocess_compat, "win32job", fake)`` on Linux CI
+# instead of failing with AttributeError.
+win32api = None  # type: ignore
+win32con = None  # type: ignore
+win32job = None  # type: ignore
+win32process = None  # type: ignore
 try:
     if IS_WINDOWS:
         import win32api  # type: ignore

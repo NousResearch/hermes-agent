@@ -1963,6 +1963,20 @@ class HindsightMemoryProvider(MemoryProvider):
         # per-session cleanup happens via self._client.aclose() above.
 
 
+# Module-level cache for the provider instance.  Each plugin reload (which
+# happens on every ``agent_init``) calls ``register()`` — creating a fresh
+# ``HindsightMemoryProvider`` resets ``_turn_counter`` to 0, defeating
+# ``retain_every_n_turns > 1``.  Reusing the instance preserves the counter
+# (and accumulated session turns) across agent re-initializations within the
+# same process.  The ``_ensure_writer()`` method already handles the
+# shutdown → reuse transition by clearing ``_shutting_down`` and starting a
+# new writer thread.  (#35763)
+_cached_provider: HindsightMemoryProvider | None = None
+
+
 def register(ctx) -> None:
     """Register Hindsight as a memory provider plugin."""
-    ctx.register_memory_provider(HindsightMemoryProvider())
+    global _cached_provider
+    if _cached_provider is None:
+        _cached_provider = HindsightMemoryProvider()
+    ctx.register_memory_provider(_cached_provider)

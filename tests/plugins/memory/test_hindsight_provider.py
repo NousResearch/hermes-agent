@@ -1124,6 +1124,142 @@ class TestSyncTurn:
 
 
 # ---------------------------------------------------------------------------
+# Register caching / turn-counter persistence (#35763)
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterCaching:
+    """register() must reuse the same provider instance so _turn_counter
+    survives agent re-initialization within a process."""
+
+    def test_register_reuses_instance(self, tmp_path, monkeypatch):
+        """Calling register() twice returns the same provider object."""
+        import plugins.memory.hindsight as hmod
+
+        # Reset the module-level cache
+        hmod._cached_provider = None
+
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        registered = []
+
+        class FakeCtx:
+            def register_memory_provider(self, provider):
+                registered.append(provider)
+
+        ctx1 = FakeCtx()
+        ctx2 = FakeCtx()
+        hmod.register(ctx1)
+        hmod.register(ctx2)
+
+        assert registered[0] is registered[1], "register() should reuse the cached instance"
+        # Cleanup
+        hmod._cached_provider = None
+
+    def test_turn_counter_survives_re_register(self, tmp_path, monkeypatch):
+        """_turn_counter is preserved when register() reuses the cached provider."""
+        import plugins.memory.hindsight as hmod
+
+        hmod._cached_provider = None
+
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "retain_every_n_turns": 3,
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        registered = []
+
+        class FakeCtx:
+            def register_memory_provider(self, provider):
+                registered.append(provider)
+
+        # First registration — simulate first agent_init
+        hmod.register(FakeCtx())
+        p = registered[0]
+        p.initialize(session_id="s1", platform="cli", hermes_home=str(tmp_path))
+        p._client = _make_mock_client()
+        p._retain_every_n_turns = 3
+
+        # Process 2 turns (counter should be 2, retain not triggered yet)
+        p.sync_turn("u1", "a1")
+        p.sync_turn("u2", "a2")
+        assert p._turn_counter == 2
+        p._client.aretain_batch.assert_not_called()
+
+        # Simulate agent re-initialization (register called again)
+        hmod.register(FakeCtx())
+        assert registered[1] is p, "Should reuse the same instance"
+
+        # Re-initialize with same session
+        p.initialize(session_id="s1", platform="cli", hermes_home=str(tmp_path))
+        p._client = _make_mock_client()
+        p._retain_every_n_turns = 3
+
+        # Turn 3 — counter should now be 3, triggering retain
+        p.sync_turn("u3", "a3")
+        p._retain_queue.join()
+        assert p._turn_counter == 3
+        p._client.aretain_batch.assert_called_once()
+
+        # Cleanup
+        hmod._cached_provider = None
+
+    def test_counter_resets_on_session_switch(self, tmp_path, monkeypatch):
+        """_turn_counter resets on genuine session switch (on_session_switch)."""
+        import plugins.memory.hindsight as hmod
+
+        hmod._cached_provider = None
+
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        registered = []
+
+        class FakeCtx:
+            def register_memory_provider(self, provider):
+                registered.append(provider)
+
+        hmod.register(FakeCtx())
+        p = registered[0]
+        p.initialize(session_id="s1", platform="cli", hermes_home=str(tmp_path))
+        p._client = _make_mock_client()
+
+        p.sync_turn("u1", "a1")
+        p.sync_turn("u2", "a2")
+        assert p._turn_counter == 2
+
+        # Genuine session switch — counter should reset
+        p.on_session_switch("s2", parent_session_id="s1", reset=False)
+        assert p._turn_counter == 0
+
+        # Cleanup
+        hmod._cached_provider = None
+
+
 # Shutdown / writer tests
 # ---------------------------------------------------------------------------
 

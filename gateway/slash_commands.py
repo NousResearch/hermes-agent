@@ -749,12 +749,21 @@ class GatewaySlashCommandsMixin:
         # chat. is_shared_multi_user_session only decides participant sharing
         # WITHIN a thread, never across threads — require thread equality before
         # any sharing logic so a live origin in thread A cannot match a caller in
-        # thread B of the same parent chat.
-        if str(getattr(current, "thread_id", "") or "") != str(
-            getattr(origin, "thread_id", "") or ""
-        ):
-            return False
+        # thread B of the same parent chat.  When either side has no recorded
+        # thread_id (legacy sessions, or a caller without thread context), the
+        # thread comparison is skipped — the chat_id + platform already scope
+        # the session correctly.
+        cur_thread = str(getattr(current, "thread_id", "") or "")
+        orig_thread = str(getattr(origin, "thread_id", "") or "")
         chat_type = (getattr(current, "chat_type", "") or "").lower()
+        caller_is_dm = chat_type in {"dm", "direct", "private", ""}
+        # DM sessions are scoped by chat_id + user_id, not thread_id, so
+        # legacy sessions without thread_id should match even when the
+        # caller carries one.  Non-DM (group/channel/forum) sessions still
+        # require thread equality — a threaded origin must not match a
+        # non-threaded caller (and vice versa).
+        if not caller_is_dm and cur_thread != orig_thread:
+            return False
         # DM-like chats are always per-user.
         if chat_type in {"dm", "direct", "private", ""}:
             # chat_id was already required equal above and, when present, IS the
@@ -892,7 +901,7 @@ class GatewaySlashCommandsMixin:
             origin_ok = (
                 bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_thread == caller_thread
+                and (caller_is_dm or not row_thread or not caller_thread or row_thread == caller_thread)
             )
             if not origin_ok:
                 return False

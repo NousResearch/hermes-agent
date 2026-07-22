@@ -4385,6 +4385,9 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
     emits = []
     agent = types.SimpleNamespace(
         model="openai/gpt-5.4",
+        provider="openrouter",
+        api_mode="chat_completions",
+        base_url="https://openrouter.ai/api/v1",
         request_overrides={"foo": "bar", "speed": "slow"},
         service_tier=None,
     )
@@ -4398,7 +4401,7 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
-        lambda _model_id: {"service_tier": "priority"},
+        lambda _model_id, **_route: {"service_tier": "priority"},
     )
 
     try:
@@ -4432,6 +4435,38 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
         # "" (not absent) so a rebuild pins normal instead of falling back to
         # the global default.
         assert session["create_service_tier_override"] == ""
+        assert writes == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_fast_rejects_anthropic_over_openrouter(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(
+        model="anthropic/claude-opus-4.6",
+        provider="openrouter",
+        api_mode="chat_completions",
+        base_url="https://openrouter.ai/api/v1",
+        request_overrides={"foo": "bar"},
+        service_tier=None,
+    )
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+            }
+        )
+
+        assert resp["error"]["code"] == 4002
+        assert agent.service_tier is None
+        assert agent.request_overrides == {"foo": "bar"}
         assert writes == []
     finally:
         server._sessions.pop("sid", None)
@@ -4477,7 +4512,7 @@ def test_config_set_fast_rejects_unsupported_model(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
-        lambda _model_id: None,
+        lambda _model_id, **_route: None,
     )
 
     try:
@@ -7513,6 +7548,71 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     # Should NOT contain "session busy" — the switch went through.
     assert "session busy" not in warning
     assert applied["model"]
+
+
+@pytest.mark.parametrize(
+    ("agent", "expected_overrides"),
+    [
+        (
+            types.SimpleNamespace(
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+                api_mode="codex_responses",
+                base_url="https://chatgpt.com/backend-api/codex",
+                service_tier="priority",
+                request_overrides={"service_tier": "priority", "timeout": 321.0},
+            ),
+            {"timeout": 321.0},
+        ),
+        (
+            types.SimpleNamespace(
+                model="claude-opus-4-6",
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                base_url="https://api.anthropic.com",
+                service_tier="priority",
+                request_overrides={
+                    "speed": "fast",
+                    "extra_body": {"trace": "keep"},
+                },
+            ),
+            {"extra_body": {"trace": "keep"}},
+        ),
+    ],
+)
+def test_slash_exec_fast_normal_clears_derived_fast_overrides(
+    monkeypatch, agent, expected_overrides
+):
+    """The slash-worker mirror must update the live request path, not only config."""
+
+    class _Worker:
+        def run(self, command):
+            assert command == "fast normal"
+            return "Fast mode disabled"
+
+    persisted = []
+    monkeypatch.setattr(
+        server,
+        "_persist_live_session_runtime",
+        lambda session: persisted.append(session),
+    )
+    session = _session(agent=agent, slash_worker=_Worker())
+    server._sessions["sid"] = session
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "fast normal", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["output"] == "Fast mode disabled"
+    assert agent.service_tier is None
+    assert agent.request_overrides == expected_overrides
+    assert persisted == [session]
 
 
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):

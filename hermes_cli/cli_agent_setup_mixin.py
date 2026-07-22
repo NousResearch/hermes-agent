@@ -217,7 +217,12 @@ class CLIAgentSetupMixin:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime.get("provider"),
+                api_mode=runtime.get("api_mode"),
+                base_url=runtime.get("base_url"),
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides

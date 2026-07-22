@@ -2276,22 +2276,128 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return "opus-4-6" in base or "opus-4.6" in base
 
 
-def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
-    """Return request_overrides for fast/priority mode, or None if unsupported.
+def _fast_route_hostname(base_url: Optional[str]) -> str:
+    try:
+        return (urllib.parse.urlparse(str(base_url or "")).hostname or "").lower()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _is_native_anthropic_fast_route(
+    *,
+    provider: Optional[str],
+    api_mode: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Return whether the active route is Anthropic's native Messages API."""
+    if str(api_mode or "").strip().lower() != "anthropic_messages":
+        return False
+    hostname = _fast_route_hostname(base_url)
+    if hostname:
+        return hostname == "api.anthropic.com"
+    return normalize_provider(provider) == "anthropic"
+
+
+def _is_openai_fast_route(
+    *,
+    provider: Optional[str],
+    api_mode: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Return whether the active OpenAI-compatible route can carry service_tier."""
+    if str(api_mode or "").strip().lower() not in {
+        "chat_completions",
+        "codex_responses",
+    }:
+        return False
+    if normalize_provider(provider) in {
+        "anthropic",
+        "bedrock",
+        "gemini",
+        "vertex",
+        "xai",
+        "xai-oauth",
+    }:
+        return False
+    return _fast_route_hostname(base_url) not in {
+        "api.anthropic.com",
+        "api.x.ai",
+    }
+
+
+def resolve_fast_mode_overrides(
+    model_id: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
+    """Return route-valid request overrides for fast/priority mode.
 
     Returns provider-appropriate overrides:
     - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
     - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
 
-    The overrides are injected into the API request kwargs by
-    ``_build_api_kwargs`` in run_agent.py — each API path handles its own
-    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+    Callers that know the active runtime must pass its provider, API mode, and
+    base URL. Model-only calls retain the legacy capability lookup used by UI
+    discovery, but must not be used to construct wire kwargs.
     """
     if not model_supports_fast_mode(model_id):
         return None
+    has_route = provider is not None or api_mode is not None or base_url is not None
     if _is_anthropic_fast_model(model_id):
+        if has_route and not _is_native_anthropic_fast_route(
+            provider=provider,
+            api_mode=api_mode,
+            base_url=base_url,
+        ):
+            return None
         return {"speed": "fast"}
+    if has_route and not _is_openai_fast_route(
+        provider=provider,
+        api_mode=api_mode,
+        base_url=base_url,
+    ):
+        return None
     return {"service_tier": "priority"}
+
+
+def apply_fast_mode_request_overrides(
+    request_overrides: Optional[dict[str, Any]],
+    *,
+    service_tier: Optional[str],
+    model_id: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str],
+    base_url: Optional[str],
+    clear_when_disabled: bool = False,
+) -> dict[str, Any]:
+    """Replace derived Fast-only keys with the option for the active route.
+
+    Explicit low-level request overrides remain authoritative when there is no
+    durable Fast preference. Callers handling an explicit user-visible Fast
+    disable can request removal with ``clear_when_disabled=True``.
+    """
+    merged = dict(request_overrides or {})
+
+    if str(service_tier or "").strip().lower() != "priority":
+        if clear_when_disabled:
+            merged.pop("service_tier", None)
+            merged.pop("speed", None)
+        return merged
+
+    merged.pop("service_tier", None)
+    merged.pop("speed", None)
+
+    fast_overrides = resolve_fast_mode_overrides(
+        model_id,
+        provider=provider,
+        api_mode=api_mode,
+        base_url=base_url,
+    )
+    if fast_overrides:
+        merged.update(fast_overrides)
+    return merged
 
 
 def _resolve_copilot_catalog_api_key() -> str:

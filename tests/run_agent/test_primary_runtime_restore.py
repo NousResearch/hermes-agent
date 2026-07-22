@@ -30,7 +30,12 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    **agent_kwargs,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
@@ -45,6 +50,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            **agent_kwargs,
         )
         agent.client = MagicMock()
         return agent
@@ -200,6 +206,113 @@ class TestRestorePrimaryRuntime:
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
+
+    def test_openai_fast_override_clears_on_fallback_and_recomputes_on_restore(self):
+        unrelated = {"extra_body": {"trace": "keep"}}
+        agent = _make_agent(
+            provider="openai-api",
+            base_url="https://api.openai.com/v1",
+            model="gpt-5.5",
+            api_mode="codex_responses",
+            service_tier="priority",
+            request_overrides={**unrelated, "service_tier": "priority"},
+            fallback_model={
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+            },
+        )
+
+        primary_kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        assert primary_kwargs["service_tier"] == "priority"
+        assert primary_kwargs["extra_body"]["trace"] == "keep"
+
+        fallback_client = _mock_resolve(base_url="https://api.deepseek.com/v1")
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.request_overrides == unrelated
+        fallback_kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        assert "service_tier" not in fallback_kwargs
+        assert "speed" not in fallback_kwargs
+        assert fallback_kwargs["extra_body"]["trace"] == "keep"
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.request_overrides == {
+            **unrelated,
+            "service_tier": "priority",
+        }
+        restored_kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        assert restored_kwargs["service_tier"] == "priority"
+        assert restored_kwargs["extra_body"]["trace"] == "keep"
+
+    def test_anthropic_fast_override_translates_on_fallback_and_recomputes_on_restore(self):
+        from agent.anthropic_adapter import _FAST_MODE_BETA
+
+        unrelated = {"extra_body": {"trace": "keep"}}
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.anthropic.com",
+            model="claude-opus-4-6",
+            api_mode="anthropic_messages",
+            service_tier="priority",
+            request_overrides={**unrelated, "speed": "fast"},
+            fallback_model={
+                "provider": "openai-api",
+                "model": "gpt-5.5",
+            },
+        )
+        agent.client = None
+
+        primary_kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        assert "speed" not in primary_kwargs
+        assert primary_kwargs["extra_body"]["speed"] == "fast"
+        assert _FAST_MODE_BETA in primary_kwargs["extra_headers"]["anthropic-beta"]
+
+        fallback_client = _mock_resolve(base_url="https://api.openai.com/v1")
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, None),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.request_overrides == {
+            **unrelated,
+            "service_tier": "priority",
+        }
+        fallback_kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        assert fallback_kwargs["service_tier"] == "priority"
+        assert "speed" not in fallback_kwargs
+        assert fallback_kwargs.get("extra_body", {}).get("speed") != "fast"
+        assert fallback_kwargs["extra_body"]["trace"] == "keep"
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(),
+        ):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.request_overrides == {**unrelated, "speed": "fast"}
+        restored_kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        assert "speed" not in restored_kwargs
+        assert restored_kwargs["extra_body"]["speed"] == "fast"
+        assert _FAST_MODE_BETA in restored_kwargs["extra_headers"]["anthropic-beta"]
 
     def test_restore_skips_cross_provider_pool_entry(self):
         """Restore must not swap in a fallback provider credential for the primary runtime."""

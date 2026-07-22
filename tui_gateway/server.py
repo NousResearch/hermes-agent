@@ -11611,7 +11611,14 @@ def _(rid, params: dict) -> dict:
                     4002,
                     "fast mode is not available without a selected model",
                 )
-            overrides = resolve_fast_mode_overrides(target_model)
+            route_kwargs = {}
+            if agent is not None:
+                route_kwargs = {
+                    "provider": getattr(agent, "provider", None),
+                    "api_mode": getattr(agent, "api_mode", None),
+                    "base_url": getattr(agent, "base_url", None),
+                }
+            overrides = resolve_fast_mode_overrides(target_model, **route_kwargs)
             if overrides is None:
                 return _err(
                     rid,
@@ -11634,13 +11641,7 @@ def _(rid, params: dict) -> dict:
         else:
             _write_config_key("agent.service_tier", nv)
         if agent is not None:
-            agent.service_tier = "priority" if nv == "fast" else None
-            current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
-            current_overrides.pop("service_tier", None)
-            current_overrides.pop("speed", None)
-            if nv == "fast":
-                current_overrides.update(overrides)
-            agent.request_overrides = current_overrides
+            _set_live_agent_fast_mode(agent, enabled=nv == "fast")
             _persist_live_session_runtime(session)
             _emit(
                 "session.info",
@@ -14975,6 +14976,22 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     return None
 
 
+def _set_live_agent_fast_mode(agent, *, enabled: bool) -> None:
+    """Apply an explicit TUI Fast transition to marker and derived wire state."""
+
+    from hermes_cli.models import apply_fast_mode_request_overrides
+
+    agent.service_tier = "priority" if enabled else None
+    agent.request_overrides = apply_fast_mode_request_overrides(
+        getattr(agent, "request_overrides", None),
+        service_tier=agent.service_tier,
+        model_id=getattr(agent, "model", None),
+        provider=getattr(agent, "provider", None),
+        api_mode=getattr(agent, "api_mode", None),
+        base_url=getattr(agent, "base_url", None),
+        clear_when_disabled=True,
+    )
+
 
 def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
@@ -15074,9 +15091,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:
-                agent.service_tier = "priority"
+                _set_live_agent_fast_mode(agent, enabled=True)
+                _persist_live_session_runtime(session)
             elif mode in {"normal", "off"}:
-                agent.service_tier = None
+                _set_live_agent_fast_mode(agent, enabled=False)
+                _persist_live_session_runtime(session)
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

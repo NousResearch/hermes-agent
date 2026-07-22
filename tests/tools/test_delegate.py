@@ -46,6 +46,8 @@ def _make_mock_parent(depth=0):
     parent.provider = "openrouter"
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
+    parent.service_tier = None
+    parent.request_overrides = {}
     parent.platform = "cli"
     parent.providers_allowed = None
     parent.providers_ignored = None
@@ -502,6 +504,347 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def _capture_child_agent_kwargs(
+        self,
+        parent,
+        *,
+        model=None,
+        override_provider=None,
+        override_base_url=None,
+        override_api_key=None,
+        override_api_mode=None,
+        override_request_overrides=None,
+    ):
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Use fast processing",
+                context=None,
+                toolsets=None,
+                model=model,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider=override_provider,
+                override_base_url=override_base_url,
+                override_api_key=override_api_key,
+                override_api_mode=override_api_mode,
+                override_request_overrides=override_request_overrides,
+            )
+        return MockAgent.call_args.kwargs
+
+    @staticmethod
+    def _real_agent_from_child_kwargs(kwargs):
+        from run_agent import AIAgent
+
+        return AIAgent(
+            api_key="test-key-12345678",
+            base_url=kwargs["base_url"],
+            provider=kwargs["provider"],
+            api_mode=kwargs["api_mode"],
+            model=kwargs["model"],
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            service_tier=kwargs["service_tier"],
+            request_overrides=kwargs["request_overrides"],
+        )
+
+    def test_child_fast_preference_reaches_supported_openai_wire_kwargs(self):
+        parent = _make_mock_parent(depth=0)
+        parent.model = "gpt-5.6-sol"
+        parent.provider = "openai-codex"
+        parent.api_mode = "codex_responses"
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.service_tier = "priority"
+        parent.request_overrides = {"extra_body": {"trace": "keep"}}
+
+        kwargs = self._capture_child_agent_kwargs(parent)
+
+        self.assertEqual(kwargs["service_tier"], "priority")
+        self.assertEqual(
+            kwargs["request_overrides"],
+            {"extra_body": {"trace": "keep"}, "service_tier": "priority"},
+        )
+        child = self._real_agent_from_child_kwargs(kwargs)
+        api_kwargs = child._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        self.assertEqual(api_kwargs["service_tier"], "priority")
+        self.assertEqual(api_kwargs["extra_body"]["trace"], "keep")
+
+    def test_child_fast_preference_reaches_native_anthropic_wire_kwargs(self):
+        from agent.anthropic_adapter import _FAST_MODE_BETA
+
+        parent = _make_mock_parent(depth=0)
+        parent.model = "claude-opus-4-6"
+        parent.provider = "anthropic"
+        parent.api_mode = "anthropic_messages"
+        parent.base_url = "https://api.anthropic.com"
+        parent.service_tier = "priority"
+        parent.request_overrides = {"timeout": 321.0}
+
+        kwargs = self._capture_child_agent_kwargs(parent)
+
+        self.assertEqual(kwargs["service_tier"], "priority")
+        self.assertEqual(
+            kwargs["request_overrides"],
+            {"timeout": 321.0, "speed": "fast"},
+        )
+        child = self._real_agent_from_child_kwargs(kwargs)
+        api_kwargs = child._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        self.assertNotIn("speed", api_kwargs)
+        self.assertEqual(api_kwargs["extra_body"]["speed"], "fast")
+        self.assertIn(
+            _FAST_MODE_BETA,
+            api_kwargs["extra_headers"]["anthropic-beta"],
+        )
+
+    def test_child_fast_preference_omits_anthropic_fields_on_openrouter(self):
+        from agent.anthropic_adapter import _FAST_MODE_BETA
+
+        parent = _make_mock_parent(depth=0)
+        parent.model = "anthropic/claude-opus-4.6"
+        parent.provider = "openrouter"
+        parent.api_mode = "chat_completions"
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.service_tier = "priority"
+        parent.request_overrides = {
+            "speed": "fast",
+            "extra_body": {"trace": "keep"},
+        }
+
+        kwargs = self._capture_child_agent_kwargs(parent)
+
+        self.assertEqual(kwargs["service_tier"], "priority")
+        self.assertEqual(
+            kwargs["request_overrides"],
+            {"extra_body": {"trace": "keep"}},
+        )
+        child = self._real_agent_from_child_kwargs(kwargs)
+        api_kwargs = child._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        self.assertNotIn("speed", api_kwargs)
+        self.assertNotEqual(api_kwargs.get("extra_body", {}).get("speed"), "fast")
+        self.assertEqual(api_kwargs["extra_body"]["trace"], "keep")
+        self.assertNotIn(
+            _FAST_MODE_BETA,
+            api_kwargs.get("extra_headers", {}).get("anthropic-beta", ""),
+        )
+
+    def test_standard_child_without_derived_fast_state_keeps_unrelated_overrides(self):
+        parent = _make_mock_parent(depth=0)
+        parent.model = "gpt-5.5"
+        parent.provider = "openai-api"
+        parent.api_mode = "codex_responses"
+        parent.base_url = "https://api.openai.com/v1"
+        parent.service_tier = None
+        parent.request_overrides = {"timeout": 321.0}
+
+        kwargs = self._capture_child_agent_kwargs(parent)
+
+        self.assertIsNone(kwargs["service_tier"])
+        self.assertEqual(kwargs["request_overrides"], {"timeout": 321.0})
+        child = self._real_agent_from_child_kwargs(kwargs)
+        api_kwargs = child._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        self.assertNotIn("service_tier", api_kwargs)
+        self.assertNotIn("speed", api_kwargs)
+        self.assertEqual(api_kwargs["timeout"], 321.0)
+
+    def test_delegate_task_standard_preserves_explicit_low_level_overrides(self):
+        """No durable Fast marker means configured request overrides are explicit."""
+        parent = _make_mock_parent(depth=0)
+        parent.service_tier = None
+        parent.request_overrides = {"extra_body": {"parent_only": True}}
+        runtime_overrides = {
+            "service_tier": "flex",
+            "timeout": 321.0,
+            "extra_body": {"store": False},
+        }
+        runtime = {
+            "provider": "openai-api",
+            "model": "gpt-5.5",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "child-key-12345678",
+            "api_mode": "codex_responses",
+            "request_overrides": runtime_overrides,
+        }
+        cfg = {
+            "model": "gpt-5.5",
+            "provider": "openai-api",
+            "max_iterations": 10,
+        }
+        child_result = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "error": None,
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=runtime,
+            ),
+            patch("tools.delegate_tool._run_single_child", return_value=child_result),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            MockAgent.return_value = MagicMock()
+            result = json.loads(
+                delegate_task(goal="Preserve explicit overrides", parent_agent=parent)
+            )
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        kwargs = MockAgent.call_args.kwargs
+        self.assertIsNone(kwargs["service_tier"])
+        self.assertEqual(kwargs["request_overrides"], runtime_overrides)
+
+    def test_overridden_provider_keeps_its_overrides_without_fast_leakage(self):
+        parent = _make_mock_parent(depth=0)
+        parent.model = "claude-opus-4-6"
+        parent.provider = "anthropic"
+        parent.api_mode = "anthropic_messages"
+        parent.base_url = "https://api.anthropic.com"
+        parent.service_tier = "priority"
+        parent.request_overrides = {
+            "speed": "fast",
+            "extra_body": {"parent_only": True},
+        }
+
+        kwargs = self._capture_child_agent_kwargs(
+            parent,
+            model="deepseek-chat",
+            override_provider="deepseek",
+            override_base_url="https://api.deepseek.com/v1",
+            override_api_key="child-key-12345678",
+            override_api_mode="chat_completions",
+            override_request_overrides={"extra_body": {"child_only": True}},
+        )
+
+        self.assertEqual(kwargs["service_tier"], "priority")
+        self.assertEqual(
+            kwargs["request_overrides"],
+            {"extra_body": {"child_only": True}},
+        )
+        child = self._real_agent_from_child_kwargs(kwargs)
+        api_kwargs = child._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        self.assertNotIn("service_tier", api_kwargs)
+        self.assertNotIn("speed", api_kwargs)
+        self.assertIs(api_kwargs["extra_body"]["child_only"], True)
+        self.assertNotIn("parent_only", api_kwargs["extra_body"])
+
+    def test_delegate_task_configured_provider_keeps_runtime_overrides_and_fast_wire(self):
+        """Configured provider metadata must survive the full delegate_task path."""
+        parent = _make_mock_parent(depth=0)
+        parent.model = "claude-opus-4-6"
+        parent.provider = "anthropic"
+        parent.api_mode = "anthropic_messages"
+        parent.base_url = "https://api.anthropic.com"
+        parent.service_tier = "priority"
+        parent.request_overrides = {
+            "speed": "fast",
+            "extra_body": {"parent_only": True},
+        }
+        runtime_overrides = {"extra_body": {"store": False}}
+        runtime = {
+            "provider": "openai-api",
+            "model": "gpt-5.5",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "child-key-12345678",
+            "api_mode": "codex_responses",
+            "request_overrides": runtime_overrides,
+        }
+        cfg = {
+            "model": "gpt-5.5",
+            "provider": "openai-api",
+            "max_iterations": 10,
+        }
+        child_result = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "error": None,
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value=runtime,
+            ) as mock_resolve,
+            patch("tools.delegate_tool._run_single_child", return_value=child_result),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            MockAgent.return_value = MagicMock()
+            result = json.loads(
+                delegate_task(goal="Use configured provider", parent_agent=parent)
+            )
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        mock_resolve.assert_called_once_with(
+            requested="openai-api", target_model="gpt-5.5"
+        )
+        kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(kwargs["provider"], "openai-api")
+        self.assertEqual(kwargs["api_mode"], "codex_responses")
+        self.assertEqual(kwargs["service_tier"], "priority")
+        self.assertEqual(
+            kwargs["request_overrides"],
+            {
+                "extra_body": {"store": False},
+                "service_tier": "priority",
+            },
+        )
+        child = self._real_agent_from_child_kwargs(kwargs)
+        api_kwargs = child._build_api_kwargs(
+            [{"role": "user", "content": "test"}]
+        )
+        self.assertEqual(api_kwargs["service_tier"], "priority")
+        self.assertIs(api_kwargs["extra_body"]["store"], False)
+        self.assertNotIn("parent_only", api_kwargs["extra_body"])
+
+    def test_fast_preference_is_inherited_by_nested_descendant(self):
+        parent = _make_mock_parent(depth=0)
+        parent.model = "gpt-5.5"
+        parent.provider = "openai-api"
+        parent.api_mode = "codex_responses"
+        parent.base_url = "https://api.openai.com/v1"
+        parent.service_tier = "priority"
+
+        child_kwargs = self._capture_child_agent_kwargs(parent)
+        child_parent = _make_mock_parent(depth=1)
+        for name in (
+            "model",
+            "provider",
+            "api_mode",
+            "base_url",
+            "service_tier",
+            "request_overrides",
+        ):
+            setattr(child_parent, name, child_kwargs[name])
+
+        grandchild_kwargs = self._capture_child_agent_kwargs(child_parent)
+
+        self.assertEqual(grandchild_kwargs["service_tier"], "priority")
+        self.assertEqual(
+            grandchild_kwargs["request_overrides"]["service_tier"],
+            "priority",
+        )
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)

@@ -305,6 +305,19 @@ def test_legacy_v22_optimize_lands_on_cjk(cjk_so, tmp_path, monkeypatch):
         d.close()
 
 
+def test_pure_latin_embedded_in_cjk_recovered_via_cjk_index(db):
+    """#54242 residual: a pure-Latin query for a token embedded in CJK text
+    (no whitespace) misses on unicode61; with the cjk index available the
+    zero-result fallback recovers it as an exact ranked token match."""
+    db.append_message("s1", role="user", content="修改youer服务端的계획")
+    rows = db.search_messages("youer", limit=10)
+    assert rows and "youer" in rows[0]["snippet"]
+    # Short tokens (<3 chars, no trigram) are also recoverable via cjk.
+    db.append_message("s1", role="user", content="에러코드ab확인")
+    rows = db.search_messages("ab", limit=10)
+    assert rows
+
+
 def test_fresh_db_index_counts_exclude_tool_rows(db):
     with db._lock:
         idx = db._conn.execute(

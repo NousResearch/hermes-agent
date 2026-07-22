@@ -37,6 +37,12 @@ _WARNED_UTF32_PATHS: set[str] = set()
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
 
+# Snapshot externally supplied values by resolved HERMES_HOME at apply time.
+# ``os.environ`` is process-global and can later be replaced while loading a
+# different profile, so profile secret scopes must never reconstruct these
+# values from the mutable environment.
+_SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
 # several hot modules (cli.py, hermes_cli/main.py, run_agent.py,
@@ -60,6 +66,12 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def get_secret_source_values(hermes_home: str | os.PathLike[str]) -> dict[str, str]:
+    """Return a copy of externally sourced values for one resolved profile home."""
+    home_key = str(Path(hermes_home).resolve())
+    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
+
+
 def reset_secret_source_cache() -> None:
     """Forget which HERMES_HOME paths have already had external secrets applied.
 
@@ -71,6 +83,8 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _SECRET_SOURCES.clear()
+    _SECRET_SOURCE_VALUES_BY_HOME.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -424,8 +438,14 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # flows can label detected credentials with "(from Bitwarden)" /
         # "(from 1Password)" — otherwise users see "credentials ✓" with
         # no hint the value came from a vault rather than .env.
+        applied_values: dict[str, str] = {}
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+            value = os.environ.get(name)
+            if value is not None:
+                applied_values[name] = value
+        if applied_values:
+            _SECRET_SOURCE_VALUES_BY_HOME[home_key] = applied_values
 
     for src in report.sources:
         if src.applied:

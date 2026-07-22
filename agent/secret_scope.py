@@ -22,6 +22,8 @@ Design rationale lives in ``docs/design/multiplexing-gateway.md`` (Workstream A)
 """
 from __future__ import annotations
 
+import ast
+import json
 import os
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -66,6 +68,29 @@ class UnscopedSecretError(RuntimeError):
     The fix is to wrap the call path in ``set_secret_scope(...)`` (the per-turn
     / per-adapter profile scope), not to widen the allowlist.
     """
+
+
+def _resolve_secret_reference(value: str) -> str:
+    """Resolve ``{"source": "file", "path": ...}`` secret references."""
+    raw = value.strip()
+    if not (raw.startswith("{") and raw.endswith("}")):
+        return value
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        try:
+            parsed = ast.literal_eval(raw)
+        except Exception:
+            return value
+    if not isinstance(parsed, dict) or parsed.get("source") != "file":
+        return value
+    path = parsed.get("path")
+    if not isinstance(path, str) or not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
@@ -189,7 +214,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
-        secrets[key] = value
+        secrets[key] = _resolve_secret_reference(value)
 
     return secrets
 
@@ -200,6 +225,40 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
-    """
-    return load_env_file(Path(hermes_home) / ".env")
 
+    External secret sources (Bitwarden, 1Password, ...) snapshot their applied
+    values by profile home in ``env_loader``.
+    Without merging those keys into the scope, they are invisible under an
+    active scope (cron / multiplexed gateway), causing provider resolution
+    failures for BWS-managed credentials that are NOT in ``.env``.
+
+    We merge ONLY values captured for this home — not arbitrary ``os.environ``
+    entries — so cross-profile isolation is
+    preserved: a key from another profile's shell export has no provenance
+    entry and is excluded. ``.env`` values always take precedence over
+    external-source values, matching the ``.env``-first resolution order
+    in ``get_env_value_prefer_dotenv``.
+    """
+    secrets = load_env_file(Path(hermes_home) / ".env")
+    _merge_external_secret_sources(Path(hermes_home), secrets)
+    return secrets
+
+
+def _merge_external_secret_sources(hermes_home: Path, secrets: Dict[str, str]) -> None:
+    """Merge externally-injected secrets (BWS, 1Password, ...) into ``secrets``.
+
+    Values are captured at source-application time for the requested home;
+    this prevents a later profile load from replacing a same-named value in
+    process-global ``os.environ``. ``.env`` values already in ``secrets`` are
+    never overwritten.
+    """
+    try:
+        from hermes_cli.env_loader import get_secret_source_values
+    except ImportError:
+        return
+
+    for name, value in get_secret_source_values(hermes_home).items():
+        if name in secrets or _is_global_env(name):
+            continue  # .env wins
+        if value:
+            secrets[name] = value

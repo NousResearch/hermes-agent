@@ -128,3 +128,143 @@ class TestEnvFileParsing:
         assert ss.build_profile_secret_scope(tmp_path) == {
             "ANTHROPIC_API_KEY": "sk-profile"
         }
+
+    def test_file_backed_secret_descriptor(self, tmp_path):
+        secret_path = tmp_path / "TELEGRAM_BOT_TOKEN"
+        secret_path.write_text("123456:scoped-token\n", encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN={'source':'file','path':'"
+            + str(secret_path)
+            + "'}\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            ss.build_profile_secret_scope(tmp_path)["TELEGRAM_BOT_TOKEN"]
+            == "123456:scoped-token"
+        )
+
+
+class TestExternalSecretSourceMerge:
+    """BWS / 1Password keys must be visible under an active scope.
+
+    Regression coverage for the cron/multiplex failure where
+    ``build_profile_secret_scope`` loaded only ``.env``, hiding
+    externally-injected keys that exist in ``os.environ`` with
+    provenance tracked in ``env_loader._SECRET_SOURCES``.
+    """
+
+    def test_bws_key_visible_under_scope(self, tmp_path, monkeypatch):
+        """BWS-proven key resolves via get_secret under an active scope."""
+        (tmp_path / ".env").write_text("BWS_ACCESS_TOKEN=bootstrap\n")
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-bws-key")
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bootstrap")
+
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(tmp_path.resolve())] = {
+            "OLLAMA_API_KEY": "ollama-bws-key"
+        }
+        try:
+            scope = ss.build_profile_secret_scope(tmp_path)
+            assert scope["OLLAMA_API_KEY"] == "ollama-bws-key"
+
+            ss.set_multiplex_active(True)
+            token = ss.set_secret_scope(scope)
+            try:
+                assert ss.get_secret("OLLAMA_API_KEY") == "ollama-bws-key"
+            finally:
+                ss.reset_secret_scope(token)
+        finally:
+            env_loader.reset_secret_source_cache()
+
+    def test_env_value_takes_precedence_over_bws(self, tmp_path, monkeypatch):
+        """A key in .env must win over the BWS-injected value."""
+        (tmp_path / ".env").write_text("OLLAMA_API_KEY=from-dotenv\n")
+        monkeypatch.setenv("OLLAMA_API_KEY", "from-bws")
+
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(tmp_path.resolve())] = {
+            "OLLAMA_API_KEY": "from-bws"
+        }
+        try:
+            scope = ss.build_profile_secret_scope(tmp_path)
+            assert scope["OLLAMA_API_KEY"] == "from-dotenv"
+        finally:
+            env_loader.reset_secret_source_cache()
+
+    def test_disabled_bws_does_not_leak_unrelated_env(self, tmp_path, monkeypatch):
+        """When _SECRET_SOURCES is empty, arbitrary os.environ keys are excluded."""
+        (tmp_path / ".env").write_text("# empty\n")
+        monkeypatch.setenv("SOME_RANDOM_KEY", "should-not-leak")
+
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCES.clear()
+        try:
+            scope = ss.build_profile_secret_scope(tmp_path)
+            assert "SOME_RANDOM_KEY" not in scope
+            assert scope.get("SOME_RANDOM_KEY") is None
+        finally:
+            env_loader._SECRET_SOURCES.clear()
+
+    def test_multiplex_isolation_preserved(self, tmp_path, monkeypatch):
+        """BWS-proven keys appear in scope; untracked env keys do not.
+
+        This is the cross-profile isolation invariant: under multiplex,
+        a key from another profile's shell export (no provenance entry)
+        must NOT be visible, even though a BWS-proven key must be.
+        """
+        (tmp_path / ".env").write_text("# empty\n")
+        monkeypatch.setenv("OLLAMA_API_KEY", "bws-key")
+        monkeypatch.setenv("OTHER_PROFILE_KEY", "leaky")
+
+        from hermes_cli import env_loader
+
+        env_loader.reset_secret_source_cache()
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(tmp_path.resolve())] = {
+            "OLLAMA_API_KEY": "bws-key"
+        }
+        try:
+            scope = ss.build_profile_secret_scope(tmp_path)
+            assert scope["OLLAMA_API_KEY"] == "bws-key"
+            assert "OTHER_PROFILE_KEY" not in scope
+
+            ss.set_multiplex_active(True)
+            token = ss.set_secret_scope(scope)
+            try:
+                assert ss.get_secret("OLLAMA_API_KEY") == "bws-key"
+                assert ss.get_secret("OTHER_PROFILE_KEY") is None
+            finally:
+                ss.reset_secret_scope(token)
+        finally:
+            env_loader.reset_secret_source_cache()
+
+    def test_same_key_isolated_by_home_snapshot(self, tmp_path, monkeypatch):
+        """Later profile loads cannot replace another home's captured value."""
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+        first_home.mkdir()
+        second_home.mkdir()
+        monkeypatch.setenv("OLLAMA_API_KEY", "second-profile-value")
+
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(first_home.resolve())] = {
+            "OLLAMA_API_KEY": "first-profile-value"
+        }
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(second_home.resolve())] = {
+            "OLLAMA_API_KEY": "second-profile-value"
+        }
+        try:
+            assert (
+                ss.build_profile_secret_scope(first_home)["OLLAMA_API_KEY"]
+                == "first-profile-value"
+            )
+            assert (
+                ss.build_profile_secret_scope(second_home)["OLLAMA_API_KEY"]
+                == "second-profile-value"
+            )
+        finally:
+            env_loader.reset_secret_source_cache()

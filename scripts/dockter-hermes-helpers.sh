@@ -507,9 +507,48 @@ dockter-hermes-setup() {
 # =============================================================================
 # Dashboard and health
 # =============================================================================
+_dockter_hermes_dashboard_url() {
+  printf 'http://127.0.0.1:%s/' "${DOCKTER_HERMES_DASHBOARD_PORT:-9119}"
+}
+
+_dockter_hermes_wait_for_dashboard() {
+  local url="$1"
+  if ! command -v curl >/dev/null 2>&1; then
+    return 2
+  fi
+
+  local attempt
+  for (( attempt = 0; attempt < 15; attempt++ )); do
+    if curl -fsS --max-time 2 "${url}api/status" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 dockter-hermes-dashboard() {
   _dockter_hermes_compose up -d dashboard || return 1
-  local url="http://127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}/"
+  local url wait_status
+  url=$(_dockter_hermes_dashboard_url)
+  if _dockter_hermes_wait_for_dashboard "$url"; then
+    wait_status=0
+  else
+    wait_status=$?
+  fi
+  if (( wait_status == 1 )); then
+    echo "Dashboard did not become ready at ${url}" >&2
+    _dockter_hermes_compose logs --tail 50 dashboard >&2 || true
+    if _dockter_hermes_is_native_windows; then
+      echo "" >&2
+      echo "Docker Desktop bridge networking requires a non-loopback bind inside the container," >&2
+      echo "so Hermes requires a dashboard auth provider. Configure one, then restart dashboard:" >&2
+      echo "  OAuth:             dockter-hermes-cli dashboard register" >&2
+      echo "  Username/password: configure HERMES_DASHBOARD_BASIC_AUTH_* in ~/.hermes/.env" >&2
+      echo "  Restart:           dockter-hermes-restart dashboard" >&2
+    fi
+    return 1
+  fi
   echo -e "Opening: ${_HD_CLR_CYAN}${url}${_HD_CLR_RESET}"
   open "$url" 2>/dev/null || xdg-open "$url" 2>/dev/null || \
     echo -e "Open manually: ${_HD_CLR_CYAN}${url}${_HD_CLR_RESET}"
@@ -635,7 +674,13 @@ dockter-hermes-help() {
 
   echo -e "${_HD_CLR_BOLD}${_HD_CLR_CYAN}First Time Setup${_HD_CLR_RESET}"
   echo -e "  ${_HD_CLR_CYAN}1.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-setup)       ${_HD_CLR_DIM}# Configure ~/.hermes inside Docker${_HD_CLR_RESET}"
-  echo -e "  ${_HD_CLR_CYAN}2.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-start)     ${_HD_CLR_DIM}# Start gateway and dashboard${_HD_CLR_RESET}"
-  echo -e "  ${_HD_CLR_CYAN}3.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard)   ${_HD_CLR_DIM}# Open http://127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}${_HD_CLR_RESET}"
+  if _dockter_hermes_is_native_windows; then
+    echo -e "  ${_HD_CLR_CYAN}2.${_HD_CLR_RESET} $(_hd_cmd 'dockter-hermes-cli dashboard register') ${_HD_CLR_DIM}# Configure OAuth (or basic auth in ~/.hermes/.env)${_HD_CLR_RESET}"
+    echo -e "  ${_HD_CLR_CYAN}3.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-start)     ${_HD_CLR_DIM}# Start gateway and dashboard${_HD_CLR_RESET}"
+    echo -e "  ${_HD_CLR_CYAN}4.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard)   ${_HD_CLR_DIM}# Open http://127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}${_HD_CLR_RESET}"
+  else
+    echo -e "  ${_HD_CLR_CYAN}2.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-start)     ${_HD_CLR_DIM}# Start gateway and dashboard${_HD_CLR_RESET}"
+    echo -e "  ${_HD_CLR_CYAN}3.${_HD_CLR_RESET} $(_hd_cmd dockter-hermes-dashboard)   ${_HD_CLR_DIM}# Open http://127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}${_HD_CLR_RESET}"
+  fi
   echo ""
 }

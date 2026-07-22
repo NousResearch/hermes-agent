@@ -57,6 +57,21 @@ networking and bind-mount paths while retaining local image builds. Optional
 project and user override files are applied afterward. Run
 `dockter-hermes-config` to see the selected Compose files.
 
+Docker Desktop publishes the dashboard port to host loopback, but the dashboard
+must bind to a non-loopback interface inside its bridge-network container.
+Hermes therefore requires a dashboard auth provider before the Windows
+dashboard can become ready. Configure either OAuth:
+
+```sh
+dockter-hermes-cli dashboard register
+```
+
+or the bundled username/password provider by setting
+`HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, `_PASSWORD` (or `_PASSWORD_HASH`), and
+the recommended `_SECRET` in `~/.hermes/.env`. See
+[Web Dashboard authentication](features/web-dashboard.md#authentication-gated-mode).
+After configuration, run `dockter-hermes-restart dashboard`.
+
 PowerShell cannot source this shell helper. WSL follows the Linux path; when its
 Docker CLI targets Docker Desktop, the standard Compose file requires Docker
 Desktop's host-networking feature to be enabled. To invoke the native Windows

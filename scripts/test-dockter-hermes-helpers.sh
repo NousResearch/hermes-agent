@@ -208,6 +208,31 @@ run_update_failure_case() {
   assert_log update-recreate-failure "$expected"
 }
 
+run_dashboard_failure_case() {
+  local expected="$1"
+  local output status
+  printf 'TEST dashboard-not-ready\n'
+  : > "$LOG_FILE"
+  set +e
+  output=$(run_windows_dashboard_not_ready 2>&1)
+  status=$?
+  set -e
+
+  if [[ $status -eq 0 ]]; then
+    printf 'Expected dashboard readiness failure\n' >&2
+    return 1
+  fi
+  if [[ "$output" == *"Opening:"* ]]; then
+    printf 'Unready dashboard claimed it was opening:\n%s\n' "$output" >&2
+    return 1
+  fi
+  if [[ "$output" != *"dockter-hermes-cli dashboard register"* ]]; then
+    printf 'Windows dashboard failure omitted auth guidance:\n%s\n' "$output" >&2
+    return 1
+  fi
+  assert_log dashboard-not-ready "$expected"
+}
+
 run_clean() {
   printf 'y\n' | dockter-hermes-clean
 }
@@ -221,9 +246,20 @@ run_windows_start() {
   dockter-hermes-start
 }
 
+run_windows_dashboard_not_ready() {
+  _dockter_hermes_is_native_windows() { return 0; }
+  _dockter_hermes_wait_for_dashboard() { return 1; }
+  dockter-hermes-dashboard
+}
+
 run_windows_config() {
   _dockter_hermes_is_native_windows() { return 0; }
   dockter-hermes-config | grep -F "$TMP_DIR/hermes-agent/docker-compose.windows.yml" >/dev/null
+}
+
+run_windows_help() {
+  _dockter_hermes_is_native_windows() { return 0; }
+  dockter-hermes-help | grep -F 'dockter-hermes-cli dashboard register' >/dev/null
 }
 
 run_windows_data_dir() {
@@ -283,6 +319,7 @@ run_windows_compose_model_case() {
 }
 
 run_case help dockter-hermes-help
+run_case help-windows run_windows_help
 run_case config dockter-hermes-config
 run_case config-windows run_windows_config
 run_case data-dir-windows run_windows_data_dir
@@ -311,7 +348,10 @@ run_logged_case chat "$(compose_line run --rm gateway chat)" dockter-hermes-chat
 run_logged_case setup "$(compose_line run --rm gateway setup)" dockter-hermes-setup
 
 run_logged_case dashboard "$(compose_line up -d dashboard)
+$(command_line curl -fsS --max-time 2 http://127.0.0.1:19119/api/status)
 $(command_line open http://127.0.0.1:19119/)" run_dashboard
+run_dashboard_failure_case "$(windows_compose_line up -d dashboard)
+$(windows_compose_line logs --tail 50 dashboard)"
 run_logged_case health "$(command_line docker exec hermes hermes gateway status --deep)" dockter-hermes-health
 
 run_logged_case rebuild "$(compose_line build gateway)

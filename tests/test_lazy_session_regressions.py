@@ -8,10 +8,13 @@ Tests cover:
 5. Prune — finalize_orphaned_compression_sessions catches ghost continuations
 """
 
+import sqlite3
 import threading
 import time
 import types
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 
@@ -629,3 +632,87 @@ class TestFinalizeOrphanedCompressionSessions:
 
         session = db.get_session("titled-ghost")
         assert session["end_reason"] == "orphaned_compression"
+
+
+class TestAppendMessageAfterSessionDelete:
+    def test_returns_none_and_leaves_no_rows_after_session_delete(self, tmp_path):
+        db = _make_session_db(tmp_path)
+
+        db.create_session(session_id="victim", source="tui", model="test")
+        db.delete_session("victim")
+
+        result = db.append_message("victim", role="user", content="late message")
+
+        assert result is None
+        assert db.get_messages("victim") == []
+
+    def test_parallel_delete_while_append_both_complete_cleanly(self, tmp_path):
+        db = _make_session_db(tmp_path)
+        db.create_session(session_id="race-session", source="tui", model="test")
+
+        errors = []
+
+        def deleter():
+            try:
+                for _ in range(50):
+                    db.create_session(
+                        session_id="race-session",
+                        source="tui",
+                        model="test",
+                    )
+                    db.delete_session("race-session")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def appender():
+            try:
+                for _ in range(50):
+                    db.append_message(
+                        "race-session",
+                        role="user",
+                        content="ping",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=deleter)
+        t2 = threading.Thread(target=appender)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert errors == [], f"Unexpected errors: {errors}"
+
+# ===========================================================================
+# append_message FK / IntegrityError gating
+# ===========================================================================
+
+class TestAppendMessageIntegrityGating:
+    """append_message() must swallow only FK violations (deleted session)
+    and re-raise every other IntegrityError instead of masking it."""
+
+    def test_append_message_returns_none_when_session_deleted(self, tmp_path):
+        """If the session row is deleted between the caller's read and the
+        INSERT, the FK on messages.session_id fails. That race is benign —
+        the message has no valid session to attach to — so append_message
+        must return None rather than raising."""
+        db = _make_session_db(tmp_path)
+
+        db.create_session(session_id="gone", source="tui", model="test")
+        # Hard-delete the session row (dashboard bulk-delete / prune path).
+        db.delete_session("gone")
+
+        result = db.append_message("gone", role="user", content="orphan")
+        assert result is None
+
+    def test_append_message_reraises_non_fk_integrity_error(self, tmp_path):
+        """A non-FK IntegrityError (e.g. NOT NULL on messages.role) is a real
+        schema/serialization bug and must propagate — the FK-only guard must
+        NOT swallow it as if the session had merely been deleted."""
+        db = _make_session_db(tmp_path)
+
+        db.create_session(session_id="live", source="tui", model="test")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.append_message("live", role=None, content="bad")

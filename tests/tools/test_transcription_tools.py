@@ -1578,3 +1578,28 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+class TestTranscribeCredentialReadGuard:
+    """transcribe_audio must refuse credential/secret stores before dispatch."""
+
+    def test_transcribe_audio_blocks_credential_read(self, tmp_path):
+        """A ``.env`` (secret-bearing) file is refused up front, so its
+        plaintext is never shipped to an external STT provider — mirroring the
+        read guard added to image-gen (587be5b5b) and xAI video-gen
+        (104232979)."""
+        from tools.transcription_tools import transcribe_audio
+        from agent.file_safety import get_read_block_error
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-secret\n")
+
+        expected = get_read_block_error(str(env_file))
+        assert expected, "test setup: a .env file should be read-blocked"
+
+        result = transcribe_audio(str(env_file))
+
+        assert result["success"] is False
+        # The error is the shared read-guard message, not an audio-validation
+        # or provider error — proving the guard fired before dispatch.
+        assert result["error"] == expected

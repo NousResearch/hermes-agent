@@ -1946,6 +1946,7 @@ def _setup_webhooks():
 
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
+    from gateway.config import load_gateway_config
     from hermes_cli.gateway import _all_platforms, _platform_status, _configure_platform
 
     print_header("Messaging Platforms")
@@ -1954,12 +1955,13 @@ def setup_gateway(config: dict):
     print()
 
     platforms = _all_platforms()
+    status_config = load_gateway_config()
 
     # Build checklist, pre-selecting already-configured platforms.
     items = []
     pre_selected = []
     for i, plat in enumerate(platforms):
-        status = _platform_status(plat)
+        status = _platform_status(plat, status_config)
         items.append(f"{plat['emoji']} {plat['label']}  ({status})")
         if status == "configured":
             pre_selected.append(i)
@@ -1985,8 +1987,9 @@ def setup_gateway(config: dict):
             or s.startswith("plugin disabled")
         )
 
+    status_config = load_gateway_config()
     any_messaging = any(
-        _is_progress(_platform_status(p)) for p in _all_platforms()
+        _is_progress(_platform_status(p, status_config)) for p in _all_platforms()
     )
     if any_messaging:
         print()
@@ -2298,16 +2301,18 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
+        from gateway.config import load_gateway_config
         from hermes_cli.gateway import _all_platforms, _platform_status
         # Count any non-empty status other than the "not configured" sentinel —
         # platforms like WhatsApp ("enabled, not paired"), Matrix ("configured
         # + E2EE"), and Signal ("partially configured") all indicate the user
         # has already started setup and we shouldn't force the section to rerun.
-        configured = [
-            _gateway_platform_short_label(plat["label"])
-            for plat in _all_platforms()
-            if _platform_status(plat) and _platform_status(plat) != "not configured"
-        ]
+        status_config = load_gateway_config()
+        configured = []
+        for plat in _all_platforms():
+            status = _platform_status(plat, status_config)
+            if status and status != "not configured":
+                configured.append(_gateway_platform_short_label(plat["label"]))
         if configured:
             return ", ".join(configured)
         return None  # No platforms configured — section must run

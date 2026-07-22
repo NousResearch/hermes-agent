@@ -69,6 +69,10 @@ class PlatformEntry:
     # Hint shown when check_fn returns False.
     install_hint: str = ""
 
+    # Exact pip requirements declared by the owning plugin manifest. The
+    # gateway setup flow installs these before it runs ``setup_fn``.
+    pip_dependencies: list[str] = field(default_factory=list)
+
     # Optional setup function for interactive configuration.
     # Signature: () -> None (prompts user, saves env vars).
     # If None, falls back to _setup_standard_platform (needs token_var + vars)
@@ -157,6 +161,13 @@ class PlatformEntry:
     # Without this hook, plugin platforms cannot serve as cron ``deliver=``
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+
+    # Optional parser for plugin-native target references that cannot be
+    # represented by the generic ``chat_id[:thread_id]`` shapes. Returns
+    # ``(chat_id, secondary_route_id)`` or None when the reference is invalid.
+    target_parser_fn: Optional[
+        Callable[[str], Optional[tuple[str, Optional[str]]]]
+    ] = None
 
 
 class PlatformRegistry:

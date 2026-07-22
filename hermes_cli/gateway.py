@@ -5293,7 +5293,7 @@ def _all_platforms() -> list[dict]:
     return platforms
 
 
-def _platform_status(platform: dict) -> str:
+def _platform_status(platform: dict, gateway_config=None) -> str:
     """Return a plain-text status string for a platform.
 
     Returns uncolored text so it can safely be embedded in
@@ -5306,10 +5306,16 @@ def _platform_status(platform: dict) -> str:
         # check_fn (typically just dependency / env presence).
         if entry.is_connected is not None:
             try:
-                from gateway.config import PlatformConfig
+                from gateway.config import Platform, PlatformConfig
 
-                synthetic = PlatformConfig(enabled=True)
-                configured = bool(entry.is_connected(synthetic))
+                if gateway_config is None:
+                    gateway_config = load_gateway_config()
+                saved = getattr(gateway_config, "platforms", {}).get(
+                    Platform(entry.name)
+                )
+                configured = bool(
+                    entry.is_connected(saved or PlatformConfig(enabled=True))
+                )
             except Exception:
                 configured = False
         else:
@@ -6161,6 +6167,25 @@ def _builtin_setup_fn(key: str):
     }.get(key)
 
 
+def _install_platform_dependencies(entry) -> bool:
+    """Install a platform plugin's declared requirements during setup."""
+    if not entry.pip_dependencies:
+        return True
+
+    from hermes_cli.tools_config import _pip_install
+
+    print_info(f"  Installing dependencies: {', '.join(entry.pip_dependencies)}")
+    try:
+        result = _pip_install(["--quiet", *entry.pip_dependencies], timeout=120)
+    except Exception as exc:
+        print_error(f"  Dependency install failed: {exc}")
+        return False
+    if result.returncode:
+        print_error(f"  Dependency install failed: {(result.stderr or result.stdout).strip()[:200]}")
+        return False
+    return True
+
+
 def _configure_platform(platform: dict) -> None:
     """Run the interactive setup flow for a single platform.
 
@@ -6175,6 +6200,9 @@ def _configure_platform(platform: dict) -> None:
     must already be in ``plugins.enabled`` before they appear in this menu.
     """
     entry = platform.get("_registry_entry")
+
+    if entry is not None and not _install_platform_dependencies(entry):
+        return
 
     if entry is not None and entry.setup_fn is not None:
         entry.setup_fn()
@@ -6294,9 +6322,11 @@ def gateway_setup():
         print_header("Messaging Platforms")
 
         platforms = _all_platforms()
+        status_config = load_gateway_config()
 
         menu_items = [
-            f"{p['emoji']} {p['label']}  ({_platform_status(p)})" for p in platforms
+            f"{p['emoji']} {p['label']}  ({_platform_status(p, status_config)})"
+            for p in platforms
         ]
         menu_items.append("Done")
 
@@ -6321,7 +6351,10 @@ def gateway_setup():
             or s.startswith("plugin disabled")
         )
 
-    any_configured = any(_is_progress(_platform_status(p)) for p in _all_platforms())
+    status_config = load_gateway_config()
+    any_configured = any(
+        _is_progress(_platform_status(p, status_config)) for p in _all_platforms()
+    )
 
     if any_configured:
         print()

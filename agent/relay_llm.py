@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset(
     {"reasoning_content", "reasoning_details"}
 )
+_RELAY_INTERNAL_PROVIDER_HEADERS = frozenset(
+    {"x-dynamo-parent-session-id", "x-dynamo-session-id"}
+)
 
 
 def execute(
@@ -694,7 +697,13 @@ def _provider_request(
                 final[key] = value
         _restore_provider_message_extensions(original, final)
     headers = getattr(request, "headers", None)
-    if isinstance(headers, dict) and headers:
+    if isinstance(headers, dict):
+        headers = {
+            key: value
+            for key, value in headers.items()
+            if str(key).lower() not in _RELAY_INTERNAL_PROVIDER_HEADERS
+        }
+    if headers:
         final["extra_headers"] = {
             **dict(final.get("extra_headers") or {}),
             **headers,

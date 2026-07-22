@@ -586,6 +586,18 @@ def init_agent(
     elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
+    elif agent.provider == "vertex":
+        # Vertex is a dual-path provider: Claude → AnthropicVertex SDK
+        # (anthropic_messages), Gemini → OpenAI-compatible endpoint
+        # (chat_completions).  When api_mode was already set explicitly
+        # (by runtime_provider), the top-of-chain check at line 440
+        # accepted it; this branch only fires for direct AIAgent()
+        # construction without an explicit api_mode.
+        from hermes_cli.runtime_provider import _is_anthropic_vertex_model
+        if _is_anthropic_vertex_model(agent.model):
+            agent.api_mode = "anthropic_messages"
+        else:
+            agent.api_mode = "chat_completions"
     elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"
@@ -916,6 +928,8 @@ def init_agent(
     # access for Codex Responses API streaming.
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
+    agent._vertex_project_id = None
+    agent._vertex_region = None
 
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,
@@ -928,6 +942,7 @@ def init_agent(
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
+        _is_vertex_anthropic = agent.provider == "vertex"
         if _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
@@ -942,6 +957,31 @@ def init_agent(
             agent._client_kwargs = {}
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+        elif _is_vertex_anthropic:
+            from agent.anthropic_adapter import build_anthropic_vertex_client
+            from hermes_cli.auth import resolve_vertex_anthropic_runtime_credentials
+
+            vertex_runtime = resolve_vertex_anthropic_runtime_credentials()
+            vertex_base_url = vertex_runtime.get("base_url", "").rstrip("/")
+            agent._vertex_project_id = vertex_runtime["project_id"]
+            agent._vertex_region = vertex_runtime["region"]
+            agent.base_url = vertex_base_url
+            agent._anthropic_client = build_anthropic_vertex_client(
+                agent._vertex_project_id,
+                agent._vertex_region,
+                timeout=_provider_timeout,
+            )
+            agent._anthropic_api_key = vertex_runtime.get("api_key", "gcp-adc")
+            agent._anthropic_base_url = vertex_base_url
+            agent._is_anthropic_oauth = False
+            agent.api_key = agent._anthropic_api_key
+            agent.client = None
+            agent._client_kwargs = {}
+            if not agent.quiet_mode:
+                print(
+                    f"🤖 AI Agent initialized with model: {agent.model} "
+                    f"(Google Vertex AI + AnthropicVertex SDK, {agent._vertex_region})"
+                )
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

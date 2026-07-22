@@ -2834,6 +2834,188 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
+class TestVertexRuntimeResolution:
+    def test_vertex_anthropic_prefers_anthropic_project_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "anthropic-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "google-project")
+        monkeypatch.setenv("GCLOUD_PROJECT", "gcloud-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "europe-west4")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "claude-sonnet-4-6"})
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+        monkeypatch.setattr(
+            rp,
+            "load_pool",
+            lambda provider: (_ for _ in ()).throw(
+                AssertionError("credential pools should not run for vertex")
+            ),
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="vertex")
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["project_id"] == "anthropic-project"
+        assert resolved["region"] == "europe-west4"
+        assert resolved["api_key"] == "gcp-adc"
+        assert resolved["vertex_anthropic"] is True  # signal for AnthropicVertex client
+        assert resolved["source"] == "gcp-adc"
+
+    def test_vertex_anthropic_falls_back_to_gcloud_project_and_global_region(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.setenv("GCLOUD_PROJECT", "gcloud-project")
+        monkeypatch.delenv("CLOUD_ML_REGION", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "claude-opus-4-6"})
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+        monkeypatch.setattr(
+            rp,
+            "load_pool",
+            lambda provider: (_ for _ in ()).throw(
+                AssertionError("credential pools should not run for vertex")
+            ),
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="vertex")
+
+        assert resolved["project_id"] == "gcloud-project"
+        assert resolved["region"] == "global"
+
+    def test_vertex_anthropic_requires_project_id(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("GCLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("CLOUD_ML_REGION", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "claude-sonnet-4-6"})
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        with pytest.raises(rp.AuthError, match="ANTHROPIC_VERTEX_PROJECT_ID"):
+            rp.resolve_runtime_provider(requested="vertex")
+
+    def test_vertex_reads_project_and_region_from_config_yaml(self, monkeypatch):
+        """Config-only path: vertex.project_id / vertex.region in config.yaml
+        should be enough when no env vars are set (regression test for PR review)."""
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("GCLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("CLOUD_ML_REGION", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "claude-sonnet-4-6"})
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        # Patch load_config in auth.py to return a config with vertex section
+        import hermes_cli.auth as auth_mod
+        monkeypatch.setattr(
+            auth_mod, "resolve_vertex_anthropic_runtime_credentials",
+            lambda: {
+                "provider": "vertex",
+                "api_key": "gcp-adc",
+                "base_url": "https://aiplatform.googleapis.com",
+                "project_id": "config-project",
+                "region": "europe-west4",
+                "source": "gcp-adc",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="vertex")
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["project_id"] == "config-project"
+        assert resolved["region"] == "europe-west4"
+
+    def test_vertex_credential_resolver_falls_back_to_config_yaml(self, monkeypatch):
+        """resolve_vertex_anthropic_runtime_credentials reads vertex.project_id
+        and vertex.region from config.yaml when env vars are absent."""
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("GCLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("CLOUD_ML_REGION", raising=False)
+
+        import hermes_cli.auth as auth_mod
+
+        # Patch load_config inside auth.py to return our test config
+        monkeypatch.setattr(
+            auth_mod, "resolve_vertex_anthropic_runtime_credentials",
+            auth_mod.resolve_vertex_anthropic_runtime_credentials,  # keep real fn
+        )
+
+        # We need to patch the config loader that the function imports
+        _fake_config = {"vertex": {"project_id": "yaml-project", "region": "asia-southeast1"}}
+        from hermes_cli import config as config_mod
+        monkeypatch.setattr(config_mod, "load_config", lambda: _fake_config)
+
+        creds = auth_mod.resolve_vertex_anthropic_runtime_credentials()
+        assert creds["project_id"] == "yaml-project"
+        assert creds["region"] == "asia-southeast1"
+
+    def test_vertex_env_vars_take_precedence_over_config_yaml(self, monkeypatch):
+        """Env vars should win over config.yaml vertex section."""
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "env-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "us-central1")
+
+        import hermes_cli.auth as auth_mod
+        _fake_config = {"vertex": {"project_id": "yaml-project", "region": "asia-southeast1"}}
+        from hermes_cli import config as config_mod
+        monkeypatch.setattr(config_mod, "load_config", lambda: _fake_config)
+
+        creds = auth_mod.resolve_vertex_anthropic_runtime_credentials()
+        assert creds["project_id"] == "env-project"
+        assert creds["region"] == "us-central1"
+
+    def test_vertex_gemini_routes_to_chat_completions(self, monkeypatch):
+        """Gemini models on Vertex should get api_mode=chat_completions, not anthropic_messages."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "default": "google/gemini-3-flash-preview", "provider": "vertex",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        mock_token = "ya29.test-token"
+        mock_base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+
+        import agent.vertex_adapter as va_mod
+        monkeypatch.setattr(va_mod, "get_vertex_config", lambda **kw: (mock_token, mock_base_url))
+
+        resolved = rp.resolve_runtime_provider(
+            requested="vertex",
+            target_model="google/gemini-3-flash-preview",
+        )
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["api_mode"] == "chat_completions"
+        assert resolved["api_key"] == mock_token
+        assert "vertex_anthropic" not in resolved
+
+    def test_vertex_claude_routes_to_anthropic_messages(self, monkeypatch):
+        """Claude models on Vertex should get api_mode=anthropic_messages with vertex_anthropic=True."""
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "test-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "us-east5")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "default": "claude-sonnet-4-6", "provider": "vertex",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="vertex",
+            target_model="claude-sonnet-4-6",
+        )
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["vertex_anthropic"] is True
+        assert resolved["project_id"] == "test-project"
+        assert resolved["region"] == "us-east5"
+
+
 # ----------------------------------------------------------------------
 # GitHub #27132 — provider aliases (ollama/vllm/llamacpp/llama-cpp) must
 # follow the same base_url trust + routing rules as bare `provider: custom`.

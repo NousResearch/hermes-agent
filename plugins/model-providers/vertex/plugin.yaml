@@ -1,5 +1,5 @@
 name: vertex-provider
 kind: model-provider
 version: 1.0.0
-description: Google Vertex AI (Gemini via OpenAI-compatible endpoint, OAuth2)
-author: Steve Lawton (@slawt), Hermes Agent
+description: Google Vertex AI (Gemini + Claude; OAuth2 service account or ADC)
+author: Steve Lawton (@slawt), Egor Lunin, Hermes Agent

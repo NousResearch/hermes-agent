@@ -104,6 +104,13 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _exit1_signature(body: bytes, secret: str) -> str:
+    """Compute X-Exit1-Signature for *body* using *secret* (sha256= prefixed)."""
+    return "sha256=" + hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+
+
 def _generic_v2_signature(body: bytes, secret: str, timestamp: str) -> str:
     """Compute X-Webhook-Signature-V2 (HMAC-SHA256 of "<timestamp>.<body>")."""
     signed_content = timestamp.encode() + b"." + body
@@ -237,6 +244,23 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_exit1_signature_valid(self):
+        """Valid X-Exit1-Signature (sha256= HMAC-SHA256 hex) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"monitor": "down"}'
+        secret = "exit1-secret"
+        sig = _exit1_signature(body, secret)
+        req = _mock_request(headers={"X-Exit1-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_exit1_signature_invalid(self):
+        """A wrong X-Exit1-Signature is rejected (constant-time compare fails)."""
+        adapter = _make_adapter()
+        body = b'{"monitor": "down"}'
+        secret = "exit1-secret"
+        req = _mock_request(headers={"X-Exit1-Signature": "sha256=deadbeef"})
+        assert adapter._validate_signature(req, body, secret) is False
 
     def test_validate_generic_v2_signature_valid(self):
         """Valid X-Webhook-Signature-V2 (timestamp-bound) is accepted."""

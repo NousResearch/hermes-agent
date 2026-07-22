@@ -99,6 +99,33 @@ class TestCliApprovalUi:
             "rm -rf /tmp/example", allow_permanent=False, smart_denied=False
         ) == ["once", "session", "deny"]
 
+    def test_approval_callback_persists_pending_prompt_in_scrollback(self):
+        """A pending approval remains visible even if the modal repaint is lost."""
+        cli = _make_cli_stub()
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("tar -xf archive.tar", "tirith warning")
+
+        with patch.object(cli_module, "_cprint") as cprint:
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+            rendered = "\n".join(str(call.args[0]) for call in cprint.call_args_list)
+            assert "PENDING APPROVAL" in rendered
+            assert "tar -xf archive.tar" in rendered
+            assert "arrow/number keys" in rendered
+
+            cli._approval_state["response_queue"].put("deny")
+            thread.join(timeout=2)
+
+        assert result["value"] == "deny"
+
     def test_sudo_prompt_restores_existing_draft_after_response(self):
         cli = _make_cli_stub()
         cli._app.current_buffer = _FakeBuffer("draft command", cursor_position=5)

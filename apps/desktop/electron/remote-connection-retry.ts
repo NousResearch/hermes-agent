@@ -1,4 +1,4 @@
-import { isOauthSessionAuthFailure } from './connection-config'
+import { isGatewayAuthRejection } from './connection-config'
 
 interface RemoteConnectionRetryOptions {
   initialDelayMs?: number
@@ -15,7 +15,7 @@ function requiresOauthLogin(error: unknown): boolean {
 
   const candidate = error as { cause?: unknown; needsOauthLogin?: unknown }
 
-  return candidate.needsOauthLogin === true || isOauthSessionAuthFailure(error) || isOauthSessionAuthFailure(candidate.cause)
+  return candidate.needsOauthLogin === true || isGatewayAuthRejection(error) || isGatewayAuthRejection(candidate.cause)
 }
 
 /**

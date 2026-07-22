@@ -189,11 +189,28 @@ class TestFastChoicePicker:
         assert values == ["fast", "normal"]
 
     @pytest.mark.asyncio
-    async def test_fast_picker_selection_persists_service_tier(self, tmp_path, monkeypatch):
+    async def test_fast_picker_selection_is_session_scoped(self, tmp_path, monkeypatch):
+        """A bare /fast picker tap applies a session override, not a config write."""
         self._patch_fast_support(monkeypatch, tmp_path)
         adapter = _PickerAdapter()
         runner = _make_runner(adapter)
         event = _make_event("/fast")
+
+        await runner._handle_fast_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        await on_choice(event.source.chat_id, "fast")
+
+        assert runner._service_tier == "priority"
+        assert runner._session_service_tier_overrides
+        assert not (tmp_path / "config.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_fast_picker_global_flag_persists_service_tier(self, tmp_path, monkeypatch):
+        """A /fast --global picker tap persists agent.service_tier to config."""
+        self._patch_fast_support(monkeypatch, tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event("/fast --global")
 
         await runner._handle_fast_command(event)
         on_choice = adapter.calls[0]["on_choice_selected"]

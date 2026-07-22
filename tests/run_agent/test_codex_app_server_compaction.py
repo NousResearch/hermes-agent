@@ -1,4 +1,7 @@
+import time
 from types import SimpleNamespace
+
+import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
 from agent.conversation_compression import COMPACTION_STATUS, compress_context
@@ -17,6 +20,26 @@ class FakeCodexSession:
 
     def close(self):
         self.closed = True
+
+
+class SlowCodexSession(FakeCodexSession):
+    def __init__(self, result, touch_calls):
+        super().__init__(result)
+        self.touch_calls = touch_calls
+
+    def compact_thread(self):
+        self.calls += 1
+        _wait_for_touch(self.touch_calls, "context compression in progress")
+        return self.result
+
+
+def _wait_for_touch(touch_calls, desc, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if desc in touch_calls:
+            return
+        time.sleep(0.01)
+    pytest.fail(f"timed out waiting for touch {desc!r}; saw {touch_calls!r}")
 
 
 class DummyAgent:
@@ -43,6 +66,11 @@ class DummyAgent:
         self.warnings = []
         self.events = []
         self.built_prompts = []
+        self.touch_calls = []
+        self._compression_activity_heartbeat_interval = 0.1
+
+    def _touch_activity(self, desc):
+        self.touch_calls.append(desc)
 
     def _emit_status(self, message):
         self.statuses.append(message)
@@ -77,6 +105,33 @@ def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     assert agent._codex_session.calls == 0
     assert agent.context_compressor.compression_count == 0
     assert agent.events == []
+
+
+def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
+    )
+    agent._codex_session = SlowCodexSession(
+        agent._codex_session.result,
+        agent.touch_calls,
+    )
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+        force=True,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 1
+    assert "context compression started" in agent.touch_calls
+    assert "context compression in progress" in agent.touch_calls
+    assert agent.touch_calls[-1] == "context compression completed"
 
 
 def test_codex_app_server_manual_compression_routes_to_codex_thread():
@@ -162,6 +217,8 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
     assert agent.context_compressor.compression_count == 0
     assert agent.context_compressor.last_prompt_tokens == 123
     assert agent.warnings
+    assert agent.touch_calls[0] == "context compression started"
+    assert agent.touch_calls[-1] == "context compression failed"
 
 
 def test_codex_app_server_native_compaction_notice_emits_status_and_event():

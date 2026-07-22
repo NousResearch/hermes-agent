@@ -218,6 +218,35 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "matching the background co-work model."
                 ),
             },
+            # ── delivery (verify → escalate ladder) ────────────────
+            "delivery_mode": {
+                "type": "string",
+                "enum": ["background", "foreground"],
+                "description": (
+                    "How input is delivered, for the input actions (click, "
+                    "double_click, right_click, drag, scroll, type, key). "
+                    "`background` (DEFAULT) routes input to the target without "
+                    "raising it or stealing focus — the co-work model. "
+                    "`foreground` briefly fronts the window, acts, then "
+                    "restores the prior frontmost app. Only escalate to "
+                    "`foreground` when a background attempt did NOT land — i.e. "
+                    "a prior result had `effect: 'suspected_noop'`, "
+                    "`code: 'background_unavailable'`, or "
+                    "`escalation.recommended: 'foreground'`. Do not predict it "
+                    "from the app being Electron/Chromium; react to the "
+                    "returned signal. Foreground is a visible focus change and "
+                    "needs its own approval."
+                ),
+            },
+            "bring_to_front": {
+                "type": "boolean",
+                "description": (
+                    "Optional, pairs with delivery_mode='foreground'. Keep the "
+                    "target fronted after the action instead of restoring the "
+                    "previous app, to avoid a per-call flash across a short "
+                    "sequence of foreground actions. Default false."
+                ),
+            },
             # ── return shape ───────────────────────────────────────
             "capture_after": {
                 "type": "boolean",

@@ -28,6 +28,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
     discover_local_cdp_url,
@@ -757,7 +758,8 @@ class CLICommandsMixin:
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
-                    self.conversation_history
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
                 )
             except Exception:
                 pass
@@ -832,6 +834,14 @@ class CLICommandsMixin:
             self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+        # Retarget the process + tool cwd to where the session was started, so a
+        # mid-chat /resume (and /sessions <id>, which delegates here) lands in the
+        # same directory as a startup `hermes -c`/`--resume`. The startup resume
+        # paths already call this; without it, the terminal/code-exec tools and
+        # relative-path resolution keep operating in the wrong repo. Idempotent
+        # and a no-op when the session recorded no cwd. See #38562.
+        self._restore_session_cwd(session_meta)
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -910,7 +920,8 @@ class CLICommandsMixin:
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
-                    self.conversation_history
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
                 )
             except Exception:
                 pass
@@ -953,6 +964,11 @@ class CLICommandsMixin:
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning=msg.get("reasoning"),
+                    # Keep the api_content sidecar so the branch's first turn
+                    # replays the parent's exact wire bytes (warm provider
+                    # prompt cache) instead of a full cold prefill.
+                    api_content=extract_api_content_sidecar(msg),
+                    timestamp=msg.get("timestamp"),
                 )
             except Exception:
                 pass  # Best-effort copy
@@ -2502,13 +2518,14 @@ class CLICommandsMixin:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set effort (none, minimal, low, medium, high, xhigh, max, ultra)
+            /reasoning <level>      Set effort for this session only (none, minimal, low, medium, high, xhigh, max, ultra)
+            /reasoning <level> --global  Persist reasoning effort to config.yaml
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
             /reasoning clamp        Collapse long thinking to the first 10 lines
         """
-        from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
+        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
@@ -2524,10 +2541,20 @@ class CLICommandsMixin:
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp> [--global]{_RST}")
             return
 
         arg = parts[1].strip().lower()
+        arg_tokens = arg.split()
+        # Session scope is the default; --global opts into persisting to
+        # config.yaml. --session is accepted as an explicit no-op for parity
+        # with /model and the gateway /reasoning handler.
+        explicit_global = "--global" in arg_tokens
+        if explicit_global or "--session" in arg_tokens:
+            arg = " ".join(
+                token for token in arg_tokens
+                if token not in ("--global", "--session")
+            )
 
         # Display toggle
         if arg in {"show", "on"}:
@@ -2567,15 +2594,23 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
             _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max, ultra{_RST}")
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
+            _cprint(f"  {_DIM}Scope:        session-scoped by default, --global to persist{_RST}")
             return
 
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
-        if save_config_value("agent.reasoning_effort", arg):
+        if explicit_global and save_config_value("agent.reasoning_effort", arg):
+            agent_cfg = CLI_CONFIG.get("agent")
+            if not isinstance(agent_cfg, dict):
+                agent_cfg = {}
+                CLI_CONFIG["agent"] = agent_cfg
+            agent_cfg["reasoning_effort"] = arg
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+        elif explicit_global:
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only; config save failed){_RST}")
         else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (this session — use --global to persist){_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.
@@ -2621,7 +2656,11 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
-        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
+
+        Session-scoped by default; ``--global`` persists agent.service_tier
+        to config.yaml (parity with /model and /reasoning).
+        """
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
         if not self._fast_command_available():
             _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
@@ -2640,10 +2679,15 @@ class CLICommandsMixin:
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        arg_tokens = parts[1].strip().lower().split()
+        explicit_global = "--global" in arg_tokens
+        arg = " ".join(
+            token for token in arg_tokens
+            if token not in ("--global", "--session")
+        )
 
         if arg in {"fast", "on"}:
             self.service_tier = "priority"
@@ -2655,14 +2699,16 @@ class CLICommandsMixin:
             label = "NORMAL"
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config
-        if save_config_value("agent.service_tier", saved_value):
+        if explicit_global and save_config_value("agent.service_tier", saved_value):
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
+        elif explicit_global:
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only; config save failed){_RST}")
         else:
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (this session — use --global to persist){_RST}")
 
     def _handle_debug_command(self, cmd_original: str = ""):
         """Handle /debug — upload debug report + logs and print share URLs.

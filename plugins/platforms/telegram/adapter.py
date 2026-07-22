@@ -17,6 +17,7 @@ import os
 import html as _html
 import re
 import threading
+import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
@@ -249,6 +250,7 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -543,6 +545,24 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# shutdown()/initialize() on the getUpdates httpx request close and rebuild the
+# connection pool. When a connection is wedged on a stale CLOSE-WAIT socket that
+# close can block forever, hanging _drain_polling_connections() and freezing the
+# whole reconnect ladder (the tracked _polling_error_task never completes, so
+# every escalation path stays gated behind its in-flight guard). Bound the drain
+# so the ladder always advances toward the fatal-restart escalation. Matches
+# _UPDATER_STOP_TIMEOUT. Refs: NousResearch/hermes-agent#66377
+_DRAIN_TIMEOUT = 15.0
+# Cause-agnostic wedged-recovery watchdog (#66377). Every recovery path (the
+# reconnect ladder's re-entry, the pending-update probe, PTB's error callback)
+# gates new recovery on ``_polling_error_task.done()``; if that task ever wedges
+# on a hung await that no local bound covers, the whole gateway goes silently
+# deaf with nothing retrying. The heartbeat loop force-escalates a recovery task
+# that stays in-flight far longer than any healthy ladder attempt could take —
+# stop (_UPDATER_STOP_TIMEOUT) + drain (2x_DRAIN_TIMEOUT) + start
+# (_UPDATER_START_TIMEOUT) + max backoff (60s) is ~135s, so 300s is
+# unambiguously stuck.
+_POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
@@ -994,10 +1014,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
-        # Adapter-level allow_from: when set, it is the sole authority.
-        adapter_allow_from = self.config.extra.get("allow_from")
+        # Adapter-level allow_from / group_allow_from: when set, they are the
+        # sole authority.  Group chats use group_allow_from; DMs use allow_from.
+        chat_type = source.chat_type or ""
+        if chat_type in ("group", "forum", "channel"):
+            adapter_allow_from = self.config.extra.get("group_allow_from")
+        else:
+            adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None:
-            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            allowed = _coerce_allow_set(adapter_allow_from)
             return user_id in allowed or "*" in allowed
 
         # Test/custom injection only. The class method named
@@ -1987,20 +2012,22 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return
         try:
-            await polling_req.shutdown()
+            # Bounded: a wedged CLOSE-WAIT socket can make this close hang
+            # forever and freeze the reconnect ladder (#66377).
+            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
         except Exception:
             logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
+                "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
         try:
-            await polling_req.initialize()
+            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
         except Exception:
             logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
+                "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
 
@@ -2336,11 +2363,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if attempt > MAX_NETWORK_RETRIES:
             message = (
                 "Telegram polling could not reconnect after %d network error retries. "
-                "Restarting gateway." % MAX_NETWORK_RETRIES
+                "Escalating to gateway recovery." % MAX_NETWORK_RETRIES
             )
             logger.error("[%s] %s Last error: %s", self.name, message, _redact_telegram_error_text(error))
             self._set_fatal_error("telegram_network_error", message, retryable=True)
-            await self._notify_fatal_error()
+            await self._handoff_polling_fatal_error()
             return
 
         delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
@@ -2454,6 +2481,16 @@ class TelegramAdapter(BasePlatformAdapter):
         HEARTBEAT_INTERVAL = 90   # seconds between probes
         PROBE_TIMEOUT = 15        # seconds before declaring the path dead
 
+        # Wedged-recovery watchdog state (#66377). Tracked locally so no
+        # _polling_error_task assignment site needs to stamp a timestamp: the
+        # heartbeat notes when it first observes a given recovery task still
+        # in-flight, and force-escalates if the *same* task object is still
+        # running after _POLLING_ERROR_TASK_STUCK_TIMEOUT. A healthy ladder
+        # attempt completes (task done) or chains to a new task well before
+        # then, so a single long-lived task is unambiguously wedged.
+        stuck_task_ref: Optional[asyncio.Task] = None
+        stuck_task_since = 0.0
+
         while True:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -2461,6 +2498,42 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 if self.has_fatal_error:
                     return
+
+                # Independent wedged-recovery watchdog (#66377): if the tracked
+                # recovery task has hung (any await no local bound covers), every
+                # other recovery path is gated behind it and returns early
+                # forever — the gateway stays alive but deaf. Force a
+                # retryable-fatal so the background reconnector rebuilds the
+                # adapter instead of relying on the frozen ladder.
+                recovery_task = self._polling_error_task
+                if recovery_task is not None and not recovery_task.done():
+                    now = time.monotonic()
+                    if recovery_task is not stuck_task_ref:
+                        stuck_task_ref = recovery_task
+                        stuck_task_since = now
+                    elif now - stuck_task_since > _POLLING_ERROR_TASK_STUCK_TIMEOUT:
+                        stuck_for = now - stuck_task_since
+                        logger.error(
+                            "[%s] Telegram reconnect task wedged for %.0fs with no "
+                            "ladder progress; forcing retryable-fatal so the gateway "
+                            "reconnects instead of staying silently deaf.",
+                            self.name, stuck_for,
+                        )
+                        try:
+                            recovery_task.cancel()
+                        except Exception:
+                            pass
+                        self._set_fatal_error(
+                            "telegram_network_error",
+                            "Telegram reconnect task wedged for %.0fs; forcing "
+                            "gateway reconnect." % stuck_for,
+                            retryable=True,
+                        )
+                        await self._handoff_polling_fatal_error()
+                        return
+                else:
+                    stuck_task_ref = None
+
                 bot = self._app.bot if self._app else None
                 if bot is None:
                     continue
@@ -2915,7 +2988,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, stop_error, exc_info=True,
             )
         if not _already_fatal:
-            await self._notify_fatal_error()
+            await self._handoff_polling_fatal_error()
+
+    async def _handoff_polling_fatal_error(self) -> None:
+        """Notify the runner without letting child teardown cancel this owner.
+
+        The runner bounds adapter cleanup in a child task.  ``disconnect()``
+        cancels the tracked polling-recovery task and the heartbeat task, so
+        retaining the current notifier in either field would cancel the fatal
+        callback before the runner can finish its reconnect or shutdown
+        decision.  Release only the current owner from whichever field tracks
+        it; unrelated tasks remain under teardown control.
+        """
+        current_task = asyncio.current_task()
+        if self._polling_error_task is current_task:
+            self._polling_error_task = None
+        if getattr(self, "_polling_heartbeat_task", None) is current_task:
+            self._polling_heartbeat_task = None
+        await self._notify_fatal_error()
 
     async def _create_dm_topic(
         self,
@@ -3344,10 +3434,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] python-telegram-bot not installed. Run: pip install python-telegram-bot",
                 self.name,
             )
+            self._set_fatal_error("missing_dependency", "python-telegram-bot not installed", retryable=False)
             return False
         
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
+            self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
         
         try:
@@ -4937,6 +5029,7 @@ class TelegramAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
@@ -4971,7 +5064,7 @@ class TelegramAdapter(BasePlatformAdapter):
             buttons = [
                 InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")
             ]
-            if not smart_denied:
+            if not smart_denied and allow_session:
                 buttons.append(
                     InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
                 )
@@ -5879,29 +5972,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="This approval has already been resolved.")
                     return
 
-                # Map choice to human-readable label
-                label_map = {
-                    "once": "✅ Approved once",
-                    "session": "✅ Approved for session",
-                    "always": "✅ Approved permanently",
-                    "deny": "❌ Denied",
-                }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
 
-                await query.answer(text=label)
-
-                # Edit message to show decision, remove buttons
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass  # non-fatal if edit fails
-
-                # Resolve the approval — unblocks the agent thread
+                # Resolve the approval FIRST — unblocks the agent thread.
+                # Rendering happens after so the message reflects what
+                # actually occurred: a tap that lands after the approval
+                # wait timed out (count == 0) must NOT claim "Approved" —
+                # the command was already denied and will not run (#63501
+                # regression follow-up: 60s waits made stale taps common).
                 try:
                     from tools.approval import resolve_gateway_approval
                     count = resolve_gateway_approval(session_key, choice)
@@ -5912,6 +5990,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
                     count = 0
+
+                if count:
+                    # Map choice to human-readable label
+                    label_map = {
+                        "once": "✅ Approved once",
+                        "session": "✅ Approved for session",
+                        "always": "✅ Approved permanently",
+                        "deny": "❌ Denied",
+                    }
+                    label = label_map.get(choice, "Resolved")
+                    edit_text = f"{label} by {user_display}"
+                else:
+                    label = "⌛ Approval expired"
+                    edit_text = (
+                        f"{label} — no command was waiting. "
+                        f"It already timed out (and was denied) or was resolved elsewhere."
+                    )
+
+                await query.answer(text=label)
+
+                # Edit message to show decision, remove buttons
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(edit_text),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if edit fails
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths
@@ -7676,9 +7783,15 @@ class TelegramAdapter(BasePlatformAdapter):
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:
+            # Commands must retain the original source (with user_id) so
+            # slash-access control (_check_slash_access) can identify the
+            # sender.  Replacing the source with an anonymised shared source
+            # (user_id=None) causes admin-only commands like /new to be
+            # denied even when the sender is an admin, because
+            # SlashAccessPolicy.is_admin(None) is always False.
+            # Still inject channel_prompt for group context.
             return dataclasses.replace(
                 event,
-                source=shared_source,
                 channel_prompt=channel_prompt,
             )
         return dataclasses.replace(
@@ -9295,12 +9408,12 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(allowed_users, list):
             allowed_users = ",".join(str(v) for v in allowed_users)
         os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
-    group_allowed_users = telegram_cfg.get("group_allow_from")
+    group_allowed_users = telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from")
     if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
         if isinstance(group_allowed_users, list):
             group_allowed_users = ",".join(str(v) for v in group_allowed_users)
         os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
-    group_allowed_chats = telegram_cfg.get("group_allowed_chats")
+    group_allowed_chats = telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats")
     if group_allowed_chats is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)

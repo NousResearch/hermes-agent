@@ -8043,8 +8043,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "filter_text": "",
         }
         self._invalidate(min_interval=0.0)
+
+    @staticmethod
+    def _get_filtered_models(state: dict) -> list:
+        """Get filtered model list from state. Pure function for display, nav, and selection."""
+        model_list = state.get("model_list") or []
+        filter_text = state.get("filter_text", "")
+        if filter_text:
+            ft = filter_text.lower()
+            return [m for m in model_list if ft in m.lower()]
+        return model_list
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
@@ -8371,19 +8382,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
-            back_idx = len(model_list)
-            cancel_idx = len(model_list) + 1
+            # Use filtered list if a search is active
+            filtered = self._get_filtered_models(state)
+            back_idx = len(filtered)
+            cancel_idx = back_idx + 1
             if selected == back_idx:
                 state["stage"] = "provider"
+                state["filter_text"] = ""
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
                 self._close_model_picker()
                 return
-            if selected < len(model_list):
+            if selected < back_idx:
                 from hermes_cli.model_switch import switch_model
-                chosen_model = model_list[selected]
+                chosen_model = filtered[selected]
                 result = switch_model(
                     raw_input=chosen_model,
                     current_provider=self.provider or "",
@@ -13701,16 +13715,64 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
             else:
-                max_idx = len(state.get("model_list") or []) + 1
+                filtered = self._get_filtered_models(state)
+                max_idx = len(filtered)
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
             event.app.invalidate()
 
         @kb.add('escape', filter=Condition(lambda: bool(self._model_picker_state)), eager=True)
         def model_picker_escape(event):
-            """ESC closes the /model picker."""
-            self._close_model_picker()
-            event.app.current_buffer.reset()
-            event.app.invalidate()
+            """ESC clears search filter, or closes the /model picker."""
+            state = self._model_picker_state
+            if state and state.get("filter_text"):
+                state["filter_text"] = ""
+                state["selected"] = 0
+                state["_scroll_offset"] = 0
+                event.app.invalidate()
+            else:
+                self._close_model_picker()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+
+        @kb.add('backspace', filter=Condition(lambda: bool(self._model_picker_state and self._model_picker_state.get("stage") == "model")))
+        def model_picker_backspace(event):
+            """Backspace removes last character from search filter."""
+            state = self._model_picker_state
+            if state and state.get("filter_text"):
+                state["filter_text"] = state["filter_text"][:-1]
+                state["selected"] = 0
+                state["_scroll_offset"] = 0
+                event.app.invalidate()
+
+        def _model_search_filter(event):
+            """Intercept printable characters as search input when in model stage."""
+            state = self._model_picker_state
+            if not state or state.get("stage") != "model":
+                return True  # pass through
+            data = event.data
+            if not data or len(data) > 2:
+                return True  # pass through control sequences
+            ch = data
+            # Accept model-ID-relevant chars: alphanumeric, hyphen, underscore, dot, slash
+            if ch.isalnum() or ch in "-_./:":
+                state["filter_text"] = state.get("filter_text", "") + ch
+                state["selected"] = 0
+                state["_scroll_offset"] = 0
+                event.app.invalidate()
+                return False  # consume
+            return True  # pass through
+
+        # Register _model_search_filter for each model-ID-relevant character
+        _model_search_chars = (
+            [chr(c) for c in range(ord('a'), ord('z') + 1)]
+            + [chr(c) for c in range(ord('A'), ord('Z') + 1)]
+            + [chr(c) for c in range(ord('0'), ord('9') + 1)]
+            + list("-_./:")
+        )
+        for _ch in _model_search_chars:
+            kb.add(_ch, filter=Condition(
+                lambda: bool(self._model_picker_state and self._model_picker_state.get("stage") == "model")
+            ))(_model_search_filter)
 
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
@@ -14809,11 +14871,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                choices = list(model_list) + ["← Back", "Cancel"]
-                if model_list:
-                    hint = f"Select a model ({len(model_list)} available)"
+                # Apply search filter using pure helper
+                filtered = self._get_filtered_models(state)
+                if filtered is not model_list:
+                    choices = list(filtered) + ["← Back", "Cancel"]
+                    hint = f"🔍 {state.get('filter_text', '')}  ({len(filtered)}/{len(model_list)} matches)"
                 else:
-                    hint = "No models listed for this provider. Use Back or Cancel."
+                    choices = list(model_list) + ["← Back", "Cancel"]
+                    if model_list:
+                        hint = f"Select a model ({len(model_list)} available) — type to search"
+                    else:
+                        hint = "No models listed for this provider. Use Back or Cancel."
 
             box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)

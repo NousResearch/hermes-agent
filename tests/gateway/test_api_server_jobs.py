@@ -11,15 +11,21 @@ Covers:
 """
 
 import logging
+import warnings
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.web_exceptions import NotAppKeyWarning
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _API_SERVER_ADAPTER_KEY,
+    cors_middleware,
+)
 
 _MOD = "gateway.platforms.api_server"
 
@@ -52,7 +58,7 @@ def _make_adapter(api_key: str = "") -> APIServerAdapter:
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app with jobs routes registered."""
     app = web.Application(middlewares=[cors_middleware])
-    app["api_server_adapter"] = adapter
+    app[_API_SERVER_ADAPTER_KEY] = adapter
     # Register only job routes (plus health for sanity)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/api/jobs", adapter._handle_list_jobs)
@@ -74,6 +80,14 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+class TestAppKeyRegression:
+    def test_create_app_uses_appkey_without_warning(self, adapter):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NotAppKeyWarning)
+            app = _create_app(adapter)
+        assert app[_API_SERVER_ADAPTER_KEY] is adapter
 
 
 # ---------------------------------------------------------------------------

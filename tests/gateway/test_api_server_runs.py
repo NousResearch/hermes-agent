@@ -11,15 +11,18 @@ Covers:
 import asyncio
 import threading
 import time
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.web_exceptions import NotAppKeyWarning
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _API_SERVER_ADAPTER_KEY,
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
@@ -64,13 +67,21 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     """Create an aiohttp app with /v1/runs routes registered."""
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
-    app["api_server_adapter"] = adapter
+    app[_API_SERVER_ADAPTER_KEY] = adapter
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
+
+
+def test_create_runs_app_uses_appkey_without_warning():
+    adapter = _make_adapter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", NotAppKeyWarning)
+        app = _create_runs_app(adapter)
+    assert app[_API_SERVER_ADAPTER_KEY] is adapter
 
 
 def _make_slow_agent(**kwargs):

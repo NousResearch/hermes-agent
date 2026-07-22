@@ -18,16 +18,19 @@ import os
 import stat
 import time
 import uuid
+import warnings
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from aiohttp.web_exceptions import NotAppKeyWarning
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
+    _API_SERVER_ADAPTER_KEY,
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
@@ -633,6 +636,33 @@ class TestConcurrencyCap:
         assert adapter._concurrency_limited_response() is None
 
 
+class TestAppKeyRegression:
+    def test_create_app_uses_appkey_without_warning(self, adapter):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NotAppKeyWarning)
+            app = _create_app(adapter)
+        assert app[_API_SERVER_ADAPTER_KEY] is adapter
+
+    @pytest.mark.asyncio
+    async def test_cors_middleware_reads_adapter_via_appkey_without_warning(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        request = make_mocked_request(
+            "OPTIONS",
+            "/v1/models",
+            headers={"Origin": "http://localhost:3000"},
+            app=app,
+        )
+        handler = AsyncMock(return_value=web.Response())
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NotAppKeyWarning)
+            response = await cors_middleware(request, handler)
+
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+
+
 # ---------------------------------------------------------------------------
 # Helpers for HTTP tests
 # ---------------------------------------------------------------------------
@@ -653,7 +683,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
-    app["api_server_adapter"] = adapter
+    app[_API_SERVER_ADAPTER_KEY] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)

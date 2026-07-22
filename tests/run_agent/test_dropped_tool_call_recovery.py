@@ -150,9 +150,14 @@ class TestDroppedToolCallRecovery:
     def test_persistent_dropped_tool_calls_are_bounded(self, loop_agent):
         """If the model never emits a call, the recovery must give up after a
         bounded number of consecutive stalls instead of looping forever."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        # Stage plenty of dropped-tool-call responses followed by a clean stop,
+        # so that if the bound is respected the loop exits on its own well
+        # before exhausting the staged responses (no StopIteration).
         loop_agent.client.chat.completions.create.side_effect = [
-            _dropped_tool_call_response("Let me check.") for _ in range(10)
-        ]
+            _dropped_tool_call_response("Let me check.") for _ in range(9)
+        ] + [_mock_response(content="done", finish_reason="stop")]
 
         with (
             patch.object(loop_agent, "_persist_session"),
@@ -161,7 +166,8 @@ class TestDroppedToolCallRecovery:
         ):
             result = loop_agent.run_conversation("review the PR")
 
-        # 1 initial call + 3 bounded re-prompts = 4 total, then it stops.
+        # 1 initial call + at most 3 bounded re-prompts = 4 total before the
+        # guard stops firing. It must NOT consume all 9 staged stalls.
         assert loop_agent.client.chat.completions.create.call_count <= 4, (
             "Consecutive dropped tool calls must be bounded (no infinite loop)."
         )

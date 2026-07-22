@@ -31,3 +31,11 @@ optional_env:
     description: "Display name for the WhatsApp home channel"
     prompt: "Home channel display name"
     password: false
+  - name: WHATSAPP_SYNC_FULL_HISTORY
+    description: "Sync full WhatsApp message history on first connect (requires WHATSAPP_ENABLE_HISTORY_API=true)"
+    prompt: "Sync full chat history on connect? (true/false)"
+    password: false
+  - name: WHATSAPP_ENABLE_HISTORY_API
+    description: "Enable HTTP endpoints for message history, chat listing, and contact search"
+    prompt: "Enable history API endpoints? (true/false)"
+    password: false

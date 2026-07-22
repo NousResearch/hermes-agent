@@ -190,6 +190,33 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+@pytest.mark.parametrize(
+    ("configured_timeout", "strict", "max_seconds", "expected"),
+    [
+        (120.0, False, 0.0, (True, 180.0)),
+        (120.0, False, 150.0, (True, 150.0)),
+        (0.0, False, 0.0, (False, 0.0)),
+        (120.0, True, 0.0, (True, 120.0)),
+    ],
+    ids=["adaptive-default", "explicit-cap", "disabled", "strict"],
+)
+def test_large_request_codex_ttfb_timeout_policy(
+    configured_timeout, strict, max_seconds, expected
+):
+    """The >100k tier adapts unless an operator disables, caps, or makes it strict."""
+    from agent import chat_completion_helpers as h
+
+    result = h._compute_codex_ttfb_timeout(
+        estimated_tokens=100_001,
+        configured_timeout=configured_timeout,
+        disable_above_tokens=10_000.0,
+        strict=strict,
+        max_seconds=max_seconds,
+    )
+
+    assert result == expected
+
+
 def test_ttfb_high_env_is_capped_for_openai_codex(tmp_path, monkeypatch):
     """A stale local env value like 90s must not make openai-codex wait 90s
     before reconnecting when the backend emits no SSE frames."""

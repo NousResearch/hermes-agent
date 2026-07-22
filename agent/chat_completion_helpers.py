@@ -152,6 +152,40 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     return 0.0
 
 
+def _codex_adaptive_watchdog_timeout(estimated_tokens: int) -> float:
+    if estimated_tokens > 100_000:
+        return 180.0
+    if estimated_tokens > 50_000:
+        return 120.0
+    if estimated_tokens > 10_000:
+        return 60.0
+    return 12.0
+
+
+def _compute_codex_ttfb_timeout(
+    *,
+    estimated_tokens: int,
+    configured_timeout: float,
+    disable_above_tokens: float,
+    strict: bool,
+    max_seconds: float,
+) -> tuple[bool, float]:
+    """Return whether the no-byte watchdog is enabled and its timeout."""
+    if configured_timeout <= 0:
+        return False, configured_timeout
+
+    timeout = configured_timeout
+    if (
+        not strict
+        and disable_above_tokens > 0
+        and estimated_tokens >= disable_above_tokens
+    ):
+        timeout = max(timeout, _codex_adaptive_watchdog_timeout(estimated_tokens))
+    if max_seconds > 0:
+        timeout = min(timeout, max_seconds)
+    return True, timeout
+
+
 def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     """Return a normalized OpenRouter provider.sort value or None."""
     if not isinstance(raw_sort, str):
@@ -685,14 +719,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
     ):
         _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
 
-    if _est_tokens_for_codex_watchdog > 100_000:
-        _codex_idle_timeout_default = 180.0
-    elif _est_tokens_for_codex_watchdog > 50_000:
-        _codex_idle_timeout_default = 120.0
-    elif _est_tokens_for_codex_watchdog > 10_000:
-        _codex_idle_timeout_default = 60.0
-    else:
-        _codex_idle_timeout_default = 12.0
+    _codex_idle_timeout_default = _codex_adaptive_watchdog_timeout(
+        _est_tokens_for_codex_watchdog
+    )
 
     # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
     # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
@@ -701,15 +730,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # clear normal backend admission / prompt prefill, short enough to still
     # reconnect promptly when the socket is genuinely wedged. Set
     # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
+    # HERMES_CODEX_TTFB_MAX_SECONDS caps the adaptive timeout only when set to
+    # a positive value; leaving it unset preserves every adaptive tier.
     _ttfb_enabled = _codex_watchdog_enabled
     _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
-    if _ttfb_timeout <= 0:
-        _ttfb_enabled = False
-    elif _openai_codex_backend:
+    if _openai_codex_backend:
         _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on"
         }
+        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
+        _scaled_ttfb_timeout = _ttfb_timeout
         if (
             not _ttfb_strict
             and _ttfb_disable_above > 0
@@ -726,17 +757,28 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"{_est_tokens_for_codex_watchdog:,}",
                     _ttfb_disable_above,
                 )
-                _ttfb_timeout = _large_request_ttfb_timeout
-        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
-        if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
+                _scaled_ttfb_timeout = _large_request_ttfb_timeout
+        _computed_ttfb_enabled, _ttfb_timeout = _compute_codex_ttfb_timeout(
+            estimated_tokens=_est_tokens_for_codex_watchdog,
+            configured_timeout=_ttfb_timeout,
+            disable_above_tokens=_ttfb_disable_above,
+            strict=_ttfb_strict,
+            max_seconds=_ttfb_cap,
+        )
+        _ttfb_enabled = _codex_watchdog_enabled and _computed_ttfb_enabled
+        if (
+            _ttfb_cap > 0
+            and _scaled_ttfb_timeout > _ttfb_cap
+        ):
             logger.info(
                 "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
-                _ttfb_timeout,
+                _scaled_ttfb_timeout,
                 _ttfb_cap,
                 f"{_est_tokens_for_codex_watchdog:,}",
             )
-            _ttfb_timeout = _ttfb_cap
+    elif _ttfb_timeout <= 0:
+        _ttfb_enabled = False
 
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(

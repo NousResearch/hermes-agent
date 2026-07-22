@@ -2136,6 +2136,19 @@ def list_authenticated_providers(
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        # A providers.<hermes_slug>.models block extends this overlay
+        # provider's discovered catalog too — same as the Section 1 merge
+        # above. Without this, a model declared under providers.nous.models
+        # (or providers.openai-codex/copilot/opencode-go) is already typeable
+        # via /model <name> (see _configured_provider_matches()) but never
+        # appears in the picker list, unlike the identical config surface for
+        # built-in providers.
+        _configured_models: list[str] = []
+        if isinstance(user_providers, dict):
+            _configured = user_providers.get(hermes_slug)
+            if isinstance(_configured, dict):
+                _configured_models = _declared_model_ids(_configured.get("models"))
+        model_ids = list(dict.fromkeys([*_configured_models, *model_ids]))
         total = len(model_ids)
         if hermes_slug in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models

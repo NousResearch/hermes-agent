@@ -239,10 +239,22 @@ def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
     secrets. In that scope we must prefer the scoped value; outside it we keep
     legacy ``os.getenv`` behavior for single-profile callers and unscoped
     gateway reads.
+
+    When a secret scope IS active but the requested var is NOT in it, we fall
+    through to ``os.environ`` so non-credential platform config (e.g.
+    ``API_SERVER_ENABLED``, ``API_SERVER_HOST``) set via container environment
+    (Docker compose, systemd) remains visible — preventing the v2026.7.20
+    regression where ``load_gateway_config_for_runner`` silently dropped
+    process-env-only platform config under multiplex (#69379).
     """
     if current_secret_scope() is not None:
         scope_val = _get_secret(name, None)
-        return scope_val if scope_val is not None else default
+        if scope_val is not None:
+            return scope_val
+        # Not a profile secret — fall through to process env so that
+        # non-credential platform config set via container environment
+        # (Docker compose ``environment:`` block, systemd ``Environment=``)
+        # is visible even when a profile secret scope is active (#69379).
     env_val = os.environ.get(name)
     if env_val is not None:
         return env_val

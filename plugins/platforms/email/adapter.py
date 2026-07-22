@@ -887,7 +887,7 @@ class EmailAdapter(BasePlatformAdapter):
             reply_to_message_id=msg_data["in_reply_to"] or None,
         )
 
-        logger.info("[Email] New message from %s: %s", sender_addr, subject)
+        logger.info("[Email] New message received (subject_chars=%d)", len(subject))
         await self.handle_message(event)
 
     async def send(

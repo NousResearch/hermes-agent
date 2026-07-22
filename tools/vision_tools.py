@@ -1125,7 +1125,7 @@ async def vision_analyze_tool(
             return tool_error("Interrupted", success=False)
 
         logger.info("Analyzing image: %s", image_url[:60])
-        logger.info("User prompt: %s", user_prompt[:100])
+        logger.info("Image-analysis prompt received (chars=%d)", len(user_prompt))
 
         # Resolve the source to raw bytes through the single resolver (unifies
         # data:/http/file/local/container and enforces terminal-backend
@@ -1657,7 +1657,7 @@ async def video_analyze_tool(
             return tool_error("Interrupted", success=False)
 
         logger.info("Analyzing video: %s", video_url[:60])
-        logger.info("User prompt: %s", user_prompt[:100])
+        logger.info("Video-analysis prompt received (chars=%d)", len(user_prompt))
 
         # Resolve local path vs remote URL
         resolved_url = video_url

@@ -204,7 +204,9 @@ class TestCaptureLogSnapshot:
         # backward-reading loop so the truncation path actually fires.
         line = "A" * 99 + "\n"  # 100 bytes per line
         num_lines = 200  # 20000 bytes
-        (hermes_home / "logs" / "agent.log").write_text(line * num_lines)
+        (hermes_home / "logs" / "agent.log").write_text(
+            line * num_lines, newline="\n"
+        )
 
         # max_bytes = 1000 = 100 * 10 → cut at byte 20000 - 1000 = 19000,
         # and byte 19000 - 1 is '\n'.  Boundary hit → keep all 10 lines.
@@ -404,6 +406,141 @@ class TestCaptureLogSnapshotRedaction:
             assert "msg='[REDACTED_MESSAGE]'" in text
             assert "~/.hermes" in text
 
+    def test_default_redacts_positional_log_formats_and_ip_addresses(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 WARNING gateway.run: "
+            "Unauthorized user: 123456 (Alice Example) on telegram\n"
+            "2026-04-12 INFO tools.vision_tools: "
+            "User prompt: private medical question\n"
+            "2026-04-12 INFO gateway.platforms.webhook: "
+            "[webhook] Response for github:owner/repo: internal answer\n"
+            "2026-04-12 INFO gateway.platforms.webhook: "
+            "[webhook] direct-deliver log-only: private fallback\n"
+            "2026-04-12 INFO service: backend=10.0.0.7:8080 "
+            "endpoint=[2001:db8::1]:443 scoped=fe80::1%eth0 version=1.2.3.4\n"
+            "2026-04-12 INFO service: user=alice\n"
+            "2026-04-12 INFO service: next=record\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=20)
+
+        for text in (snap.tail_text, snap.full_text or ""):
+            for sensitive in (
+                "123456",
+                "Alice Example",
+                "private medical question",
+                "github:owner/repo",
+                "internal answer",
+                "private fallback",
+                "10.0.0.7",
+                "2001:db8::1",
+                "fe80::1%eth0",
+                "user=alice",
+            ):
+                assert sensitive not in text
+            assert "Unauthorized user: [REDACTED_ID] ([REDACTED_NAME])" in text
+            assert "User prompt: [REDACTED_MESSAGE]" in text
+            assert "[webhook] Response for [REDACTED_ID]: [REDACTED_MESSAGE]" in text
+            assert "[webhook] direct-deliver log-only: [REDACTED_MESSAGE]" in text
+            assert "backend=[REDACTED_IP]:8080" in text
+            assert "version=1.2.3.4" in text
+            assert "endpoint=[[REDACTED_IP]]:443" in text
+            assert "scoped=[REDACTED_IP]" in text
+            assert "user=[REDACTED_ID]" in text
+
+    @pytest.mark.parametrize(
+        ("line", "sensitive"),
+        [
+            (
+                "[Telegram] Blocked unauthorized user 123 in chat -456",
+                ("123", "-456"),
+            ),
+            ("Voice input from user 123: medical transcript", ("123", "medical transcript")),
+            (
+                "[Email] New message from alice@example.test: payroll subject",
+                ("alice@example.test", "payroll subject"),
+            ),
+            (
+                "Generating image with flux (flux) — prompt: private portrait",
+                ("private portrait",),
+            ),
+            (
+                "Forwarded update prompt to discord:123: private question",
+                ("discord:123", "private question"),
+            ),
+            (
+                "Suppressing duplicate voice transcript for guild=12 user=34: secret words",
+                ("guild=12", "user=34", "secret words"),
+            ),
+            (
+                "api_calls=2 response=review confidential status=done",
+                ("review confidential",),
+            ),
+            (
+                "chat_id=oc_1 sender=user:ou_2 text='private feishu message' media=0",
+                ("oc_1", "user:ou_2", "private feishu message"),
+            ),
+            (
+                "session=abc answer=private choice user=Alice Example",
+                ("abc", "private choice", "Alice Example"),
+            ),
+        ],
+    )
+    def test_redacts_historical_sensitive_log_formats(self, line, sensitive):
+        from hermes_cli.debug import _redact_log_text
+
+        redacted = _redact_log_text(line)
+
+        assert all(value not in redacted for value in sensitive)
+
+    def test_redacts_nested_display_name_and_multiline_message_continuation(self):
+        from hermes_cli.debug import _redact_log_text
+
+        text = (
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "Unauthorized user: 123 (Alice (Admin)) on telegram\n"
+            "2026-04-12 17:00:01 INFO tools.vision_tools: User prompt: first line\n"
+            "private continuation\r\n"
+            "2026-04-12 17:00:02 INFO service: next record\n"
+        )
+
+        redacted = _redact_log_text(text)
+
+        for sensitive in ("123", "Alice (Admin)", "first line", "private continuation"):
+            assert sensitive not in redacted
+        assert "2026-04-12 17:00:02 INFO service: next record" in redacted
+        assert "[REDACTED_MESSAGE_CONTINUATION]\r\n" in redacted
+
+    def test_default_redacts_sensitive_snapshot_read_error_path(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        with patch(
+            "builtins.open",
+            side_effect=PermissionError(f"cannot read {log_path}"),
+        ):
+            snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert str(hermes_home_with_secret) not in snap.tail_text
+        assert "~/.hermes/logs/agent.log" in snap.tail_text
+
+    def test_malformed_quoted_field_stays_on_its_physical_line(self):
+        from hermes_cli.debug import _redact_log_text
+
+        text = "msg='unterminated\r\n2026-04-12 17:00:01 INFO service: healthy\r\n"
+
+        redacted = _redact_log_text(text)
+
+        assert "unterminated" not in redacted
+        assert "2026-04-12 17:00:01 INFO service: healthy" in redacted
+
     def test_no_redact_preserves_email_addresses(self, hermes_home_with_secret):
         from hermes_cli.debug import _capture_log_snapshot
 
@@ -431,6 +568,9 @@ class TestCaptureLogSnapshotRedaction:
             "user=Alice Smith chat=9876543210 "
             "msg='private medical question' "
             f"cwd={hermes_home_with_secret / 'sessions'}\n"
+            "Unauthorized user: 123456 (Alice Smith) on telegram\n"
+            "User prompt: private medical question\n"
+            "[webhook] Response for room-987: internal answer from 10.0.0.7\n"
         )
 
         snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
@@ -439,6 +579,8 @@ class TestCaptureLogSnapshotRedaction:
         assert "9876543210" in snap.tail_text
         assert "private medical question" in snap.tail_text
         assert str(hermes_home_with_secret) in snap.tail_text
+        assert "123456 (Alice Smith)" in snap.tail_text
+        assert "room-987: internal answer from 10.0.0.7" in snap.tail_text
 
     def test_capture_default_log_snapshots_threads_redact(
         self, hermes_home_with_secret
@@ -554,6 +696,7 @@ class TestRunDebugShare:
         args.expire = 7
         args.local = False
         args.nous = False
+        args.no_redact = False
 
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)) as mock_sweep, \
@@ -863,7 +1006,7 @@ class TestRunDebugShareRedaction:
             run_debug_share(args)
 
         for content in captured:
-            assert "redacted at upload time" in content, (
+            assert "redaction applied at upload time" in content, (
                 "redaction banner missing from upload-bound content"
             )
 
@@ -897,7 +1040,7 @@ class TestRunDebugShareRedaction:
         )
         # No banner anywhere when redaction is disabled.
         for content in captured:
-            assert "redacted at upload time" not in content, (
+            assert "redaction applied at upload time" not in content, (
                 "banner present with --no-redact"
             )
 
@@ -1321,7 +1464,7 @@ class TestShareIncludesAutoDelete:
         assert "https://paste.rs/test1" in urls_arg
 
         out = capsys.readouterr().out
-        assert "auto-delete" in out
+        assert "attempt paste deletion" in out
 
     def test_share_shows_privacy_notice(self, hermes_home, capsys):
         from hermes_cli.debug import run_debug_share
@@ -1331,6 +1474,7 @@ class TestShareIncludesAutoDelete:
         args.expire = 7
         args.local = False
         args.nous = False
+        args.no_redact = False
 
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug.upload_to_pastebin",
@@ -1340,7 +1484,39 @@ class TestShareIncludesAutoDelete:
 
         out = capsys.readouterr().out
         assert "PUBLIC paste service" in out
-        assert "NOT redacted" in out
+        assert "Best-effort privacy redaction" in out
+        assert "may still contain personal data" in out
+        assert "best-effort deletion" in out
+        assert "may remain available" in out
+        assert "--local" in out
+
+    def test_no_redact_share_shows_explicit_unredacted_notice(
+        self, hermes_home, capsys
+    ):
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock(
+            lines=50,
+            expire=7,
+            local=False,
+            nous=False,
+            no_redact=True,
+            yes=True,
+        )
+        with (
+            patch("hermes_cli.dump.run_dump"),
+            patch(
+                "hermes_cli.debug.upload_to_pastebin",
+                return_value="https://paste.rs/test",
+            ),
+            patch("hermes_cli.debug._schedule_auto_delete"),
+        ):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "--no-redact is set" in out
+        assert "without upload-time redaction" in out
+        assert "Best-effort privacy redaction" not in out
 
     def test_local_no_privacy_notice(self, hermes_home, capsys):
         from hermes_cli.debug import run_debug_share
@@ -1481,7 +1657,7 @@ class TestCollectShareBundle:
         assert "gateway.log" in bundle
         assert "desktop.log" in bundle
         # Banner is prepended under redact=True.
-        assert "redacted at upload time" in bundle["report"]
+        assert "redaction applied at upload time" in bundle["report"]
         assert "session started" in bundle["agent.log"]
 
     def test_no_redact_omits_banner(self, hermes_home):
@@ -1490,7 +1666,7 @@ class TestCollectShareBundle:
         with patch("hermes_cli.dump.run_dump"):
             bundle = collect_share_bundle(log_lines=50, redact=False)
 
-        assert "redacted at upload time" not in bundle["report"]
+        assert "redaction applied at upload time" not in bundle["report"]
 
     def test_redaction_keeps_secrets_out(self, hermes_home):
         from hermes_cli.debug import collect_share_bundle
@@ -1507,6 +1683,76 @@ class TestCollectShareBundle:
         assert secret in "\n".join(unredacted.values())
         # With redaction it must be scrubbed everywhere.
         assert secret not in "\n".join(redacted.values())
+
+    def test_redaction_covers_dump_text_in_every_bundle_payload(self, hermes_home):
+        from hermes_cli.debug import collect_share_bundle
+
+        dump_text = (
+            "terminal.docker_image: 10.0.0.7/private\n"
+            "operator_email: alice@example.test\n"
+        )
+        (hermes_home / "logs" / "agent.log").write_text("agent ready\n")
+
+        with (
+            patch("hermes_cli.debug._capture_dump", return_value=dump_text),
+            patch("hermes_cli.dump.run_dump"),
+        ):
+            redacted = collect_share_bundle(log_lines=50, redact=True)
+            unredacted = collect_share_bundle(log_lines=50, redact=False)
+
+        assert all("10.0.0.7" not in value for value in redacted.values())
+        assert all("alice@example.test" not in value for value in redacted.values())
+        assert any("10.0.0.7/private" in value for value in unredacted.values())
+        assert any("alice@example.test" in value for value in unredacted.values())
+
+    def test_redaction_sanitizes_positional_pii_across_full_bundle(
+        self, hermes_home
+    ):
+        from hermes_cli.debug import collect_share_bundle
+
+        sensitive = {
+            "123456",
+            "Alice Example",
+            "private medical question",
+            "room-987",
+            "internal answer",
+            "888",
+            "-999",
+            "777",
+            "private transcript",
+            "payroll@example.test",
+            "salary review",
+            "private portrait",
+            "discord:555",
+            "private decision",
+            "10.0.0.7",
+            "2001:db8::1",
+        }
+        fixture = (
+            "Unauthorized user: 123456 (Alice Example) on telegram\n"
+            "User prompt: private medical question\n"
+            "[webhook] Response for room-987: internal answer\n"
+            "[Telegram] Blocked unauthorized user 888 in chat -999\n"
+            "Voice input from user 777: private transcript\n"
+            "[Email] New message from payroll@example.test: salary review\n"
+            "Generating image with flux (flux) — prompt: private portrait\n"
+            "Forwarded update prompt to discord:555: private decision\n"
+            "backend=10.0.0.7 peer=2001:db8::1\n"
+        )
+        for name in ("agent.log", "gateway.log", "desktop.log"):
+            (hermes_home / "logs" / name).write_text(fixture)
+
+        with patch("hermes_cli.dump.run_dump"):
+            redacted = collect_share_bundle(log_lines=50, redact=True)
+            unredacted = collect_share_bundle(log_lines=50, redact=False)
+
+        unredacted_payload = "\n".join(unredacted.values())
+        redacted_payload = "\n".join(redacted.values())
+        assert all(value in unredacted_payload for value in sensitive)
+        assert all(value not in redacted_payload for value in sensitive)
+        assert "[REDACTED_NAME]" in redacted_payload
+        assert "[REDACTED_MESSAGE]" in redacted_payload
+        assert "[REDACTED_IP]" in redacted_payload
 
 
     def test_build_debug_share_uses_collector(self, hermes_home):
@@ -1812,4 +2058,3 @@ class TestShareConsentGate:
 
         mock_upload.assert_not_called()
         assert "Aborted" not in capsys.readouterr().out
-

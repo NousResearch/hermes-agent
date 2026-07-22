@@ -14698,12 +14698,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
-            logger.info(
-                "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
-                guild_id,
-                user_id,
-                transcript[:100],
-            )
+            logger.info("Suppressing duplicate voice transcript")
             return
 
         # Show transcript in text channel (after auth, with mention sanitization)
@@ -16366,7 +16361,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # still suppressed by _update_prompt_pending.
                         self._update_prompt_pending[session_key] = True
                         # .update_response to continue — it doesn't re-check
-                        logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
+                        logger.info(
+                            "Forwarded update prompt (prompt_chars=%d)", len(prompt_text)
+                        )
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)
 

@@ -20,6 +20,7 @@ Currently supports:
 import datetime
 import gzip
 import io
+import ipaddress
 import json
 import logging
 import re
@@ -39,7 +40,8 @@ logger = logging.getLogger(__name__)
 # Visible in the public paste so reviewers know the content was sanitized.
 # Kept short; the trailing newline guarantees the banner sits on its own line.
 _REDACTION_BANNER = (
-    "[hermes debug share: log content redacted at upload time. "
+    "[hermes debug share: best-effort secret and privacy redaction applied "
+    "at upload time; unrecognized personal data may remain. "
     "run with --no-redact to disable]\n"
 )
 
@@ -49,25 +51,85 @@ _EMAIL_ADDRESS_RE = re.compile(
     r"(?![A-Za-z0-9._%+-])"
 )
 _MESSAGE_FIELD_SINGLE_RE = re.compile(
-    r"\b(?P<key>msg|message|prompt|response|content)="
-    r"'(?:\\.|[^'\\])*'"
+    r"\b(?P<key>msg|message|prompt|response|content|text|answer|reply_to_text|tool_output)="
+    r"'(?:\\[^\r\n]|[^'\\\r\n])*'"
 )
 _MESSAGE_FIELD_DOUBLE_RE = re.compile(
-    r'\b(?P<key>msg|message|prompt|response|content)="'
-    r'(?:\\.|[^"\\])*"'
+    r'\b(?P<key>msg|message|prompt|response|content|text|answer|reply_to_text|tool_output)="'
+    r'(?:\\[^\r\n]|[^"\\\r\n])*"'
 )
 _MESSAGE_FIELD_BARE_RE = re.compile(
-    r"\b(?P<key>msg|message|prompt|response|content)=(?!['\"])[^\s]+"
+    r"\b(?P<key>msg|message|prompt|response|content|text|answer|reply_to_text|tool_output)="
+    r"(?!['\"]).*?(?=\s+[A-Za-z_][\w.-]*=|$)",
+    re.MULTILINE,
+)
+_MESSAGE_FIELD_MALFORMED_SINGLE_RE = re.compile(
+    r"\b(?P<key>msg|message|prompt|response|content|text|answer|reply_to_text|tool_output)="
+    r"'(?![^'\r\n]*')[^\r\n]*(?=\r?$)",
+    re.MULTILINE,
+)
+_MESSAGE_FIELD_MALFORMED_DOUBLE_RE = re.compile(
+    r'\b(?P<key>msg|message|prompt|response|content|text|answer|reply_to_text|tool_output)='
+    r'"(?![^"\r\n]*")[^\r\n]*(?=\r?$)',
+    re.MULTILINE,
 )
 _USER_FIELD_RE = re.compile(
-    r"\b(?P<key>user|user_id)="
+    r"\b(?P<key>user|user_id|username|display_name|sender)="
     r".*?"
-    r"(?=\s+(?:platform|user|user_id|chat|chat_id|session|session_id|thread|"
-    r"thread_id|msg|message|prompt|response|content)=|$)"
+    r"(?=\s+[A-Za-z_][\w.-]*=|$)",
+    re.MULTILINE,
 )
 _IDENTITY_TOKEN_FIELD_RE = re.compile(
-    r"\b(?P<key>chat|chat_id|session|session_id|thread|thread_id)=[^\s]+"
+    r"\b(?P<key>chat|chat_id|room|room_id|peer|peer_id|session|session_id|"
+    r"thread|thread_id|reply_to_id)=[^\s]+"
 )
+_UNAUTHORIZED_USER_RE = re.compile(
+    r"(?m)(?P<prefix>\bUnauthorized user:\s*)[^\s(]+"
+    r"(?:\s+\((?:[^\r\n)]|\)(?!\s+on\s+))*\))?"
+    r"(?P<suffix>\s+on\s+[^\s\r\n]+)"
+)
+_USER_PROMPT_RE = re.compile(r"(?im)(?P<prefix>\bUser prompt:\s*)[^\r\n]*")
+_WEBHOOK_RESPONSE_RE = re.compile(
+    r"(?im)(?P<prefix>\[(?:webhook|msgraph_webhook)\]\s+Response for\s*)[^\r\n]*?"
+    r"(?P<separator>:\s+)[^\r\n]*"
+)
+_WEBHOOK_DIRECT_DELIVER_RE = re.compile(
+    r"(?im)(?P<prefix>\[webhook\]\s+direct-deliver log-only:\s*)[^\r\n]*"
+)
+_TELEGRAM_BLOCKED_RE = re.compile(
+    r"(?im)(?P<prefix>\[Telegram\]\s+Blocked\s+(?:media from\s+)?"
+    r"unauthorized user\s+)[^\s\r\n]+(?P<middle>\s+in chat\s+)[^\s\r\n]+"
+)
+_VOICE_INPUT_RE = re.compile(
+    r"(?im)(?P<prefix>\bVoice input from user\s+)\d+(?P<separator>:\s*)[^\r\n]*"
+)
+_EMAIL_MESSAGE_RE = re.compile(
+    r"(?im)(?P<prefix>\[Email\]\s+New message from\s+)[^\s\r\n]+"
+    r"(?P<separator>:\s*)[^\r\n]*"
+)
+_IMAGE_PROMPT_RE = re.compile(
+    r"(?im)(?P<prefix>\b(?:Editing|Generating) image[^\r\n]*?"
+    r"(?:prompt|prompt text):\s*)[^\r\n]*"
+)
+_FORWARDED_UPDATE_PROMPT_RE = re.compile(
+    r"(?im)(?P<prefix>\bForwarded update prompt to\s+)[^\s\r\n]+"
+    r"(?P<separator>:\s*)[^\r\n]*"
+)
+_DUPLICATE_VOICE_RE = re.compile(
+    r"(?im)(?P<prefix>\bSuppressing duplicate voice transcript for\s+)"
+    r"guild=[^\s\r\n]+\s+user=[^\s\r\n]+(?P<separator>:\s*)[^\r\n]*"
+)
+_LOG_RECORD_START_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:[,.]\d+)?\s+[A-Z]+\b"
+)
+_IPV4_ADDRESS_RE = re.compile(
+    r"(?<![0-9A-Fa-f.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Fa-f.])"
+)
+_IPV6_ADDRESS_RE = re.compile(
+    r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}"
+    r"(?:%[A-Za-z0-9_.-]+)?(?![0-9A-Fa-f:])"
+)
+_VERSION_VALUE_PREFIX_RE = re.compile(r"\b(?:version|ver)=\s*$", re.IGNORECASE)
 _UNIX_HOME_COMPONENT_RE = re.compile(r"(?<![\w.-])/(?:home|Users)/[^/\s:'\"]+")
 _WINDOWS_HOME_COMPONENT_RE = re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\s:'\"]+")
 
@@ -221,24 +283,38 @@ _PRIVACY_NOTICE = """\
 ⚠️  This will upload system info + logs to a PUBLIC paste service.
 
 Cryptographic secrets (API keys, tokens, passwords) are redacted before
-upload, but the following personal data is NOT redacted and will be public:
-  • Your display name and persistent platform user ID
-  • Verbatim content of your recent messages (prompts, responses, tool output)
-  • Local filesystem paths
-  • Any other PII present in the logs
+upload. Best-effort privacy redaction also removes common email and IP
+addresses, user/chat/session identifiers, message-like fields, known
+positional log formats, and local home paths.
 
-The resulting URL is public to anyone who has the link. Pastes auto-delete
-after 6 hours, but may be archived by third parties in the meantime.
+Logs may still contain personal data in formats Hermes does not recognize.
+Review the report with --local before uploading when the logs are sensitive.
+
+The resulting URL is public to anyone who has the link. Hermes schedules
+best-effort deletion after 6 hours, but the paste may remain available or be
+archived by third parties.
 
 Use --local to view the report without uploading.
 """
 
+_NO_REDACTION_PRIVACY_NOTICE = """\
+⚠️  This will upload system info + logs to a PUBLIC paste service.
+
+--no-redact is set. Cryptographic secrets and personal data will be uploaded
+without upload-time redaction. Review the report with --local first.
+
+The resulting URL is public to anyone who has the link. Hermes schedules
+best-effort deletion after 6 hours, but the paste may remain available or be
+archived by third parties.
+"""
+
 _GATEWAY_PRIVACY_NOTICE = (
     "⚠️ **Privacy notice:** This uploads system info + recent log tails "
-    "(may contain conversation fragments) to a public paste service. "
+    "to a public paste service. Best-effort secret and privacy redaction is "
+    "applied, but unrecognized personal data may remain. "
     "Full logs are NOT included from the gateway — use `hermes debug share` "
     "from the CLI for full log uploads.\n"
-    "Pastes auto-delete after 6 hours."
+    "Hermes schedules best-effort deletion after 6 hours; availability may persist."
 )
 
 
@@ -435,6 +511,13 @@ def _redact_log_text(text: str) -> str:
 def _redact_debug_share_privacy(text: str) -> str:
     """Remove personal context that is not covered by secret redaction."""
     text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    text = _DUPLICATE_VOICE_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}guild=[REDACTED_ID] user=[REDACTED_ID]"
+            f"{m.group('separator')}[REDACTED_MESSAGE]"
+        ),
+        text,
+    )
     text = _MESSAGE_FIELD_SINGLE_RE.sub(
         lambda m: f"{m.group('key')}='[REDACTED_MESSAGE]'", text
     )
@@ -444,12 +527,74 @@ def _redact_debug_share_privacy(text: str) -> str:
     text = _MESSAGE_FIELD_BARE_RE.sub(
         lambda m: f"{m.group('key')}=[REDACTED_MESSAGE]", text
     )
+    text = _MESSAGE_FIELD_MALFORMED_SINGLE_RE.sub(
+        lambda m: f"{m.group('key')}='[REDACTED_MESSAGE]'",
+        text,
+    )
+    text = _MESSAGE_FIELD_MALFORMED_DOUBLE_RE.sub(
+        lambda m: f'{m.group("key")}="[REDACTED_MESSAGE]"',
+        text,
+    )
     text = _USER_FIELD_RE.sub(
         lambda m: f"{m.group('key')}=[REDACTED_ID]", text
     )
     text = _IDENTITY_TOKEN_FIELD_RE.sub(
         lambda m: f"{m.group('key')}=[REDACTED_ID]", text
     )
+    text = _UNAUTHORIZED_USER_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}[REDACTED_ID] ([REDACTED_NAME])"
+            f"{m.group('suffix')}"
+        ),
+        text,
+    )
+    text = _USER_PROMPT_RE.sub(
+        lambda m: f"{m.group('prefix')}[REDACTED_MESSAGE]", text
+    )
+    text = _WEBHOOK_RESPONSE_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}[REDACTED_ID]"
+            f"{m.group('separator')}[REDACTED_MESSAGE]"
+        ),
+        text,
+    )
+    text = _WEBHOOK_DIRECT_DELIVER_RE.sub(
+        lambda m: f"{m.group('prefix')}[REDACTED_MESSAGE]", text
+    )
+    text = _TELEGRAM_BLOCKED_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}[REDACTED_ID]"
+            f"{m.group('middle')}[REDACTED_ID]"
+        ),
+        text,
+    )
+    text = _VOICE_INPUT_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}[REDACTED_ID]"
+            f"{m.group('separator')}[REDACTED_MESSAGE]"
+        ),
+        text,
+    )
+    text = _EMAIL_MESSAGE_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}[REDACTED_EMAIL]"
+            f"{m.group('separator')}[REDACTED_MESSAGE]"
+        ),
+        text,
+    )
+    text = _IMAGE_PROMPT_RE.sub(
+        lambda m: f"{m.group('prefix')}[REDACTED_MESSAGE]", text
+    )
+    text = _FORWARDED_UPDATE_PROMPT_RE.sub(
+        lambda m: (
+            f"{m.group('prefix')}[REDACTED_ID]"
+            f"{m.group('separator')}[REDACTED_MESSAGE]"
+        ),
+        text,
+    )
+    text = _redact_message_continuations(text)
+    text = _IPV4_ADDRESS_RE.sub(_redact_ipv4_address, text)
+    text = _IPV6_ADDRESS_RE.sub(_redact_ipv6_address, text)
 
     for raw_path, replacement in _privacy_path_replacements():
         text = text.replace(raw_path, replacement)
@@ -457,6 +602,44 @@ def _redact_debug_share_privacy(text: str) -> str:
 
     text = _UNIX_HOME_COMPONENT_RE.sub("~", text)
     return _WINDOWS_HOME_COMPONENT_RE.sub("~", text)
+
+
+def _redact_message_continuations(text: str) -> str:
+    """Redact newline continuations after a sensitive framed log record."""
+    lines = text.splitlines(keepends=True)
+    redact_continuation = False
+    for index, line in enumerate(lines):
+        is_record_start = bool(_LOG_RECORD_START_RE.match(line))
+        if is_record_start:
+            redact_continuation = "[REDACTED_MESSAGE]" in line
+            continue
+        if redact_continuation and line.strip():
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            lines[index] = f"[REDACTED_MESSAGE_CONTINUATION]{newline}"
+    return "".join(lines)
+
+
+def _redact_ipv4_address(match: re.Match[str]) -> str:
+    """Redact valid IPv4 addresses without treating version-like text as IP."""
+    prefix = match.string[max(0, match.start() - 24) : match.start()]
+    if _VERSION_VALUE_PREFIX_RE.search(prefix):
+        return match.group(0)
+    try:
+        ipaddress.ip_address(match.group(0))
+    except ValueError:
+        return match.group(0)
+    return "[REDACTED_IP]"
+
+
+def _redact_ipv6_address(match: re.Match[str]) -> str:
+    """Redact valid IPv6 addresses, including scoped link-local forms."""
+    candidate = match.group(0)
+    address = candidate.split("%", 1)[0]
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return candidate
+    return "[REDACTED_IP]" if parsed.version == 6 else candidate
 
 
 def _privacy_path_replacements() -> list[tuple[str, str]]:
@@ -560,7 +743,10 @@ def _capture_log_snapshot(
 
         return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
     except Exception as exc:
-        return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
+        error_text = f"(error reading: {exc})"
+        if redact:
+            error_text = _redact_log_text(error_text)
+        return LogSnapshot(path=log_path, tail_text=error_text, full_text=None)
 
 
 def _capture_default_log_snapshots(
@@ -721,17 +907,20 @@ def collect_share_bundle(
     if desktop_log:
         desktop_log = dump_text + "\n\n--- full desktop.log ---\n" + desktop_log
 
-    # Visible banner so reviewers know redaction was applied at upload time.
+    # Apply the privacy boundary to every complete upload payload.  Log
+    # snapshots are already redacted above, but this final pass also covers
+    # diagnostic-dump output, snapshot error strings, and any future content
+    # added to the bundle outside the snapshot collector.
     if redact:
-        report = _REDACTION_BANNER + report
+        report = _REDACTION_BANNER + _redact_log_text(report)
         if agent_log:
-            agent_log = _REDACTION_BANNER + agent_log
+            agent_log = _REDACTION_BANNER + _redact_log_text(agent_log)
         if gateway_log:
-            gateway_log = _REDACTION_BANNER + gateway_log
+            gateway_log = _REDACTION_BANNER + _redact_log_text(gateway_log)
         if gui_log:
-            gui_log = _REDACTION_BANNER + gui_log
+            gui_log = _REDACTION_BANNER + _redact_log_text(gui_log)
         if desktop_log:
-            desktop_log = _REDACTION_BANNER + desktop_log
+            desktop_log = _REDACTION_BANNER + _redact_log_text(desktop_log)
 
     bundle: dict[str, str] = {"report": report}
     if agent_log:
@@ -911,7 +1100,7 @@ def run_debug_share(args):
         _run_debug_share_nous(args, log_lines=log_lines, redact=redact)
         return
 
-    print(_PRIVACY_NOTICE)
+    print(_PRIVACY_NOTICE if redact else _NO_REDACTION_PRIVACY_NOTICE)
     if not _confirm_upload(args):
         return
     print("Collecting debug report...")
@@ -938,7 +1127,7 @@ def run_debug_share(args):
         print(f"\n  (failed to upload: {', '.join(result.failures)})")
 
     hours = result.auto_delete_seconds // 3600
-    print(f"\n⏱  Pastes will auto-delete in {hours} hours.")
+    print(f"\n⏱  Hermes will attempt paste deletion in {hours} hours.")
 
     # Manual delete fallback
     print("To delete now:  hermes debug delete <url>")
@@ -976,8 +1165,8 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
         return
     if not redact:
         print(
-            "⚠️  --no-redact is set: secrets in your logs will NOT be redacted "
-            "before upload.\n"
+            "⚠️  --no-redact is set: secrets and personal data in your logs "
+            "will NOT be redacted before upload.\n"
         )
     print("Collecting debug report...")
     _best_effort_sweep_expired_pastes()
@@ -1074,7 +1263,7 @@ def run_debug(args):
         print("  --local      Print report locally instead of uploading")
         print("  --nous       Upload to Nous-internal storage (private, staff-only,")
         print("               auto-deletes in 14 days) instead of a public paste")
-        print("  --no-redact  Disable upload-time secret redaction (default: redact)")
+        print("  --no-redact  Disable upload-time secret and privacy redaction")
         print()
         print("Options (delete):")
         print("  <url> ...    One or more paste URLs to delete")

@@ -222,6 +222,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    "friendli": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("FRIENDLI_API_KEY",),
+        base_url_override="https://api.friendli.ai/serverless/v1",
+        base_url_env_var="FRIENDLI_BASE_URL",
+    ),
 }
 
 
@@ -360,6 +366,10 @@ ALIASES: Dict[str, str] = {
 
     # upstage
     "solar": "upstage",
+
+    # friendli
+    "friendliai": "friendli",
+    "friendli-ai": "friendli",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",

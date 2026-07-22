@@ -44,6 +44,7 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
     "FIREWORKS_API_KEY",
+    "FRIENDLI_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -954,6 +955,9 @@ def run_doctor(args):
                 # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
                 # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
                 "deepinfra",
+                # Friendli's native model IDs are also slash-form
+                # (deepseek-ai/DeepSeek-V3.2, zai-org/GLM-5.2, ...).
+                "friendli",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

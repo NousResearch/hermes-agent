@@ -1,0 +1,5 @@
+name: friendli-provider
+kind: model-provider
+version: 1.0.0
+description: Friendli — serverless inference API for open models
+author: Friendli

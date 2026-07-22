@@ -23,9 +23,9 @@ import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
-import { relativeTime } from '@/lib/time'
+import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
@@ -162,13 +162,13 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
           }}
           tooltip={copy.branchNewChat}
         >
-          <GitBranchIcon className="size-3.5" />
+          <GitForkIcon className="size-3.5" />
         </TooltipIconButton>
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
-            <Codicon name="refresh" />
+            <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
       </ActionBarPrimitive.Root>
@@ -187,7 +187,7 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   const isPreparing = readAloudStatus === 'preparing'
   const isSpeaking = readAloudStatus === 'speaking'
   const anyPlaybackActive = voicePlayback.status !== 'idle'
-  const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : Volume2Icon
+  const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : AudioLines
   const tooltip = isPreparing ? copy.preparingAudio : isSpeaking ? copy.stopReading : copy.readAloud
 
   const read = useCallback(async () => {
@@ -221,22 +221,19 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 const MessageAge: FC = () => {
   const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
+  const date = createdAt ? new Date(createdAt) : null
 
-  if (!createdAt) {
+  if (!date || Number.isNaN(date.getTime())) {
     return null
   }
 
-  const date = createdAt instanceof Date ? createdAt : new Date(createdAt)
-
-  if (Number.isNaN(date.getTime())) {
-    return null
-  }
-
-  const absolute = formatMessageTimestamp(date, t.assistant.thread)
-
+  // Compact "2h ago" (shared util) with the absolute time on hover.
   return (
-    <span className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground" title={absolute || undefined}>
-      {relativeTime(date.getTime())}
+    <span
+      className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
+      title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
+    >
+      {formatAgo(date.getTime(), t.agents)}
     </span>
   )
 }

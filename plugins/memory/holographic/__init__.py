@@ -368,14 +368,24 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
+        # ── English preference patterns ──
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            # ── Chinese preference patterns ──
+            re.compile(r'(?:我|人家|咱|本(?:人|公主|宝宝|大爷))\s*(?:喜欢|偏爱|常用|习惯|想要|需要|想用|爱用|推荐|推荐用)\s*(.+)'),
+            re.compile(r'(?:我|老大|咱)\s*(?:的)\s*(?:最爱|首选|默认|偏好)\s*\w*\s*(?:是|为)\s*(.+)'),
+            re.compile(r'(?:我|人家|咱)\s*(?:总是|经常|通常|习惯|一律|基本上)\s*(.+)'),
+            re.compile(r'(?:我|咱|我们)\s*(?:不太喜欢|不喜欢|不用|讨厌|很少)\s*(.+)'),
         ]
         _DECISION_PATTERNS = [
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            # ── Chinese decision/project patterns ──
+            re.compile(r'(?:我们|咱们|咱|大家)\s*(?:决定|商定|约定|选定|选了|用了|确认|同意|最终(?:选|选择))\s*(?:的?|了?|要?)(.+)'),
+            re.compile(r'(?:这个|这个项目|我们项目|项目)\s*(?:使用|采用|依赖|需要|基于|用|用的是)\s*(.+)'),
+            re.compile(r'(?:已经|已经?|已\s*经\s*)\s*(?:决定|选定|配置好|设置好|搞定|装好|部署好)\s*(.+)'),
         ]
 
         extracted = 0

@@ -3,6 +3,11 @@
 The terminal `hermes model` flow already exposes `custom_providers`, but the
 shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
+
+Fixtures that set ``discover_models=False`` deliberately opt out of live
+endpoint probing; they test saved/configured-provider behavior rather than a
+local model server. The live-probe cases set it separately when discovery is
+the behavior under test.
 """
 
 import hermes_cli.providers as providers_mod
@@ -390,6 +395,8 @@ def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypa
         user_providers={},
         custom_providers=[
             {
+                # Keep this generic and off Ollama's default :11434: this case
+                # covers /v1/models probing, not native /api/tags discovery.
                 "name": "Local llama.cpp",
                 "base_url": "http://localhost:8080/v1",
                 "model": "llama3",

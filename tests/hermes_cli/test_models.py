@@ -1590,8 +1590,114 @@ class TestLocalOllamaModelDiscovery:
         assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
         assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
 
+    def test_switch_model_on_current_ollama_custom_endpoint_keeps_base_url(self):
+        """Mid-session `/model` on local Ollama must not re-resolve custom to another provider."""
+        from hermes_cli.model_switch import switch_model
 
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ), patch(
+                "hermes_cli.model_switch.get_model_info",
+                return_value=None,
+            ):
+                result = switch_model(
+                    raw_input="llama3.2:1b",
+                    current_provider="custom",
+                    current_model="qwen3:1.7b",
+                    current_base_url=base_url,
+                    current_api_key="no-key-required",
+                    user_providers={"ollama": {"base_url": base_url}},
+                    custom_providers=[],
+                )
+        finally:
+            server.shutdown()
 
+        assert result.success is True
+        assert result.target_provider == "custom"
+        assert result.new_model == "llama3.2:1b"
+        assert result.base_url == base_url
+        assert result.warning_message == ""
+
+    def test_switch_model_on_non_ollama_custom_endpoint_still_resolves_runtime(self):
+        """The Ollama base-url preservation path must not change ordinary custom endpoints."""
+        from hermes_cli.model_switch import switch_model
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "api_key": "new-key",
+                "base_url": "https://custom.example/v1",
+                "api_mode": "chat_completions",
+            },
+        ), patch(
+            "hermes_cli.models.validate_requested_model",
+            return_value={
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            },
+        ), patch(
+            "hermes_cli.model_switch.get_model_info",
+            return_value=None,
+        ):
+            result = switch_model(
+                raw_input="my-model",
+                current_provider="custom",
+                current_model="old-model",
+                current_base_url="https://old-custom.example/v1",
+                current_api_key="old-key",
+                user_providers={},
+                custom_providers=[],
+            )
+
+        assert result.success is True
+        assert result.base_url == "https://custom.example/v1"
+        assert result.api_key == "new-key"
+
+    def test_switch_model_ollama_precheck_runtime_error_falls_back_to_runtime_resolution(self):
+        """A native-catalog precheck failure should not abort ordinary /model switching."""
+        from hermes_cli.model_switch import switch_model
+
+        with patch(
+            "hermes_cli.models.should_use_ollama_native_catalog",
+            side_effect=RuntimeError("config unavailable"),
+        ), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "api_key": "new-key",
+                "base_url": "https://custom.example/v1",
+                "api_mode": "chat_completions",
+            },
+        ), patch(
+            "hermes_cli.models.validate_requested_model",
+            return_value={
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            },
+        ), patch(
+            "hermes_cli.model_switch.get_model_info",
+            return_value=None,
+        ):
+            result = switch_model(
+                raw_input="my-model",
+                current_provider="custom",
+                current_model="old-model",
+                current_base_url="http://127.0.0.1:11434/v1",
+                current_api_key="old-key",
+                user_providers={},
+                custom_providers=[],
+            )
+
+        assert result.success is True
+        assert result.base_url == "https://custom.example/v1"
+        assert result.api_key == "new-key"
 
     def test_ollama_root_matching_is_case_insensitive_for_hostnames(self):
         from hermes_cli.models import _same_ollama_native_root
@@ -1714,3 +1820,90 @@ class TestLocalOllamaModelDiscovery:
                 headers={"X-Endpoint-Token": "explicit"},
             )
             assert probe.call_args.kwargs["headers"] == {"X-Endpoint-Token": "explicit"}
+
+
+    def test_switch_model_direct_ollama_alias_preserves_matching_origin_api_key(self):
+        import hermes_cli.model_switch as model_switch
+
+        base_url = "https://ollama.internal/v1"
+        original_aliases = dict(model_switch.DIRECT_ALIASES)
+        model_switch.DIRECT_ALIASES.clear()
+        model_switch.DIRECT_ALIASES["remote-qwen"] = model_switch.DirectAlias(
+            model="qwen3:1.7b", provider="ollama", base_url=base_url
+        )
+        try:
+            with patch.object(model_switch, "get_model_info", return_value=None), patch(
+                "hermes_cli.models._get_provider_config_dict",
+                return_value={"base_url": base_url, "api_key": "secret"},
+            ) as config_provider, patch(
+                "hermes_cli.models.validate_requested_model",
+                return_value={"accepted": True, "persist": True, "recognized": True, "message": ""},
+            ):
+                result = model_switch.switch_model(
+                    raw_input="remote-qwen",
+                    current_provider="openrouter",
+                    current_model="old-model",
+                    current_api_key="stale-other-endpoint-key",
+                    user_providers={"ollama": {"base_url": base_url, "api_key": "secret"}},
+                    custom_providers=[],
+                )
+        finally:
+            model_switch.DIRECT_ALIASES.clear()
+            model_switch.DIRECT_ALIASES.update(original_aliases)
+
+        assert config_provider.call_args is not None, result
+        assert config_provider.call_args.args == ("ollama",), config_provider.call_args
+        assert result.success is True
+        assert result.api_key == "secret", result
+
+    def test_switch_model_direct_ollama_alias_clears_different_origin_api_key(self):
+        import hermes_cli.model_switch as model_switch
+
+        original_aliases = dict(model_switch.DIRECT_ALIASES)
+        model_switch.DIRECT_ALIASES.clear()
+        model_switch.DIRECT_ALIASES["other-qwen"] = model_switch.DirectAlias(
+            model="qwen3:1.7b", provider="ollama", base_url="https://other.internal/v1"
+        )
+        try:
+            with patch.object(model_switch, "get_model_info", return_value=None), patch(
+                "hermes_cli.models.validate_requested_model",
+                return_value={"accepted": True, "persist": True, "recognized": True, "message": ""},
+            ):
+                result = model_switch.switch_model(
+                    raw_input="other-qwen",
+                    current_provider="custom",
+                    current_model="old-model",
+                    user_providers={
+                        "ollama": {
+                            "base_url": "https://ollama.internal/v1",
+                            "api_key": "secret",
+                        }
+                    },
+                    custom_providers=[],
+                )
+        finally:
+            model_switch.DIRECT_ALIASES.clear()
+            model_switch.DIRECT_ALIASES.update(original_aliases)
+
+        assert result.success is True
+        assert result.api_key == "no-key-required"
+
+        import hermes_cli.models as models
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "providers": {
+                    "ollama": {"extra_headers": {"Authorization": "Bearer secret"}}
+                }
+            },
+        ), patch.object(models, "should_use_ollama_native_catalog", return_value=True), patch.object(
+            models, "probe_ollama_local_models", return_value=[]
+        ) as probe:
+            models.validate_requested_model(
+                "qwen3:1.7b",
+                "ollama",
+                base_url="https://alias.example/v1",
+                headers={},
+            )
+        assert probe.call_args.kwargs["headers"] == {}

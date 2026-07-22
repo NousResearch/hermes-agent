@@ -1444,7 +1444,8 @@ class GatewaySlashCommandsMixin:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from gateway.run import _hermes_home, _load_gateway_config
+        from contextlib import nullcontext
+        from gateway.run import _hermes_home, _load_gateway_config, _profile_runtime_scope
         import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags_detailed,
@@ -1461,6 +1462,15 @@ class GatewaySlashCommandsMixin:
             _command_profile_home = getattr(
                 self, "_resolve_profile_home_for_source"
             )(source)
+
+        # Scope config reads/writes (and secrets) to the routed profile's
+        # HERMES_HOME for the duration of this command when multiplexing is
+        # active, mirroring the pattern used by the interactive picker path
+        # below. A no-op context manager when there's no secondary profile.
+        def _model_cmd_scope_factory():
+            if _command_profile_home is not None:
+                return _profile_runtime_scope(_command_profile_home)
+            return nullcontext()
 
         # Parse --provider, --global, --session, --once, and --refresh flags
         parsed_flags = parse_model_flags_detailed(raw_args)
@@ -1499,22 +1509,23 @@ class GatewaySlashCommandsMixin:
         excluded_provs = []
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
-            cfg = _load_gateway_config()
-            if cfg:
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_model = model_cfg.get("default", "")
-                    current_provider = model_cfg.get("provider", current_provider)
-                    current_base_url = model_cfg.get("base_url", "")
-                user_provs = cfg.get("providers")
-                try:
-                    from hermes_cli.config import get_compatible_custom_providers
-                    custom_provs = get_compatible_custom_providers(cfg)
-                except Exception:
-                    custom_provs = cfg.get("custom_providers")
-                _excl = cfg.get("model_catalog", {}).get("excluded_providers")
-                if isinstance(_excl, list):
-                    excluded_provs = _excl
+            with _model_cmd_scope_factory():
+                cfg = _load_gateway_config()
+                if cfg:
+                    model_cfg = cfg.get("model", {})
+                    if isinstance(model_cfg, dict):
+                        current_model = model_cfg.get("default", "")
+                        current_provider = model_cfg.get("provider", current_provider)
+                        current_base_url = model_cfg.get("base_url", "")
+                    user_provs = cfg.get("providers")
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers
+                        custom_provs = get_compatible_custom_providers(cfg)
+                    except Exception:
+                        custom_provs = cfg.get("custom_providers")
+                    _excl = cfg.get("model_catalog", {}).get("excluded_providers")
+                    if isinstance(_excl, list):
+                        excluded_provs = _excl
         except Exception:
             pass
 
@@ -1923,238 +1934,239 @@ class GatewaySlashCommandsMixin:
             logger.debug("preflight-compression switch warning failed: %s", exc)
 
         async def _finish_switch() -> str:
-            """Apply the resolved switch (agent, session, config) and build the reply."""
-            # If there's a cached agent, update it in-place
-            cached_entry = None
-            _cache_lock = getattr(self, "_agent_cache_lock", None)
-            _cache = getattr(self, "_agent_cache", None)
-            if _cache_lock and _cache is not None:
-                with _cache_lock:
-                    cached_entry = _cache.get(session_key)
+            with _model_cmd_scope_factory():
+                """Apply the resolved switch (agent, session, config) and build the reply."""
+                # If there's a cached agent, update it in-place
+                cached_entry = None
+                _cache_lock = getattr(self, "_agent_cache_lock", None)
+                _cache = getattr(self, "_agent_cache", None)
+                if _cache_lock and _cache is not None:
+                    with _cache_lock:
+                        cached_entry = _cache.get(session_key)
 
-            if cached_entry and cached_entry[0] is not None:
-                try:
-                    cached_entry[0].switch_model(
-                        new_model=result.new_model,
-                        new_provider=result.target_provider,
-                        api_key=result.api_key,
-                        base_url=result.base_url,
-                        api_mode=result.api_mode,
-                    )
-                except Exception as exc:
-                    # In-place swap rolled the agent back to the OLD working
-                    # model/client and re-raised.  Abort the commit: skip DB
-                    # persist, session override, cache eviction, and config
-                    # write so a failed switch is a no-op rather than a dead
-                    # conversation (#50163).  Without this early return the
-                    # next message rebuilds a broken agent from the override.
-                    logger.warning("In-place model switch failed for cached agent: %s", exc)
-                    return t(
-                        "gateway.model.error_prefix",
-                        error=(
-                            f"Model switch to {result.new_model} failed ({exc}); "
-                            f"staying on {current_model}."
-                        ),
-                    )
-
-            # Persist the new model to the session DB so the dashboard
-            # shows the updated model (#34850).
-            _sess_db = getattr(self, "_session_db", None)
-            if _sess_db is not None:
-                try:
-                    _sess_entry = await self.async_session_store.get_or_create_session(source)
-                    # If this session was auto-reset, consume the flag so the
-                    # next regular message's cleanup does not wipe the model
-                    # override just stored below (Closes #48031).
-                    if getattr(_sess_entry, "was_auto_reset", False):
-                        _sess_entry.was_auto_reset = False
-                    await _sess_db.update_session_model(
-                        _sess_entry.session_id, result.new_model
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "Failed to persist model switch to DB: %s", exc
-                    )
-
-            # Store a note to prepend to the next user message so the model
-            # knows about the switch (avoids system messages mid-history).
-            # Display form strips opaque Palantir RID prefixes; the override
-            # map below keeps the full ID for the wire.
-            from hermes_cli.model_switch import format_model_for_display
-            if not hasattr(self, "_pending_model_notes"):
-                self._pending_model_notes = {}
-            self._pending_model_notes[session_key] = (
-                f"[Note: model was just switched from {format_model_for_display(current_model)} to {format_model_for_display(result.new_model)} "
-                f"via {result.provider_label or result.target_provider}. "
-                f"{'This override applies to the next turn only. ' if one_turn else ''}"
-                f"Adjust your self-identification accordingly.]"
-            )
-
-            # Store session override so next agent creation uses the new model
-            self._session_model_overrides[session_key] = {
-                "model": result.new_model,
-                "provider": result.target_provider,
-                "api_key": result.api_key,
-                "base_url": result.base_url,
-                "api_mode": result.api_mode,
-            }
-            if one_turn:
-                if not hasattr(self, "_pending_one_turn_model_restores"):
-                    self._pending_one_turn_model_restores = {}
-                self._pending_one_turn_model_restores[session_key] = (
-                    restore_snapshot or {"had_override": False, "override": None}
-                )
-            elif hasattr(self, "_pending_one_turn_model_restores"):
-                self._pending_one_turn_model_restores.pop(session_key, None)
-
-            # Write-through the non-secret parts (model/provider/base_url) to
-            # the session store so the override survives a gateway restart.
-            # api_key/api_mode are never persisted — they are re-resolved via
-            # runtime provider resolution on rehydration.
-            #
-            # /model --once is intentionally EXCLUDED from the write-through:
-            # a one-turn override must never survive a restart. The persisted
-            # value stays at the pre-once state (the prior session override,
-            # or nothing), which is exactly what the finally-restore reverts
-            # the in-memory dict to. (#29923 review defect: the original
-            # implementation wrote through, so a crash before the restore
-            # rehydrated the once-model permanently.)
-            if not one_turn:
-                try:
-                    await self.async_session_store.set_model_override(
-                        session_key,
-                        self._session_model_overrides[session_key],
-                    )
-                except Exception:
-                    logger.debug(
-                        "Failed to persist session model override", exc_info=True
-                    )
-
-            # Evict cached agent so the next turn creates a fresh agent from the
-            # override rather than relying on cache signature mismatch detection.
-            self._evict_cached_agent(session_key)
-
-            # Persist to config (default) unless --session opted out
-            if persist_global:
-                try:
-                    if config_path.exists():
-                        with open(config_path, encoding="utf-8") as f:
-                            cfg = yaml.safe_load(f) or {}
-                    else:
-                        cfg = {}
-                    # Coerce scalar/None ``model:`` into a dict before mutation —
-                    # otherwise ``cfg.setdefault("model", {})`` returns the existing
-                    # scalar and the next assignment raises
-                    # ``TypeError: 'str' object does not support item assignment``.
-                    # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
-                    # string) instead of the proper nested ``model: {default: ...}``.
-                    raw_model = cfg.get("model")
-                    if isinstance(raw_model, dict):
-                        model_cfg = raw_model
-                    elif isinstance(raw_model, str) and raw_model.strip():
-                        model_cfg = {"default": raw_model.strip()}
-                        cfg["model"] = model_cfg
-                    else:
-                        model_cfg = {}
-                        cfg["model"] = model_cfg
+                if cached_entry and cached_entry[0] is not None:
                     try:
-                        from hermes_cli.route_identity import should_clear_context_pin
+                        cached_entry[0].switch_model(
+                            new_model=result.new_model,
+                            new_provider=result.target_provider,
+                            api_key=result.api_key,
+                            base_url=result.base_url,
+                            api_mode=result.api_mode,
+                        )
+                    except Exception as exc:
+                        # In-place swap rolled the agent back to the OLD working
+                        # model/client and re-raised.  Abort the commit: skip DB
+                        # persist, session override, cache eviction, and config
+                        # write so a failed switch is a no-op rather than a dead
+                        # conversation (#50163).  Without this early return the
+                        # next message rebuilds a broken agent from the override.
+                        logger.warning("In-place model switch failed for cached agent: %s", exc)
+                        return t(
+                            "gateway.model.error_prefix",
+                            error=(
+                                f"Model switch to {result.new_model} failed ({exc}); "
+                                f"staying on {current_model}."
+                            ),
+                        )
 
-                        if should_clear_context_pin(
-                            model_cfg.get("default") or model_cfg.get("model"),
-                            result.new_model,
-                            model_cfg.get("base_url"),
-                            result.base_url,
-                            model_cfg.get("provider"),
-                            result.target_provider,
-                        ):
-                            model_cfg.pop("context_length", None)
+                # Persist the new model to the session DB so the dashboard
+                # shows the updated model (#34850).
+                _sess_db = getattr(self, "_session_db", None)
+                if _sess_db is not None:
+                    try:
+                        _sess_entry = await self.async_session_store.get_or_create_session(source)
+                        # If this session was auto-reset, consume the flag so the
+                        # next regular message's cleanup does not wipe the model
+                        # override just stored below (Closes #48031).
+                        if getattr(_sess_entry, "was_auto_reset", False):
+                            _sess_entry.was_auto_reset = False
+                        await _sess_db.update_session_model(
+                            _sess_entry.session_id, result.new_model
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Failed to persist model switch to DB: %s", exc
+                        )
+
+                # Store a note to prepend to the next user message so the model
+                # knows about the switch (avoids system messages mid-history).
+                # Display form strips opaque Palantir RID prefixes; the override
+                # map below keeps the full ID for the wire.
+                from hermes_cli.model_switch import format_model_for_display
+                if not hasattr(self, "_pending_model_notes"):
+                    self._pending_model_notes = {}
+                self._pending_model_notes[session_key] = (
+                    f"[Note: model was just switched from {format_model_for_display(current_model)} to {format_model_for_display(result.new_model)} "
+                    f"via {result.provider_label or result.target_provider}. "
+                    f"{'This override applies to the next turn only. ' if one_turn else ''}"
+                    f"Adjust your self-identification accordingly.]"
+                )
+
+                # Store session override so next agent creation uses the new model
+                self._session_model_overrides[session_key] = {
+                    "model": result.new_model,
+                    "provider": result.target_provider,
+                    "api_key": result.api_key,
+                    "base_url": result.base_url,
+                    "api_mode": result.api_mode,
+                }
+                if one_turn:
+                    if not hasattr(self, "_pending_one_turn_model_restores"):
+                        self._pending_one_turn_model_restores = {}
+                    self._pending_one_turn_model_restores[session_key] = (
+                        restore_snapshot or {"had_override": False, "override": None}
+                    )
+                elif hasattr(self, "_pending_one_turn_model_restores"):
+                    self._pending_one_turn_model_restores.pop(session_key, None)
+
+                # Write-through the non-secret parts (model/provider/base_url) to
+                # the session store so the override survives a gateway restart.
+                # api_key/api_mode are never persisted — they are re-resolved via
+                # runtime provider resolution on rehydration.
+                #
+                # /model --once is intentionally EXCLUDED from the write-through:
+                # a one-turn override must never survive a restart. The persisted
+                # value stays at the pre-once state (the prior session override,
+                # or nothing), which is exactly what the finally-restore reverts
+                # the in-memory dict to. (#29923 review defect: the original
+                # implementation wrote through, so a crash before the restore
+                # rehydrated the once-model permanently.)
+                if not one_turn:
+                    try:
+                        await self.async_session_store.set_model_override(
+                            session_key,
+                            self._session_model_overrides[session_key],
+                        )
                     except Exception:
-                        model_cfg.pop("context_length", None)
-                    model_cfg["default"] = result.new_model
-                    model_cfg["provider"] = result.target_provider
-                    # See the picker handler above for why custom providers need an
-                    # explicit set-or-clear instead of the old lone truthy check (#25107).
-                    _is_custom_target = str(result.target_provider or "").strip().lower() == "custom"
-                    if result.base_url:
-                        model_cfg["base_url"] = result.base_url
-                    elif _is_custom_target:
-                        model_cfg.pop("base_url", None)
-                    if _is_custom_target:
-                        if result.api_mode:
-                            model_cfg["api_mode"] = result.api_mode
+                        logger.debug(
+                            "Failed to persist session model override", exc_info=True
+                        )
+
+                # Evict cached agent so the next turn creates a fresh agent from the
+                # override rather than relying on cache signature mismatch detection.
+                self._evict_cached_agent(session_key)
+
+                # Persist to config (default) unless --session opted out
+                if persist_global:
+                    try:
+                        if config_path.exists():
+                            with open(config_path, encoding="utf-8") as f:
+                                cfg = yaml.safe_load(f) or {}
                         else:
-                            model_cfg.pop("api_mode", None)
-                    else:
-                        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
-                    from hermes_cli.config import save_config
-                    save_config(cfg)
-                except Exception as e:
-                    logger.warning("Failed to persist model switch: %s", e)
+                            cfg = {}
+                        # Coerce scalar/None ``model:`` into a dict before mutation —
+                        # otherwise ``cfg.setdefault("model", {})`` returns the existing
+                        # scalar and the next assignment raises
+                        # ``TypeError: 'str' object does not support item assignment``.
+                        # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
+                        # string) instead of the proper nested ``model: {default: ...}``.
+                        raw_model = cfg.get("model")
+                        if isinstance(raw_model, dict):
+                            model_cfg = raw_model
+                        elif isinstance(raw_model, str) and raw_model.strip():
+                            model_cfg = {"default": raw_model.strip()}
+                            cfg["model"] = model_cfg
+                        else:
+                            model_cfg = {}
+                            cfg["model"] = model_cfg
+                        try:
+                            from hermes_cli.route_identity import should_clear_context_pin
 
-            # Build confirmation message with full metadata
-            provider_label = result.provider_label or result.target_provider
-            lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
-            lines.append(t("gateway.model.provider_label", provider=provider_label))
+                            if should_clear_context_pin(
+                                model_cfg.get("default") or model_cfg.get("model"),
+                                result.new_model,
+                                model_cfg.get("base_url"),
+                                result.base_url,
+                                model_cfg.get("provider"),
+                                result.target_provider,
+                            ):
+                                model_cfg.pop("context_length", None)
+                        except Exception:
+                            model_cfg.pop("context_length", None)
+                        model_cfg["default"] = result.new_model
+                        model_cfg["provider"] = result.target_provider
+                        # See the picker handler above for why custom providers need an
+                        # explicit set-or-clear instead of the old lone truthy check (#25107).
+                        _is_custom_target = str(result.target_provider or "").strip().lower() == "custom"
+                        if result.base_url:
+                            model_cfg["base_url"] = result.base_url
+                        elif _is_custom_target:
+                            model_cfg.pop("base_url", None)
+                        if _is_custom_target:
+                            if result.api_mode:
+                                model_cfg["api_mode"] = result.api_mode
+                            else:
+                                model_cfg.pop("api_mode", None)
+                        else:
+                            clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
+                        from hermes_cli.config import save_config
+                        save_config(cfg)
+                    except Exception as e:
+                        logger.warning("Failed to persist model switch: %s", e)
 
-            # Context: always resolve via the provider-aware chain so Codex OAuth,
-            # Copilot, and Nous-enforced caps win over the raw models.dev entry.
-            mi = result.model_info
-            from hermes_cli.model_switch import resolve_display_context_length
-            _sw2_config_ctx = None
-            _sw2_model_cfg = {}
-            try:
-                _sw2_cfg = _load_gateway_config()
-                _sw2_model_cfg = _sw2_cfg.get("model", {})
-                if isinstance(_sw2_model_cfg, dict):
-                    _sw2_raw = _sw2_model_cfg.get("context_length")
-                    if _sw2_raw is not None:
-                        _sw2_config_ctx = int(_sw2_raw)
-            except Exception:
-                pass
-            if not isinstance(_sw2_model_cfg, dict):
+                # Build confirmation message with full metadata
+                provider_label = result.provider_label or result.target_provider
+                lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
+                lines.append(t("gateway.model.provider_label", provider=provider_label))
+
+                # Context: always resolve via the provider-aware chain so Codex OAuth,
+                # Copilot, and Nous-enforced caps win over the raw models.dev entry.
+                mi = result.model_info
+                from hermes_cli.model_switch import resolve_display_context_length
+                _sw2_config_ctx = None
                 _sw2_model_cfg = {}
-            ctx = resolve_display_context_length(
-                result.new_model,
-                result.target_provider,
-                base_url=result.base_url or current_base_url or "",
-                api_key=result.api_key or current_api_key or "",
-                model_info=mi,
-                custom_providers=custom_provs,
-                config_context_length=_sw2_config_ctx,
-                configured_model=(
-                    _sw2_model_cfg.get("default")
-                    or _sw2_model_cfg.get("model")
-                ),
-                configured_provider=_sw2_model_cfg.get("provider"),
-                configured_base_url=_sw2_model_cfg.get("base_url"),
-            )
-            if ctx:
-                lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
-            if mi:
-                if mi.max_output:
-                    lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
-                lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
+                try:
+                    _sw2_cfg = _load_gateway_config()
+                    _sw2_model_cfg = _sw2_cfg.get("model", {})
+                    if isinstance(_sw2_model_cfg, dict):
+                        _sw2_raw = _sw2_model_cfg.get("context_length")
+                        if _sw2_raw is not None:
+                            _sw2_config_ctx = int(_sw2_raw)
+                except Exception:
+                    pass
+                if not isinstance(_sw2_model_cfg, dict):
+                    _sw2_model_cfg = {}
+                ctx = resolve_display_context_length(
+                    result.new_model,
+                    result.target_provider,
+                    base_url=result.base_url or current_base_url or "",
+                    api_key=result.api_key or current_api_key or "",
+                    model_info=mi,
+                    custom_providers=custom_provs,
+                    config_context_length=_sw2_config_ctx,
+                    configured_model=(
+                        _sw2_model_cfg.get("default")
+                        or _sw2_model_cfg.get("model")
+                    ),
+                    configured_provider=_sw2_model_cfg.get("provider"),
+                    configured_base_url=_sw2_model_cfg.get("base_url"),
+                )
+                if ctx:
+                    lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
+                if mi:
+                    if mi.max_output:
+                        lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
+                    lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
 
-            # Cache notice
-            cache_enabled = (
-                (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-                or result.api_mode == "anthropic_messages"
-            )
-            if cache_enabled:
-                lines.append(t("gateway.model.prompt_caching_enabled"))
+                # Cache notice
+                cache_enabled = (
+                    (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
+                    or result.api_mode == "anthropic_messages"
+                )
+                if cache_enabled:
+                    lines.append(t("gateway.model.prompt_caching_enabled"))
 
-            if result.warning_message:
-                lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+                if result.warning_message:
+                    lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
 
-            if persist_global:
-                lines.append(t("gateway.model.saved_global"))
-            elif one_turn:
-                lines.append("    (next turn only — restores after one response)")
-            else:
-                lines.append(t("gateway.model.session_only_hint"))
+                if persist_global:
+                    lines.append(t("gateway.model.saved_global"))
+                elif one_turn:
+                    lines.append("    (next turn only — restores after one response)")
+                else:
+                    lines.append(t("gateway.model.session_only_hint"))
 
-            return "\n".join(lines)
+                return "\n".join(lines)
 
         # Expensive-model confirmation gate (typed /model <name> path).
         # The pickers (Telegram/Discord inline keyboards, TUI, dashboard)

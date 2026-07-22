@@ -147,6 +147,57 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _fetch_runtime_footer_quota_snapshot(provider: str | None, *, base_url: str | None = None, api_key: str | None = None):
+    """Best-effort quota snapshots for the final runtime footer.
+
+    This runs only after a normal model turn and never schedules background
+    polling. Keep it time-bounded and fail-open so quota metadata cannot block
+    the user's final answer.
+    """
+    normalized = str(provider or "").strip().lower()
+    try:
+        import concurrent.futures
+        from agent.account_usage import AccountUsageSnapshot, fetch_account_usage
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = []
+            if normalized in {"anthropic", "openai-codex", "openrouter"}:
+                futures.append(pool.submit(
+                    fetch_account_usage,
+                    normalized,
+                    base_url=base_url,
+                    api_key=api_key,
+                ))
+            if os.environ.get("SUPERMEMORY_API_KEY", "").strip():
+                futures.append(pool.submit(fetch_account_usage, "supermemory"))
+
+            snapshots = []
+            for fut in futures:
+                snap = fut.result(timeout=5.0)
+                if snap and not getattr(snap, "unavailable_reason", None) and getattr(snap, "available", False):
+                    snapshots.append(snap)
+            if not snapshots:
+                return None
+            if len(snapshots) == 1:
+                return snapshots[0]
+            windows = []
+            details = []
+            for snap in snapshots:
+                windows.extend(list(getattr(snap, "windows", ()) or ()))
+                details.extend(list(getattr(snap, "details", ()) or ()))
+            return AccountUsageSnapshot(
+                provider="combined",
+                source="runtime_footer",
+                fetched_at=snapshots[0].fetched_at,
+                title="Account limits",
+                windows=tuple(windows),
+                details=tuple(details),
+            )
+    except Exception:
+        logger.debug("runtime footer quota fetch failed", exc_info=True)
+        return None
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -13494,13 +13545,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
+                from gateway.runtime_footer import build_footer_line as _bfl, resolve_footer_config as _rfc
+                _gateway_config = _load_gateway_config()
+                _platform_key = _platform_config_key(source.platform)
+                _footer_cfg = _rfc(_gateway_config, _platform_key)
+                _quota_snapshot = None
+                if _footer_cfg.get("enabled") and "quota" in (_footer_cfg.get("fields") or ()):  # avoid quota API calls when footer/quota is hidden
+                    _quota_snapshot = _fetch_runtime_footer_quota_snapshot(
+                        agent_result.get("provider"),
+                        base_url=agent_result.get("base_url"),
+                        api_key=agent_result.get("api_key"),
+                    )
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
+                    user_config=_gateway_config,
+                    platform_key=_platform_key,
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
+                    quota_snapshot=_quota_snapshot,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                 )
             except Exception as _footer_err:

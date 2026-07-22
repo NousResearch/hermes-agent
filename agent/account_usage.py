@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -881,6 +882,62 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_supermemory_account_usage() -> Optional[AccountUsageSnapshot]:
+    api_key = os.environ.get("SUPERMEMORY_API_KEY", "").strip()
+    if not api_key:
+        return AccountUsageSnapshot(
+            provider="supermemory",
+            source="billing_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="SUPERMEMORY_API_KEY not set",
+        )
+
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(
+            "https://api.supermemory.ai/v3/auth/billing/usage",
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+    features = payload.get("features") if isinstance(payload, dict) else {}
+    credits = features.get("usd_credits") if isinstance(features, dict) else {}
+    if not isinstance(credits, dict):
+        credits = {}
+
+    used = credits.get("usage")
+    included = credits.get("included_usage")
+    balance = credits.get("balance")
+    reset = credits.get("next_reset_at")
+
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    if isinstance(used, (int, float)) and isinstance(included, (int, float)) and float(included) > 0:
+        used_value = float(used)
+        included_value = float(included)
+        remaining = float(balance) if isinstance(balance, (int, float)) else max(0.0, included_value - used_value)
+        windows.append(
+            AccountUsageWindow(
+                label="Supermemory credits",
+                used_percent=(used_value / included_value) * 100,
+                reset_at=_parse_dt(float(reset) / 1000) if isinstance(reset, (int, float)) else _parse_dt(reset),
+                detail=f"${remaining:.2f} of ${included_value:.2f} remaining",
+            )
+        )
+        details.append(f"Supermemory credits used: ${used_value:.2f} of ${included_value:.2f}")
+    elif isinstance(balance, (int, float)):
+        details.append(f"Supermemory credits balance: ${float(balance):.2f}")
+
+    return AccountUsageSnapshot(
+        provider="supermemory",
+        source="billing_usage_api",
+        fetched_at=_utc_now(),
+        title="Supermemory limits",
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -897,6 +954,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "supermemory":
+            return _fetch_supermemory_account_usage()
     except Exception:
         return None
     return None

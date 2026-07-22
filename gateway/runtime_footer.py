@@ -9,7 +9,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, context_pct, quota, cwd]   # order shown; drop any to hide
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -26,9 +26,15 @@ piecemeal, the footer is sent as a separate trailing message via
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python without zoneinfo
+    ZoneInfo = None
+
+_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "quota", "cwd")
 _SEP = " · "
 
 
@@ -51,6 +57,79 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _quota_window_label(label: str) -> str:
+    """Human-friendly quota-window labels for the multiline footer."""
+    text = str(label or "").strip()
+    lowered = text.lower()
+    if not lowered:
+        return ""
+    if lowered in {"current session", "session", "primary window"}:
+        return "5h"
+    if lowered in {"current week", "weekly", "secondary window"}:
+        return "7d"
+    if lowered.endswith(" week"):
+        prefix = lowered[:-5].replace("current", "").strip()
+        return f"{prefix.title()} 7d" if prefix else "7d"
+    return text[:24]
+
+
+def _quota_reset_short(value: Any) -> str:
+    """Compact Eastern reset timestamp for a quota window."""
+    if value is None:
+        return ""
+    try:
+        dt = value
+        if not isinstance(dt, datetime):
+            return ""
+        if ZoneInfo is not None:
+            dt = dt.astimezone(ZoneInfo("America/Toronto"))
+        else:
+            dt = dt.astimezone()
+        return dt.strftime("%b %-d %-I:%M %p %Z")
+    except Exception:
+        try:
+            return value.strftime("%b %d %I:%M %p %Z")
+        except Exception:
+            return ""
+
+
+def _quota_block(snapshot: Any) -> str:
+    """Render provider quota/limit windows as a readable multiline block."""
+    if not snapshot:
+        return ""
+    try:
+        if getattr(snapshot, "unavailable_reason", None):
+            return ""
+        windows = list(getattr(snapshot, "windows", ()) or ())
+    except Exception:
+        return ""
+    lines: list[str] = []
+    for window in windows:
+        try:
+            used = getattr(window, "used_percent", None)
+            if used is None:
+                continue
+            label = _quota_window_label(getattr(window, "label", ""))
+            if not label:
+                continue
+            pct = max(0, min(100, round(float(used))))
+            line = f"{label} - {pct}%"
+            detail = str(getattr(window, "detail", "") or "").strip()
+            if detail:
+                line += f" - {detail}"
+            reset = _quota_reset_short(getattr(window, "reset_at", None))
+            if reset:
+                line += f" - Reset {reset}"
+            lines.append(line)
+        except Exception:
+            continue
+        if len(lines) >= 3:
+            break
+    if not lines:
+        return ""
+    return "Quota Used:\n" + "\n".join(lines)
 
 
 def resolve_footer_config(
@@ -93,6 +172,7 @@ def format_runtime_footer(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    quota_snapshot: Any = None,
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
@@ -111,6 +191,10 @@ def format_runtime_footer(
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
+        elif field == "quota":
+            q = _quota_block(quota_snapshot)
+            if q:
+                parts.append(q)
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
@@ -129,6 +213,7 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    quota_snapshot: Any = None,
     cwd: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
@@ -144,6 +229,7 @@ def build_footer_line(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
+        quota_snapshot=quota_snapshot,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

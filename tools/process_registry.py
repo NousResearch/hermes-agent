@@ -2170,6 +2170,58 @@ def _format_async_delegation(evt: dict) -> str:
     return "\n".join(lines)
 
 
+def _short_process_command(command: object, *, limit: int = 300) -> str:
+    """Single-line, redacted command snippet safe for chat-sized notices.
+
+    Redaction runs BEFORE shortening so the truncation boundary can never
+    bisect a secret into a surviving prefix. Same policy as
+    _redact_process_result: commands routinely carry inline credentials
+    (curl -H "Authorization: ...", DATABASE_URL=..., etc.).
+    """
+    from agent.redact import redact_sensitive_text
+
+    text = str(command or "unknown").replace("\r", " ").replace("\n", " ").strip()
+    text = redact_sensitive_text(text, code_file=True)
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)]}…"
+
+
+def _process_log_hint(session_id: object) -> str:
+    sid = str(session_id or "unknown")
+    return (
+        "Output omitted to keep the transcript readable; read it with "
+        f'process(action="log", session_id="{sid}").'
+    )
+
+
+def process_status_phrase(
+    exit_code: object,
+    completion_reason: object = None,
+    termination_source: object = None,
+) -> "tuple[str, str]":
+    """(human status, signal suffix) for a finished background process.
+
+    Shared by the synthetic [IMPORTANT: ...] injection and the chat-facing
+    notices in gateway/run.py so killed/lost/SIGTERM outcomes can never be
+    collapsed into a generic "completed" in one surface but not the other.
+    """
+    signal = ", SIGTERM" if exit_code in {-15, 143, "-15", "143"} else ""
+    reason = completion_reason or "exited"
+    source = termination_source or ""
+    if reason == "killed":
+        status = f"terminated by {source or 'Hermes'}"
+    elif reason == "lost":
+        status = "marked lost because the process backend disappeared"
+    elif reason == "failed_start":
+        status = "failed to start"
+    elif exit_code == 0:
+        status = "completed normally"
+    else:
+        status = "exited"
+    return status, signal
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -2178,7 +2230,7 @@ def format_process_notification(evt: dict) -> "str | None":
     """
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
+    _cmd = _short_process_command(evt.get("command", "unknown"))
 
     if evt_type == "watch_disabled":
         return f"[IMPORTANT: {evt.get('message', '')}]"
@@ -2202,27 +2254,20 @@ def format_process_notification(evt: dict) -> "str | None":
         return _format_async_delegation(evt)
 
     _exit = evt.get("exit_code", "?")
-    _out = evt.get("output", "")
-    _reason = evt.get("completion_reason") or "exited"
-    _source = evt.get("termination_source") or ""
-    _signal = ""
-    if _exit in {-15, 143, "-15", "143"}:
-        _signal = ", SIGTERM"
-    if _reason == "killed":
-        _status = f"terminated by {_source or 'Hermes'}"
-    elif _reason == "lost":
-        _status = "marked lost because the process backend disappeared"
-    elif _reason == "failed_start":
-        _status = "failed to start"
-    elif _exit == 0:
-        _status = "completed normally"
-    else:
-        _status = "exited"
+    _status, _signal = process_status_phrase(
+        _exit,
+        evt.get("completion_reason"),
+        evt.get("termination_source"),
+    )
+    # Raw stdout/stderr is deliberately NOT embedded: multi-KB tails made
+    # these injections unreadable and leaked terminal noise into transcripts.
+    # The status/reason/signal diagnostics above are retained in full; the
+    # output itself stays one process(action="log") away.
     return (
         f"[IMPORTANT: Background process {_sid} {_status} "
         f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"{_process_log_hint(_sid)}]"
     )
 
 

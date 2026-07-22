@@ -1201,7 +1201,23 @@ def test_format_completion_event():
     assert "[IMPORTANT: Background process proc_abc completed normally" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
+    # Raw output is omitted from the injection; the notice points at the
+    # process log instead.
+    assert "done" not in result.replace("completed normally", "")
+    assert 'process(action="log", session_id="proc_abc")' in result
+
+
+def test_format_completion_event_redacts_command_credentials():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_secret",
+        "command": 'curl -H "Authorization: Bearer sk-abc123456789012345678901234567890123" https://api.example.com',
+        "exit_code": 0,
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "sk-abc123456789012345678901234567890123" not in result
+    assert "proc_secret" in result
 
 
 def test_format_killed_completion_event_names_source_and_signal():

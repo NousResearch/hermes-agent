@@ -130,7 +130,10 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        content = response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        # Prefer content; fall back to reasoning field for models that
+        # output thinking despite disable attempts (e.g. Qwen3 in vLLM).
+        content = msg.content or getattr(msg, "reasoning", None) or ""
         # Strip thinking/reasoning blocks that think-enabled models
         # (MiniMax M2.7, DeepSeek, etc.) emit even for simple prompts like
         # title generation. Without this the raw <think>...</think> XML

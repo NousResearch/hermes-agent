@@ -718,33 +718,48 @@
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = getDestructiveConfirm(t, newStatus);
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const patch = withCompletionSummary({ status: newStatus }, 1, t);
-      if (!patch) return;
-      setBoardData(function (b) {
-        if (!b) return b;
-        let moved = null;
-        const columns = b.columns.map(function (col) {
-          const next = col.tasks.filter(function (t) {
-            if (t.id === taskId) { moved = Object.assign({}, t, { status: newStatus }); return false; }
-            return true;
+      const perform = function () {
+        const patch = withCompletionSummary({ status: newStatus }, 1, t);
+        if (!patch) return;
+        setBoardData(function (b) {
+          if (!b) return b;
+          let moved = null;
+          const columns = b.columns.map(function (col) {
+            const next = col.tasks.filter(function (t) {
+              if (t.id === taskId) { moved = Object.assign({}, t, { status: newStatus }); return false; }
+              return true;
+            });
+            return Object.assign({}, col, { tasks: next });
           });
-          return Object.assign({}, col, { tasks: next });
+          if (moved) {
+            const dest = columns.find(function (c) { return c.name === newStatus; });
+            if (dest) dest.tasks = [moved].concat(dest.tasks);
+          }
+          return Object.assign({}, b, { columns });
         });
-        if (moved) {
-          const dest = columns.find(function (c) { return c.name === newStatus; });
-          if (dest) dest.tasks = [moved].concat(dest.tasks);
-        }
-        return Object.assign({}, b, { columns });
-      });
-      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      }).catch(function (err) {
-        setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
-        loadBoard();
-      });
+        SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        }).catch(function (err) {
+          setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
+          loadBoard();
+        });
+      };
+      if (SDK && typeof SDK.dialogs === "object" && typeof SDK.dialogs.confirm === "function") {
+        SDK.dialogs.confirm({
+          title: tx(t, "confirmTitle", "Confirm"),
+          description: confirmMsg,
+          destructive: true,
+          confirmLabel: tx(t, "confirmLabel", "Confirm"),
+          cancelLabel: tx(t, "cancelLabel", "Cancel"),
+          onConfirm: perform,
+          onCancel: function () {},
+        });
+        return;
+      }
+      if (confirmMsg && !window.confirm(confirmMsg)) return;
+      perform();
     }, [loadBoard, board, t]);
 
     const clearSelected = useCallback(function () {
@@ -753,48 +768,63 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
-      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
-      const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
-      if (!patch) return;
-      const ids = Array.from(selectedIds);
-      // Optimistic UI: remove selected from all columns and prepend to target.
-      setBoardData(function (b) {
-        if (!b) return b;
-        const moved = [];
-        const columns = b.columns.map(function (col) {
-          const kept = [];
-          for (const t of col.tasks) {
-            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: newStatus }));
-            else kept.push(t);
-          }
-          return Object.assign({}, col, { tasks: kept });
+      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
+      const perform = function () {
+        const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
+        if (!patch) return;
+        const ids = Array.from(selectedIds);
+        // Optimistic UI: remove selected from all columns and prepend to target.
+        setBoardData(function (b) {
+          if (!b) return b;
+          const moved = [];
+          const columns = b.columns.map(function (col) {
+            const kept = [];
+            for (const t of col.tasks) {
+              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: newStatus }));
+              else kept.push(t);
+            }
+            return Object.assign({}, col, { tasks: kept });
+          });
+          const dest = columns.find(function (c) { return c.name === newStatus; });
+          if (dest) dest.tasks = moved.concat(dest.tasks);
+          return Object.assign({}, b, { columns });
         });
-        const dest = columns.find(function (c) { return c.name === newStatus; });
-        if (dest) dest.tasks = moved.concat(dest.tasks);
-        return Object.assign({}, b, { columns });
-      });
-      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(Object.assign({ ids }, patch)),
-      }).then(function (res) {
-        const failed = (res.results || []).filter(function (r) { return !r.ok; });
-        if (failed.length > 0) {
-          setError(`Bulk move: ${failed.length} of ${res.results.length} failed`);
-          setFailedIds(new Set(failed.map(function (f) { return f.id; })));
-        } else {
-          setFailedIds(new Set());
-        }
-        setSelectedIds(new Set());
-        setLastSelectedId(null);
-        loadBoard();
-      }).catch(function (err) {
-        setError(`Move failed: ${err.message || err}`);
-        setFailedIds(new Set(selectedIds));
-        loadBoard();
-      });
+        SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({ ids }, patch)),
+        }).then(function (res) {
+          const failed = (res.results || []).filter(function (r) { return !r.ok; });
+          if (failed.length > 0) {
+            setError(`Bulk move: ${failed.length} of ${res.results.length} failed`);
+            setFailedIds(new Set(failed.map(function (f) { return f.id; })));
+          } else {
+            setFailedIds(new Set());
+          }
+          setSelectedIds(new Set());
+          setLastSelectedId(null);
+          loadBoard();
+        }).catch(function (err) {
+          setError(`Move failed: ${err.message || err}`);
+          setFailedIds(new Set(selectedIds));
+          loadBoard();
+        });
+      };
+      if (SDK && typeof SDK.dialogs === "object" && typeof SDK.dialogs.confirm === "function") {
+        SDK.dialogs.confirm({
+          title: tx(t, "confirmTitle", "Confirm"),
+          description: confirmMsg,
+          destructive: true,
+          confirmLabel: tx(t, "confirmLabel", "Confirm"),
+          cancelLabel: tx(t, "cancelLabel", "Cancel"),
+          onConfirm: perform,
+          onCancel: function () {},
+        });
+        return;
+      }
+      if (confirmMsg && !window.confirm(confirmMsg)) return;
+      perform();
     }, [selectedIds, loadBoard, board]);
 
     const createTask = useCallback(function (body) {
@@ -892,52 +922,67 @@
 
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
       const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
       if (!finalPatch) return;
       const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
-      // Optimistic UI for status moves (same pattern as moveSelected).
-      if (finalPatch.status) {
-        setBoardData(function (b) {
-          if (!b) return b;
-          const moved = [];
-          const columns = b.columns.map(function (col) {
-            const kept = [];
-            for (const t of col.tasks) {
-              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
-              else kept.push(t);
-            }
-            return Object.assign({}, col, { tasks: kept });
+      const perform = function () {
+        // Optimistic UI for status moves (same pattern as moveSelected).
+        if (finalPatch.status) {
+          setBoardData(function (b) {
+            if (!b) return b;
+            const moved = [];
+            const columns = b.columns.map(function (col) {
+              const kept = [];
+              for (const t of col.tasks) {
+                if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
+                else kept.push(t);
+              }
+              return Object.assign({}, col, { tasks: kept });
+            });
+            const dest = columns.find(function (c) { return c.name === finalPatch.status; });
+            if (dest) dest.tasks = moved.concat(dest.tasks);
+            return Object.assign({}, b, { columns });
           });
-          const dest = columns.find(function (c) { return c.name === finalPatch.status; });
-          if (dest) dest.tasks = moved.concat(dest.tasks);
-          return Object.assign({}, b, { columns });
-        });
-      }
-      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      })
-        .then(function (res) {
-          const failed = (res.results || []).filter(function (r) { return !r.ok; });
-          if (failed.length > 0) {
-            setError(tx(t, "bulkFailed", "Bulk: ") +
-              `${failed.length} of ${res.results.length} failed: ` +
-              failed.slice(0, 3).map(function (f) { return `${f.id} (${f.error})`; }).join("; "));
-            setFailedIds(new Set(failed.map(function (f) { return f.id; })));
-          } else {
-            setFailedIds(new Set());
-          }
-          setSelectedIds(new Set());
-          setLastSelectedId(null);
-          loadBoard();
+        }
+        SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
         })
-        .catch(function (e) {
-          setError(String(e.message || e));
-          setFailedIds(new Set(selectedIds));
-          loadBoard();
+          .then(function (res) {
+            const failed = (res.results || []).filter(function (r) { return !r.ok; });
+            if (failed.length > 0) {
+              setError(tx(t, "bulkFailed", "Bulk: ") +
+                `${failed.length} of ${res.results.length} failed: ` +
+                failed.slice(0, 3).map(function (f) { return `${f.id} (${f.error})`; }).join("; "));
+              setFailedIds(new Set(failed.map(function (f) { return f.id; })));
+            } else {
+              setFailedIds(new Set());
+            }
+            setSelectedIds(new Set());
+            setLastSelectedId(null);
+            loadBoard();
+          })
+          .catch(function (e) {
+            setError(String(e.message || e));
+            setFailedIds(new Set(selectedIds));
+            loadBoard();
+          });
+      };
+      if (SDK && typeof SDK.dialogs === "object" && typeof SDK.dialogs.confirm === "function") {
+        SDK.dialogs.confirm({
+          title: tx(t, "confirmTitle", "Confirm"),
+          description: confirmMsg,
+          destructive: true,
+          confirmLabel: tx(t, "confirmLabel", "Confirm"),
+          cancelLabel: tx(t, "cancelLabel", "Cancel"),
+          onConfirm: perform,
+          onCancel: function () {},
         });
+        return;
+      }
+      if (confirmMsg && !window.confirm(confirmMsg)) return;
+      perform();
     }, [selectedIds, loadBoard, board, t]);
 
     // --- board switching ----------------------------------------------------

@@ -430,6 +430,24 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
+def _is_telegram_flood_error(exc: BaseException) -> bool:
+    """True when Telegram is rate-limiting (RetryAfter / flood control).
+
+    Flood is transient transport pressure, not a MarkdownV2 parse failure.
+    Callers must wait/retry with the original parse_mode instead of stripping
+    formatting to plain text (which is what made replies look unrendered).
+    """
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        return True
+    err = str(exc).lower()
+    return (
+        "retry after" in err
+        or "flood control" in err
+        or "too many requests" in err
+    )
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escape backslashes to produce clean plain text.
 
@@ -4481,7 +4499,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
+                # Flood/rate-limit is NOT a parse failure. Re-raise so the outer
+                # handler can wait/retry (or escalate) while keeping MarkdownV2.
+                # Previously this branch stripped formatting on flood and users
+                # saw unrendered / plain final replies.
+                if _is_telegram_flood_error(fmt_err):
+                    raise
+                # Fallback: real MarkdownV2 parse failures only → clean plain text
                 safe_format_error = _redact_telegram_error_text(fmt_err)
                 logger.warning(
                     "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
@@ -4528,8 +4552,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
             retry_after = getattr(e, "retry_after", None)
-            if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
+            if retry_after is not None or "retry after" in err_str or "flood control" in err_str:
+                wait = float(retry_after) if retry_after is not None else 1.0
                 logger.warning(
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
@@ -4542,11 +4566,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 await asyncio.sleep(wait)
                 try:
-                    await self._bot.edit_message_text(
-                        chat_id=normalize_telegram_chat_id(chat_id),
-                        message_id=int(message_id),
-                        text=content,
-                    )
+                    # Preserve MarkdownV2 on finalize retries. Mid-stream
+                    # previews stay plain (no parse_mode) as before.
+                    if finalize:
+                        _retry_text = self.format_message(content)
+                        await self._bot.edit_message_text(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            message_id=int(message_id),
+                            text=_retry_text,
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                        )
+                    else:
+                        await self._bot.edit_message_text(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            message_id=int(message_id),
+                            text=content,
+                        )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
@@ -4656,6 +4691,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        # Flood is not a parse failure — bubble up so the caller
+                        # can retry with MarkdownV2 instead of stripping.
+                        if _is_telegram_flood_error(fmt_err):
+                            raise
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",

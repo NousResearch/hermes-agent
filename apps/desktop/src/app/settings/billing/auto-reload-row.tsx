@@ -175,10 +175,7 @@ export function AutoReloadRow({
           </div>
           <div className="mt-3 grid [grid-template-areas:'stack']">
             {/* EDIT layer — always in layout (reserves exact height); hidden until editing. */}
-            <div
-              aria-hidden={!editing}
-              className={cn('space-y-2 [grid-area:stack]', !editing && 'invisible')}
-            >
+            <div aria-hidden={!editing} className={cn('space-y-2 [grid-area:stack]', !editing && 'invisible')}>
               <div className="grid gap-2 @2xl:grid-cols-2">
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                   Threshold
@@ -225,7 +222,13 @@ export function AutoReloadRow({
                   <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
                     Turn off
                   </Button>
-                  <Button disabled={busy} onClick={() => setConfirmDisable(false)} size="sm" type="button" variant="ghost">
+                  <Button
+                    disabled={busy}
+                    onClick={() => setConfirmDisable(false)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
                     Cancel
                   </Button>
                 </div>

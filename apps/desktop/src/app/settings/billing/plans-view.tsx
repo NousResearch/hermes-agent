@@ -95,7 +95,11 @@ function DowngradeConfirm({ flow, tier }: { flow: DowngradeFlow; tier: BillingPl
           </Button>
         ) : canConfirm ? (
           <Button disabled={busy} onClick={() => void flow.confirm()} size="sm" type="button">
-            {phase.kind === 'scheduling' ? 'Scheduling…' : phase.kind === 'scheduleFailed' ? 'Try again' : 'Confirm downgrade'}
+            {phase.kind === 'scheduling'
+              ? 'Scheduling…'
+              : phase.kind === 'scheduleFailed'
+                ? 'Try again'
+                : 'Confirm downgrade'}
           </Button>
         ) : null}
         <Button disabled={busy} onClick={flow.cancel} size="sm" type="button" variant="outline">
@@ -155,7 +159,12 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
         {tier.state === 'scheduled' && <Pill>Scheduled</Pill>}
 
         {tier.state === 'upgrade' && (
-          <Button onClick={() => tier.action && openExternalLink(tier.action.url)} size="sm" type="button" variant="outline">
+          <Button
+            onClick={() => tier.action && openExternalLink(tier.action.url)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
             {tier.action.label}
             <ExternalLink className="size-3.5" />
           </Button>

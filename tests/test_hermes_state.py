@@ -2835,6 +2835,63 @@ class TestDeleteSessionOrphansChildren:
         assert grandchild["parent_session_id"] == "child"
 
 
+class TestPruneEmptyGhostSessions:
+    """``prune_empty_ghost_sessions`` sweeps stale, empty TUI ghost rows
+    (source='tui', no title, ended, >24h old, zero messages).
+
+    An empty ghost can still be the ``parent_session_id`` of a live child
+    — a compression continuation or a ``/branch`` session keeps a parent
+    pointer even when the parent row itself never accumulated message
+    rows. Because the sessions table declares the FK with
+    ``foreign_keys=ON`` and no ON DELETE CASCADE, deleting such a parent
+    must first orphan its children, exactly like ``delete_session`` and
+    ``prune_sessions`` do. Otherwise the bulk DELETE raises a
+    ``FOREIGN KEY constraint failed`` IntegrityError that rolls back the
+    whole batch, so not a single ghost is ever pruned.
+    """
+
+    def _make_ghost(self, db, sid, *, parent=None):
+        """Create a row matching every prune predicate: TUI source, no
+        title, ended, backdated past the 24h cutoff, and no messages."""
+        db.create_session(session_id=sid, source="tui", parent_session_id=parent)
+        db.end_session(sid, end_reason="compression")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 2 * 86400, sid),
+        )
+        db._conn.commit()
+
+    def test_prunes_ghost_that_is_a_parent_without_fk_error(self, db):
+        """The regression: a prunable ghost that another session still
+        points to must be removed (after orphaning the child), not left
+        behind because the FK constraint aborts the batch."""
+        # Empty ghost parent — matches every prune predicate.
+        self._make_ghost(db, "ghost-parent")
+        # Live child still referencing the ghost. It has a message, so it
+        # is NOT itself a prune candidate and must survive.
+        db.create_session(
+            session_id="child", source="tui", parent_session_id="ghost-parent"
+        )
+        db.append_message("child", role="user", content="continued")
+
+        # Must not raise IntegrityError, and must actually prune the ghost.
+        pruned = db.prune_empty_ghost_sessions()
+        assert pruned == 1
+        assert db.get_session("ghost-parent") is None
+        # Child survives, re-parented to NULL.
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+
+    def test_prunes_plain_ghosts(self, db):
+        """A ghost with no children is still pruned (no regression in the
+        common path)."""
+        self._make_ghost(db, "lonely-ghost")
+        pruned = db.prune_empty_ghost_sessions()
+        assert pruned == 1
+        assert db.get_session("lonely-ghost") is None
+
+
 class TestBulkDeleteSessions:
     """``delete_sessions(ids)`` — the bulk-delete primitive backing the
     sessions-page "Delete N selected" button. Per-row contract matches

@@ -3277,6 +3277,22 @@ class SessionDB:
             ids = [r[0] if isinstance(r, (tuple, list)) else r["id"] for r in rows]
             if ids:
                 placeholders = ",".join("?" * len(ids))
+                # Orphan any children before deleting their parent. An empty
+                # ghost can still be a parent_session_id (e.g. a `/branch`
+                # child or a compression continuation whose messages live on
+                # the child row), and the sessions table declares
+                # ``FOREIGN KEY (parent_session_id) REFERENCES sessions(id)``
+                # with foreign_keys=ON and no ON DELETE CASCADE. Without this
+                # step the DELETE raises ``FOREIGN KEY constraint failed``,
+                # which is an IntegrityError (not a lock error), so
+                # _execute_write rolls back and re-raises and the ENTIRE batch
+                # fails — no ghost is pruned. This mirrors delete_session,
+                # delete_sessions, delete_empty_sessions and prune_sessions.
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({placeholders})",
+                    ids,
+                )
                 conn.execute(
                     f"DELETE FROM sessions WHERE id IN ({placeholders})", ids
                 )

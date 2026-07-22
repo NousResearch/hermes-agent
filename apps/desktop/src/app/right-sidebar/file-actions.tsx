@@ -18,6 +18,7 @@ import {
   beginInlineRename,
   cancelInlineRename,
   closeFileActionDialog,
+  copyFileContent,
   copyFilePath,
   executeFileDelete,
   executeFileRename,
@@ -79,6 +80,9 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
           <ContextMenuItem onSelect={() => void copyFilePath(toRelativePath(path, relativeTo))}>
             {m.copyRelativePath}
           </ContextMenuItem>
+        )}
+        {!isDirectory && (
+          <ContextMenuItem onSelect={() => void copyFileContent(path)}>{m.copyContent}</ContextMenuItem>
         )}
         {localFs && (
           <>

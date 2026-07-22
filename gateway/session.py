@@ -342,6 +342,18 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+GROUP_PREFIXED_CHAT_ID_PLATFORMS = frozenset({"signal", "simplex", "yuanbao"})
+"""Platform values whose adapters bake the chat_type into chat_id itself as a
+literal ``group:<id>`` (gateway/platforms/signal.py,
+plugins/platforms/simplex/adapter.py, gateway/platforms/yuanbao.py) and route
+outbound sends on that prefix.
+
+:func:`build_session_key` strips the redundant segment for these platforms so
+the key isn't doubled, and ``_parse_session_key`` in gateway/run.py restores it
+when rebuilding a source from a key alone.  Both sides gate on this set and on
+``chat_type == "group"``, which is what keeps the transform reversible."""
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
 
@@ -975,7 +987,19 @@ def build_session_key(
     key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
-        key_parts.append(source.chat_id)
+        # Signal, SimpleX and Yuanbao already bake the chat_type into chat_id
+        # itself ("group:<id>"), and key_parts above supplies that segment
+        # once already.  Drop the redundant copy so the key doesn't double up
+        # ("agent:main:signal:group:group:<id>"), which also made the fifth
+        # segment read back as a bare "group" in _parse_session_key.
+        chat_id_for_key = source.chat_id
+        if (
+            platform in GROUP_PREFIXED_CHAT_ID_PLATFORMS
+            and source.chat_type == "group"
+            and chat_id_for_key.startswith("group:")
+        ):
+            chat_id_for_key = chat_id_for_key[len("group:"):]
+        key_parts.append(chat_id_for_key)
     if source.thread_id:
         key_parts.append(source.thread_id)
 

@@ -2017,3 +2017,125 @@ class TestGatewayRoutingTable:
         )
         assert entry.session_key not in rows
         restarted._db.close()
+
+
+class TestGroupChatIdDoublePrefix:
+    """Regression: Signal, SimpleX and Yuanbao bake the chat_type into chat_id
+    itself ("group:<id>") before handing it to build_session_key, which also
+    appends chat_type as its own key segment.  That double-prefixes the key
+    ("agent:main:signal:group:group:<id>"), and _parse_session_key reads the
+    fifth segment as the chat_id, so a key-only reconstruction used to come
+    back with a bare "group".
+    """
+
+    def test_signal_group_key_has_single_group_prefix(self):
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="group:AbCdEf123456",
+            chat_type="group",
+            user_name="alice",
+        )
+        key = build_session_key(source, group_sessions_per_user=False)
+        assert key == "agent:main:signal:group:AbCdEf123456"
+
+    def test_simplex_group_key_has_single_group_prefix(self):
+        """SimpleX uses the same prefix convention
+        (plugins/platforms/simplex/adapter.py)."""
+        source = SessionSource(
+            platform=Platform("simplex"),
+            chat_id="group:42",
+            chat_type="group",
+        )
+        key = build_session_key(source, group_sessions_per_user=False)
+        assert key == "agent:main:simplex:group:42"
+
+    def test_signal_dm_key_unaffected(self):
+        """Signal DM chat_ids are bare phone numbers, never prefixed."""
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="+15551234567",
+            chat_type="dm",
+        )
+        assert build_session_key(source) == "agent:main:signal:dm:+15551234567"
+
+    def test_discord_group_key_unaffected(self):
+        """Platforms whose chat_id never carries a chat_type prefix (Discord's
+        bare guild id) must be byte-identical to before.  The strip only
+        applies to the platforms that use the prefix convention."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        assert (
+            build_session_key(source, group_sessions_per_user=False)
+            == "agent:main:discord:group:guild-123"
+        )
+
+
+class TestGroupChatIdKeyRoundTrip:
+    """Session-key-only routing must reconstruct a routable chat_id.
+
+    Async-delegation completions carry only ``session_key`` and are rebuilt by
+    ``_parse_session_key`` in gateway/run.py.  Signal's ``send()`` treats a
+    chat_id as a group only when it starts with "group:" and otherwise sends to
+    a direct recipient (gateway/platforms/signal.py), and SimpleX does the same
+    (plugins/platforms/simplex/adapter.py), so the prefix has to survive the
+    round trip or a group reply is delivered to one individual.
+    """
+
+    def test_signal_group_key_round_trips_to_prefixed_chat_id(self):
+        from gateway.run import _parse_session_key
+
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="group:AbCdEf123456",
+            chat_type="group",
+        )
+        key = build_session_key(source, group_sessions_per_user=False)
+        parsed = _parse_session_key(key)
+        assert parsed is not None
+        assert parsed["chat_id"] == "group:AbCdEf123456"
+        assert parsed["platform"] == "signal"
+        assert parsed["chat_type"] == "group"
+
+    def test_signal_group_per_user_key_round_trips(self):
+        """Per-user isolation appends a user_id segment; the chat_id segment
+        still has to come back prefixed."""
+        from gateway.run import _parse_session_key
+
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="group:AbCdEf123456",
+            chat_type="group",
+            user_id="+15551234567",
+        )
+        key = build_session_key(source, group_sessions_per_user=True)
+        assert key == "agent:main:signal:group:AbCdEf123456:+15551234567"
+        assert _parse_session_key(key)["chat_id"] == "group:AbCdEf123456"
+
+    def test_simplex_group_key_round_trips(self):
+        from gateway.run import _parse_session_key
+
+        source = SessionSource(
+            platform=Platform("simplex"),
+            chat_id="group:42",
+            chat_type="group",
+        )
+        key = build_session_key(source, group_sessions_per_user=False)
+        assert _parse_session_key(key)["chat_id"] == "group:42"
+
+    def test_discord_group_key_round_trip_stays_bare(self):
+        """Discord chat_ids carry no prefix, so parsing must not invent one."""
+        from gateway.run import _parse_session_key
+
+        parsed = _parse_session_key("agent:main:discord:group:guild-123")
+        assert parsed["chat_id"] == "guild-123"
+
+    def test_signal_dm_key_round_trip_stays_bare(self):
+        from gateway.run import _parse_session_key
+
+        parsed = _parse_session_key("agent:main:signal:dm:+15551234567")
+        assert parsed["chat_id"] == "+15551234567"

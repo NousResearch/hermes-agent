@@ -556,3 +556,54 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+def test_parse_session_key_restores_signal_group_prefix():
+    """Signal chat_ids carry the chat_type as a literal prefix, and send()
+    routes to a group only when it is present, so parsing must restore it."""
+    result = _parse_session_key("agent:main:signal:group:AbCdEf123456")
+    assert result == {
+        "platform": "signal",
+        "chat_type": "group",
+        "chat_id": "group:AbCdEf123456",
+    }
+
+
+def test_parse_session_key_leaves_unprefixed_platforms_alone():
+    """Only the platforms that use the prefix convention get it back."""
+    result = _parse_session_key("agent:main:discord:group:guild-123")
+    assert result["chat_id"] == "guild-123"
+
+
+# ---------------------------------------------------------------------------
+# Async-delegation routing enrichment
+# ---------------------------------------------------------------------------
+
+def test_enrich_async_delegation_routing_keeps_signal_group_routable(
+    monkeypatch, tmp_path
+):
+    """A background/async-delegation completion carries only session_key.
+
+    Its reconstructed source has to stay addressed to the group: a bare id
+    would be handed to Signal's direct-recipient branch and the group's reply
+    would be delivered to one person.
+    """
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+
+    evt = {
+        "type": "async_delegation",
+        "session_id": "proc_async",
+        "session_key": "agent:main:signal:group:AbCdEf123456",
+    }
+
+    runner._enrich_async_delegation_routing(evt)
+
+    assert evt["platform"] == "signal"
+    assert evt["chat_type"] == "group"
+    assert evt["chat_id"] == "group:AbCdEf123456"
+
+    source = runner._build_process_event_source(evt)
+    assert source is not None
+    assert source.platform == Platform.SIGNAL
+    assert source.chat_id == "group:AbCdEf123456"
+    assert source.chat_type == "group"

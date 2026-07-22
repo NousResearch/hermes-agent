@@ -1915,6 +1915,7 @@ from gateway.session import (
     SessionStore,
     SessionSource,
     SessionContext,
+    GROUP_PREFIXED_CHAT_ID_PLATFORMS,
     build_session_context,
     build_session_context_prompt,
     build_session_key,
@@ -2750,13 +2751,26 @@ def _parse_session_key(session_key: str) -> "dict | None":
     it is unambiguous (``dm`` and ``thread``).  For group/channel sessions
     the suffix may be a user_id (per-user isolation) rather than a
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
+
+    Signal/SimpleX/Yuanbao chat_ids carry the chat_type as a literal
+    ``group:`` prefix that ``build_session_key`` strips (it would otherwise
+    duplicate the chat_type segment); it is restored here, because those
+    adapters send to a group only when the prefix is present and would
+    otherwise deliver a group reply to a single direct recipient.
     """
     parts = session_key.split(":")
     if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+        chat_id = parts[4]
+        if (
+            parts[2] in GROUP_PREFIXED_CHAT_ID_PLATFORMS
+            and parts[3] == "group"
+            and not chat_id.startswith("group:")
+        ):
+            chat_id = f"group:{chat_id}"
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
-            "chat_id": parts[4],
+            "chat_id": chat_id,
         }
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]

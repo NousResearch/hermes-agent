@@ -376,11 +376,16 @@ def test_write_file_reports_creation_provenance_only_for_new_target(
         "test_created.py", "hello\n", task_id="t1"
     ))
     assert created.get("created_paths") == [str(new_path.resolve())]
+    assert created.get("created_path_identities") == [{
+        "path": str(new_path.resolve()),
+        "identity": ft._local_path_identity(str(new_path.resolve())),
+    }]
 
     overwritten = json.loads(ft.write_file_tool(
         "test_created.py", "changed\n", task_id="t1"
     ))
     assert "created_paths" not in overwritten
+    assert "created_path_identities" not in overwritten
 
 
 def test_write_file_creation_probe_occurs_inside_path_lock(

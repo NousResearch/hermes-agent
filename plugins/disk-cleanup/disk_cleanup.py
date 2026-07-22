@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -207,6 +208,29 @@ _MANAGED_ARTIFACT_SKIP_NAMES = frozenset({
 # guard against stale tracked.json entries from before #34840.
 _PROTECTED_CRON_PATHS: set[str] = set()
 
+_PROTECTED_TRACKED_TOP_LEVEL = frozenset({
+    ".worktrees",
+    "backups",
+    "disk-cleanup",
+    "hermes-agent",
+    "logs",
+    "memories",
+    "optional-skills",
+    "plugins",
+    "profiles",
+    "sessions",
+    "skills",
+})
+_PROTECTED_TRACKED_TOP_LEVEL_FILES = frozenset({
+    ".env",
+    "MEMORY.md",
+    "SOUL.md",
+    "USER.md",
+    "auth.json",
+    "config.yaml",
+    "state.db",
+})
+
 
 def _is_protected_cron_path(p: Path) -> bool:
     """Return True if *p* is a cron control-plane file/directory that must
@@ -232,6 +256,21 @@ def _is_protected_cron_path(p: Path) -> bool:
             _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
     resolved = str(p.resolve())
     return resolved in _PROTECTED_CRON_PATHS
+
+
+def _is_protected_tracked_path(path: Path) -> bool:
+    """Protect durable Hermes state from manual or stale tracking records."""
+    try:
+        rel = path.resolve().relative_to(get_hermes_home().resolve())
+    except (OSError, ValueError):
+        return False
+    if not rel.parts:
+        return True
+    top = rel.parts[0]
+    return (
+        top in _PROTECTED_TRACKED_TOP_LEVEL
+        or (len(rel.parts) == 1 and top in _PROTECTED_TRACKED_TOP_LEVEL_FILES)
+    )
 
 
 def _is_owned_empty_dir_root(path: Path) -> bool:
@@ -375,6 +414,10 @@ def _remove_path(path: Path) -> Optional[str]:
 
 def _remove_tracked_path(path: Path, identity: Dict[str, int]) -> Optional[str]:
     """Remove only the unchanged filesystem object authorized by tracking."""
+    if _is_protected_tracked_path(path) or _is_protected_cron_path(path):
+        return "protected durable path"
+    if not stat.S_ISREG(identity.get("mode", 0)):
+        return "tracked path is not a regular file"
     if not _identity_matches(path, identity):
         return "tracked filesystem identity changed"
     return _remove_path(path)
@@ -392,13 +435,27 @@ def fmt_size(n: float) -> str:
 # Track / forget
 # ---------------------------------------------------------------------------
 
-def track(path_str: str, category: str, silent: bool = False) -> bool:
+def track(
+    path_str: str,
+    category: str,
+    silent: bool = False,
+    expected_identity: Optional[Dict[str, int]] = None,
+) -> bool:
     """Register a file for tracking. Returns True if newly tracked."""
     if category not in ALLOWED_CATEGORIES:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
 
-    path = Path(path_str).resolve()
+    source_path = Path(path_str).expanduser()
+
+    try:
+        if source_path.is_symlink() or not source_path.is_file():
+            _log(f"REJECT: {source_path} (not a regular file)")
+            return False
+        path = source_path.resolve()
+    except (OSError, ValueError):
+        _log(f"REJECT: {source_path} (filesystem identity unavailable)")
+        return False
 
     if not path.exists():
         _log(f"SKIP: {path} (does not exist)")
@@ -408,9 +465,16 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
 
+    if _is_protected_tracked_path(path) or _is_protected_cron_path(path):
+        _log(f"REJECT: {path} (protected durable path)")
+        return False
+
     identity = _capture_identity(path)
     if identity is None:
         _log(f"SKIP: {path} (filesystem identity unavailable)")
+        return False
+    if expected_identity is not None and identity != expected_identity:
+        _log(f"REJECT: {path} (creation identity changed before tracking)")
         return False
     size = identity["size"] if path.is_file() else 0
     tracked = load_tracked()
@@ -468,7 +532,14 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
             # from the preview rather than aborting the whole report.
             continue
         p, cat, timestamp, size, identity = validated
-        if not p.exists() or not is_safe_path(p) or not _identity_matches(p, identity):
+        if (
+            not p.exists()
+            or not is_safe_path(p)
+            or _is_protected_tracked_path(p)
+            or _is_protected_cron_path(p)
+            or not stat.S_ISREG(identity.get("mode", 0))
+            or not _identity_matches(p, identity)
+        ):
             continue
         age = (now - timestamp).days
 
@@ -554,6 +625,18 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         if not is_safe_path(p):
             _log(f"SKIP unsafe tracked path: {p}")
             errors.append(f"{p}: unsafe path")
+            new_tracked.append(item)
+            continue
+
+        if _is_protected_tracked_path(p) or _is_protected_cron_path(p):
+            _log(f"SKIP protected tracked path: {p}")
+            errors.append(f"{p}: protected durable path")
+            new_tracked.append(item)
+            continue
+
+        if not stat.S_ISREG(identity.get("mode", 0)):
+            _log(f"SKIP non-file tracked path: {p}")
+            errors.append(f"{p}: tracked path is not a regular file")
             new_tracked.append(item)
             continue
 
@@ -755,7 +838,12 @@ def deep(
             p.stat()
         except (FileNotFoundError, OSError, ValueError):
             continue
-        if not is_safe_path(p) or _is_protected_cron_path(p):
+        if (
+            not is_safe_path(p)
+            or _is_protected_cron_path(p)
+            or _is_protected_tracked_path(p)
+            or not stat.S_ISREG(identity.get("mode", 0))
+        ):
             continue
         age = (now - timestamp).days
 
@@ -779,7 +867,12 @@ def deep(
                 if validated is None:
                     continue
                 p, _cat, _timestamp, size, identity = validated
-                if not is_safe_path(p) or _is_protected_cron_path(p):
+                if (
+                    not is_safe_path(p)
+                    or _is_protected_cron_path(p)
+                    or _is_protected_tracked_path(p)
+                    or not stat.S_ISREG(identity.get("mode", 0))
+                ):
                     continue
                 error = _remove_tracked_path(p, identity)
                 if error is None:

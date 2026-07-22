@@ -26,7 +26,7 @@ import re
 import shlex
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import disk_cleanup as dg
 
@@ -71,7 +71,12 @@ def _drain(task_id: str, session_id: str) -> Set[str]:
         return _recent_test_tracks.pop(key, set())
 
 
-def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
+def _attempt_track(
+    path_str: str,
+    expected_identity: Dict[str, int],
+    task_id: str,
+    session_id: str,
+) -> None:
     """Best-effort auto-track. Never raises."""
     try:
         p = Path(path_str).expanduser()
@@ -80,7 +85,12 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
         category = dg.guess_category(p)
         if category is None:
             return
-        newly = dg.track(str(p), category, silent=True)
+        newly = dg.track(
+            str(p),
+            category,
+            silent=True,
+            expected_identity=expected_identity,
+        )
         if newly:
             _record_track(task_id, session_id, p, category)
     except Exception:
@@ -117,29 +127,35 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
     return paths
 
 
-def _extract_trusted_created_paths(result: Any) -> Set[str]:
-    """Return only explicit creation metadata from a tool result.
+def _extract_trusted_created_paths(
+    result: Any,
+) -> List[Tuple[str, Dict[str, int]]]:
+    """Return path identities bound to a successful ``write_file`` result.
 
-    ``created_paths`` is emitted by ``write_file`` after it establishes that a
-    target was absent before a successful write. Neither free-form output nor
-    V4A ``files_created`` metadata is creation proof. Malformed or ambiguous
-    result shapes return no paths (fail closed).
+    A path string alone is not durable creation evidence: another process can
+    replace it before this hook runs. ``write_file`` therefore emits the exact
+    post-write identity sampled inside its path lock, and tracking requires the
+    current object to match. Malformed or legacy result shapes fail closed.
     """
     if isinstance(result, str):
         try:
             result = json.loads(result)
         except (TypeError, ValueError):
-            return set()
+            return []
     if not isinstance(result, dict):
-        return set()
+        return []
 
-    paths: Set[str] = set()
-    values = result.get("created_paths")
+    paths: List[Tuple[str, Dict[str, int]]] = []
+    values = result.get("created_path_identities")
     if not isinstance(values, list):
         return paths
     for value in values:
-        if isinstance(value, str) and value:
-            paths.add(value)
+        if not isinstance(value, dict):
+            continue
+        path = value.get("path")
+        identity = value.get("identity")
+        if isinstance(path, str) and path and isinstance(identity, dict):
+            paths.append((path, identity))
     return paths
 
 
@@ -167,8 +183,8 @@ def _on_post_tool_call(
     # serialized write boundary. Terminal and patch metadata remain ambiguous.
     candidates = _extract_trusted_created_paths(result)
 
-    for path_str in candidates:
-        _attempt_track(path_str, task_id, session_id)
+    for path_str, expected_identity in candidates:
+        _attempt_track(path_str, expected_identity, task_id, session_id)
 
 
 def _on_session_end(

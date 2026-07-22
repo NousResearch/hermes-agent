@@ -71,6 +71,17 @@ def _load_plugin_init():
     return mod
 
 
+def _write_file_creation_result(plugin, path: Path) -> str:
+    identity = plugin.dg._capture_identity(path)
+    assert identity is not None
+    return json.dumps({
+        "created_paths": [str(path)],
+        "created_path_identities": [
+            {"path": str(path), "identity": identity},
+        ],
+    })
+
+
 # ---------------------------------------------------------------------------
 # Library tests
 # ---------------------------------------------------------------------------
@@ -354,6 +365,64 @@ class TestTrackForgetQuick:
     def test_track_skips_missing(self, _isolate_env):
         dg = _load_lib()
         assert dg.track(str(_isolate_env / "nope.txt"), "test", silent=True) is False
+
+    def test_track_rejects_directories(self, _isolate_env):
+        dg = _load_lib()
+        directory = _isolate_env / "test_tree"
+        nested = directory / "existing"
+        nested.mkdir(parents=True)
+        (nested / "human.txt").write_text("keep")
+
+        assert dg.track(str(directory), "test", silent=True) is False
+        assert dg.quick()["deleted"] == 0
+        assert (nested / "human.txt").exists()
+
+    def test_quick_preserves_legacy_tracked_directory(self, _isolate_env):
+        dg = _load_lib()
+        directory = _isolate_env / "test_legacy_tree"
+        nested = directory / "existing"
+        nested.mkdir(parents=True)
+        human = nested / "human.txt"
+        human.write_text("keep")
+        identity = dg._capture_identity(directory)
+        assert identity is not None
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(directory),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": 0,
+            "identity": identity,
+        }]))
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert summary["errors"]
+        assert human.read_text() == "keep"
+
+    def test_track_rejects_protected_durable_file(self, _isolate_env):
+        dg = _load_lib()
+        memories = _isolate_env / "memories"
+        memories.mkdir()
+        memory = memories / "MEMORY.md"
+        memory.write_text("human memory")
+
+        assert dg.track(str(memory), "test", silent=True) is False
+        identity = dg._capture_identity(memory)
+        assert identity is not None
+        dg.save_tracked([{
+            "path": str(memory),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": memory.stat().st_size,
+            "identity": identity,
+        }])
+        summary = dg.quick()
+        assert summary["deleted"] == 0
+        assert summary["errors"]
+        assert memory.read_text() == "human memory"
 
     def test_forget_removes_entry(self, _isolate_env):
         dg = _load_lib()
@@ -673,13 +742,48 @@ class TestPostToolCallHook:
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
-            result=json.dumps({"created_paths": [str(p)]}),
+            result=_write_file_creation_result(pi, p),
             task_id="t1", session_id="s1",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())
         assert len(data) == 1
         assert data[0]["category"] == "test"
+
+    def test_replacement_before_hook_is_not_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_replaced_before_hook.py"
+        p.write_text("agent scratch")
+        result = _write_file_creation_result(pi, p)
+        p.unlink()
+        p.write_text("human replacement")
+
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "agent scratch"},
+            result=result,
+            task_id="race-task",
+            session_id="race-session",
+        )
+        pi._on_session_end(session_id="race-session")
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+        assert p.read_text() == "human replacement"
+
+    def test_legacy_created_path_without_identity_is_not_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_legacy_metadata.py"
+        p.write_text("human file")
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "unknown"},
+            result=json.dumps({"created_paths": [str(p)]}),
+            task_id="legacy-task",
+            session_id="legacy-session",
+        )
+        pi._on_session_end(session_id="legacy-session")
+        assert p.read_text() == "human file"
 
     def test_write_file_non_test_not_tracked(self, _isolate_env):
         pi = _load_plugin_init()
@@ -785,7 +889,7 @@ class TestOnSessionEndHook:
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
-            result=json.dumps({"created_paths": [str(p)]}),
+            result=_write_file_creation_result(pi, p),
             task_id="", session_id="s1",
         )
         assert p.exists()
@@ -807,7 +911,7 @@ class TestOnSessionEndHook:
             pi._on_post_tool_call(
                 tool_name="write_file",
                 args={"path": str(path), "content": path.read_text()},
-                result=json.dumps({"created_paths": [str(path)]}),
+                result=_write_file_creation_result(pi, path),
                 task_id=f"task-{session}",
                 session_id=session,
             )

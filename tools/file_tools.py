@@ -79,6 +79,26 @@ def _local_path_existed_before(path: str | None) -> bool | None:
         return None
 
 
+def _local_path_identity(path: str | None) -> dict[str, int] | None:
+    """Return the exact local filesystem identity for creation provenance."""
+    path = _canonical_local_path(path)
+    if path is None:
+        return None
+    try:
+        stat_result = os.lstat(path)
+    except (OSError, ValueError):
+        return None
+    return {
+        "version": 1,
+        "device": int(stat_result.st_dev),
+        "inode": int(stat_result.st_ino),
+        "mode": int(stat_result.st_mode),
+        "size": int(stat_result.st_size),
+        "mtime_ns": int(stat_result.st_mtime_ns),
+        "ctime_ns": int(stat_result.st_ctime_ns),
+    }
+
+
 def _add_created_path_evidence(
     result_dict: dict, path: str | None, existed_before: bool | None
 ) -> None:
@@ -86,7 +106,13 @@ def _add_created_path_evidence(
     if result_dict.get("error") or existed_before is not False:
         return
     if isinstance(path, str) and path:
+        identity = _local_path_identity(path)
+        if identity is None:
+            return
         result_dict["created_paths"] = [path]
+        result_dict["created_path_identities"] = [
+            {"path": path, "identity": identity}
+        ]
 
 
 # ---------------------------------------------------------------------------

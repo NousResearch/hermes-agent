@@ -285,22 +285,24 @@ class TestSearchLoopDetection(unittest.TestCase):
 
 
 class TestTodoInjectionFiltering(unittest.TestCase):
-    """Verify that format_for_injection filters completed/cancelled todos."""
+    """Verify that format_for_injection avoids re-injecting todo subjects."""
 
-    def test_filters_completed_and_cancelled(self):
+    def test_filters_completed_cancelled_and_active_subjects(self):
         from tools.todo_tool import TodoStore
         store = TodoStore()
         store.write([
             {"id": "1", "content": "Read codebase", "status": "completed"},
-            {"id": "2", "content": "Write fix", "status": "in_progress"},
-            {"id": "3", "content": "Run tests", "status": "pending"},
+            {"id": "2", "content": "Write fix for client ACME", "status": "in_progress"},
+            {"id": "3", "content": "Run secret-token rotation tests", "status": "pending"},
             {"id": "4", "content": "Abandoned", "status": "cancelled"},
         ])
         injection = store.format_for_injection()
         self.assertNotIn("Read codebase", injection)
         self.assertNotIn("Abandoned", injection)
-        self.assertIn("Write fix", injection)
-        self.assertIn("Run tests", injection)
+        self.assertNotIn("Write fix for client ACME", injection)
+        self.assertNotIn("Run secret-token rotation tests", injection)
+        self.assertIn("1 in_progress", injection)
+        self.assertIn("1 pending", injection)
 
     def test_all_completed_returns_none(self):
         from tools.todo_tool import TodoStore
@@ -316,7 +318,7 @@ class TestTodoInjectionFiltering(unittest.TestCase):
         store = TodoStore()
         self.assertIsNone(store.format_for_injection())
 
-    def test_all_active_included(self):
+    def test_all_active_injects_counts_only(self):
         from tools.todo_tool import TodoStore
         store = TodoStore()
         store.write([
@@ -324,8 +326,10 @@ class TestTodoInjectionFiltering(unittest.TestCase):
             {"id": "2", "content": "Task B", "status": "in_progress"},
         ])
         injection = store.format_for_injection()
-        self.assertIn("Task A", injection)
-        self.assertIn("Task B", injection)
+        self.assertNotIn("Task A", injection)
+        self.assertNotIn("Task B", injection)
+        self.assertIn("1 pending", injection)
+        self.assertIn("1 in_progress", injection)
 
 
 if __name__ == "__main__":

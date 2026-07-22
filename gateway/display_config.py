@@ -142,7 +142,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
     "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
-    "matrix":          _TIER_MEDIUM,
+    # Matrix: permanent timeline messages; tool_progress spam is hard to clean
+    # up (edit support varies by client). Quiet by default like Slack; opt in
+    # via display.platforms.matrix.tool_progress.
+    "matrix":          {**_TIER_MEDIUM, "tool_progress": "off"},
     "feishu":          _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent

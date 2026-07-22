@@ -955,7 +955,14 @@ class PhotonAdapter(BasePlatformAdapter):
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         try:
-            patch = subprocess.run(  # noqa: S603
+            # Off the event loop, for the same reason the dep reinstall above
+            # hops to a thread: this spawns node and *waits* for it (up to 10s).
+            # Run inline it holds the shared gateway loop for that whole window,
+            # so every other platform's traffic stalls — and _start_sidecar runs
+            # on every reconnect (connect(is_reconnect=True)), not just startup,
+            # so the stall recurs on a live gateway.
+            patch = await asyncio.to_thread(
+                subprocess.run,  # noqa: S603
                 [
                     self._node_bin,
                     str(_SIDECAR_DIR / "patch-spectrum-mixed-attachments.mjs"),

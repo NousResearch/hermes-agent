@@ -2495,8 +2495,12 @@ class AIAgent:
         except Exception:
             pass
         if isinstance(value, SimpleNamespace):
+            try:
+                sn_vars = vars(value)
+            except TypeError:
+                sn_vars = {}
             return cls._hook_jsonable(
-                vars(value),
+                sn_vars,
                 depth=depth + 1,
                 max_depth=max_depth,
                 max_string=max_string,
@@ -2504,9 +2508,14 @@ class AIAgent:
             )
         if hasattr(value, "__dict__"):
             try:
+                try:
+                    # Safe vars() handling - some objects may have __dict__ attribute but vars() fails
+                    dict_items = list(vars(value).items())
+                except TypeError:
+                    dict_items = []
                 public_attrs = {
                     k: v
-                    for k, v in vars(value).items()
+                    for k, v in dict_items
                     if not str(k).startswith("_")
                 }
                 return cls._hook_jsonable(

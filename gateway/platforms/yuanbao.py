@@ -5354,16 +5354,35 @@ class YuanbaoAdapter(BasePlatformAdapter):
         return await self._outbound.send_text(chat_id, content, reply_to, group_code=group_code)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Return basic chat metadata derived from the chat_id prefix.
+        """Return chat metadata, resolving real name/member-count where possible.
 
         chat_id conventions:
           "group:<group_code>"  → group chat
           "direct:<account>"   → C2C / direct message (default)
 
-        TODO (T06): fetch real chat name/member-count from Yuanbao API.
+        Groups: queried live via the WS QueryGroupInfo call. DMs: resolved
+        from the member-list cache (populated by prior group member queries)
+        since Yuanbao exposes no standalone C2C user-info API; falls back to
+        the raw chat_id when no live/cached data is available.
         """
         if chat_id.startswith("group:"):
+            group_code = chat_id[len("group:"):]
+            info = await self._group_query.query_group_info_raw(group_code)
+            if info and info.get("group_name"):
+                return {
+                    "name": info["group_name"],
+                    "type": "group",
+                    "member_count": info.get("member_count", 0),
+                }
             return {"name": chat_id, "type": "group"}
+
+        account = chat_id[len("direct:"):] if chat_id.startswith("direct:") else chat_id
+        for _, members in self._member_cache.values():
+            for member in members:
+                if member.get("user_id") == account:
+                    nickname = member.get("nickname")
+                    if nickname:
+                        return {"name": nickname, "type": "dm"}
         return {"name": chat_id, "type": "dm"}
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict] = None) -> None:

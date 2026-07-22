@@ -317,6 +317,25 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_success_below_soft_capacity_threshold_has_no_warning(self, store):
+        result = store.add("memory", "x" * 449)
+
+        assert result["success"] is True
+        assert result["done"] is True
+        assert result["usage"] == "89% — 449/500 chars"
+        assert "warning" not in result
+        assert "recommendation" not in result
+
+    def test_success_at_soft_capacity_threshold_warns_without_changing_behavior(self, store):
+        result = store.add("memory", "x" * 450)
+
+        assert result["success"] is True
+        assert result["done"] is True
+        assert result["usage"] == "90% — 450/500 chars"
+        assert "90%" in result["warning"]
+        assert "Memory is nearing capacity" in result["warning"]
+        assert "consolidate" in result["recommendation"].lower()
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):

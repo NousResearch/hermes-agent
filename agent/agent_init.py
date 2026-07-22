@@ -786,6 +786,16 @@ def init_agent(
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
+        # Per-provider override: prompt_caching.provider_overrides.<provider>.cache_ttl
+        # takes precedence over the global cache_ttl. Allows operators to set
+        # longer TTLs for specific providers (e.g. DeepSeek 1h vs Anthropic 5m).
+        _overrides = _pc_cfg.get("provider_overrides", {}) or {}
+        if isinstance(_overrides, dict) and agent.provider and agent.provider in _overrides:
+            _prov = _overrides[agent.provider]
+            if isinstance(_prov, dict):
+                _prov_ttl = _prov.get("cache_ttl")
+                if _prov_ttl in {"5m", "1h"}:
+                    _ttl = _prov_ttl
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
     except Exception:

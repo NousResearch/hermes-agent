@@ -1084,6 +1084,93 @@ class TestInit:
             )
             assert a._cache_ttl == "1h"
 
+    def test_prompt_caching_provider_override_wins(self):
+        """provider_overrides.<provider>.cache_ttl takes precedence over global."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "prompt_caching": {
+                        "cache_ttl": "5m",
+                        "provider_overrides": {
+                            "commandcode": {"cache_ttl": "1h"},
+                        },
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="deepseek/deepseek-v4-pro",
+                provider="commandcode",
+                base_url="https://api.commandcode.ai/provider/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "1h"
+
+    def test_prompt_caching_provider_no_override_falls_back(self):
+        """Provider without override falls back to global cache_ttl."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "prompt_caching": {
+                        "cache_ttl": "5m",
+                        "provider_overrides": {
+                            "otherprovider": {"cache_ttl": "1h"},
+                        },
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "5m"
+
+    def test_prompt_caching_invalid_provider_ttl_ignored(self):
+        """Invalid provider cache_ttl values are ignored, falls back to global."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "prompt_caching": {
+                        "cache_ttl": "5m",
+                        "provider_overrides": {
+                            "commandcode": {"cache_ttl": "2h"},
+                        },
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="deepseek/deepseek-v4-pro",
+                provider="commandcode",
+                base_url="https://api.commandcode.ai/provider/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "5m"
+
     def test_model_max_tokens_from_config(self):
         """model.max_tokens config populates the chat-completions request cap."""
         with (

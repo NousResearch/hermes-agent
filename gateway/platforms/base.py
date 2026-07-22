@@ -3556,8 +3556,10 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare text for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Default strips <think> reasoning blocks, markdown formatting,
+        and truncates to 4000 chars.
         """
+        text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
         return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(

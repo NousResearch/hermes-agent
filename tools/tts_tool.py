@@ -2733,9 +2733,14 @@ _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
 
+# Strip <think>...</think> reasoning blocks before TTS — models with
+# /reasoning show enabled produce think blocks that shouldn't be spoken.
+_THINK_BLOCK = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
+
 
 def _strip_markdown_for_tts(text: str) -> str:
     """Remove markdown formatting that shouldn't be spoken aloud."""
+    text = _THINK_BLOCK.sub(' ', text)
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)

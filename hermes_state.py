@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -546,6 +547,127 @@ def _claim_repair_attempt(db_path: Path) -> bool:
         return True
 
 
+# Cross-process serialisation for the schema-surgery paths below.  The
+# ``_repair_attempt_lock`` above is a ``threading.Lock`` — it only covers
+# threads inside ONE interpreter, yet a normal Hermes host runs several
+# independent processes against the same ``state.db``: the gateway service,
+# the Desktop app's own ``hermes serve`` backend, interactive CLI sessions,
+# and the TUI slash worker.  Two of those hitting a malformed DB at once each
+# ran the full ``writable_schema`` surgery + ``VACUUM`` on their own private
+# connection, with nothing serialising them.
+#
+# The timeout is sized for the slowest legitimate holder — a ``VACUUM`` over a
+# multi-GB DB in strategy 2.  Waiting that long is not a new stall: before this
+# lock the losing caller spent the same minutes running its own surgery, it
+# just did so on top of the winner's.
+_REPAIR_LOCK_TIMEOUT_SECONDS = 120.0
+_REPAIR_LOCK_POLL_SECONDS = 0.1
+_IS_WINDOWS = sys.platform == "win32"
+
+
+@contextlib.contextmanager
+def _cross_process_repair_lock(db_path: Path):
+    """Serialize state.db schema surgery across processes.
+
+    Yields True when this process holds the repair lock for *db_path*, False
+    when the bounded acquire timed out.  Unlike the kanban init lock — whose
+    critical section is idempotent, so proceeding without the lock is merely
+    redundant work — proceeding here would be exactly the unsafe interleaving
+    we are trying to prevent, so a caller that gets False must NOT do surgery.
+
+    ``flock`` is the right primitive for this: the kernel drops the lock when
+    the holding process dies, so a crashed repairer cannot leave a stale lock
+    that wedges every future repair (a pidfile would).  The acquire is still
+    bounded because a *live* repairer can legitimately sit in ``VACUUM`` for
+    minutes on a large DB, and an unbounded wait would hang the caller's open
+    with no traceback (the failure shape of #36644).
+    """
+    lock_path = db_path.with_name(db_path.name + ".repair.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        # Read-only dir, exhausted fds, exotic filesystem: fall back to the
+        # in-process behaviour that shipped before this lock existed rather
+        # than refusing to repair a DB we could otherwise heal.
+        logger.warning(
+            "Could not open state.db repair lock %s (%s) — proceeding with "
+            "in-process serialisation only.", lock_path, exc,
+        )
+        yield True
+        return
+
+    acquired = False
+    try:
+        deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_REPAIR_LOCK_POLL_SECONDS)
+        if not acquired:
+            logger.warning(
+                "state.db repair lock %s held by another process for more "
+                "than %.0fs — skipping schema surgery in this process to "
+                "avoid racing the repairer.",
+                lock_path, _REPAIR_LOCK_TIMEOUT_SECONDS,
+            )
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - best effort release
+            pass
+        finally:
+            handle.close()
+
+
+def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
+    """Increment the schema cookie after direct ``sqlite_master`` surgery.
+
+    Ordinary DDL bumps this counter for free, and every other connection
+    compares it before running a prepared statement — that is how they learn
+    to discard a cached schema.  Editing ``sqlite_master`` under
+    ``PRAGMA writable_schema=ON`` does NOT bump it, so live connections in
+    other processes keep compiling statements against the schema we just
+    deleted objects from — e.g. writing ``messages`` rows through triggers
+    into ``messages_fts*`` shadow tables that no longer exist.  SQLite's
+    writable_schema documentation calls out incrementing ``schema_version``
+    as the required companion to such an edit.
+
+    Best-effort and never raises: a failed bump leaves exactly the
+    pre-existing behaviour, and the repair itself is still worth completing.
+    """
+    try:
+        current = conn.execute("PRAGMA schema_version").fetchone()[0]
+        # Wraps within the 32-bit signed range SQLite stores this in; the
+        # comparison other connections make is equality, not ordering.
+        conn.execute(f"PRAGMA schema_version={(int(current) + 1) & 0x7FFFFFFF}")
+    except (sqlite3.DatabaseError, TypeError, IndexError) as exc:
+        logger.warning("Could not bump state.db schema cookie: %s", exc)
+
+
 def _backup_db_file(db_path: Path) -> Optional[Path]:
     """Copy a (possibly malformed) DB file to a timestamped backup beside it.
 
@@ -720,6 +842,12 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     Canonical ``sessions`` / ``messages`` rows are never modified. A
     timestamped raw backup is taken first unless ``backup=False``.
 
+    The surgery below is serialised across processes (see
+    :func:`_cross_process_repair_lock`): the gateway service, the Desktop
+    app's backend and interactive CLI sessions all open the same file, and
+    two of them running ``writable_schema`` surgery concurrently is itself a
+    corruption source.
+
     Returns a report dict: ``{repaired: bool, strategy: str|None,
     backup_path: str|None, error: str|None}``.
     """
@@ -735,6 +863,34 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
+    with _cross_process_repair_lock(db_path) as holding_lock:
+        if not holding_lock:
+            # Another process is still inside its critical section. It may
+            # nonetheless have healed the file already (long VACUUM after a
+            # successful strategy), so re-probe before reporting failure.
+            if _db_opens_cleanly(db_path) is None:
+                report["repaired"] = True
+                report["strategy"] = "repaired_by_other_process"
+                return report
+            report["error"] = (
+                "another process holds the state.db repair lock; skipped "
+                "schema surgery to avoid racing it"
+            )
+            return report
+        return _repair_state_db_schema_locked(db_path, backup=backup, report=report)
+
+
+def _repair_state_db_schema_locked(
+    db_path: Path, *, backup: bool, report: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Repair strategies for :func:`repair_state_db_schema`.
+
+    Caller must hold the cross-process repair lock for *db_path*.
+    """
+    # Re-probe under the lock: a process we queued behind may have just
+    # repaired the file, in which case redoing the surgery would undo its
+    # work on a now-healthy DB (the repair/re-corrupt cascade this lock
+    # exists to break).
     if _db_opens_cleanly(db_path) is None:
         report["repaired"] = True
         report["strategy"] = "already_healthy"
@@ -816,6 +972,8 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                     "WHERE type IS ? AND name IS ? AND rowid <> ?",
                     (type_, name, keep),
                 )
+            if dupes:
+                _bump_schema_cookie(conn)
             conn.execute("PRAGMA writable_schema=OFF")
             conn.commit()
         finally:
@@ -837,6 +995,7 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         try:
             conn.execute("PRAGMA writable_schema=ON")
             conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
+            _bump_schema_cookie(conn)
             conn.execute("PRAGMA writable_schema=OFF")
             conn.commit()
             conn.execute("VACUUM")

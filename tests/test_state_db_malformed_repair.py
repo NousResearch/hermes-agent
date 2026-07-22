@@ -12,7 +12,11 @@ journal_mode in apply_wal_with_fallback), before _init_schema runs — so it
 cannot be handled at the FTS-rebuild layer. These tests verify the
 sqlite_master surgery path recovers the canonical data and self-heals on open.
 """
+import contextlib
+import json
 import sqlite3
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -616,3 +620,163 @@ def test_select_cached_agent_history_prefers_longer_live_transcript():
     # No live transcript / not a list → no-op.
     assert _select_cached_agent_history(persisted, None) is persisted
     assert _select_cached_agent_history(persisted, "nope") is persisted
+
+
+# ---------------------------------------------------------------------------
+# Cross-process serialisation of the schema surgery
+# ---------------------------------------------------------------------------
+# A normal host runs several independent processes against one state.db: the
+# gateway service, the Desktop app's own `hermes serve` backend, interactive
+# CLI sessions and the TUI slash worker. `_repair_attempt_lock` is a
+# threading.Lock and covers none of that, so two of them hitting a malformed
+# DB at once each ran the full writable_schema surgery + VACUUM on a private
+# connection — one repairing while the other was mid-surgery.
+
+
+_HOLD_LOCK_SCRIPT = """
+import sys, time, fcntl, pathlib
+sys.path.insert(0, {root!r})
+lock_path = pathlib.Path({lock!r})
+handle = lock_path.open("a+b")
+fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+print("locked", flush=True)
+time.sleep({hold})
+"""
+
+
+@contextlib.contextmanager
+def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
+    """Hold the repair flock for *db_path* in a real child process."""
+    script = _HOLD_LOCK_SCRIPT.format(
+        root=str(Path(hermes_state.__file__).parent),
+        lock=str(db_path.with_name(db_path.name + ".repair.lock")),
+        hold=hold_seconds,
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        # Wait for the child to actually own the lock before yielding.
+        assert proc.stdout.readline().strip() == "locked"
+        yield
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+def test_repair_skips_surgery_while_another_process_holds_the_lock(
+    tmp_path, monkeypatch
+):
+    """The losing process must NOT run writable_schema surgery in parallel."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+    monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+
+    with _lock_held_by_other_process(db_path):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is False
+    assert "repair lock" in (report["error"] or "")
+    # No surgery ran: no backup was taken and the DB is still malformed.
+    assert report["backup_path"] is None
+    assert not list(tmp_path.glob("state.db.malformed-backup-*"))
+    assert hermes_state._db_opens_cleanly(db_path) is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+def test_repair_reports_success_when_the_holder_already_healed_the_db(
+    tmp_path, monkeypatch
+):
+    """Timing out against a healthy DB is a success, not an error."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+
+    with _lock_held_by_other_process(db_path):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert report["strategy"] == "repaired_by_other_process"
+
+
+_REPAIR_SCRIPT = """
+import sys, json
+sys.path.insert(0, {root!r})
+from hermes_state import repair_state_db_schema
+print(json.dumps(repair_state_db_schema({db!r})), flush=True)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
+    """Concurrent repairers serialise; the loser sees a healed DB and stops.
+
+    Without the cross-process lock both processes back up and operate on
+    sqlite_master, i.e. one runs surgery on a database the other is
+    simultaneously rewriting. The backup count is the observable proxy for
+    "how many processes entered the critical section".
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    script = _REPAIR_SCRIPT.format(
+        root=str(Path(hermes_state.__file__).parent), db=str(db_path)
+    )
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for _ in range(2)
+    ]
+    reports = []
+    for proc in procs:
+        out, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err
+        reports.append(json.loads(out.strip().splitlines()[-1]))
+
+    assert all(r["repaired"] for r in reports), reports
+    # Exactly one process did the work; the other found the DB already healthy.
+    strategies = sorted(r["strategy"] for r in reports)
+    assert "already_healthy" in strategies or "repaired_by_other_process" in strategies
+    assert len(list(tmp_path.glob("state.db.malformed-backup-*"))) == 1
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+    finally:
+        conn.close()
+
+
+def test_schema_surgery_bumps_the_schema_cookie(tmp_path):
+    """Live connections in other processes must be told to reload the schema.
+
+    Editing sqlite_master under writable_schema=ON does not bump the cookie
+    that every other connection checks before running a prepared statement,
+    so they keep compiling against objects the surgery just deleted.
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    probe = sqlite3.connect(str(db_path))
+    try:
+        probe.execute("PRAGMA writable_schema=ON")
+        before = probe.execute("PRAGMA schema_version").fetchone()[0]
+    finally:
+        probe.close()
+
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is True
+
+    probe = sqlite3.connect(str(db_path))
+    try:
+        after = probe.execute("PRAGMA schema_version").fetchone()[0]
+    finally:
+        probe.close()
+    assert after != before

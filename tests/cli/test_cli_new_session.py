@@ -387,3 +387,22 @@ def test_new_session_with_duplicate_title_surfaces_error(capsys):
     captured = capsys.readouterr()
     assert "New session started: Dup" not in captured.out
     assert "New session started!" in captured.out
+
+
+def test_new_session_reloads_default_model_from_config():
+    """Session resets should restore the current config default model."""
+    cli = _make_cli(
+        model="anthropic/claude-haiku-4-5-20251001",
+        config_overrides={
+            "model": {
+                "default": "openrouter/auto",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "auto",
+            }
+        },
+    )
+
+    with patch("hermes_cli.config.load_config", return_value={"model": {"default": "openrouter/auto"}}):
+        cli.new_session(silent=True)
+
+    assert cli.model == "openrouter/auto"

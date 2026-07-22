@@ -384,6 +384,22 @@ async def handle_ws(ws: Any) -> None:
             # response dict, which we write here from the loop.
             req_id = req.get("id") if isinstance(req, dict) else None
             req_method = req.get("method") if isinstance(req, dict) else None
+
+            if req_method == "gateway.ping":
+                ok = await transport.write_async(
+                    {
+                        "jsonrpc": "2.0",
+                        "result": {"ok": True},
+                        "id": req_id,
+                    }
+                )
+                if not ok:
+                    disconnect_reason = "send_failed_after_heartbeat"
+                    send_failures += 1
+                    _log.warning("ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
+                    break
+                continue
+
             try:
                 resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:

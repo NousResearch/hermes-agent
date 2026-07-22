@@ -332,6 +332,17 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # literal strings like "path" as bare-string schemas and replace
             # them with {"type": "object"} dicts. Pass through unchanged.
             out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
+        elif key in {"default", "const"}:
+            # Annotation siblings whose values are literal instances (any JSON
+            # type, including arrays and objects) rather than schemas. Treat
+            # them the same as ``enum`` / ``examples`` so a default like
+            # ``["read", "write"]`` is not walked as a sub-schema and turned
+            # into ``[{"type": "object", "properties": {}}, ...]``.
+            #
+            # NOTE: ``default`` siblings of ``$ref`` are still removed by the
+            # separate ``_strip_ref_siblings`` pass below — strict backends
+            # (Fireworks, draft-07 validators) reject that combination.
+            out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 

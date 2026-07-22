@@ -334,6 +334,101 @@ def test_none_tools_returns_none():
     assert sanitize_tool_schemas(None) is None
 
 
+def test_array_default_value_preserved_as_literal():
+    """Issue #55077: array-valued ``default`` siblings must NOT be walked as schemas.
+
+    The literal ``default: ["read", "write"]`` on a property is a hint to the
+    model, not a JSON Schema sub-document. Walking it through _sanitize_node
+    replaces each bare string with ``{"type": "object", "properties": {}}``
+    and silently corrupts the advertised default.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "perms": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": ["read", "write"],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    perms = out[0]["function"]["parameters"]["properties"]["perms"]
+    assert perms["default"] == ["read", "write"]
+
+
+def test_object_default_value_preserved_as_literal():
+    """Object-valued ``default`` siblings must survive as-is."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "cfg": {
+                "type": "object",
+                "default": {"nested": ["a", "b"]},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    cfg = out[0]["function"]["parameters"]["properties"]["cfg"]
+    assert cfg["default"] == {"nested": ["a", "b"]}
+
+
+def test_string_default_preserved_as_literal():
+    """Scalar string ``default`` was already passing — confirm it still does."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "tier": {"type": "string", "const": "gold", "default": "gold"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    tier = out[0]["function"]["parameters"]["properties"]["tier"]
+    assert tier["default"] == "gold"
+    assert tier["const"] == "gold"
+
+
+def test_array_const_preserved_as_literal():
+    """Array-valued ``const`` siblings must NOT be walked as schemas."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "const": ["a", "b"],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    tags = out[0]["function"]["parameters"]["properties"]["tags"]
+    assert tags["const"] == ["a", "b"]
+
+
+def test_default_with_ref_still_stripped():
+    """Allowing ``default`` as a literal must NOT bypass the $ref-sibling strip.
+
+    The strict-backend rule that ``default`` cannot sit alongside ``$ref``
+    is enforced separately by ``_strip_ref_siblings``. Adding ``default`` to
+    the literal-value allow-list only affects the recursive schema walk;
+    the $ref-sibling strip remains authoritative.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"$ref": "#/$defs/Payload", "default": ["x", "y"]},
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload == {"$ref": "#/$defs/Payload"}
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # strip_pattern_and_format — reactive recovery when llama.cpp rejects a
 # schema with an HTTP 400 grammar-parse error. Must be opt-in (only

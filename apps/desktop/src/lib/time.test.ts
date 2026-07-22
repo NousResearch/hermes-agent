@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { DAY, HOUR, MINUTE, SECOND, formatAgo } from './time'
+import { DAY, formatAgo, HOUR, MINUTE, SECOND } from './time'
 
 const labels = {
   ageNow: 'now',

@@ -652,6 +652,127 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    def test_retain_redacts_user_strings_without_mutating_inputs(
+        self, provider, monkeypatch
+    ):
+        secret = "sk-" + "A" * 48
+        metadata = {
+            "nested": {"credential": secret, "count": 3, "enabled": True},
+            "items": [secret, None, 7],
+            "source": "hermes",
+        }
+        original_metadata = {
+            "nested": dict(metadata["nested"]),
+            "items": list(metadata["items"]),
+            "source": metadata["source"],
+        }
+        monkeypatch.setattr(provider, "_build_metadata", lambda **kwargs: metadata)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+        provider.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": f"token={secret}",
+                "context": f"credential {secret}",
+                "tags": [f"auth:{secret}", "ordinary-tag"],
+            },
+        )
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert secret not in item["content"]
+        assert secret not in item["context"]
+        assert secret not in item["tags"][0]
+        assert item["tags"][1] == "ordinary-tag"
+        assert secret not in item["metadata"]["nested"]["credential"]
+        assert secret not in item["metadata"]["items"][0]
+        assert item["metadata"]["nested"]["count"] == 3
+        assert item["metadata"]["nested"]["enabled"] is True
+        assert item["metadata"]["items"][1:] == [None, 7]
+        assert item["metadata"]["source"] == "hermes"
+        assert metadata == original_metadata
+
+    def test_retain_preserves_ordinary_top_level_metadata_byte_for_byte(
+        self, provider, monkeypatch
+    ):
+        metadata = {
+            "source": "hermes/public-handler",
+            "timestamp": "2026-07-10T12:34:56.789Z",
+            "retained_at": "2026-07-10T12:34:57.123Z",
+        }
+        monkeypatch.setattr(provider, "_build_metadata", lambda **kwargs: metadata)
+
+        provider.handle_tool_call("hindsight_retain", {"content": "remember this"})
+
+        item_metadata = provider._client.aretain_batch.call_args.kwargs["items"][0]["metadata"]
+        assert item_metadata == metadata
+
+    def test_retain_redacts_secret_shaped_metadata_at_every_depth(
+        self, provider, monkeypatch
+    ):
+        source = "sk-" + "D" * 48
+        timestamp = "sk-" + "E" * 48
+        retained_at = "sk-" + "F" * 48
+        metadata = {
+            "source": source,
+            "timestamp": timestamp,
+            "retained_at": retained_at,
+            "nested": {
+                "source": source,
+                "timestamp": timestamp,
+                "retained_at": retained_at,
+            },
+        }
+        monkeypatch.setattr(provider, "_build_metadata", lambda **kwargs: metadata)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+        provider.handle_tool_call("hindsight_retain", {"content": "remember this"})
+
+        item_metadata = provider._client.aretain_batch.call_args.kwargs["items"][0]["metadata"]
+        assert source not in item_metadata["source"]
+        assert timestamp not in item_metadata["timestamp"]
+        assert retained_at not in item_metadata["retained_at"]
+        assert source not in item_metadata["nested"]["source"]
+        assert timestamp not in item_metadata["nested"]["timestamp"]
+        assert retained_at not in item_metadata["nested"]["retained_at"]
+
+    def test_build_retain_kwargs_preserves_structural_identifiers(self, provider):
+        provider._bank_id = "bank/sk-" + "G" * 48
+        document_id = "document/sk-" + "H" * 48
+
+        kwargs = provider._build_retain_kwargs(
+            "ordinary content",
+            document_id=document_id,
+            retain_async=False,
+        )
+
+        assert kwargs["bank_id"] == provider._bank_id
+        assert kwargs["document_id"] == document_id
+        assert kwargs["retain_async"] is False
+
+    def test_retain_preserves_environment_lookups_and_ordinary_metadata(
+        self, provider, monkeypatch
+    ):
+        metadata = {
+            "configuration": {"api_key": "os.getenv('OPENAI_API_KEY')"},
+            "label": "ordinary metadata",
+        }
+        monkeypatch.setattr(provider, "_build_metadata", lambda **kwargs: metadata)
+
+        provider.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": "api_key=os.getenv('OPENAI_API_KEY')",
+                "context": "ordinary context",
+                "tags": ["ordinary-tag"],
+            },
+        )
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["content"] == "api_key=os.getenv('OPENAI_API_KEY')"
+        assert item["context"] == "ordinary context"
+        assert item["tags"] == ["ordinary-tag"]
+        assert item["metadata"] == metadata
+
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
@@ -677,6 +798,18 @@ class TestToolHandlers:
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["observation_scopes"] == "per_tag"
+
+    def test_retain_redacts_custom_observation_scope_tags(
+        self, provider_with_config, monkeypatch
+    ):
+        secret = "sk-" + "C" * 48
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        p = provider_with_config(observation_scopes=[[f"credential:{secret}"]])
+
+        p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert secret not in item["observation_scopes"][0][0]
 
     def test_retain_omits_observation_scopes_by_default(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
@@ -862,6 +995,25 @@ class TestPrefetch:
 
 
 class TestSyncTurn:
+    def test_sync_turn_redacts_content_and_preserves_structural_fields(
+        self, provider, monkeypatch
+    ):
+        secret = "sk-" + "B" * 48
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        provider._retain_context = f"conversation {secret}"
+        provider._retain_tags = [f"credential:{secret}"]
+
+        provider.sync_turn(f"my token is {secret}", f"received {secret}")
+        provider._retain_queue.join()
+
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
+        item = call_kwargs["items"][0]
+        assert secret not in item["content"]
+        assert secret not in item["context"]
+        assert secret not in item["tags"][0]
+        assert call_kwargs["document_id"].startswith("test-session-")
+        assert item["metadata"]["retained_at"].endswith("Z")
+
     def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
         p = provider_with_config(
             retain_tags=["conv", "session1"],

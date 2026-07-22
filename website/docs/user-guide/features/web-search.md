@@ -149,61 +149,14 @@ services:
 docker compose up -d
 ```
 
-**4. Enable the JSON API format:**
+**4. Configure Hermes:**
 
-SearXNG ships with JSON output disabled by default. Copy the generated config and enable it:
-
-```bash
-# Copy the auto-generated config out of the container
-docker cp searxng:/etc/searxng/settings.yml ~/searxng/searxng/settings.yml
-```
-
-Open `~/searxng/searxng/settings.yml`.
-If `use_default_settings: true` is present, the file only contains your overrides. All other settings are inherited from the built-in defaults.
-To enable JSON responses for Hermes, add the following override:
-
-```yaml
-search:
-  formats:
-    - html
-    - json
-```
-
-Your `settings.yml` should look similar to:
-
-```yaml
-# Read the documentation before extending the defaults:
-# https://docs.searxng.org/admin/settings/
-
-use_default_settings: true
-
-server:
-  secret_key: "abcdef12345678"
-  image_proxy: true
-
-search:
-  formats:
-    - html
-    - json
-```
-
-**5. Restart to apply:**
-
-```bash
-docker cp ~/searxng/searxng/settings.yml searxng:/etc/searxng/settings.yml
-docker restart searxng
-```
-
-**6. Verify it works:**
-
-```bash
-curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(f'{len(d[\"results\"])} results')"
-```
-
-You should see something like `10 results`. If you get a `403 Forbidden`, JSON format is still disabled — recheck step 4.
-
-**7. Configure Hermes:**
+Hermes no longer needs the JSON API format on the SearXNG side. The
+provider requests `format=html` and parses the rendered result list
+with regex, which works on any SearXNG instance — private
+(`public_instance: false`) or public — without enabling the JSON
+output and without a `link_token` handshake. Leave
+`formats: - html` as the default.
 
 ```bash
 # ~/.hermes/.env
@@ -412,8 +365,8 @@ This prints the active backend and its status:
 
 ### `web_search` returns `{"success": false}`
 
-- Check `SEARXNG_URL` is reachable: `curl -s "http://localhost:8888/search?q=test&format=json"`
-- If you get HTTP 403, JSON format is disabled — add `json` to the `formats` list in `settings.yml` and restart
+- Check `SEARXNG_URL` is reachable: `curl -s "http://localhost:8888/search?q=test"` returns HTML
+- If you get HTTP 403, the instance is rate-limiting your IP — wait a few minutes or check the instance's `botdetection.ip_limit` setting
 - If you get a connection error, the container may not be running: `docker ps | grep searxng`
 
 ### `web_extract` says "search-only backend"
@@ -456,7 +409,7 @@ hermes skills install official/research/searxng-search
 ```
 
 This adds a skill that teaches the agent how to:
-- Call the SearXNG JSON API via `curl` or Python
+- Call the SearXNG HTML search endpoint via `curl` or Python (`format=html`)
 - Filter by category (`general`, `news`, `science`, etc.)
 - Handle pagination and error cases
 - Fall back gracefully when SearXNG is unreachable

@@ -163,6 +163,61 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
 
 
+def test_conditional_routing_columns_are_added_to_legacy_board(tmp_path, monkeypatch):
+    db_path = _setup_home(tmp_path, monkeypatch)
+    _make_legacy_db(db_path)
+
+    with kb.connect(db_path) as conn:
+        task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        link_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_links)")}
+        assert "completion_outcome" in task_cols
+        assert "when_outcomes" in link_cols
+
+
+def test_project_loop_tables_are_added_to_legacy_board(tmp_path, monkeypatch):
+    db_path = _setup_home(tmp_path, monkeypatch)
+    _make_legacy_db(db_path)
+    legacy = sqlite3.connect(str(db_path))
+    legacy.executescript(
+        """
+        DROP TABLE project_loops;
+        CREATE TABLE project_loops (
+            project_key TEXT PRIMARY KEY,
+            goal TEXT NOT NULL,
+            acceptance_criteria TEXT NOT NULL,
+            status TEXT NOT NULL,
+            max_rounds INTEGER NOT NULL,
+            max_tasks INTEGER NOT NULL,
+            rounds_used INTEGER NOT NULL DEFAULT 0,
+            tasks_created INTEGER NOT NULL DEFAULT 0,
+            current_verify_task_id TEXT,
+            last_decision TEXT,
+            stop_reason TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        """
+    )
+    legacy.close()
+
+    with kb.connect(db_path) as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {
+            "project_loops",
+            "project_loop_tasks",
+            "project_loop_reconciliations",
+        } <= tables
+        loop_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(project_loops)")
+        }
+        assert "current_owner_gate_task_id" in loop_cols
+
+
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
     gone after migration; the notifier query returns an integer cursor."""

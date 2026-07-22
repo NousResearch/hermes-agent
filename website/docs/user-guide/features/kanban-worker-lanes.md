@@ -58,13 +58,36 @@ The kanban kernel enforces that exactly one of these terminates each run. A work
 
 ## Outputs and the review-required convention
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For code-changing tasks that require an independent review, model implementation and review as separate tasks:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- **Complete the implementation** with `outcome="review_required"` and include the structured handoff in `summary` / `metadata`.
+- **Link a reviewer child conditionally** with `when_outcomes=["review_required"]`. The reviewer promotes when implementation completes; the implementation card does not remain blocked.
+- **Use `kanban_block` only for unfinished work** that cannot proceed because of a dependency, missing input, capability, or transient failure.
 
-The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The injected `KANBAN_GUIDANCE` documents this completion-outcome convention.
+
+## Bounded project-goal continuation
+
+Ordinary cards remain single-round. For a project that must continue until a
+persisted goal is actually accepted, explicitly configure a project loop and
+bind its current final Verify card:
+
+```bash
+hermes kanban project-loop configure expert-rollout \
+  --goal "Ship the expert workflow without unresolved blockers" \
+  --accept "All expert blockers are closed" \
+  --accept "A dispatched run is observed for each continuation round" \
+  --verify-task t_12345678 --max-rounds 3 --max-tasks 12
+```
+
+The Verify card completes with one of `goal_complete`, `continue_bounded`,
+`owner_judgment_required`, or `stop`. For `continue_bounded`, its completion
+metadata must contain `project_loop.next_steps`, with a stable `key`, `title`,
+and optional `body` / `assignee` for every next task. Hermes atomically creates
+those tasks plus their dependent next Verify card. Reconciliation is idempotent
+per Verify card, budgets count both work and Verify cards, and missing or invalid
+next steps fail closed. The loop becomes active only after the dispatcher has
+created a real `task_runs` row for the new round.
 
 ## Logs and audit trail
 

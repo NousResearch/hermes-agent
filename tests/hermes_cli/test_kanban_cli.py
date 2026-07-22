@@ -91,6 +91,26 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_configures_and_shows_project_loop(kanban_home):
+    with kb.connect() as conn:
+        verify = kb.create_task(conn, title="Final verify", assignee="default")
+
+    out = kc.run_slash(
+        "project-loop configure expert-rollout "
+        "--goal 'Ship expert workflow' "
+        "--accept 'All blockers closed' "
+        "--accept 'A dispatched run is observed' "
+        f"--verify-task {verify} --max-rounds 3 --max-tasks 12"
+    )
+    assert "expert-rollout: active" in out
+
+    payload = json.loads(kc.run_slash("project-loop show expert-rollout --json"))
+    assert payload["goal"] == "Ship expert workflow"
+    assert payload["current_verify_task_id"] == verify
+    assert payload["max_rounds"] == 3
+    assert payload["max_tasks"] == 12
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

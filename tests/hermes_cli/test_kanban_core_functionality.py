@@ -3495,11 +3495,39 @@ def _make_create_ns(**overrides):
         created_by="user", workspace="scratch", tenant=None,
         priority=0, parent=None, triage=False,
         idempotency_key=None, max_runtime=None, skills=None,
+        parent_outcome=None, implementation_claim_key=None,
+        output_root=None, review_input_fingerprint=None,
         json=False,
     )
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
+
+
+def test_cli_create_forwards_conditional_and_claim_fields(kanban_home, capsys):
+    from hermes_cli import kanban as kb_cli
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+    ns = _make_create_ns(
+        title="review",
+        parent=[parent],
+        parent_outcome=[f"{parent}=review_required"],
+        implementation_claim_key="goal:demo:review",
+        output_root="~/demo-output",
+        review_input_fingerprint="sha256:abc",
+        assignee=None,
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    task_id = capsys.readouterr().out.split()[1]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.implementation_claim_key == "goal:demo:review"
+        assert task.output_root.endswith("/demo-output")
+        assert task.review_input_fingerprint == "sha256:abc"
+        assert kb.unsatisfied_parent_dependencies(conn, task_id)[0][
+            "when_outcomes"
+        ] == ["review_required"]
 
 
 def test_cli_create_warns_when_no_gateway(kanban_home, monkeypatch, capsys):

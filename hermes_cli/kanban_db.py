@@ -133,6 +133,12 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_PROJECT_LOOP_DECISIONS = {
+    "goal_complete",
+    "continue_bounded",
+    "owner_judgment_required",
+    "stop",
+}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
@@ -858,7 +864,13 @@ class Task:
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
     result: Optional[str] = None
+    completion_outcome: Optional[str] = None
     idempotency_key: Optional[str] = None
+    workspace_claim_key: Optional[str] = None
+    review_input_fingerprint: Optional[str] = None
+    review_last_fingerprint: Optional[str] = None
+    implementation_claim_key: Optional[str] = None
+    output_root: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
     #   * timed_out outcome (worker exceeded max_runtime_seconds)
@@ -947,7 +959,15 @@ class Task:
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
+            completion_outcome=(
+                row["completion_outcome"] if "completion_outcome" in keys else None
+            ),
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
+            workspace_claim_key=(row["workspace_claim_key"] if "workspace_claim_key" in keys else None),
+            review_input_fingerprint=(row["review_input_fingerprint"] if "review_input_fingerprint" in keys else None),
+            review_last_fingerprint=(row["review_last_fingerprint"] if "review_last_fingerprint" in keys else None),
+            implementation_claim_key=(row["implementation_claim_key"] if "implementation_claim_key" in keys else None),
+            output_root=row["output_root"] if "output_root" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
                 # Pre-migration fallback: ``_migrate_add_optional_columns`` always
@@ -1089,6 +1109,39 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class ProjectLoop:
+    project_key: str
+    goal: str
+    acceptance_criteria: list[str]
+    status: str
+    max_rounds: int
+    max_tasks: int
+    rounds_used: int
+    tasks_created: int
+    current_verify_task_id: Optional[str]
+    current_owner_gate_task_id: Optional[str]
+    last_decision: Optional[str]
+    stop_reason: Optional[str]
+
+
+@dataclass
+class ProjectLoopTask:
+    project_key: str
+    round_no: int
+    step_key: str
+    role: str
+    task_id: str
+
+
+@dataclass
+class ProjectLoopReconcileResult:
+    decision: str
+    created_task_ids: list[str] = field(default_factory=list)
+    owner_gate_task_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1116,7 +1169,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     claim_expires        INTEGER,
     tenant               TEXT,
     result               TEXT,
+    completion_outcome   TEXT,
     idempotency_key      TEXT,
+    workspace_claim_key  TEXT,
+    review_input_fingerprint TEXT,
+    review_last_fingerprint TEXT,
+    implementation_claim_key TEXT,
+    output_root            TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
     -- The circuit breaker in _record_task_failure trips when this
@@ -1180,9 +1239,60 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
-    parent_id  TEXT NOT NULL,
-    child_id   TEXT NOT NULL,
+    parent_id     TEXT NOT NULL,
+    child_id      TEXT NOT NULL,
+    when_outcomes TEXT,
     PRIMARY KEY (parent_id, child_id)
+);
+
+-- Explicit opt-in, project-level continuation loop. Ordinary task cards never
+-- enter this state machine. Goal state stays beside dependencies and runs in
+-- the shared SQLite control plane.
+CREATE TABLE IF NOT EXISTS project_loops (
+    project_key            TEXT PRIMARY KEY,
+    goal                   TEXT NOT NULL,
+    acceptance_criteria    TEXT NOT NULL,
+    status                 TEXT NOT NULL,
+    max_rounds             INTEGER NOT NULL,
+    max_tasks              INTEGER NOT NULL,
+    rounds_used            INTEGER NOT NULL DEFAULT 0,
+    tasks_created          INTEGER NOT NULL DEFAULT 0,
+    current_verify_task_id TEXT,
+    current_owner_gate_task_id TEXT,
+    last_decision          TEXT,
+    stop_reason            TEXT,
+    created_at             INTEGER NOT NULL,
+    updated_at             INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_loop_tasks (
+    project_key TEXT NOT NULL,
+    round_no    INTEGER NOT NULL,
+    step_key    TEXT NOT NULL,
+    role        TEXT NOT NULL,
+    task_id     TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (project_key, round_no, step_key)
+);
+
+CREATE TABLE IF NOT EXISTS project_loop_reconciliations (
+    project_key    TEXT NOT NULL,
+    verify_task_id TEXT NOT NULL,
+    decision       TEXT NOT NULL,
+    result         TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (project_key, verify_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS repeated_patterns (
+    pattern_key      TEXT PRIMARY KEY,
+    occurrences     INTEGER NOT NULL DEFAULT 1,
+    affected_tasks  TEXT NOT NULL,
+    root_fix_task_id TEXT,
+    canary           TEXT,
+    state            TEXT NOT NULL DEFAULT 'observed',
+    high_risk        INTEGER NOT NULL DEFAULT 0,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_comments (
@@ -1268,6 +1378,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+CREATE INDEX IF NOT EXISTS idx_project_loop_tasks_round
+    ON project_loop_tasks(project_key, round_no, role);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
@@ -2194,6 +2306,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
     if "result" not in cols:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
+    if "completion_outcome" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "completion_outcome", "completion_outcome TEXT"
+        )
     if "branch_name" not in cols:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
@@ -2202,6 +2318,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
+    if "workspace_claim_key" not in cols:
+        _add_column_if_missing(conn, "tasks", "workspace_claim_key", "workspace_claim_key TEXT")
+    if "review_input_fingerprint" not in cols:
+        _add_column_if_missing(conn, "tasks", "review_input_fingerprint", "review_input_fingerprint TEXT")
+    if "review_last_fingerprint" not in cols:
+        _add_column_if_missing(conn, "tasks", "review_last_fingerprint", "review_last_fingerprint TEXT")
+    if "implementation_claim_key" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "implementation_claim_key", "implementation_claim_key TEXT"
+        )
+    if "output_root" not in cols:
+        _add_column_if_missing(conn, "tasks", "output_root", "output_root TEXT")
     # ``idx_tasks_idempotency`` is created unconditionally below alongside
     # the other additive-column indexes — see the block after the
     # legacy-column migration. Creating it here too would be redundant.
@@ -2321,6 +2449,32 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    link_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_links'"
+    ).fetchone() is not None
+    link_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(task_links)")
+    } if link_table_exists else set()
+    if link_table_exists and "when_outcomes" not in link_cols:
+        _add_column_if_missing(
+            conn, "task_links", "when_outcomes", "when_outcomes TEXT"
+        )
+
+    project_loop_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_loops'"
+    ).fetchone() is not None
+    if project_loop_table_exists:
+        project_loop_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(project_loops)")
+        }
+        if "current_owner_gate_task_id" not in project_loop_cols:
+            _add_column_if_missing(
+                conn,
+                "project_loops",
+                "current_owner_gate_task_id",
+                "current_owner_gate_task_id TEXT",
+            )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2332,6 +2486,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
     )
+    # Some migration unit fixtures intentionally model only the additive
+    # columns and omit old baseline columns such as ``status``.  Index only
+    # when every referenced column exists; real boards always have them.
+    final_task_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    if {"workspace_claim_key", "status"} <= final_task_cols:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_workspace_claim "
+            "ON tasks(workspace_claim_key, status)"
+        )
+    if {"implementation_claim_key", "status"} <= final_task_cols:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_implementation_claim "
+            "ON tasks(implementation_claim_key, status)"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -2731,6 +2901,7 @@ def create_task(
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
+    parent_outcomes: Optional[dict[str, Iterable[str]]] = None,
     triage: bool = False,
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
@@ -2742,6 +2913,10 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    implementation_claim_key: Optional[str] = None,
+    output_root: Optional[str] = None,
+    review_input_fingerprint: Optional[str] = None,
+    _in_transaction: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2767,6 +2942,11 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    implementation_claim_key = str(implementation_claim_key or "").strip() or None
+    output_root = (
+        os.path.realpath(os.path.expanduser(str(output_root))) if output_root else None
+    )
+    review_input_fingerprint = str(review_input_fingerprint or "").strip() or None
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2824,7 +3004,14 @@ def create_task(
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
 
-    parents = tuple(p for p in parents if p)
+    parents = tuple(dict.fromkeys(p for p in parents if p))
+    normalized_parent_outcomes: dict[str, tuple[str, ...]] = {}
+    for parent_id, outcomes in (parent_outcomes or {}).items():
+        if parent_id not in parents:
+            raise ValueError(
+                f"parent_outcomes references {parent_id!r}, which is not in parents"
+            )
+        normalized_parent_outcomes[parent_id] = _normalize_outcome_conditions(outcomes)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2912,7 +3099,19 @@ def create_task(
     for attempt in range(2):
         task_id = _new_task_id()
         try:
-            with write_txn(conn):
+            txn = contextlib.nullcontext(conn) if _in_transaction else write_txn(conn)
+            with txn:
+                # The pre-transaction lookup above is only a fast path. Recheck
+                # under BEGIN IMMEDIATE so two concurrent creators with the same
+                # stable key serialize to exactly one row.
+                if idempotency_key:
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing:
+                        return existing["id"]
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -2930,13 +3129,20 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
                         rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
+                            "SELECT id, status, completion_outcome FROM tasks WHERE id IN "
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        by_id = {r["id"]: r for r in rows}
+                        if any(
+                            not _parent_satisfies_condition(
+                                by_id[pid]["status"],
+                                by_id[pid]["completion_outcome"],
+                                normalized_parent_outcomes.get(pid, ()),
+                            )
+                            for pid in parents
+                        ):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -2969,9 +3175,11 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
+                        implementation_claim_key, output_root,
+                        review_input_fingerprint,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2988,6 +3196,9 @@ def create_task(
                         project_id,
                         tenant,
                         idempotency_key,
+                        implementation_claim_key,
+                        output_root,
+                        review_input_fingerprint,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
@@ -2998,8 +3209,14 @@ def create_task(
                 )
                 for pid in parents:
                     conn.execute(
-                        "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-                        (pid, task_id),
+                        "INSERT OR IGNORE INTO task_links "
+                        "(parent_id, child_id, when_outcomes) VALUES (?, ?, ?)",
+                        (
+                            pid, task_id,
+                            _encode_outcome_conditions(
+                                normalized_parent_outcomes.get(pid, ())
+                            ),
+                        ),
                     )
                 _append_event(
                     conn,
@@ -3009,6 +3226,10 @@ def create_task(
                         "assignee": assignee,
                         "status": task_status,
                         "parents": list(parents),
+                        "parent_outcomes": {
+                            pid: list(outcomes)
+                            for pid, outcomes in normalized_parent_outcomes.items()
+                        } or None,
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
@@ -3040,6 +3261,205 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row) if row else None
+
+
+def create_or_merge_bounded_repair(
+    conn: sqlite3.Connection,
+    *,
+    finding_set_key: str,
+    title: str,
+    findings: Iterable[str],
+    assignee: Optional[str] = None,
+    created_by: Optional[str] = None,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    implementation_claim_key: Optional[str] = None,
+) -> str:
+    """Create one repair card per stable finding set and merge later findings."""
+    key = str(finding_set_key or "").strip()
+    if not key:
+        raise ValueError("finding_set_key is required")
+    clean_findings = tuple(dict.fromkeys(
+        str(finding).strip() for finding in findings if str(finding).strip()
+    ))
+    if not clean_findings:
+        raise ValueError("findings must contain at least one non-empty item")
+    idempotency_key = f"bounded-repair:{key}"
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT id, body FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        if existing:
+            body = existing["body"] or ""
+            additions = [item for item in clean_findings if f"- {item}" not in body]
+            if additions:
+                merged = body.rstrip() + "\n" + "\n".join(f"- {item}" for item in additions)
+                conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (merged, existing["id"]))
+                _append_event(
+                    conn, existing["id"], "findings_merged",
+                    {"finding_set_key": key, "added": additions},
+                )
+            return existing["id"]
+        return create_task(
+            conn,
+            title=title,
+            body="Findings:\n" + "\n".join(f"- {item}" for item in clean_findings),
+            assignee=assignee,
+            created_by=created_by,
+            workspace_kind=workspace_kind,
+            workspace_path=workspace_path,
+            branch_name=branch_name,
+            tenant=tenant,
+            priority=priority,
+            idempotency_key=idempotency_key,
+            implementation_claim_key=implementation_claim_key or f"repair:{key}",
+            _in_transaction=True,
+        )
+
+
+def record_repeated_pattern(
+    conn: sqlite3.Connection,
+    *,
+    pattern_key: str,
+    affected_task_id: str,
+    root_fix_task_id: Optional[str] = None,
+    canary: Optional[str] = None,
+    high_risk: bool = False,
+) -> dict[str, Any]:
+    """Persist a lightweight repeated-pattern record and link repeat sightings."""
+    key = str(pattern_key or "").strip()
+    if not key:
+        raise ValueError("pattern_key is required")
+    if get_task(conn, affected_task_id) is None:
+        raise ValueError(f"unknown affected task: {affected_task_id}")
+    if root_fix_task_id and get_task(conn, root_fix_task_id) is None:
+        raise ValueError(f"unknown root-fix task: {root_fix_task_id}")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM repeated_patterns WHERE pattern_key = ?", (key,)
+        ).fetchone()
+        if row:
+            previous_affected = list(json.loads(row["affected_tasks"]))
+            is_new_sighting = affected_task_id not in previous_affected
+            affected = list(dict.fromkeys([*previous_affected, affected_task_id]))
+            occurrences = int(row["occurrences"]) + int(is_new_sighting)
+            root_fix = row["root_fix_task_id"] or root_fix_task_id
+            risk = bool(row["high_risk"]) or bool(high_risk)
+            state = "escalated" if risk or occurrences >= 2 else row["state"]
+            conn.execute(
+                "UPDATE repeated_patterns SET occurrences=?, affected_tasks=?, "
+                "root_fix_task_id=?, canary=COALESCE(?, canary), state=?, "
+                "high_risk=?, updated_at=? WHERE pattern_key=?",
+                (occurrences, json.dumps(affected), root_fix, canary, state,
+                 int(risk), now, key),
+            )
+        else:
+            affected = [affected_task_id]
+            occurrences = 1
+            root_fix = root_fix_task_id
+            risk = bool(high_risk)
+            state = "escalated" if risk else "observed"
+            conn.execute(
+                "INSERT INTO repeated_patterns "
+                "(pattern_key, occurrences, affected_tasks, root_fix_task_id, "
+                "canary, state, high_risk, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, occurrences, json.dumps(affected), root_fix, canary,
+                 state, int(risk), now, now),
+            )
+        if root_fix and affected_task_id != root_fix:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_links "
+                "(parent_id, child_id, when_outcomes) VALUES (?, ?, NULL)",
+                (root_fix, affected_task_id),
+            )
+        return {
+            "pattern_key": key,
+            "occurrences": occurrences,
+            "affected_tasks": affected,
+            "root_fix_task_id": root_fix,
+            "canary": canary or (row["canary"] if row else None),
+            "state": state,
+            "high_risk": risk,
+        }
+
+
+def record_task_pattern(
+    conn: sqlite3.Connection,
+    *,
+    pattern_key: str,
+    affected_task_id: str,
+    root_fix_task_id: Optional[str] = None,
+    canary: Optional[str] = None,
+    high_risk: bool = False,
+) -> dict[str, Any]:
+    """Runtime entry point that preserves an explicitly assigned root fix."""
+    key = str(pattern_key or "").strip()
+    existing = conn.execute(
+        "SELECT root_fix_task_id FROM repeated_patterns WHERE pattern_key = ?",
+        (key,),
+    ).fetchone()
+    root = (
+        existing["root_fix_task_id"]
+        if existing and existing["root_fix_task_id"]
+        else root_fix_task_id
+    )
+    return record_repeated_pattern(
+        conn,
+        pattern_key=key,
+        affected_task_id=affected_task_id,
+        root_fix_task_id=root,
+        canary=canary,
+        high_risk=high_risk,
+    )
+
+
+def update_review_input_fingerprint(
+    conn: sqlite3.Connection,
+    task_id: str,
+    fingerprint: str,
+    *,
+    queue_review: bool = False,
+) -> bool:
+    """Atomically publish implementation input and optionally queue review."""
+    value = str(fingerprint or "").strip()
+    if not value:
+        raise ValueError("review input fingerprint is required")
+    allowed = ("review", "blocked", "ready", "todo")
+    placeholders = ",".join("?" for _ in allowed)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, review_input_fingerprint FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] not in allowed:
+            return False
+        new_status = "review" if queue_review else row["status"]
+        cur = conn.execute(
+            "UPDATE tasks SET review_input_fingerprint = ?, status = ?, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            f"WHERE id = ? AND status IN ({placeholders})",
+            (value, new_status, task_id, *allowed),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "review_input_updated",
+            {
+                "fingerprint": value,
+                "changed": row["review_input_fingerprint"] != value,
+                "queued": bool(queue_review),
+            },
+        )
+    return True
 
 
 # Canonical sort-order mappings for ``hermes kanban list --sort``.
@@ -3145,7 +3565,16 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+_WHEN_OUTCOMES_UNSET = object()
+
+
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    when_outcomes: Optional[Iterable[str]] | object = _WHEN_OUTCOMES_UNSET,
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
@@ -3156,23 +3585,46 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
-        conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+        existing = conn.execute(
+            "SELECT when_outcomes FROM task_links "
+            "WHERE parent_id = ? AND child_id = ?",
             (parent_id, child_id),
-        )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        ).fetchone()
+        if when_outcomes is _WHEN_OUTCOMES_UNSET:
+            normalized = (
+                _decode_outcome_conditions(existing["when_outcomes"])
+                if existing else ()
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO task_links "
+                "(parent_id, child_id, when_outcomes) VALUES (?, ?, ?)",
+                (parent_id, child_id, _encode_outcome_conditions(normalized)),
+            )
+        else:
+            normalized = _normalize_outcome_conditions(when_outcomes)
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id, when_outcomes) "
+                "VALUES (?, ?, ?) ON CONFLICT(parent_id,child_id) DO UPDATE SET "
+                "when_outcomes = excluded.when_outcomes",
+                (parent_id, child_id, _encode_outcome_conditions(normalized)),
+            )
+        parent = conn.execute(
+            "SELECT status, completion_outcome FROM tasks WHERE id = ?",
+            (parent_id,),
+        ).fetchone()
+        if not _parent_satisfies_condition(
+            parent["status"], parent["completion_outcome"], normalized
+        ):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
         _append_event(
             conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
+            {"parent": parent_id, "child": child_id,
+             "when_outcomes": list(normalized) if normalized else None},
         )
+    recompute_ready(conn)
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -3686,6 +4138,72 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _normalize_outcome_conditions(
+    outcomes: Optional[Iterable[str]],
+) -> tuple[str, ...]:
+    if outcomes is None:
+        return ()
+    if isinstance(outcomes, str):
+        outcomes = [outcomes]
+    cleaned = tuple(dict.fromkeys(
+        str(value).strip() for value in outcomes if str(value).strip()
+    ))
+    if not cleaned:
+        raise ValueError("when_outcomes must contain a non-empty outcome")
+    return cleaned
+
+
+def _encode_outcome_conditions(outcomes: Iterable[str]) -> Optional[str]:
+    values = tuple(outcomes)
+    return json.dumps(list(values), ensure_ascii=False) if values else None
+
+
+def _decode_outcome_conditions(raw: Optional[str]) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return ()
+    return tuple(str(item) for item in value) if isinstance(value, list) else ()
+
+
+def _parent_satisfies_condition(
+    status: str,
+    completion_outcome: Optional[str],
+    when_outcomes: Iterable[str],
+) -> bool:
+    required = tuple(when_outcomes)
+    if status == "archived":
+        # Preserve legacy semantics for unconditional links, but do not let
+        # archiving synthesize a business outcome for a conditional route.
+        return not required
+    return status == "done" and (
+        not required or completion_outcome in required
+    )
+
+
+def unsatisfied_parent_dependencies(
+    conn: sqlite3.Connection, task_id: str,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT p.id, p.status, p.completion_outcome, l.when_outcomes "
+        "FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? ORDER BY p.id", (task_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        required = _decode_outcome_conditions(row["when_outcomes"])
+        if not _parent_satisfies_condition(
+            row["status"], row["completion_outcome"], required
+        ):
+            result.append({
+                "id": row["id"], "status": row["status"],
+                "completion_outcome": row["completion_outcome"],
+                "when_outcomes": list(required),
+            })
+    return result
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -3772,13 +4290,7 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if not unsatisfied_parent_dependencies(conn, task_id):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3815,6 +4327,50 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def _task_resource_claim_keys(row: sqlite3.Row) -> tuple[str, ...]:
+    """Return canonical writable-resource keys guarded by the claim CAS."""
+    keys: list[str] = []
+    workspace_path = row["workspace_path"]
+    if row["workspace_kind"] in {"dir", "worktree"} and workspace_path:
+        keys.append(f"workspace:{os.path.realpath(os.path.expanduser(workspace_path))}")
+    if row["branch_name"]:
+        keys.append(f"branch:{row['branch_name'].strip()}")
+    if "output_root" in row.keys() and row["output_root"]:
+        keys.append(f"output:{os.path.realpath(os.path.expanduser(row['output_root']))}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _claim_conflict(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[dict[str, str]]:
+    """Find an active goal/workstream or writable-resource claim conflict."""
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return None
+    implementation_key = row["implementation_claim_key"]
+    if implementation_key:
+        conflict = conn.execute(
+            "SELECT id FROM tasks WHERE id != ? AND status = 'running' "
+            "AND implementation_claim_key = ? LIMIT 1",
+            (task_id, implementation_key),
+        ).fetchone()
+        if conflict:
+            return {"kind": "implementation", "task_id": conflict["id"]}
+    wanted = set(_task_resource_claim_keys(row))
+    if not wanted:
+        return None
+    for other in conn.execute(
+        "SELECT * FROM tasks WHERE id != ? AND status = 'running'", (task_id,)
+    ):
+        overlap = wanted.intersection(_task_resource_claim_keys(other))
+        if overlap:
+            return {
+                "kind": "writable_resource",
+                "task_id": other["id"],
+                "resource": sorted(overlap)[0],
+            }
+    return None
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3839,12 +4395,7 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
+        undone = unsatisfied_parent_dependencies(conn, task_id)
         if undone:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
@@ -3854,6 +4405,13 @@ def claim_task(
             _append_event(
                 conn, task_id, "claim_rejected",
                 {"reason": "parents_not_done"},
+            )
+            return None
+        conflict = _claim_conflict(conn, task_id)
+        if conflict:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "active_claim_conflict", **conflict},
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -3949,10 +4507,6 @@ def claim_review_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
-
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
     """
@@ -3960,6 +4514,38 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        review_row = conn.execute(
+            "SELECT review_input_fingerprint, review_last_fingerprint FROM tasks "
+            "WHERE id = ? AND status = 'review'", (task_id,),
+        ).fetchone()
+        if review_row is None:
+            return None
+        undone = unsatisfied_parent_dependencies(conn, task_id)
+        if undone:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'review'",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "claim_rejected", {"reason": "parents_not_done"}
+            )
+            return None
+        current = review_row["review_input_fingerprint"]
+        previous = review_row["review_last_fingerprint"]
+        if current is not None and current == previous:
+            _append_event(
+                conn, task_id, "review_waiting",
+                {"reason": "input_fingerprint_unchanged", "fingerprint": current},
+            )
+            return None
+        conflict = _claim_conflict(conn, task_id)
+        if conflict:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "active_claim_conflict", **conflict},
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3975,6 +4561,11 @@ def claim_review_task(
         )
         if cur.rowcount != 1:
             return None
+        if review_row is not None and review_row["review_input_fingerprint"] is not None:
+            conn.execute(
+                "UPDATE tasks SET review_last_fingerprint = review_input_fingerprint "
+                "WHERE id = ?", (task_id,),
+            )
         trow = conn.execute(
             "SELECT assignee, max_runtime_seconds, current_step_key "
             "FROM tasks WHERE id = ?",
@@ -4432,6 +5023,7 @@ def complete_task(
     result: Optional[str] = None,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    outcome: Optional[str] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
@@ -4464,6 +5056,34 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    if outcome is not None:
+        outcome = str(outcome).strip()
+        if not outcome:
+            raise ValueError("outcome must be a non-empty string when provided")
+    owner_gate = conn.execute(
+        "SELECT 1 FROM project_loops "
+        "WHERE current_owner_gate_task_id = ? AND status = 'owner_gate'",
+        (task_id,),
+    ).fetchone()
+    if owner_gate is not None and outcome not in {
+        "goal_complete",
+        "continue_bounded",
+        "stop",
+    }:
+        raise ValueError(
+            "owner gate completion requires outcome goal_complete, "
+            "continue_bounded, or stop"
+        )
+
+    current_verify = conn.execute(
+        "SELECT 1 FROM project_loops WHERE current_verify_task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if current_verify is not None and outcome not in VALID_PROJECT_LOOP_DECISIONS:
+        raise ValueError(
+            "project-loop Verify completion requires outcome goal_complete, "
+            "continue_bounded, owner_judgment_required, or stop"
+        )
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4502,6 +5122,7 @@ def complete_task(
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
+                       completion_outcome = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
@@ -4511,7 +5132,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (result, outcome, now, task_id),
             )
         else:
             cur = conn.execute(
@@ -4519,6 +5140,7 @@ def complete_task(
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
+                       completion_outcome = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
@@ -4529,7 +5151,7 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (result, outcome, now, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -4571,6 +5193,7 @@ def complete_task(
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
+            "outcome": outcome,
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
@@ -4592,6 +5215,14 @@ def complete_task(
             conn, task_id, "completed",
             completed_payload,
             run_id=run_id,
+        )
+        # Project-loop state is part of the completion control-plane write.
+        # Reuse this transaction so a reconcile exception cannot leave the
+        # Verify/owner gate done while the loop remains unadvanced.
+        from hermes_cli.kanban_project_loop import reconcile_from_completion
+
+        reconcile_from_completion(
+            conn, task_id, outcome, metadata, _in_transaction=True
         )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
@@ -4619,7 +5250,8 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
-    # Recompute ready status for dependents (separate txn so children see done).
+    # Recompute ready status for dependents after completion and any
+    # project-loop continuation are durable.
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
@@ -5214,6 +5846,9 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    pattern_key: Optional[str] = None,
+    root_fix_task_id: Optional[str] = None,
+    pattern_high_risk: bool = False,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -5419,6 +6054,11 @@ def block_task(
         run_id=run_id,
         reason=reason,
     )
+    if pattern_key:
+        record_task_pattern(
+            conn, pattern_key=pattern_key, affected_task_id=task_id,
+            root_fix_task_id=root_fix_task_id, high_risk=pattern_high_risk,
+        )
     return True
 
 
@@ -5456,15 +6096,8 @@ def promote_task(
         )
 
     if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
-            (task_id,),
-        ).fetchall()
         unsatisfied = [
-            p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
+            p["id"] for p in unsatisfied_parent_dependencies(conn, task_id)
         ]
         if unsatisfied:
             return False, (
@@ -5527,12 +6160,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
+        undone_parents = unsatisfied_parent_dependencies(conn, task_id)
         new_status = "todo" if undone_parents else "ready"
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
@@ -5873,6 +6501,39 @@ def decompose_triage_task(
     return child_ids
 
 
+def _detach_project_loop_control_task(
+    conn: sqlite3.Connection, task_id: str, *, action: str
+) -> None:
+    """Fail closed when a current Verify/owner-gate card leaves the board."""
+    rows = conn.execute(
+        "SELECT project_key, status FROM project_loops "
+        "WHERE current_verify_task_id = ? OR current_owner_gate_task_id = ?",
+        (task_id, task_id),
+    ).fetchall()
+    if not rows:
+        return
+    now = int(time.time())
+    for row in rows:
+        was_active = row["status"] not in {"complete", "stopped"}
+        reason = f"current project-loop control task {action}: {task_id}"
+        conn.execute(
+            "UPDATE project_loops SET "
+            "status = CASE WHEN status IN ('complete', 'stopped') THEN status ELSE 'stopped' END, "
+            "current_verify_task_id = CASE WHEN current_verify_task_id = ? THEN NULL ELSE current_verify_task_id END, "
+            "current_owner_gate_task_id = CASE WHEN current_owner_gate_task_id = ? THEN NULL ELSE current_owner_gate_task_id END, "
+            "last_decision = CASE WHEN status IN ('complete', 'stopped') THEN last_decision ELSE 'stop' END, "
+            "stop_reason = CASE WHEN status IN ('complete', 'stopped') THEN stop_reason ELSE ? END, "
+            "updated_at = ? WHERE project_key = ?",
+            (task_id, task_id, reason, now, row["project_key"]),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "project_loop_control_detached",
+            {"project_key": row["project_key"], "action": action, "loop_stopped": was_active},
+        )
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
@@ -5883,6 +6544,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _detach_project_loop_control_task(conn, task_id, action="archived")
         # If archive happened while a run was still in flight (e.g. user
         # archived a running task from the dashboard), close that run with
         # outcome='reclaimed' so attempt history isn't orphaned.
@@ -5913,6 +6575,12 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        _detach_project_loop_control_task(conn, task_id, action="deleted")
+        conn.execute("DELETE FROM project_loop_tasks WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM project_loop_reconciliations WHERE verify_task_id = ?",
+            (task_id,),
+        )
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -5936,9 +6604,15 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cur.rowcount != 1:
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
             return False
+        _detach_project_loop_control_task(conn, task_id, action="deleted")
+        conn.execute("DELETE FROM project_loop_tasks WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM project_loop_reconciliations WHERE verify_task_id = ?",
+            (task_id,),
+        )
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
@@ -8239,6 +8913,9 @@ def _dispatch_once_locked(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+    from hermes_cli.kanban_project_loop import mark_launched_rounds
+
+    mark_launched_rounds(conn)
     return result
 
 
@@ -9582,3 +10259,14 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+# Public project-loop API remains reachable from kanban_db, while the focused
+# implementation lives outside this already-large persistence module.
+from hermes_cli.kanban_project_loop import (  # noqa: E402
+    configure_project_loop,
+    get_project_loop,
+    list_project_loop_round_tasks,
+    reconcile_owner_gate,
+    reconcile_project_loop,
+)

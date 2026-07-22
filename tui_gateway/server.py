@@ -3560,6 +3560,7 @@ def _compress_session_history(
     approx_tokens: int | None = None,
     before_messages: list | None = None,
     history_version: int | None = None,
+    force_in_place: bool | None = None,
 ) -> tuple[int, dict]:
     from agent.conversation_compression import (
         finalize_context_engine_compression_notification,
@@ -3598,6 +3599,7 @@ def _compress_session_history(
             None,
             approx_tokens=approx_tokens,
             focus_topic=focus_topic or None,
+            force_in_place=force_in_place,
             defer_context_engine_notification=True,
         )
     except Exception:
@@ -8991,15 +8993,24 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    force_in_place = params.get("force_in_place")
+    if force_in_place is not None and not isinstance(force_in_place, bool):
+        return _err(rid, 4002, "force_in_place must be a boolean")
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         focus_topic = str(params.get("focus_topic", "") or "").strip()
         command = "/compress" + (f" {focus_topic}" if focus_topic else "")
+        payload = (
+            {"force_in_place": force_in_place}
+            if force_in_place is not None
+            else None
+        )
         try:
             ack = _send_compute_host_control(
                 sid,
                 route_name="session.compress",
                 command=command,
+                payload=payload,
                 wait=True,
             )
         except Exception as exc:
@@ -9007,7 +9018,35 @@ def _(rid, params: dict) -> dict:
         if ack.get("type") in {"control.error", "error"}:
             return _err(rid, 4009, str(ack.get("message") or "compute-host compress failed"))
         _apply_compute_host_metadata_mirror(session, ack)
-        return _ok(rid, {"status": "compressed", "turn_isolation": True, "host_ack": ack})
+        output_lines = [
+            line.strip()
+            for line in str(ack.get("output") or "").splitlines()
+            if line.strip()
+        ]
+        headline = output_lines[0] if output_lines else "Compression complete."
+        aborted = headline.lower().startswith("compression aborted")
+        token_line = output_lines[1] if len(output_lines) > 1 else None
+        note = "\n".join(output_lines[2:]) or None
+        info = ack.get("session_info")
+        if not isinstance(info, dict):
+            info = _session_info(session.get("agent"), session)
+        return _ok(
+            rid,
+            {
+                "status": "aborted" if aborted else "compressed",
+                "after_messages": int(ack.get("message_count") or 0),
+                "summary": {
+                    "headline": headline,
+                    "noop": aborted or "no changes" in headline.lower(),
+                    "token_line": token_line,
+                    "note": note,
+                },
+                "usage": info.get("usage") or {},
+                "info": info,
+                "turn_isolation": True,
+                "host_ack": ack,
+            },
+        )
     session, err = _sess(params, rid)
     if err:
         return err
@@ -9056,6 +9095,7 @@ def _(rid, params: dict) -> dict:
                 approx_tokens=before_tokens,
                 before_messages=before_messages,
                 history_version=history_version,
+                force_in_place=force_in_place,
             )
             with session["history_lock"]:
                 messages = list(session.get("history", []))
@@ -13360,6 +13400,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "learn",
         "compress",
         "compact",
+        "childcompress",
     }
 )
 
@@ -14002,7 +14043,7 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
-    if name in {"compress", "compact"}:
+    if name in {"compress", "compact", "childcompress"}:
         if not session:
             return _err(rid, 4001, "no active session to compress")
         if session.get("running"):
@@ -14012,15 +14053,34 @@ def _(rid, params: dict) -> dict:
         from agent.conversation_compression import (
             finalize_context_engine_compression_notification,
         )
+        from hermes_cli.partial_compress import extract_compress_flags
+
+        force_in_place = False if name == "childcompress" else None
+        arg, preview, aggressive, child_requested = extract_compress_flags(arg)
+        if child_requested:
+            force_in_place = False
+        if preview or aggressive:
+            output = _mirror_slash_side_effects(
+                params.get("session_id", ""),
+                session,
+                f"/{name} {params.get('arg', '')}".strip(),
+            )
+            return _ok(rid, {"type": "exec", "output": output})
 
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
+            payload = (
+                {"force_in_place": force_in_place}
+                if force_in_place is not None
+                else None
+            )
             try:
                 ack = _send_compute_host_control(
                     sid,
                     route_name="slash.compress",
                     command=command,
+                    payload=payload,
                     wait=True,
                 )
             except Exception as exc:
@@ -14060,6 +14120,7 @@ def _(rid, params: dict) -> dict:
                 approx_tokens=before_tokens,
                 before_messages=before_messages,
                 history_version=history_version,
+                force_in_place=force_in_place,
             )
             with session["history_lock"]:
                 after_messages = list(session.get("history", []))
@@ -14828,6 +14889,7 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
     {
         "clear",
         "compress",
+        "childcompress",
         "effort",
         "history",
         "models",
@@ -15031,10 +15093,14 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
         session is not None and _session_uses_compute_host(session)
     ):
         return None
-    if name == "compress":
+    if name in {"compress", "childcompress"}:
         if session is None:
-            return "no active session for /compress"
-        return _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())
+            return f"no active session for /{name}"
+        return _mirror_slash_side_effects(
+            sid,
+            session,
+            f"/{name} {arg}".strip(),
+        )
     if name == "usage":
         if session is None:
             return "(._.) No active agent -- send a message first."
@@ -15074,16 +15140,25 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
 
 
 
-def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
+def _mirror_slash_side_effects(
+    sid: str,
+    session: dict,
+    command: str,
+    *,
+    force_in_place: bool | None = None,
+) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
     if not parts:
         return ""
+    raw_name = parts[0].lower()
     name, arg, agent = (
-        parts[0],
+        raw_name,
         (parts[1].strip() if len(parts) > 1 else ""),
         session.get("agent"),
     )
+    if force_in_place is not None and not isinstance(force_in_place, bool):
+        return "live session sync failed: force_in_place must be a boolean"
     if name == "compact":
         # /compact is an alias of /compress in every host. The compute-host
         # slash.compress control forwards the user's raw alias verbatim, so
@@ -15091,6 +15166,25 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         # session never compresses and the deferred context-engine
         # notification wiring below is never exercised for that route.
         name = "compress"
+    elif name == "childcompress":
+        name = "compress"
+        force_in_place = False
+
+    compression_preview = False
+    compression_aggressive = False
+    compression_focus: str | None = None
+    if name == "compress":
+        from hermes_cli.partial_compress import extract_compress_flags
+
+        (
+            arg,
+            compression_preview,
+            compression_aggressive,
+            child_requested,
+        ) = extract_compress_flags(arg)
+        if child_requested:
+            force_in_place = False
+        compression_focus = arg or None
 
     # Reject agent-mutating commands during an in-flight turn.  These
     # all do read-then-mutate on live agent/session state that the
@@ -15100,11 +15194,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
     if _session_uses_compute_host(session) and name in _MUTATES_WHILE_RUNNING:
         route_name = f"slash.{name}"
+        payload = (
+            {"force_in_place": force_in_place}
+            if name == "compress" and force_in_place is not None
+            else None
+        )
         try:
             ack = _send_compute_host_control(
                 sid,
                 route_name=route_name,
                 command=command,
+                payload=payload,
                 wait=True,
             )
         except Exception as exc:
@@ -15113,8 +15213,15 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return str(ack.get("message") or f"compute-host {route_name} failed")
         _apply_compute_host_metadata_mirror(session, ack)
         return str(ack.get("output") or "")
-    if name in _MUTATES_WHILE_RUNNING and session.get("running"):
-        return f"session busy — /interrupt the current turn before running /{name}"
+    if (
+        name in _MUTATES_WHILE_RUNNING
+        and not compression_preview
+        and session.get("running")
+    ):
+        return (
+            "session busy — /interrupt the current turn before running "
+            f"/{raw_name}"
+        )
 
     try:
         if name == "model" and arg and agent:
@@ -15153,7 +15260,35 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 else 0
             )
 
-            _compress_session_history(session, arg)
+            if compression_preview:
+                from hermes_cli.partial_compress import summarize_compress_preview
+
+                report = summarize_compress_preview(
+                    _before_messages,
+                    False,
+                    2,
+                    compression_focus,
+                    _before_tokens,
+                )
+                lines = [f"🗜️ {line}" for line in report["lines"]]
+                if compression_aggressive:
+                    lines.append(
+                        "(._.) --aggressive is not supported; use "
+                        "'/compress here [N]' to keep only recent exchanges."
+                    )
+                return "\n".join(lines)
+
+            if compression_aggressive:
+                return (
+                    "(._.) --aggressive is not supported; use "
+                    "'/compress here [N]' to keep only recent exchanges."
+                )
+
+            _compress_session_history(
+                session,
+                arg,
+                force_in_place=force_in_place,
+            )
             _sync_session_key_after_compress(sid, session)
 
             with session["history_lock"]:

@@ -6171,6 +6171,7 @@ class AIAgent:
         task_id: str = "default",
         focus_topic: str = None,
         force: bool = False,
+        force_in_place: Optional[bool] = None,
         defer_context_engine_notification: bool = False,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
@@ -6184,7 +6185,7 @@ class AIAgent:
         return compress_context(
             self, messages, system_message,
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
-            force=force,
+            force=force, force_in_place=force_in_place,
             defer_context_engine_notification=defer_context_engine_notification,
         )
 

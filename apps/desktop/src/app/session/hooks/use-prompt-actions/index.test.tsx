@@ -386,6 +386,71 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).not.toContain('empty slash command')
   })
 
+  it('routes explicit child compression commands through canonical slash.exec with a long timeout', async () => {
+    const calls: {
+      method: string
+      params?: Record<string, unknown>
+      timeoutMs?: number
+    }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      calls.push({ method, params, timeoutMs })
+
+      return { output: 'Compressed' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/compress --child auth decisions')
+    await handle!.submitText('/childcompress auth decisions')
+
+    expect(calls).toEqual([
+      {
+        method: 'slash.exec',
+        params: {
+          command: 'compress --child auth decisions',
+          session_id: RUNTIME_SESSION_ID
+        },
+        timeoutMs: 300_000
+      },
+      {
+        method: 'slash.exec',
+        params: {
+          command: 'childcompress auth decisions',
+          session_id: RUNTIME_SESSION_ID
+        },
+        timeoutMs: 300_000
+      }
+    ])
+  })
+
+  it('does not replay mutating compression through command.dispatch after slash.exec fails', async () => {
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'slash.exec') {
+        throw new Error('synthetic timeout')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/compress --child')
+
+    expect(calls).toEqual(['slash.exec'])
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
   it('restores a degenerate slash payload to the composer instead of losing it', async () => {
     setComposerDraft('')
 

@@ -546,9 +546,17 @@ class ComputeHost:
                 self._handle_reload_mcp({**frame, "type": "reload_mcp"})
                 return
             command = str(frame.get("command") or "")
+            force_in_place = frame.get("force_in_place")
+            if force_in_place is not None and not isinstance(force_in_place, bool):
+                raise ValueError("force_in_place must be a boolean")
             output = ""
             if command:
-                output = server._mirror_slash_side_effects(sid, session, command)
+                output = server._mirror_slash_side_effects(
+                    sid,
+                    session,
+                    command,
+                    force_in_place=force_in_place,
+                )
             with session["history_lock"]:
                 history_version = int(session.get("history_version", 0))
                 message_count = len(session.get("history") or [])

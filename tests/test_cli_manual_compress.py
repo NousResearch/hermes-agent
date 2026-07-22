@@ -37,6 +37,7 @@ class DummyAgent:
         approx_tokens=None,
         focus_topic=None,
         force=False,
+        force_in_place=None,
         defer_context_engine_notification=False,
     ):
         self.calls.append(
@@ -46,6 +47,7 @@ class DummyAgent:
                 "approx_tokens": approx_tokens,
                 "focus_topic": focus_topic,
                 "force": force,
+                "force_in_place": force_in_place,
                 "defer_context_engine_notification": (
                     defer_context_engine_notification
                 ),
@@ -58,6 +60,33 @@ class DummyAgent:
                 old_session_id="old-session",
             )
         return ([{"role": "user", "content": "[CONTEXT SUMMARY]: compacted"}], "new system prompt")
+
+
+def _make_cli() -> HermesCLI:
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.conversation_history = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    cli.agent = DummyAgent()
+    cli.session_id = "old-session"
+    cli._pending_title = "old title"
+    cli._busy_command = lambda _message: nullcontext()
+    return cli
+
+
+def _patch_feedback(monkeypatch):
+    monkeypatch.setattr(
+        "agent.manual_compression_feedback.summarize_manual_compression",
+        lambda *args, **kwargs: {
+            "noop": False,
+            "headline": "compressed",
+            "token_line": "tokens reduced",
+            "note": "",
+        },
+    )
 
 
 def test_manual_compress_does_not_pass_cached_system_prompt(monkeypatch):
@@ -96,6 +125,43 @@ def test_manual_compress_does_not_pass_cached_system_prompt(monkeypatch):
     assert len(cli.agent.flush_calls) == 1
     assert cli.agent.host_events == ["persist", "notify"]
     assert len(cli.agent.boundary_calls) == 1
+
+
+def test_compress_child_flag_forces_rotation_without_becoming_focus(monkeypatch):
+    cli = _make_cli()
+    _patch_feedback(monkeypatch)
+
+    cli._manual_compress("/compress auth decisions --child")
+
+    assert len(cli.agent.calls) == 1
+    call = cli.agent.calls[0]
+    assert call["focus_topic"] == "auth decisions"
+    assert call["force_in_place"] is False
+
+
+def test_childcompress_forces_rotation_via_same_manual_path(monkeypatch):
+    cli = _make_cli()
+    _patch_feedback(monkeypatch)
+
+    cli._manual_compress(
+        "/childcompress auth decisions",
+        force_in_place=False,
+    )
+
+    assert len(cli.agent.calls) == 1
+    call = cli.agent.calls[0]
+    assert call["focus_topic"] == "auth decisions"
+    assert call["force_in_place"] is False
+
+
+def test_compress_child_preview_is_side_effect_free(monkeypatch):
+    cli = _make_cli()
+    _patch_feedback(monkeypatch)
+
+    cli._manual_compress("/compress --child --preview auth decisions")
+
+    assert cli.agent.calls == []
+    assert cli.session_id == "old-session"
 
 
 def test_manual_compress_flush_failure_discards_notification(monkeypatch):

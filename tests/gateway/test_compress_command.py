@@ -91,6 +91,54 @@ async def test_compress_command_reports_noop_without_success_banner():
 
 
 @pytest.mark.asyncio
+async def test_compress_child_flag_forces_rotation_override():
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-child"
+    agent_instance._compress_context.return_value = (list(history), "")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        await runner._handle_compress_command(
+            _make_event("/compress --child database schema")
+        )
+
+    kwargs = agent_instance._compress_context.call_args.kwargs
+    assert kwargs["focus_topic"] == "database schema"
+    assert kwargs["force_in_place"] is False
+
+
+@pytest.mark.asyncio
+async def test_compress_child_dry_run_is_side_effect_free():
+    history = _make_history()
+    runner = _make_runner(history)
+    rewrite_transcript = MagicMock()
+    update_session = MagicMock()
+    runner.session_store.rewrite_transcript = rewrite_transcript
+    runner.session_store.update_session = update_session
+
+    with patch("run_agent.AIAgent") as agent_cls:
+        result = await runner._handle_compress_command(
+            _make_event("/compress --child --dry-run database schema")
+        )
+
+    assert "Preview" in result
+    agent_cls.assert_not_called()
+    rewrite_transcript.assert_not_called()
+    update_session.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_compress_command_explains_when_token_estimate_rises():
     history = _make_history()
     compressed = [

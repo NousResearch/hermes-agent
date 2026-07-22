@@ -53,57 +53,85 @@ def test_compress_args_hint_documents_preview():
 
 
 def test_no_flags_passthrough():
-    rest, preview, aggressive = extract_compress_flags("here 3")
+    rest, preview, aggressive, child = extract_compress_flags("here 3")
     assert rest == "here 3"
     assert preview is False
     assert aggressive is False
+    assert child is False
 
 
 def test_preview_flag_stripped():
-    rest, preview, aggressive = extract_compress_flags("--preview")
+    rest, preview, aggressive, child = extract_compress_flags("--preview")
     assert rest == ""
     assert preview is True
     assert aggressive is False
+    assert child is False
 
 
 def test_dry_run_is_preview():
     for form in ("--dry-run", "--dryrun", "--DRY-RUN"):
-        _, preview, _ = extract_compress_flags(form)
+        _, preview, _, _ = extract_compress_flags(form)
         assert preview is True, form
 
 
 def test_aggressive_flag_detected():
-    rest, preview, aggressive = extract_compress_flags("--aggressive")
+    rest, preview, aggressive, child = extract_compress_flags("--aggressive")
     assert rest == ""
     assert preview is False
     assert aggressive is True
+    assert child is False
+
+
+def test_child_flag_detected_case_insensitively_and_stripped():
+    rest, preview, aggressive, child = extract_compress_flags(
+        "database --CHILD schema"
+    )
+    assert rest == "database schema"
+    assert preview is False
+    assert aggressive is False
+    assert child is True
 
 
 def test_flags_coexist_with_here_form():
-    rest, preview, aggressive = extract_compress_flags("--preview here 4")
+    rest, preview, aggressive, child = extract_compress_flags(
+        "--child --preview here 4"
+    )
     assert rest == "here 4"
     assert preview is True
+    assert aggressive is False
+    assert child is True
     partial, keep, focus = parse_partial_compress_args(rest)
     assert partial is True and keep == 4 and focus is None
 
 
 def test_flags_coexist_with_focus_topic():
-    rest, preview, _ = extract_compress_flags("database schema --dry-run")
+    rest, preview, _, child = extract_compress_flags(
+        "database schema --dry-run --child"
+    )
     assert rest == "database schema"
     assert preview is True
+    assert child is True
     partial, _, focus = parse_partial_compress_args(rest)
     assert partial is False and focus == "database schema"
 
 
 def test_aggressive_dry_run_combo():
-    rest, preview, aggressive = extract_compress_flags("--aggressive --dry-run")
+    rest, preview, aggressive, child = extract_compress_flags(
+        "--aggressive --dry-run"
+    )
     assert rest == ""
     assert preview is True and aggressive is True
+    assert child is False
 
 
 def test_empty_args():
-    rest, preview, aggressive = extract_compress_flags("")
-    assert rest == "" and preview is False and aggressive is False
+    rest, preview, aggressive, child = extract_compress_flags("")
+    assert (
+        rest == ""
+        and preview is False
+        and aggressive is False
+        and child is False
+    )
 
 
 # ── summarize_compress_preview ────────────────────────────────────────

@@ -48,6 +48,18 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/compress')).toBe(true)
   })
 
+  it('surfaces /childcompress as explicit child-continuation compression', () => {
+    expect(resolveDesktopCommand('/childcompress')).toEqual(
+      expect.objectContaining({
+        description: 'Compress into an explicit child continuation session',
+        name: '/childcompress',
+        surface: { kind: 'exec' }
+      })
+    )
+    expect(isDesktopSlashCommand('childcompress')).toBe(true)
+    expect(isDesktopSlashSuggestion('/childcompress')).toBe(true)
+  })
+
   it('surfaces /tools, /save, and /personality on the desktop', () => {
     expect(isDesktopSlashSuggestion('/tools')).toBe(true)
     expect(isDesktopSlashSuggestion('/save')).toBe(true)

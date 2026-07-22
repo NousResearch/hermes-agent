@@ -108,15 +108,15 @@ def parse_partial_compress_args(
     return False, DEFAULT_KEEP_LAST, text or None
 
 
-def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
-    """Strip ``--preview``/``--dry-run``/``--aggressive`` flags from the
+def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool, bool]:
+    """Strip ``--preview``/``--dry-run``/``--aggressive``/``--child`` flags from the
     argument string after ``/compress`` (or its ``/compact`` alias).
 
     Flags may appear anywhere and coexist with the positional forms
     (``here [N]``, ``--keep N``, or a focus topic); the returned
     remainder is what :func:`parse_partial_compress_args` should see.
 
-    Returns ``(remaining_args, preview, aggressive_requested)``:
+    Returns ``(remaining_args, preview, aggressive_requested, child_requested)``:
 
     * ``preview`` — True when ``--preview`` or ``--dry-run`` was given.
       The caller must report what WOULD be compressed (message counts,
@@ -127,9 +127,13 @@ def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
       the guarded ``_compress_context`` rotation machinery), so callers
       surface a "not supported" note instead of silently treating the
       flag as a focus topic.
+    * ``child_requested`` — True when ``--child`` was given. Callers pass
+      ``force_in_place=False`` for the real compression while previews remain
+      side-effect free.
     """
     preview = False
     aggressive = False
+    child = False
     kept: List[str] = []
     for tok in (raw_args or "").split():
         low = tok.lower()
@@ -137,9 +141,11 @@ def extract_compress_flags(raw_args: str) -> Tuple[str, bool, bool]:
             preview = True
         elif low == "--aggressive":
             aggressive = True
+        elif low == "--child":
+            child = True
         else:
             kept.append(tok)
-    return " ".join(kept), preview, aggressive
+    return " ".join(kept), preview, aggressive, child
 
 
 def summarize_compress_preview(

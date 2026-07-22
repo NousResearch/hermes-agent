@@ -107,6 +107,26 @@ def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     assert agent.events == []
 
 
+def test_codex_app_server_rejects_explicit_child_override():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
+        auto_compaction="hermes",
+    )
+    history = [{"role": "user", "content": "hi"}]
+
+    with pytest.raises(RuntimeError, match="child continuation"):
+        compress_context(
+            agent,
+            history,
+            "system",
+            force_in_place=False,
+        )
+
+    assert agent._codex_session.calls == 0
+    assert agent.session_id == "hermes-session-1"
+    assert agent.events == []
+
+
 def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting():
     agent = DummyAgent(
         TurnResult(thread_id="thread-1", turn_id="compact-turn-1")

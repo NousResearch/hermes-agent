@@ -26,6 +26,32 @@ const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your bal
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
+const COMPRESSION_PREVIEW_FLAGS = new Set(['--preview', '--dry-run', '--dryrun'])
+
+const compressionArgs = (arg: string) => {
+  const tokens = arg.trim().split(/\s+/).filter(Boolean)
+  let child = false
+  let preview = false
+  const focusTokens: string[] = []
+
+  for (const token of tokens) {
+    const flag = token.toLowerCase()
+
+    if (flag === '--child') {
+      child = true
+
+      continue
+    }
+
+    if (COMPRESSION_PREVIEW_FLAGS.has(flag)) {
+      preview = true
+    }
+
+    focusTokens.push(token)
+  }
+
+  return { child, focusTopic: focusTokens.join(' '), preview }
+}
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -226,13 +252,39 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['compact', 'childcompress'],
     help: 'compress transcript',
     name: 'compress',
-    run: (arg, ctx) => {
+    run: (arg, ctx, rawCommand) => {
+      const parsed = compressionArgs(arg)
+      const invokedName = rawCommand.trimStart().split(/\s+/, 1)[0]?.replace(/^\//, '').toLowerCase()
+      const explicitChild = parsed.child || invokedName === 'childcompress'
+
+      if (parsed.preview) {
+        const command = rawCommand.trim().replace(/^\//, '')
+
+        ctx.gateway
+          .rpc<SlashExecResponse>('slash.exec', {
+            command,
+            session_id: ctx.sid
+          })
+          .then(
+            ctx.guarded<SlashExecResponse>(r => {
+              if (r.output) {
+                ctx.transcript.sys(r.output)
+              }
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
-          ...(arg ? { focus_topic: arg } : {})
+          ...(parsed.focusTopic ? { focus_topic: parsed.focusTopic } : {}),
+          ...(explicitChild ? { force_in_place: false } : {})
         })
         .then(
           ctx.guarded<SessionCompressResponse>(r => {

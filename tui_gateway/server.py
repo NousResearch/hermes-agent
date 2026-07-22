@@ -9448,6 +9448,35 @@ def _legacy_spawn_tree_session_name(session_id: str) -> str:
     )
 
 
+_LEGACY_SPAWN_TREE_SNAPSHOT_RE = re.compile(r"^\d{8}T\d{6}\.json$")
+
+
+def _has_markerless_legacy_spawn_tree_snapshot(path: Path) -> bool:
+    """Recognize origin/main history by its generated snapshot objects.
+
+    The old writer created no ownership marker.  Markerless directories are
+    therefore read-compatible only when they contain at least one exact old
+    snapshot filename backed by a regular, single-link file.  This evidence
+    grants no write or cleanup authority.
+    """
+    try:
+        for candidate in path.iterdir():
+            if _LEGACY_SPAWN_TREE_SNAPSHOT_RE.fullmatch(candidate.name) is None:
+                continue
+            selected = candidate.lstat()
+            attributes = int(getattr(selected, "st_file_attributes", 0))
+            if (
+                stat_module.S_ISREG(selected.st_mode)
+                and selected.st_nlink == 1
+                and not candidate.is_symlink()
+                and not (attributes & 0x400)
+            ):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _is_legacy_spawn_tree_dir(
     path: Path, *, session_id: str | None = None
 ) -> bool:
@@ -9455,11 +9484,20 @@ def _is_legacy_spawn_tree_dir(
     try:
         path_stat = path.lstat()
         path_attrs = int(getattr(path_stat, "st_file_attributes", 0))
+        if (
+            not stat_module.S_ISDIR(path_stat.st_mode)
+            or path.is_symlink()
+            or path_attrs & 0x400
+        ):
+            return False
+        marker = path / ".hermes-managed"
+        marker_value = _read_spawn_tree_marker(marker)
+        marker_compatible = marker_value == "spawn-trees" or (
+            not os.path.lexists(marker)
+            and _has_markerless_legacy_spawn_tree_snapshot(path)
+        )
         return (
-            stat_module.S_ISDIR(path_stat.st_mode)
-            and not path.is_symlink()
-            and not (path_attrs & 0x400)
-            and _read_spawn_tree_marker(path / ".hermes-managed") == "spawn-trees"
+            marker_compatible
             and (
                 session_id is None
                 or path.name == _legacy_spawn_tree_session_name(session_id)

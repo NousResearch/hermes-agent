@@ -11912,6 +11912,65 @@ def test_spawn_tree_reads_legacy_owned_history_without_claiming_retention(tmp_pa
         reset_hermes_home_override(token)
 
 
+def test_spawn_tree_reads_origin_main_markerless_history_without_adopting_it(
+    tmp_path,
+):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        # Exact origin/main layout: sanitized session directory, second-level
+        # timestamp filename, and no ownership marker.
+        legacy_dir = home / "spawn-trees" / "legacy_session"
+        legacy_dir.mkdir(parents=True)
+        snapshot = legacy_dir / "20260102T030405.json"
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "session_id": "legacy:session",
+                    "started_at": 10,
+                    "finished_at": 20,
+                    "label": "origin-main",
+                    "subagents": [{"id": "old"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        saved = server._methods["spawn_tree.save"](
+            "r1",
+            {
+                "session_id": "legacy:session",
+                "subagents": [{"id": "new"}],
+            },
+        )
+        listed = server._methods["spawn_tree.list"](
+            "r2", {"session_id": "legacy:session"}
+        )
+        cross_session = server._methods["spawn_tree.list"](
+            "r3", {"cross_session": True}
+        )
+        loaded = server._methods["spawn_tree.load"](
+            "r4", {"path": str(snapshot)}
+        )
+
+        new_snapshot = Path(saved["result"]["path"])
+        assert new_snapshot.parent != legacy_dir
+        assert new_snapshot.parent.name.startswith("s-")
+        assert (new_snapshot.parent / ".hermes-managed").is_file()
+        assert not (legacy_dir / ".hermes-managed").exists()
+        assert {entry["path"] for entry in listed["result"]["entries"]} == {
+            str(snapshot),
+            str(new_snapshot),
+        }
+        assert any(
+            entry["path"] == str(snapshot)
+            for entry in cross_session["result"]["entries"]
+        )
+        assert loaded["result"]["subagents"] == [{"id": "old"}]
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_spawn_tree_save_does_not_unlink_recreated_temp_name(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     token = set_hermes_home_override(home)

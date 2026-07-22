@@ -134,11 +134,30 @@ def _tracked_registry_lock():
     """Serialize tracked.json read-modify-write cycles across processes."""
     lock_path = get_state_dir() / "tracked.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with _TRACKED_THREAD_LOCK, lock_path.open("a+b") as lock_file:
-        if lock_file.seek(0, os.SEEK_END) == 0:
-            lock_file.write(b"0")
-            lock_file.flush()
-        lock_file.seek(0)
+    flags = os.O_RDWR
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    with _TRACKED_THREAD_LOCK:
+        try:
+            lock_fd = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            selected = lock_path.lstat()
+            lock_fd = os.open(lock_path, flags)
+            opened = os.fstat(lock_fd)
+            current = lock_path.lstat()
+            if (
+                not stat.S_ISREG(selected.st_mode)
+                or int(getattr(selected, "st_file_attributes", 0)) & 0x400
+                or selected.st_nlink != 1
+                or opened.st_nlink != 1
+                or not os.path.samestat(selected, opened)
+                or not os.path.samestat(opened, current)
+            ):
+                os.close(lock_fd)
+                raise OSError("tracked registry lock is not independently owned")
+        lock_file = os.fdopen(lock_fd, "r+b", closefd=True)
         acquired = False
         try:
             if os.name == "nt":
@@ -152,16 +171,19 @@ def _tracked_registry_lock():
             acquired = True
             yield
         finally:
-            if acquired:
-                lock_file.seek(0)
-                if os.name == "nt":
-                    import msvcrt
+            try:
+                if acquired:
+                    lock_file.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
 
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
 
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
 
 
 def _load_tracked_unlocked() -> List[Dict[str, Any]]:
@@ -655,6 +677,365 @@ def _managed_marker_matches(path: Path, expected: str) -> bool:
         return False
 
 
+class _ManagedArtifactLease(NamedTuple):
+    """Opened directory objects that authorize one retention deletion."""
+
+    root_path: Path
+    root_identity: os.stat_result
+    root_resolved: Path
+    root_handle: int
+    session_path: Path
+    session_identity: os.stat_result
+    session_resolved: Path
+    session_handle: int
+    marker_identity: os.stat_result
+
+
+def _windows_opened_handle_path(handle: int) -> Path:
+    """Return the kernel-resolved path for an opened Windows handle."""
+    import ctypes
+
+    get_path = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    get_path.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+    ]
+    get_path.restype = ctypes.c_uint32
+    size = 512
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        length = get_path(handle, buffer, size, 0)
+        if length == 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if length < size:
+            value = buffer.value
+            break
+        size = length + 1
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
+
+
+def _windows_directory_handle_matches_stat(
+    handle: int,
+    expected: os.stat_result,
+) -> bool:
+    """Compare an opened Windows directory handle with Python stat evidence."""
+    import ctypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", ctypes.c_uint32),
+            ("creation_time", _FileTime),
+            ("access_time", _FileTime),
+            ("write_time", _FileTime),
+            ("volume_serial", ctypes.c_uint32),
+            ("size_high", ctypes.c_uint32),
+            ("size_low", ctypes.c_uint32),
+            ("links", ctypes.c_uint32),
+            ("index_high", ctypes.c_uint32),
+            ("index_low", ctypes.c_uint32),
+        ]
+
+    information = _ByHandleFileInformation()
+    get_information = ctypes.WinDLL(
+        "kernel32", use_last_error=True
+    ).GetFileInformationByHandle
+    get_information.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    get_information.restype = ctypes.c_int
+    if not get_information(handle, ctypes.byref(information)):
+        return False
+    file_index = (information.index_high << 32) | information.index_low
+    return bool(
+        information.volume_serial == expected.st_dev
+        and file_index == expected.st_ino
+        and not (information.attributes & 0x400)
+        and bool(information.attributes & 0x10)
+    )
+
+
+def _same_artifact_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
+        os.path.normpath(str(right))
+    )
+
+
+def _open_managed_artifact_directory(path: Path, *, parent_fd: Optional[int] = None) -> int:
+    """Open a directory object, denying replacement while it is retained."""
+    if os.name != "nt":
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if parent_fd is None:
+            return os.open(path, flags)
+        return os.open(path.name, flags, dir_fd=parent_fd)
+
+    import ctypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0x00000080,  # FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002,  # SHARE_READ | SHARE_WRITE; deny SHARE_DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle)
+
+
+def _close_managed_artifact_directory(handle: int) -> None:
+    if os.name == "nt":
+        import ctypes
+
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+    else:
+        os.close(handle)
+
+
+def _managed_artifact_directory_handle_matches(
+    handle: int,
+    path: Path,
+    expected: os.stat_result,
+    resolved: Path,
+) -> bool:
+    """Verify an opened directory still names the exact selected object."""
+    try:
+        current = path.lstat()
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or _is_link_like(path)
+            or not os.path.samestat(expected, current)
+            or path.resolve(strict=True) != resolved
+        ):
+            return False
+        if os.name != "nt":
+            opened = os.fstat(handle)
+            return stat.S_ISDIR(opened.st_mode) and os.path.samestat(expected, opened)
+        return bool(
+            _windows_directory_handle_matches_stat(handle, expected)
+            and _same_artifact_path(_windows_opened_handle_path(handle), resolved)
+        )
+    except OSError:
+        return False
+
+
+@contextmanager
+def _hold_managed_artifact_session(
+    artifact_root: Path,
+    artifact_root_identity: os.stat_result,
+    session_dir: Path,
+    session_identity: os.stat_result,
+    root_name: str,
+):
+    """Bind the root and its exact session child through retention work."""
+    root_handle: Optional[int] = None
+    session_handle: Optional[int] = None
+    try:
+        root_resolved = artifact_root.resolve(strict=True)
+        session_resolved = session_dir.resolve(strict=True)
+        if session_resolved.parent != root_resolved:
+            raise OSError("managed artifact session is not an exact root child")
+        root_handle = _open_managed_artifact_directory(artifact_root)
+        if not _managed_artifact_directory_handle_matches(
+            root_handle,
+            artifact_root,
+            artifact_root_identity,
+            root_resolved,
+        ):
+            raise OSError("managed artifact root changed while binding")
+        session_handle = _open_managed_artifact_directory(
+            session_dir,
+            parent_fd=root_handle if os.name != "nt" else None,
+        )
+        if not _managed_artifact_directory_handle_matches(
+            session_handle,
+            session_dir,
+            session_identity,
+            session_resolved,
+        ):
+            raise OSError("managed artifact session changed while binding")
+        marker = session_dir / _EMPTY_DIR_OWNERSHIP_MARKER
+        marker_identity = marker.lstat()
+        if (
+            not _same_regular_file_object(marker, marker_identity)
+            or not _managed_marker_matches(session_dir, root_name)
+            or not _same_regular_file_object(marker, marker_identity)
+        ):
+            raise OSError("managed artifact ownership marker changed while binding")
+        yield _ManagedArtifactLease(
+            artifact_root,
+            artifact_root_identity,
+            root_resolved,
+            root_handle,
+            session_dir,
+            session_identity,
+            session_resolved,
+            session_handle,
+            marker_identity,
+        )
+    finally:
+        if session_handle is not None:
+            _close_managed_artifact_directory(session_handle)
+        if root_handle is not None:
+            _close_managed_artifact_directory(root_handle)
+
+
+def _managed_artifact_lease_matches(
+    lease: _ManagedArtifactLease,
+    root_name: str,
+) -> bool:
+    """Revalidate directory handles plus marker/active-maintenance policy."""
+    return bool(
+        _managed_artifact_directory_handle_matches(
+            lease.root_handle,
+            lease.root_path,
+            lease.root_identity,
+            lease.root_resolved,
+        )
+        and _managed_artifact_directory_handle_matches(
+            lease.session_handle,
+            lease.session_path,
+            lease.session_identity,
+            lease.session_resolved,
+        )
+        and _same_regular_file_object(
+            lease.session_path / _EMPTY_DIR_OWNERSHIP_MARKER,
+            lease.marker_identity,
+        )
+        and _managed_marker_matches(lease.session_path, root_name)
+        and _same_regular_file_object(
+            lease.session_path / _EMPTY_DIR_OWNERSHIP_MARKER,
+            lease.marker_identity,
+        )
+        and not _has_active_maintenance_marker(lease.session_path)
+    )
+
+
+def _artifact_identity_from_stat(value: os.stat_result) -> Dict[str, int]:
+    return {
+        "version": 1,
+        "device": int(value.st_dev),
+        "inode": int(value.st_ino),
+        "mode": int(value.st_mode),
+        "size": int(value.st_size),
+        "mtime_ns": int(value.st_mtime_ns),
+        "ctime_ns": int(value.st_ctime_ns),
+    }
+
+
+def _bound_managed_artifact_stat(
+    lease: _ManagedArtifactLease,
+    name: str,
+) -> os.stat_result:
+    if os.name == "nt":
+        return (lease.session_path / name).lstat()
+    return os.stat(name, dir_fd=lease.session_handle, follow_symlinks=False)
+
+
+def _atomic_unlink_managed_artifact(
+    lease: _ManagedArtifactLease,
+    root_name: str,
+    name: str,
+    expected_identity: Dict[str, int],
+) -> Optional[str]:
+    """Quarantine/delete one exact session child through the bound directory."""
+    if (
+        name in {"", ".", ".."}
+        or Path(name).name != name
+        or _DELETE_QUARANTINE_TOKEN in name
+    ):
+        return "invalid managed artifact name"
+    quarantine_name = f".{name}{_DELETE_QUARANTINE_TOKEN}{uuid.uuid4().hex}"
+    fd: Optional[int] = None
+    try:
+        if not _managed_artifact_lease_matches(lease, root_name):
+            return "managed artifact container identity changed"
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if os.name == "nt":
+            fd = _open_delete_candidate(lease.session_path / name)
+        else:
+            fd = os.open(name, flags, dir_fd=lease.session_handle)
+        opened = os.fstat(fd)
+        selected = _bound_managed_artifact_stat(lease, name)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or int(getattr(opened, "st_file_attributes", 0)) & 0x400
+            or not os.path.samestat(opened, selected)
+            or _artifact_identity_from_stat(opened) != expected_identity
+        ):
+            return "managed artifact filesystem identity changed"
+        if os.name == "nt":
+            import msvcrt
+
+            actual = _windows_opened_handle_path(msvcrt.get_osfhandle(fd))
+            expected = lease.session_resolved / name
+            if not _same_artifact_path(actual, expected):
+                return "managed artifact opened outside its bound session"
+        if not _managed_artifact_lease_matches(lease, root_name):
+            return "managed artifact container identity changed"
+
+        if os.name == "nt":
+            os.replace(
+                lease.session_path / name,
+                lease.session_path / quarantine_name,
+            )
+        else:
+            os.replace(
+                name,
+                quarantine_name,
+                src_dir_fd=lease.session_handle,
+                dst_dir_fd=lease.session_handle,
+            )
+        moved = _bound_managed_artifact_stat(lease, quarantine_name)
+        if not os.path.samestat(opened, moved):
+            return _restore_quarantined_path(
+                lease.session_path / quarantine_name,
+                lease.session_path / name,
+            )
+        if not _managed_artifact_lease_matches(lease, root_name):
+            return "managed artifact container changed; preserved quarantine"
+        if os.name == "nt":
+            (lease.session_path / quarantine_name).unlink()
+        else:
+            os.unlink(quarantine_name, dir_fd=lease.session_handle)
+        return None
+    except OSError as exc:
+        return str(exc)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _remove_path(path: Path) -> Optional[str]:
     """Remove one regular file or directory, returning an error if unsure."""
     try:
@@ -1121,42 +1502,64 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
                     or _has_active_maintenance_marker(session_dir)
                 ):
                     continue
-                for artifact in session_dir.iterdir():
-                    if (
-                        not _same_directory_object(
-                            artifact_root, artifact_root_identity
-                        )
-                        or not _same_directory_object(session_dir, session_identity)
-                        or not _managed_marker_matches(session_dir, root_name)
-                        or _has_active_maintenance_marker(session_dir)
-                    ):
-                        break
-                    if (
-                        artifact.name in _MANAGED_ARTIFACT_SKIP_NAMES
-                        or _is_delete_quarantine_path(artifact)
-                        or _is_link_like(artifact)
-                        or not artifact.is_file()
-                    ):
+                with _hold_managed_artifact_session(
+                    artifact_root,
+                    artifact_root_identity,
+                    session_dir,
+                    session_identity,
+                    root_name,
+                ) as lease:
+                    if not _managed_artifact_lease_matches(lease, root_name):
                         continue
-                    try:
-                        identity = _capture_identity(artifact)
-                        if identity is None or not stat.S_ISREG(identity["mode"]):
+                    names = (
+                        [entry.name for entry in session_dir.iterdir()]
+                        if os.name == "nt"
+                        else os.listdir(lease.session_handle)
+                    )
+                    for name in names:
+                        artifact = session_dir / name
+                        if not _managed_artifact_lease_matches(lease, root_name):
+                            break
+                        if (
+                            name in _MANAGED_ARTIFACT_SKIP_NAMES
+                            or _is_delete_quarantine_path(Path(name))
+                        ):
                             continue
-                        age_seconds = (
-                            now.timestamp() - identity["mtime_ns"] / 1_000_000_000
-                        )
-                        if age_seconds <= retention_days * 24 * 60 * 60:
-                            continue
-                        size = identity["size"]
-                        error = _atomic_unlink_regular(artifact, identity)
-                        if error is not None:
-                            errors.append(f"{artifact}: {error}")
-                            continue
-                        artifacts += 1
-                        freed += size
-                        _log(f"DELETED: {artifact} (managed artifact retention)")
-                    except OSError as exc:
-                        errors.append(f"{artifact}: {exc}")
+                        try:
+                            selected = _bound_managed_artifact_stat(lease, name)
+                            if (
+                                not stat.S_ISREG(selected.st_mode)
+                                or int(
+                                    getattr(selected, "st_file_attributes", 0)
+                                )
+                                & 0x400
+                            ):
+                                continue
+                            identity = _artifact_identity_from_stat(selected)
+                            age_seconds = (
+                                now.timestamp()
+                                - identity["mtime_ns"] / 1_000_000_000
+                            )
+                            if age_seconds <= retention_days * 24 * 60 * 60:
+                                continue
+                            size = identity["size"]
+                            error = _atomic_unlink_managed_artifact(
+                                lease,
+                                root_name,
+                                name,
+                                identity,
+                            )
+                            if error is not None:
+                                errors.append(f"{artifact}: {error}")
+                                continue
+                            artifacts += 1
+                            freed += size
+                            _log(
+                                f"DELETED: {artifact} "
+                                "(managed artifact retention)"
+                            )
+                        except OSError as exc:
+                            errors.append(f"{artifact}: {exc}")
             except OSError as exc:
                 errors.append(f"{session_dir}: {exc}")
 

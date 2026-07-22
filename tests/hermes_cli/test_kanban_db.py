@@ -2637,6 +2637,110 @@ def test_completion_artifact_junction_open_restore_writes_no_external_bytes(
     assert artifact.read_text(encoding="utf-8") == "agent result"
 
 
+def test_completion_artifact_rejects_regular_parent_replacement_before_read(
+    kanban_home, monkeypatch
+):
+    """Replacing a source parent cannot redirect preservation to new bytes."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="replaced artifact parent")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        nested = workspace / "nested"
+        nested.mkdir()
+        artifact = nested / "result.txt"
+        artifact.write_bytes(b"agent result")
+        first_artifact = workspace / "first.txt"
+        first_artifact.write_bytes(b"first agent result")
+        parked = workspace / "nested-parked"
+        real_open = kb.os.open
+        replaced = False
+
+        def replace_parent_on_source_open(path, flags, *args, **kwargs):
+            nonlocal replaced
+            if (
+                not replaced
+                and Path(path).name == artifact.name
+                and not flags & kb.os.O_CREAT
+            ):
+                replaced = True
+                nested.rename(parked)
+                nested.mkdir()
+                (nested / artifact.name).write_bytes(b"unrelated bytes")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(kb.os, "open", replace_parent_on_source_open)
+
+        with pytest.raises(kb.ArtifactPreservationError, match="artifact"):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(first_artifact), str(artifact)]},
+            )
+        assert replaced
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert (nested / artifact.name).read_bytes() == b"unrelated bytes"
+    assert (parked / artifact.name).read_bytes() == b"agent result"
+    assert first_artifact.read_bytes() == b"first agent result"
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or list(attachment_dir.iterdir()) == []
+
+
+def test_completion_artifact_rejects_windows_junction_final_handle_path(
+    kanban_home, monkeypatch
+):
+    """A source handle outside the bound workspace is rejected before copying."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="redirected artifact source")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "result.txt"
+        artifact.write_bytes(b"agent result")
+        external = kanban_home / "junction-target.txt"
+        external.write_bytes(b"unrelated bytes")
+        real_open = kb.os.open
+        redirected = False
+
+        def junction_source_open(path, flags, *args, **kwargs):
+            nonlocal redirected
+            if (
+                not redirected
+                and Path(path).name == artifact.name
+                and not flags & kb.os.O_CREAT
+            ):
+                redirected = True
+                return real_open(external, flags)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(kb.os, "open", junction_source_open)
+        monkeypatch.setattr(
+            kb,
+            "_opened_scratch_artifact_matches_workspace",
+            lambda fd, evidence: False,
+        )
+
+        with pytest.raises(
+            kb.ArtifactPreservationError,
+            match="outside its bound workspace",
+        ):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(artifact)]},
+            )
+        assert redirected
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert artifact.read_bytes() == b"agent result"
+    assert external.read_bytes() == b"unrelated bytes"
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or list(attachment_dir.iterdir()) == []
+
+
 def test_completion_artifact_prefix_collision_is_not_registered(kanban_home):
     """A sibling whose name shares the attachment-dir prefix stays external."""
     with kb.connect() as conn:

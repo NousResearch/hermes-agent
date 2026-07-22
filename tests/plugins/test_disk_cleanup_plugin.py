@@ -15,6 +15,7 @@ import importlib
 import concurrent.futures
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -357,6 +358,23 @@ class TestStaleCronEntryMigration:
 
 
 class TestTrackForgetQuick:
+    def test_registry_lock_refuses_hardlink_without_writing(self, _isolate_env):
+        dg = _load_lib()
+        state_dir = _isolate_env / "disk-cleanup"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        external = _isolate_env / "operator-empty.txt"
+        external.write_bytes(b"")
+        lock_path = state_dir / "tracked.lock"
+        try:
+            lock_path.hardlink_to(external)
+        except OSError as exc:
+            pytest.skip(f"hardlinks unavailable: {exc}")
+
+        with pytest.raises(OSError, match="not independently owned"):
+            dg.load_tracked()
+
+        assert external.read_bytes() == b""
+
     def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "test_a.py"
@@ -838,21 +856,110 @@ class TestTrackForgetQuick:
         stale.write_text("owned")
         old = time.time() - (15 * 24 * 60 * 60)
         os.utime(stale, (old, old))
-        real_unlink = dg._atomic_unlink_regular
+        real_unlink = dg._atomic_unlink_managed_artifact
 
-        def replace_before_unlink(path, expected_identity=None):
-            assert expected_identity is not None
+        def replace_before_unlink(lease, root_name, name, expected_identity):
             path.unlink()
             path.write_text("human replacement")
-            return real_unlink(path, expected_identity)
+            return real_unlink(lease, root_name, name, expected_identity)
 
-        monkeypatch.setattr(dg, "_atomic_unlink_regular", replace_before_unlink)
+        path = stale
+        monkeypatch.setattr(
+            dg, "_atomic_unlink_managed_artifact", replace_before_unlink
+        )
 
         summary = dg.quick()
 
         assert summary["artifacts"] == 0
         assert summary["errors"]
         assert stale.read_text() == "human replacement"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX directory-fd regression")
+    def test_retention_preserves_session_replaced_after_child_selection(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-bound-race"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        owned = session_dir / "old.txt"
+        owned.write_text("owned")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(owned, (old, old))
+        displaced = session_dir.with_name("session-bound-race-displaced")
+        real_unlink = dg._atomic_unlink_managed_artifact
+        injected = False
+
+        def replace_session(lease, root_name, name, expected_identity):
+            nonlocal injected
+            if not injected:
+                injected = True
+                session_dir.rename(displaced)
+                session_dir.mkdir()
+                (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+                human = session_dir / name
+                human.write_text("human replacement")
+                os.utime(human, (old, old))
+            return real_unlink(lease, root_name, name, expected_identity)
+
+        monkeypatch.setattr(
+            dg, "_atomic_unlink_managed_artifact", replace_session
+        )
+
+        summary = dg.quick()
+
+        assert injected
+        assert summary["artifacts"] == 0
+        assert summary["errors"]
+        assert (session_dir / "old.txt").read_text() == "human replacement"
+        assert (displaced / "old.txt").read_text() == "owned"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+    def test_retention_preserves_external_junction_replacement(
+        self, _isolate_env, tmp_path, monkeypatch
+    ):
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / "session-junction-race"
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text("hook_outputs\n")
+        (session_dir / "owned.txt").write_text("owned")
+        external = tmp_path / "operator-session"
+        external.mkdir()
+        (external / ".hermes-managed").write_text("hook_outputs\n")
+        human = external / "human.txt"
+        human.write_text("keep")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(human, (old, old))
+        displaced = session_dir.with_name("session-before-junction")
+        real_marker_matches = dg._managed_marker_matches
+        injected = False
+
+        def replace_with_junction(path, expected):
+            nonlocal injected
+            matched = real_marker_matches(path, expected)
+            if path == session_dir and matched and not injected:
+                injected = True
+                path.rename(displaced)
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(path), str(external)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if created.returncode:
+                    pytest.skip(
+                        f"junction creation unavailable: {created.stderr.strip()}"
+                    )
+            return matched
+
+        monkeypatch.setattr(dg, "_managed_marker_matches", replace_with_junction)
+
+        summary = dg.quick()
+
+        assert injected
+        assert summary["artifacts"] == 0
+        assert human.read_text() == "keep"
+        assert (displaced / "owned.txt").read_text() == "owned"
 
     def test_retention_preserves_replaced_managed_session(
         self, _isolate_env, monkeypatch
@@ -934,14 +1041,14 @@ class TestTrackForgetQuick:
         stale.write_text("preserve")
         old = time.time() - (15 * 24 * 60 * 60)
         os.utime(stale, (old, old))
-        real_unlink = Path.unlink
+        real_unlink = dg.os.unlink
 
         def fail_quarantine_unlink(path, *args, **kwargs):
-            if dg._DELETE_QUARANTINE_TOKEN in path.name:
+            if dg._DELETE_QUARANTINE_TOKEN in str(path):
                 raise PermissionError("simulated live handle")
             return real_unlink(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "unlink", fail_quarantine_unlink)
+        monkeypatch.setattr(dg.os, "unlink", fail_quarantine_unlink)
         first = dg.quick()
         quarantines = [
             path
@@ -953,7 +1060,7 @@ class TestTrackForgetQuick:
         assert len(quarantines) == 1
         assert quarantines[0].read_text() == "preserve"
 
-        monkeypatch.setattr(Path, "unlink", real_unlink)
+        monkeypatch.setattr(dg.os, "unlink", real_unlink)
         second = dg.quick()
 
         assert second["artifacts"] == 0

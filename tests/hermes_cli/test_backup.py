@@ -1498,6 +1498,9 @@ class TestSafeCopyDb:
         assert backup_mod._safe_copy_db(src, dst)
 
         assert str(dst) not in opened
+        assert ":memory:" not in opened
+        assert any(".hermes-sqlite-backup-" in path for path in opened)
+        assert not list(tmp_path.glob(".hermes-sqlite-backup-*"))
         with real_connect(dst) as copied:
             assert copied.execute("SELECT value FROM state").fetchall() == [("safe",)]
 
@@ -1694,6 +1697,35 @@ class TestQuickSnapshot:
         assert not (external / "state.db").exists()
         assert not (external / "manifest.json").exists()
         assert displaced is not None and displaced.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+    def test_persistent_junction_home_can_snapshot_and_restore(
+        self, hermes_home, tmp_path
+    ):
+        import hermes_cli.backup as backup_mod
+
+        linked_home = tmp_path / "linked-hermes-home"
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(linked_home), str(hermes_home)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode:
+            pytest.skip(f"junction creation unavailable: {created.stderr.strip()}")
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=linked_home)
+        assert snap_id is not None
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  provider: changed\n", encoding="utf-8"
+        )
+
+        assert backup_mod.restore_quick_snapshot(
+            snap_id, hermes_home=linked_home
+        )
+        assert "openrouter" in (hermes_home / "config.yaml").read_text(
+            encoding="utf-8"
+        )
 
     def test_creates_snapshot(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot

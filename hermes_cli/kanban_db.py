@@ -5062,6 +5062,212 @@ def _merge_completion_prose_artifacts(
     return updated
 
 
+@dataclass(frozen=True)
+class _ScratchArtifactSourceEvidence:
+    workspace: Path
+    workspace_resolved: Path
+    workspace_identity: os.stat_result
+    marker_identity: os.stat_result
+    source: Path
+    source_relative: Path
+    source_identity: os.stat_result
+    parent_identities: tuple[tuple[Path, os.stat_result], ...]
+    task_id: str
+    board: str
+    tenant: Optional[str]
+
+
+def _capture_scratch_artifact_source_evidence(
+    workspace: Path,
+    source: Path,
+    *,
+    ownership: tuple[os.stat_result, os.stat_result],
+    task_id: str,
+    board: str,
+    tenant: Optional[str],
+) -> _ScratchArtifactSourceEvidence:
+    """Bind a declared source to the owned workspace and every parent."""
+    workspace_identity, marker_identity = ownership
+    workspace_resolved = workspace.resolve(strict=True)
+    if not os.path.samestat(workspace_identity, workspace_resolved.lstat()):
+        raise ArtifactPreservationError("scratch workspace changed during binding")
+    try:
+        relative = source.relative_to(workspace_resolved)
+    except ValueError as exc:
+        raise ArtifactPreservationError(
+            f"declared scratch artifact escaped its workspace: {source}"
+        ) from exc
+    if not relative.parts or relative == Path("."):
+        raise ArtifactPreservationError(
+            f"declared scratch artifact is not a workspace file: {source}"
+        )
+
+    parents: list[tuple[Path, os.stat_result]] = []
+    current = workspace_resolved
+    for part in relative.parts[:-1]:
+        current = current / part
+        selected = current.lstat()
+        if not stat.S_ISDIR(selected.st_mode) or _stat_is_reparse(selected):
+            raise ArtifactPreservationError(
+                f"declared scratch artifact parent is not a regular directory: {current}"
+            )
+        parents.append((current, selected))
+
+    source_identity = source.lstat()
+    if not stat.S_ISREG(source_identity.st_mode) or _stat_is_reparse(source_identity):
+        raise ArtifactPreservationError(
+            f"declared scratch artifact is unavailable or not a regular file: {source}"
+        )
+    evidence = _ScratchArtifactSourceEvidence(
+        workspace=workspace,
+        workspace_resolved=workspace_resolved,
+        workspace_identity=workspace_identity,
+        marker_identity=marker_identity,
+        source=source,
+        source_relative=relative,
+        source_identity=source_identity,
+        parent_identities=tuple(parents),
+        task_id=task_id,
+        board=board,
+        tenant=tenant,
+    )
+    if not _scratch_artifact_source_evidence_is_current(evidence):
+        raise ArtifactPreservationError(
+            f"declared scratch artifact path changed while binding: {source}"
+        )
+    return evidence
+
+
+def _scratch_artifact_source_evidence_is_current(
+    evidence: _ScratchArtifactSourceEvidence,
+) -> bool:
+    """Revalidate the workspace marker, parent chain, and source pathname."""
+    ownership = _scratch_workspace_ownership_evidence(
+        evidence.workspace,
+        task_id=evidence.task_id,
+        board=evidence.board,
+        tenant=evidence.tenant,
+    )
+    if ownership is None:
+        return False
+    workspace_identity, marker_identity = ownership
+    try:
+        if (
+            not os.path.samestat(evidence.workspace_identity, workspace_identity)
+            or not os.path.samestat(evidence.marker_identity, marker_identity)
+            or evidence.workspace.resolve(strict=True) != evidence.workspace_resolved
+            or not os.path.samestat(
+                evidence.workspace_identity, evidence.workspace_resolved.lstat()
+            )
+        ):
+            return False
+        for parent, expected in evidence.parent_identities:
+            current = parent.lstat()
+            if (
+                not stat.S_ISDIR(current.st_mode)
+                or _stat_is_reparse(current)
+                or not os.path.samestat(expected, current)
+            ):
+                return False
+        current_source = evidence.source.lstat()
+        return bool(
+            stat.S_ISREG(current_source.st_mode)
+            and not _stat_is_reparse(current_source)
+            and os.path.samestat(evidence.source_identity, current_source)
+        )
+    except OSError:
+        return False
+
+
+def _opened_scratch_artifact_matches_workspace(
+    fd: int,
+    evidence: _ScratchArtifactSourceEvidence,
+) -> bool:
+    """On Windows, bind the source handle's final path to the workspace."""
+    if os.name != "nt":
+        return True
+    actual_path = _opened_file_actual_path(fd, evidence.source)
+    expected_path = evidence.workspace_resolved.joinpath(
+        *evidence.source_relative.parts
+    )
+    return _same_resolved_path(actual_path, expected_path)
+
+
+@contextlib.contextmanager
+def _open_bound_scratch_artifact(
+    evidence: _ScratchArtifactSourceEvidence,
+):
+    """Open a source through its bound parent chain and retain those handles."""
+    source_fd: Optional[int] = None
+    stream = None
+    directory_fds: list[int] = []
+    source_flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        source_flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        source_flags |= os.O_NOFOLLOW
+    try:
+        supports_dir_fd = os.name != "nt" and os.open in os.supports_dir_fd
+        if supports_dir_fd:
+            directory_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                directory_flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                directory_flags |= os.O_NOFOLLOW
+            root_fd = os.open(evidence.workspace_resolved, directory_flags)
+            directory_fds.append(root_fd)
+            if not os.path.samestat(
+                evidence.workspace_identity, os.fstat(root_fd)
+            ):
+                raise ArtifactPreservationError(
+                    "scratch workspace handle identity changed"
+                )
+            parent_fd = root_fd
+            for (parent, expected), part in zip(
+                evidence.parent_identities,
+                evidence.source_relative.parts[:-1],
+                strict=True,
+            ):
+                opened_parent = os.open(part, directory_flags, dir_fd=parent_fd)
+                directory_fds.append(opened_parent)
+                if not os.path.samestat(expected, os.fstat(opened_parent)):
+                    raise ArtifactPreservationError(
+                        f"declared scratch artifact parent handle changed: {parent}"
+                    )
+                parent_fd = opened_parent
+            source_fd = os.open(
+                evidence.source_relative.name,
+                source_flags,
+                dir_fd=parent_fd,
+            )
+        else:
+            source_fd = os.open(evidence.source, source_flags)
+
+        opened = os.fstat(source_fd)
+        if not _opened_scratch_artifact_matches_workspace(source_fd, evidence):
+            raise ArtifactPreservationError(
+                "declared scratch artifact opened outside its bound workspace"
+            )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(evidence.source_identity, opened)
+            or not _scratch_artifact_source_evidence_is_current(evidence)
+        ):
+            raise ArtifactPreservationError(
+                f"declared scratch artifact identity changed before copy: {evidence.source}"
+            )
+        stream = os.fdopen(source_fd, "rb")
+        source_fd = None
+        yield stream, opened
+    finally:
+        if stream is not None:
+            stream.close()
+        elif source_fd is not None:
+            os.close(source_fd)
+        for directory_fd in reversed(directory_fds):
+            os.close(directory_fd)
+
+
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5081,12 +5287,13 @@ def _persist_scratch_completion_artifacts(
 
     workspace = Path(row["workspace_path"]).expanduser()
     board = _connection_board(conn)
-    if not _scratch_workspace_is_owned(
+    workspace_ownership = _scratch_workspace_ownership_evidence(
         workspace,
         task_id=task_id,
         board=board,
         tenant=row["tenant"],
-    ):
+    )
+    if workspace_ownership is None or board is None:
         return
 
     try:
@@ -5137,26 +5344,33 @@ def _persist_scratch_completion_artifacts(
             continue
 
         try:
-            source_path_stat = resolved_src.lstat()
-            source_path_identity = _filesystem_identity(source_path_stat)
-            source_reparse = int(
-                getattr(source_path_stat, "st_file_attributes", 0)
-            ) & 0x400
-        except OSError:
-            source_path_identity = None
-            source_reparse = 0
-        if (
-            source_path_identity is None
-            or src.is_symlink()
-            or source_reparse
-            or not stat.S_ISREG(source_path_identity[2])
-        ):
+            declared_source = src.lstat()
+            if (
+                not stat.S_ISREG(declared_source.st_mode)
+                or _stat_is_reparse(declared_source)
+            ):
+                raise ArtifactPreservationError(
+                    "declared scratch artifact is unavailable or not a regular file: "
+                    f"{artifact}"
+                )
+            source_evidence = _capture_scratch_artifact_source_evidence(
+                workspace,
+                resolved_src,
+                ownership=workspace_ownership,
+                task_id=task_id,
+                board=board,
+                tenant=row["tenant"],
+            )
+        except ArtifactPreservationError:
+            _discard_copies()
+            raise
+        except OSError as exc:
             _discard_copies()
             raise ArtifactPreservationError(
                 f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-            )
+            ) from exc
 
-        size = source_path_identity[3]
+        size = source_evidence.source_identity.st_size
         if size > KANBAN_ATTACHMENT_MAX_BYTES:
             _discard_copies()
             raise ArtifactPreservationError(
@@ -5188,20 +5402,18 @@ def _persist_scratch_completion_artifacts(
                 raise ArtifactPreservationError(
                     f"attachment destination changed during resolution: {attachment_dir}"
                 )
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            source_flags = os.O_RDONLY
-            if hasattr(os, "O_BINARY"):
-                source_flags |= os.O_BINARY
-            if hasattr(os, "O_NOFOLLOW"):
-                source_flags |= os.O_NOFOLLOW
+            dest = _unique_attachment_path(
+                attachment_dir, source_evidence.source.name, used_destinations
+            )
             destination_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             if hasattr(os, "O_BINARY"):
                 destination_flags |= os.O_BINARY
             if hasattr(os, "O_NOFOLLOW"):
                 destination_flags |= os.O_NOFOLLOW
             with contextlib.ExitStack() as stack:
-                source_fd = os.open(resolved_src, source_flags)
-                source_file = stack.enter_context(os.fdopen(source_fd, "rb"))
+                source_file, source_before = stack.enter_context(
+                    _open_bound_scratch_artifact(source_evidence)
+                )
                 destination_fd = os.open(dest, destination_flags, 0o600)
                 destination_file = stack.enter_context(
                     os.fdopen(destination_fd, "wb")
@@ -5220,13 +5432,13 @@ def _persist_scratch_completion_artifacts(
                         attachment_dir_resolved,
                     )
                     destination_bound = True
-                    source_before = os.fstat(source_file.fileno())
-                    source_path_open = resolved_src.lstat()
                     if (
-                        not os.path.samestat(source_path_stat, source_before)
-                        or not os.path.samestat(source_before, source_path_open)
-                        or not stat.S_ISREG(source_before.st_mode)
-                        or _stat_is_reparse(source_path_open)
+                        not os.path.samestat(
+                            source_evidence.source_identity, source_before
+                        )
+                        or not _scratch_artifact_source_evidence_is_current(
+                            source_evidence
+                        )
                     ):
                         raise ArtifactPreservationError(
                             f"declared scratch artifact identity changed before copy: {artifact}"
@@ -5241,12 +5453,13 @@ def _persist_scratch_completion_artifacts(
                         destination_touched = True
                         destination_file.write(chunk)
                     source_after = os.fstat(source_file.fileno())
-                    source_path_after = resolved_src.lstat()
                     if (
                         _filesystem_identity(source_after)
                         != _filesystem_identity(source_before)
-                        or not os.path.samestat(source_after, source_path_after)
                         or copied != source_before.st_size
+                        or not _scratch_artifact_source_evidence_is_current(
+                            source_evidence
+                        )
                     ):
                         raise ArtifactPreservationError(
                             f"declared scratch artifact changed while being copied: {artifact}"

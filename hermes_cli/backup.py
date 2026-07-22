@@ -101,55 +101,29 @@ def _opened_fd_matches_path(fd: int, expected_path: Path) -> bool:
     actual = _opened_fd_path(fd)
     if actual is None:
         return False
-    expected = os.path.abspath(os.fspath(expected_path))
+    try:
+        expected = os.fspath(expected_path.resolve(strict=True))
+    except OSError:
+        return False
     return os.path.normcase(os.path.normpath(os.fspath(actual))) == os.path.normcase(
         os.path.normpath(expected)
     )
 
 
 def _windows_handle_matches_stat(handle: int, expected: os.stat_result) -> bool:
-    """Compare a raw Windows handle without weakening its rename guard."""
+    """Compare a raw Windows handle with a Python stat across Python versions."""
     if os.name != "nt":
         return False
     try:
-        import ctypes
-
-        class _FileTime(ctypes.Structure):
-            _fields_ = [
-                ("low", ctypes.c_uint32),
-                ("high", ctypes.c_uint32),
-            ]
-
-        class _ByHandleFileInformation(ctypes.Structure):
-            _fields_ = [
-                ("attributes", ctypes.c_uint32),
-                ("creation_time", _FileTime),
-                ("access_time", _FileTime),
-                ("write_time", _FileTime),
-                ("volume_serial", ctypes.c_uint32),
-                ("size_high", ctypes.c_uint32),
-                ("size_low", ctypes.c_uint32),
-                ("links", ctypes.c_uint32),
-                ("index_high", ctypes.c_uint32),
-                ("index_low", ctypes.c_uint32),
-            ]
-
-        information = _ByHandleFileInformation()
-        get_information = ctypes.windll.kernel32.GetFileInformationByHandle
-        get_information.argtypes = (
-            ctypes.c_void_p,
-            ctypes.POINTER(_ByHandleFileInformation),
-        )
-        get_information.restype = ctypes.c_int
-        if not get_information(handle, ctypes.byref(information)):
+        actual_path = _opened_windows_handle_path(handle)
+        if actual_path is None:
             return False
-        file_index = (information.index_high << 32) | information.index_low
-        return bool(
-            information.volume_serial == expected.st_dev
-            and file_index == expected.st_ino
-            and not (information.attributes & 0x400)
+        actual = actual_path.lstat()
+        return (
+            os.path.samestat(expected, actual)
+            and not int(getattr(actual, "st_file_attributes", 0)) & 0x400
         )
-    except (AttributeError, OSError, ValueError):
+    except OSError:
         return False
 
 
@@ -511,6 +485,11 @@ def _safe_copy_db(
     owner_fd: Optional[int] = None
     source_fd: Optional[int] = None
     source_parent_fd: Optional[int] = None
+    backup_stage_fd: Optional[int] = None
+    backup_stage_path: Optional[Path] = None
+    backup_stage_identity: Optional[os.stat_result] = None
+    backup_stage_dir: Optional[Path] = None
+    backup_stage_dir_identity: Optional[os.stat_result] = None
     cleanup_identity = expected_dst_identity
     published_destination: Optional[os.stat_result] = None
     created_here = False
@@ -566,6 +545,37 @@ def _safe_copy_db(
                     "SQLite safe copy refused replaced destination %s", dst
                 )
                 return False
+
+        # Create the disk-backed destination before baselining the source
+        # parent. The stage may legitimately share that directory with the
+        # source, and its own creation must not look like outside mutation.
+        backup_stage_dir = Path(
+            tempfile.mkdtemp(prefix=".hermes-sqlite-backup-", dir=dst.parent)
+        )
+        backup_stage_dir_identity = backup_stage_dir.lstat()
+        if (
+            not stat.S_ISDIR(backup_stage_dir_identity.st_mode)
+            or int(
+                getattr(backup_stage_dir_identity, "st_file_attributes", 0)
+            )
+            & 0x400
+        ):
+            raise OSError("SQLite backup staging directory is not regular")
+        backup_stage_fd, stage_name = tempfile.mkstemp(
+            prefix=".hermes-sqlite-backup-",
+            suffix=".db",
+            dir=backup_stage_dir,
+        )
+        backup_stage_path = Path(stage_name)
+        backup_stage_identity = os.fstat(backup_stage_fd)
+        if (
+            not stat.S_ISREG(backup_stage_identity.st_mode)
+            or not os.path.samestat(
+                backup_stage_identity, backup_stage_path.lstat()
+            )
+            or not _opened_fd_matches_path(backup_stage_fd, backup_stage_path)
+        ):
+            raise OSError("SQLite backup staging path changed during creation")
 
         source_parent = src.parent
         parent_selected = source_parent.lstat()
@@ -649,12 +659,22 @@ def _safe_copy_db(
             ):
                 raise OSError(f"SQLite source changed while opening backup: {src}")
 
-        # Destination provenance is exact because SQLite never receives the
-        # caller's pathname: its consistent WAL snapshot is serialized from
-        # memory and copied only through the retained destination descriptor.
-        backup_conn = sqlite3.connect(":memory:")
+        # Keep the consistent SQLite snapshot disk-backed so multi-GB databases
+        # do not require a full in-memory database plus a second serialized
+        # bytes copy. SQLite receives only a fresh, random staging pathname;
+        # the completed bytes are copied through retained exact descriptors.
+        backup_conn = sqlite3.connect(str(backup_stage_path))
         conn.backup(backup_conn)
-        serialized = backup_conn.serialize()
+        backup_conn.close()
+        backup_conn = None
+        stage_after_backup = os.fstat(backup_stage_fd)
+        stage_path_after_backup = backup_stage_path.lstat()
+        if (
+            not os.path.samestat(backup_stage_identity, stage_after_backup)
+            or not os.path.samestat(stage_after_backup, stage_path_after_backup)
+        ):
+            raise OSError("SQLite backup staging path changed during backup")
+        backup_stage_identity = stage_path_after_backup
 
         if not os.path.samestat(source_selected, src.lstat()):
             raise OSError(f"SQLite source changed during backup: {src}")
@@ -683,15 +703,14 @@ def _safe_copy_db(
 
         os.lseek(owner_fd, 0, os.SEEK_SET)
         os.ftruncate(owner_fd, 0)
-        serialized_view = memoryview(serialized)
-        offset = 0
-        while offset < len(serialized_view):
-            written = os.write(
-                owner_fd, serialized_view[offset : offset + 1024 * 1024]
-            )
-            if written <= 0:
-                raise OSError("short write while copying SQLite snapshot")
-            offset += written
+        os.lseek(backup_stage_fd, 0, os.SEEK_SET)
+        while chunk := os.read(backup_stage_fd, 1024 * 1024):
+            view = memoryview(chunk)
+            while view:
+                written = os.write(owner_fd, view)
+                if written <= 0:
+                    raise OSError("short write while copying SQLite snapshot")
+                view = view[written:]
         os.fsync(owner_fd)
         success = True
     except Exception as exc:
@@ -703,6 +722,27 @@ def _safe_copy_db(
                     connection.close()
                 except Exception:
                     pass
+        if backup_stage_fd is not None:
+            try:
+                os.close(backup_stage_fd)
+            except OSError:
+                pass
+        if backup_stage_path is not None and backup_stage_identity is not None:
+            try:
+                current_stage = backup_stage_path.lstat()
+                if os.path.samestat(backup_stage_identity, current_stage):
+                    _remove_owned_snapshot_file(backup_stage_path, current_stage)
+            except OSError:
+                pass
+        if backup_stage_dir is not None and backup_stage_dir_identity is not None:
+            try:
+                current_stage_dir = backup_stage_dir.lstat()
+                if os.path.samestat(
+                    backup_stage_dir_identity, current_stage_dir
+                ):
+                    backup_stage_dir.rmdir()
+            except OSError:
+                pass
         if owner_fd is not None:
             try:
                 opened_destination = os.fstat(owner_fd)
@@ -779,7 +819,7 @@ def _format_size(nbytes: int) -> str:
 
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
-    hermes_root = get_default_hermes_root()
+    hermes_root = get_default_hermes_root().resolve()
 
     if not hermes_root.is_dir():
         print(f"Error: Hermes home directory not found at {hermes_root}")
@@ -1159,7 +1199,7 @@ def run_import(args) -> None:
         print(f"Error: Not a valid zip file: {zip_path}")
         sys.exit(1)
 
-    hermes_root = get_default_hermes_root()
+    hermes_root = get_default_hermes_root().resolve()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Validate
@@ -1604,7 +1644,7 @@ def _snapshot_process_is_running(pid: int) -> bool:
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
-    home = hermes_home or get_hermes_home()
+    home = (hermes_home or get_hermes_home()).resolve()
     return home / _QUICK_SNAPSHOTS_DIR
 
 
@@ -2187,7 +2227,7 @@ def create_quick_snapshot(
     Returns:
         Snapshot ID (timestamp-based), or None if no files found.
     """
-    home = hermes_home or get_hermes_home()
+    home = (hermes_home or get_hermes_home()).resolve()
     root = _quick_snapshot_root(home)
 
     def _too_large(path: Path, rel_name: str) -> bool:
@@ -2586,7 +2626,7 @@ def restore_quick_snapshot(
     Overwrites current state files with the snapshot's copies.
     Returns True if at least one file was restored.
     """
-    home = hermes_home or get_hermes_home()
+    home = (hermes_home or get_hermes_home()).resolve()
     root = _quick_snapshot_root(home)
 
     # Security: reject snapshot_id values that contain path separators or
@@ -2867,7 +2907,7 @@ def restore_cron_jobs_if_emptied(
     if not snapshot_id:
         return None
 
-    home = hermes_home or get_hermes_home()
+    home = (hermes_home or get_hermes_home()).resolve()
     live_path = home / _CRON_JOBS_REL
 
     live_count = _count_cron_jobs(live_path)
@@ -3310,7 +3350,7 @@ _PRE_UPDATE_DEFAULT_KEEP = 5
 
 
 def _pre_update_backup_dir(hermes_home: Optional[Path] = None) -> Path:
-    home = hermes_home or get_hermes_home()
+    home = (hermes_home or get_hermes_home()).resolve()
     return home / _PRE_UPDATE_BACKUPS_DIR
 
 
@@ -3372,7 +3412,7 @@ def create_pre_update_backup(
     found or the backup could not be created.  Never raises — the caller
     (``hermes update``) should continue even if the backup fails.
     """
-    hermes_root = hermes_home or get_default_hermes_root()
+    hermes_root = (hermes_home or get_default_hermes_root()).resolve()
     if not hermes_root.is_dir():
         return None
 
@@ -3456,7 +3496,7 @@ def create_pre_migration_backup(
     to back up (fresh install) or the write failed.  Never raises — the
     caller decides whether to abort or proceed.
     """
-    hermes_root = hermes_home or get_default_hermes_root()
+    hermes_root = (hermes_home or get_default_hermes_root()).resolve()
     if not hermes_root.is_dir():
         return None
 

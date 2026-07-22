@@ -19,7 +19,11 @@ def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None,
     except ModuleNotFoundError:  # PR branch before Telegram plugin extraction
         from gateway.platforms.telegram import TelegramAdapter
 
-    extra = {}
+    # Keep these unit tests independent from the developer's live Telegram
+    # gateway config/env. In Micha's Hermes profile, TELEGRAM_ALLOWED_CHATS is
+    # set for production hardening; if the helper leaves allowed_chats unset,
+    # generic group-message tests are silently gated by that live value.
+    extra = {"allowed_chats": ""}
     if allow_from is not None:
         extra["allow_from"] = allow_from
     if allowed_chats is not None:
@@ -210,6 +214,28 @@ def test_is_user_authorized_from_message_allow_from():
     adapter = _make_adapter(allow_from=["111", "222"])
 
     msg = _make_message(from_user_id=111)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=333)
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_allow_from_scalar_int():
+    """allow_from can be a YAML scalar when set via `hermes config set`."""
+    adapter = _make_adapter(allow_from=111)
+
+    msg = _make_message(from_user_id=111)
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=222)
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_allow_from_csv_string():
+    """allow_from should accept comma-separated config/env style values."""
+    adapter = _make_adapter(allow_from="111,222")
+
+    msg = _make_message(from_user_id=222)
     assert adapter._is_user_authorized_from_message(msg) is True
 
     msg = _make_message(from_user_id=333)

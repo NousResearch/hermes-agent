@@ -182,6 +182,18 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # satisfies both — pin the patched floor here too, like platform.discord.
         "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
+    "platform.bluebubbles": (
+        # BlueBubbles webhook mode needs aiohttp. Socket.IO is opt-in and kept
+        # separate so default webhook installs do not depend on python-socketio.
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+    ),
+    "platform.bluebubbles_socketio": (
+        "python-socketio==5.16.3",
+        # python-socketio AsyncClient requires aiohttp for the async Engine.IO
+        # HTTP/WebSocket runtime. Keep it in the Socket.IO feature path instead
+        # of depending on platform.bluebubbles (webhook mode).
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+    ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
         "alibabacloud-dingtalk==2.2.42",

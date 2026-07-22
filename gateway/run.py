@@ -9971,8 +9971,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         elif platform == Platform.BLUEBUBBLES:
             from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
-            if not check_bluebubbles_requirements():
-                logger.warning("BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured")
+            if not check_bluebubbles_requirements(config):
+                logger.warning("BlueBubbles: requirements check failed (missing dependency or invalid transport; see preceding bluebubbles log for details)")
                 return None
             return BlueBubblesAdapter(config)
 

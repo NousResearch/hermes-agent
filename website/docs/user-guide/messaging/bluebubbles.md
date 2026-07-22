@@ -36,7 +36,24 @@ Or set environment variables directly in `~/.hermes/.env`:
 ```bash
 BLUEBUBBLES_SERVER_URL=http://192.168.1.10:1234
 BLUEBUBBLES_PASSWORD=your-server-password
+# Optional inbound mode. Default is webhook.
+BLUEBUBBLES_TRANSPORT=webhook
 ```
+
+You can also configure the inbound transport in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    extra:
+      server_url: http://192.168.1.10:1234
+      # Prefer .env for passwords; shown here only to document the key.
+      password: your-server-password
+      transport: socketio
+```
+
+Unknown explicit transport values fail closed; use `webhook` or one of the Socket.IO aliases listed below. If lazy dependency installation is disabled, install the narrow Socket.IO extra first: `pip install 'hermes-agent[bluebubbles-socketio]'`.
 
 #### Optional: Require mentions in group chats
 
@@ -90,16 +107,17 @@ BLUEBUBBLES_ALLOW_ALL_USERS=true
 hermes gateway run
 ```
 
-Hermes will connect to your BlueBubbles server, register a webhook, and start listening for iMessage messages.
+Hermes will connect to your BlueBubbles server and start listening for iMessage messages. By default it registers a webhook. If `BLUEBUBBLES_TRANSPORT=socketio` is set, Hermes instead opens an outbound Socket.IO connection to the BlueBubbles server.
 
 ## How It Works
 
 ```
-iMessage → Messages.app → BlueBubbles Server → Webhook → Hermes
+iMessage → Messages.app → BlueBubbles Server → Webhook or Socket.IO → Hermes
 Hermes → BlueBubbles REST API → Messages.app → iMessage
 ```
 
-- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery.
+- **Inbound:** By default, BlueBubbles sends webhook events to a local Hermes listener when new messages arrive. No polling — instant delivery.
+- **Socket.IO inbound:** Set `BLUEBUBBLES_TRANSPORT=socketio` or `platforms.bluebubbles.extra.transport: socketio` when Hermes cannot expose a webhook listener that the Mac can reach. In this mode Hermes initiates the realtime connection outward to BlueBubbles. Accepted aliases are `socketio`, `socket.io`, `socket`, `websocket`, and `ws`. Duplicate events with the same iMessage GUID, including later `updated-message` events for edits/retractions, are acknowledged but not dispatched as new agent turns.
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
 
@@ -112,6 +130,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_WEBHOOK_HOST` | No | `127.0.0.1` | Webhook listener bind address |
 | `BLUEBUBBLES_WEBHOOK_PORT` | No | `8645` | Webhook listener port |
 | `BLUEBUBBLES_WEBHOOK_PATH` | No | `/bluebubbles-webhook` | Webhook URL path |
+| `BLUEBUBBLES_TRANSPORT` | No | `webhook` | Inbound transport: `webhook` or `socketio` |
 | `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |

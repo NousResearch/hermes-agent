@@ -14,11 +14,13 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from typing import Any, Dict, List, Optional
 
@@ -1197,25 +1199,43 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     Returns:
         Number of files deleted.
     """
-    if not os.path.isdir(_TEMP_DIR):
+    try:
+        root_stat = os.lstat(_TEMP_DIR)
+        root_reparse = int(getattr(root_stat, "st_file_attributes", 0)) & 0x400
+    except OSError:
+        return 0
+    if root_reparse or not stat.S_ISDIR(root_stat.st_mode):
         return 0
 
     deleted = 0
     now = time.time()
 
     for entry in os.scandir(_TEMP_DIR):
-        if (
-            entry.is_file()
-            and entry.name.startswith("recording_")
-            and entry.name.endswith((".wav", ".aac"))
-        ):
-            try:
-                age = now - entry.stat().st_mtime
-                if age > max_age_seconds:
-                    os.unlink(entry.path)
-                    deleted += 1
-            except OSError:
-                pass
+        try:
+            selected = os.lstat(entry.path)
+            if (
+                not stat.S_ISREG(selected.st_mode)
+                or not entry.name.startswith("recording_")
+                or not entry.name.endswith((".wav", ".aac"))
+                or now - selected.st_mtime <= max_age_seconds
+            ):
+                continue
+            quarantine = os.path.join(
+                _TEMP_DIR,
+                f".{entry.name}.hermes-delete-{uuid.uuid4().hex}",
+            )
+            os.replace(entry.path, quarantine)
+            moved = os.lstat(quarantine)
+            if (
+                not os.path.samestat(root_stat, os.lstat(_TEMP_DIR))
+                or not os.path.samestat(selected, moved)
+                or not stat.S_ISREG(moved.st_mode)
+            ):
+                continue
+            os.unlink(quarantine)
+            deleted += 1
+        except OSError:
+            pass
 
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)

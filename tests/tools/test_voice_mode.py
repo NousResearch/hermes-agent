@@ -989,6 +989,28 @@ class TestCleanupTempRecordings:
         assert deleted == 1
         assert not old_file.exists()
 
+    def test_cleanup_preserves_pathname_replacement(self, temp_voice_dir, monkeypatch):
+        import tools.voice_mode as voice_mode
+
+        old_file = temp_voice_dir / "recording_20240101_000000.aac"
+        old_file.write_bytes(b"agent-audio")
+        old_mtime = time.time() - 7200
+        os.utime(old_file, (old_mtime, old_mtime))
+        original_replace = voice_mode.os.replace
+
+        def replace_before_quarantine(source, destination):
+            source_path = Path(source)
+            source_path.unlink()
+            source_path.write_bytes(b"human replacement")
+            return original_replace(source, destination)
+
+        monkeypatch.setattr(voice_mode.os, "replace", replace_before_quarantine)
+
+        assert voice_mode.cleanup_temp_recordings(max_age_seconds=3600) == 0
+        quarantines = list(temp_voice_dir.glob("*.hermes-delete-*"))
+        assert len(quarantines) == 1
+        assert quarantines[0].read_bytes() == b"human replacement"
+
 
 # ============================================================================
 # play_beep

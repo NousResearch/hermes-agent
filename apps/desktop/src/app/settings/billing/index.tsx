@@ -4,12 +4,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tip } from '@/components/ui/tooltip'
-import { BarChart3, ExternalLink, Lock, Package, Plus, RefreshCw } from '@/lib/icons'
+import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
-import { ListRow, SectionHeading, SettingsContent } from '../primitives'
+import { ListRow, SectionHeading, SettingsCard, SettingsContent, SettingsSection } from '../primitives'
 
 import { RowValue } from './account-row-value'
 import { BillingApiProvider } from './api'
@@ -27,7 +26,6 @@ import {
   type BillingNoticeView,
   type BillingUsageRowView,
   deriveBillingView,
-  formatUsageUpdatedAgo,
   useBillingState,
   useSubscriptionState
 } from './use-billing-state'
@@ -64,9 +62,23 @@ function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | '
 }
 
 function NoticeCard({ notice }: { notice: BillingNoticeView }) {
+  const warn = notice.tone === 'warn'
+
   return (
-    <div className="mb-5 rounded-lg border border-border/70 bg-muted/20 p-4">
-      <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{notice.title}</div>
+    <div
+      className={cn(
+        'mb-6 rounded-xl border p-4',
+        warn ? 'border-amber-500/30 bg-amber-500/5' : 'border-border/70 bg-muted/20'
+      )}
+    >
+      <div
+        className={cn(
+          'text-[length:var(--conversation-text-font-size)] font-medium',
+          warn ? 'text-amber-600 dark:text-amber-300' : 'text-foreground'
+        )}
+      >
+        {notice.title}
+      </div>
       <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {notice.message}
       </div>
@@ -351,53 +363,10 @@ function UsageRow({ row }: { row: BillingUsageRowView }) {
   )
 }
 
-function UsageRefreshRow({
-  fixtureName,
-  isFetching,
-  onRefresh,
-  updatedAt
-}: {
-  fixtureName?: BillingFixtureSelection
-  isFetching: boolean
-  onRefresh: () => void
-  updatedAt: number
-}) {
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 30_000)
-
-    return () => window.clearInterval(interval)
-  }, [])
-
-  if (fixtureName && fixtureName !== 'live') {
-    return (
-      <div className="flex items-center justify-end pt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        fixture: {fixtureName}
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex min-w-0 items-center justify-end gap-1.5 pt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-      <span>Updated {formatUsageUpdatedAgo(updatedAt, now)}</span>
-      <Tip label="Refresh">
-        <Button
-          aria-label="Refresh"
-          className="size-7 p-0 text-(--ui-text-tertiary)"
-          disabled={isFetching}
-          onClick={onRefresh}
-          size="sm"
-          type="button"
-          variant="ghost"
-        >
-          <RefreshCw className={cn('size-3.5', isFetching && 'animate-spin')} />
-        </Button>
-      </Tip>
-    </div>
-  )
-}
-
+// DEV-only preview switcher: swaps the whole page onto a canned fixture so every
+// billing state can be reviewed without a matching live account. Marked with a
+// wrench + "preview" so it never reads as a shipping control (it's compiled out of
+// production builds entirely).
 function BillingFixtureSelect({
   onValueChange,
   value
@@ -406,23 +375,27 @@ function BillingFixtureSelect({
   value: BillingFixtureSelection
 }) {
   return (
-    <Select onValueChange={value => onValueChange(value as BillingFixtureSelection)} value={value}>
-      <SelectTrigger
-        aria-label="Billing fixture"
-        className="h-7 w-32 border-transparent bg-transparent px-1.5 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-muted/40 focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-muted/40"
-        size="sm"
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent align="end">
-        <SelectItem value="live">live</SelectItem>
-        {BILLING_DEV_FIXTURE_NAMES.map(name => (
-          <SelectItem key={name} value={name}>
-            {name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="flex items-center gap-1.5 text-(--ui-text-tertiary)">
+      <Wrench className="size-3.5 shrink-0" />
+      <span className="text-xs font-normal">preview</span>
+      <Select onValueChange={value => onValueChange(value as BillingFixtureSelection)} value={value}>
+        <SelectTrigger
+          aria-label="Billing preview fixture (dev only)"
+          className="h-7 w-36 border-dashed border-(--ui-stroke-secondary) bg-transparent px-2 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-muted/40 focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-muted/40"
+          size="sm"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="end">
+          <SelectItem value="live">live</SelectItem>
+          {BILLING_DEV_FIXTURE_NAMES.map(name => (
+            <SelectItem key={name} value={name}>
+              {name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   )
 }
 
@@ -464,14 +437,15 @@ function BillingSettingsContent({
   const subscriptionResult = subscriptionState.data
   const view = deriveBillingView(billingResult, subscriptionResult)
   const billing = billingResult?.ok ? billingResult.data : undefined
-  const usageUpdatedAt = oldestUpdatedAt(billingState.dataUpdatedAt, subscriptionState.dataUpdatedAt)
-  const usageIsFetching = billingState.isFetching || subscriptionState.isFetching
-
-  const refreshUsage = () => {
-    void Promise.all([billingState.refetch(), subscriptionState.refetch()])
-  }
 
   const { paymentRow, refillRow, topupRow } = view
+
+  // The Payment & credits card groups every money control (payment method,
+  // one-time top-up, auto-refill) into a single divide-y list instead of three
+  // free-floating one-row sections.
+  const accountRows = [paymentRow, topupRow, refillRow].filter(
+    (row): row is BillingAccountRowView => row !== undefined
+  )
 
   // Gate the plans sub-view on the SAME capability that renders the in-app button
   // (`plan.action`): a team / non-changer deep-linking `bview=plans` must never
@@ -491,59 +465,42 @@ function BillingSettingsContent({
     <SettingsContent>
       <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
 
-      <div className="@container mb-5">
-        <div className="grid gap-3 rounded-lg border border-border/70 bg-muted/20 p-4 @2xl:grid-cols-3">
+      {view.notice && <NoticeCard notice={view.notice} />}
+
+      <div className="@container mb-6">
+        <SettingsCard className="grid gap-3 p-4 @2xl:grid-cols-3">
           {view.summary.map(item => (
             <SummaryCard key={item.label} label={item.label} tone={item.tone} value={item.value} />
           ))}
-        </div>
+        </SettingsCard>
       </div>
 
-      {view.notice && <NoticeCard notice={view.notice} />}
-
       {view.plan && (
-        <div className="mb-5">
-          <SectionHeading icon={Package} title="Plan" />
-          <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
-        </div>
+        <SettingsSection icon={Package} title="Plan">
+          <SettingsCard className="px-4">
+            <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
+          </SettingsCard>
+        </SettingsSection>
       )}
 
-      {paymentRow && (
-        <div className="mb-5">
-          <SectionHeading icon={Lock} title="Payment" />
-          <AccountRow billing={billing} row={paymentRow} />
-        </div>
-      )}
-
-      {topupRow && (
-        <div className="mb-5">
-          <SectionHeading icon={Plus} title="One-time top-up" />
-          <AccountRow billing={billing} row={topupRow} />
-        </div>
-      )}
-
-      {refillRow && (
-        <div className="mb-5">
-          <SectionHeading icon={RefreshCw} title="Automatic refill" />
-          <AccountRow billing={billing} row={refillRow} />
-        </div>
+      {accountRows.length > 0 && (
+        <SettingsSection icon={CreditCard} title="Payment & credits">
+          <SettingsCard className="divide-y divide-border/60 px-4">
+            {accountRows.map(row => (
+              <AccountRow billing={billing} key={row.id} row={row} />
+            ))}
+          </SettingsCard>
+        </SettingsSection>
       )}
 
       {view.usageRows.length > 0 && (
-        <>
-          <SectionHeading icon={BarChart3} title="Usage" />
-          <div className="@container rounded-lg border border-border/70 bg-muted/20 px-4 py-2">
+        <SettingsSection icon={BarChart3} title="Usage">
+          <SettingsCard className="@container px-4 py-2">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />
             ))}
-            <UsageRefreshRow
-              fixtureName={fixtureName}
-              isFetching={usageIsFetching}
-              onRefresh={refreshUsage}
-              updatedAt={usageUpdatedAt}
-            />
-          </div>
-        </>
+          </SettingsCard>
+        </SettingsSection>
       )}
 
       {
@@ -585,10 +542,4 @@ export function BillingSettings() {
   }
 
   return <BillingSettingsContent />
-}
-
-function oldestUpdatedAt(...timestamps: number[]): number {
-  const populated = timestamps.filter(timestamp => timestamp > 0)
-
-  return populated.length > 0 ? Math.min(...populated) : Date.now()
 }

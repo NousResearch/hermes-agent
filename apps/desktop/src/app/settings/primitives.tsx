@@ -38,6 +38,35 @@ export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponen
   )
 }
 
+// The canonical settings surface: a soft-bordered muted well. Callers own the
+// inner padding (a `divide-y` list wants none; a single block wants `p-4`) so the
+// one container styling stays consistent across every settings page.
+export function SettingsCard({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn('rounded-xl border border-border/70 bg-muted/20', className)}>{children}</div>
+}
+
+// A titled section: heading + body with the shared vertical rhythm. Keeps the
+// heading and its content welded together so pages stop hand-rolling
+// `<div className="mb-…"><SectionHeading/>…</div>` at every call site.
+export function SettingsSection({
+  children,
+  icon,
+  meta,
+  title
+}: {
+  children: ReactNode
+  icon: IconComponent
+  meta?: string
+  title: string
+}) {
+  return (
+    <section className="mb-6">
+      <SectionHeading icon={icon} meta={meta} title={title} />
+      {children}
+    </section>
+  )
+}
+
 export function NavLink({
   icon: Icon,
   label,

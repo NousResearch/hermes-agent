@@ -11,7 +11,12 @@ export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
 export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
+// Billing polls on its own while the page is mounted (react-query only ticks an
+// active observer), so the view stays live without a manual refresh control —
+// matching every other data view in the app. It pauses when the window is
+// backgrounded (refetchIntervalInBackground defaults to false).
 const BILLING_QUERY_OPTIONS = {
+  refetchInterval: 30_000,
   refetchOnWindowFocus: true,
   retry: false,
   staleTime: 30_000
@@ -30,6 +35,8 @@ export interface BillingNoticeView {
   }
   message: string
   title: string
+  /** `warn` = an actionable blocker (e.g. no card); `info` = neutral guidance. */
+  tone?: 'info' | 'warn'
 }
 
 export interface BillingRowActionView {
@@ -207,7 +214,7 @@ export function deriveBillingView(
   const tiers = derivePlanTiers(subscription, billing.portal_url, capable, pending)
 
   return {
-    notice: undefined,
+    notice: noCardNotice(billing),
     paymentRow: paymentMethodRow(billing),
     plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable, pending),
     refillRow: autoReloadRow(billing),
@@ -276,26 +283,6 @@ export function formatBillingDate(value?: null | string): string {
   return fmtDate.format(date)
 }
 
-export function formatUsageUpdatedAgo(updatedAt: number, now: number): string {
-  const elapsedSeconds = Math.max(0, Math.floor((now - updatedAt) / 1000))
-
-  if (elapsedSeconds < 1) {
-    return 'just now'
-  }
-
-  if (elapsedSeconds < 60) {
-    return `${elapsedSeconds}s ago`
-  }
-
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
-
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m ago`
-  }
-
-  return `${Math.floor(elapsedMinutes / 60)}h ago`
-}
-
 function emptySummary(): BillingSummaryItemView[] {
   return [
     { label: 'Balance', value: EMPTY_BILLING_VALUE },
@@ -311,7 +298,24 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   return {
     action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
     message: resolved.message,
-    title: resolved.title
+    title: resolved.title,
+    tone: 'warn'
+  }
+}
+
+// A logged-in account with no card can't buy credits or manage auto-refill, and
+// every one of those controls disables silently — so lead the page with a single
+// warn banner that names the blocker and links straight to the fix.
+function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefined {
+  if (billing.card) {
+    return undefined
+  }
+
+  return {
+    action: { label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+    message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
+    title: 'No payment method on file',
+    tone: 'warn'
   }
 }
 

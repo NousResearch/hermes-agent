@@ -1928,6 +1928,18 @@ class SendResult:
     error_kind: Optional[str] = None
 
 
+@dataclass
+class OutboundMessage:
+    """Base value for adapter-owned structured outbound messages.
+
+    Platform adapters may subclass this value with transport-specific fields.
+    The gateway only relies on ``content`` as the plain-text fallback and
+    otherwise treats the value as opaque.
+    """
+
+    content: str
+
+
 # Machine-readable send-failure categories.  Kept platform-neutral so every
 # adapter can populate ``SendResult.error_kind`` from the same vocabulary and
 # the gateway can decide — once, in one place — whether a failure is worth
@@ -3086,6 +3098,11 @@ class BasePlatformAdapter(ABC):
     # such as DingTalk AI Cards) override this to True (class attribute or
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
+
+    # Structured transports may need the complete assistant response before
+    # they can classify or render it. Opting in suppresses partial streaming
+    # sends and leaves final size handling to the adapter.
+    REQUIRES_COMPLETE_RESPONSE: bool = False
 
     async def create_handoff_thread(
         self,
@@ -4317,9 +4334,10 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
-        result = await self.send(
+        outbound = self.prepare_outbound_message(content)
+        result = await self.send_outbound_message(
             chat_id=chat_id,
-            content=content,
+            message=outbound,
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -4351,9 +4369,9 @@ class BasePlatformAdapter(ABC):
                     self.name, attempt, max_retries, delay, error_str,
                 )
                 await asyncio.sleep(delay)
-                result = await self.send(
+                result = await self.send_outbound_message(
                     chat_id=chat_id,
-                    content=content,
+                    message=outbound,
                     reply_to=reply_to,
                     metadata=metadata,
                 )
@@ -5831,6 +5849,34 @@ class BasePlatformAdapter(ABC):
         Default implementation returns content as-is.
         """
         return content
+
+    def prepare_outbound_message(self, content: str) -> OutboundMessage:
+        """Build the adapter-owned value for a final outbound message.
+
+        Ordinary adapters use the plain-text wrapper. Structured adapters may
+        return an :class:`OutboundMessage` subclass without widening their
+        existing :meth:`send` text contract.
+        """
+        return OutboundMessage(content=content)
+
+    async def send_outbound_message(
+        self,
+        chat_id: str,
+        message: OutboundMessage,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Transport an adapter-owned outbound value.
+
+        The default preserves every existing adapter's ``send(str)`` contract.
+        Structured adapters override this method instead of narrowing ``send``.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=message.content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
     
     @staticmethod
     def truncate_message(

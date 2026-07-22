@@ -204,6 +204,9 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        self._adapter_requires_complete_response: bool = (
+            getattr(adapter, "REQUIRES_COMPLETE_RESPONSE", False) is True
+        )
 
         # Session staleness guard — when set to False (e.g. after /new or
         # /stop), the run() loop will abandon the stream early instead of
@@ -254,6 +257,30 @@ class GatewayStreamConsumer:
         if final:
             meta["notify"] = True
         return meta or None
+
+    async def _send_outbound_message(
+        self,
+        text: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        final: bool,
+    ) -> Any:
+        """Deliver text through the adapter's structured final-message hook."""
+        if final and isinstance(self.adapter, _BasePlatformAdapter):
+            message = self.adapter.prepare_outbound_message(text)
+            return await self.adapter.send_outbound_message(
+                chat_id=self.chat_id,
+                message=message,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return await self.adapter.send(
+            chat_id=self.chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     @property
     def already_sent(self) -> bool:
@@ -641,12 +668,14 @@ class GatewayStreamConsumer:
                 # Decide whether to flush an edit
                 now = time.monotonic()
                 elapsed = now - self._last_edit_time
-                should_edit = (
-                    got_done
-                    or got_segment_break
-                    or commentary_text is not None
+                should_edit = got_done or (
+                    not self._adapter_requires_complete_response
+                    and (got_segment_break or commentary_text is not None)
                 )
-                if not self.cfg.buffer_only:
+                if not (
+                    self.cfg.buffer_only
+                    or self._adapter_requires_complete_response
+                ):
                     should_edit = should_edit or (
                         (elapsed >= self._current_edit_interval
                             and self._accumulated)
@@ -682,6 +711,7 @@ class GatewayStreamConsumer:
                     if (
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
+                        and not self._adapter_requires_complete_response
                     ):
                         # No existing message to edit (first message or after a
                         # segment break).  Use truncate_message — the same
@@ -725,6 +755,7 @@ class GatewayStreamConsumer:
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
+                        and not self._adapter_requires_complete_response
                     ):
                         _cp_budget = _custom_unit_to_cp(
                             self._accumulated, _safe_limit, _len_fn,
@@ -839,9 +870,10 @@ class GatewayStreamConsumer:
 
                 if commentary_text is not None:
                     self._reset_segment_state()
-                    await self._send_commentary(commentary_text)
-                    self._last_edit_time = time.monotonic()
-                    self._reset_segment_state()
+                    if not self._adapter_requires_complete_response:
+                        await self._send_commentary(commentary_text)
+                        self._last_edit_time = time.monotonic()
+                        self._reset_segment_state()
 
                 # Tool boundary: reset message state so the next text chunk
                 # creates a fresh message below any tool-progress messages.
@@ -944,11 +976,11 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id,
-                content=text,
+            result = await self._send_outbound_message(
+                text,
                 reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=True),
+                final=final,
             )
             if result.success and result.message_id:
                 self._message_id = str(result.message_id)
@@ -1084,7 +1116,11 @@ class GatewayStreamConsumer:
             else len
         )
         safe_limit = max(500, raw_limit - 100)
-        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
+        chunks = (
+            [continuation]
+            if self._adapter_requires_complete_response
+            else self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
+        )
 
         stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
@@ -1094,10 +1130,10 @@ class GatewayStreamConsumer:
             # Try sending with one retry on flood-control errors.
             result = None
             for attempt in range(2):
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=chunk,
+                result = await self._send_outbound_message(
+                    chunk,
                     metadata=self._metadata_for_send(final=True),
+                    final=True,
                 )
                 if result.success:
                     break
@@ -1189,10 +1225,10 @@ class GatewayStreamConsumer:
         result = None
         for attempt in range(2):
             try:
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=final_text,
+                result = await self._send_outbound_message(
+                    final_text,
                     metadata=self._metadata_for_send(final=True),
+                    final=True,
                 )
             except Exception as exc:
                 logger.debug("Empty fallback final send failed: %s", exc)
@@ -1557,10 +1593,10 @@ class GatewayStreamConsumer:
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id,
-                content=text,
+            result = await self._send_outbound_message(
+                text,
                 metadata=self._metadata_for_send(final=True),
+                final=True,
             )
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
@@ -1938,14 +1974,14 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=text,
+                result = await self._send_outbound_message(
+                    text,
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
                         final=finalize,
                         expect_edits=True,
                     ),
+                    final=finalize,
                 )
                 if result.success:
                     if result.message_id:

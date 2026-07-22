@@ -44,7 +44,7 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -400,6 +400,8 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
+        platform_capabilities: Optional[Mapping[str, Sequence[str]]] = None,
+        platform_capability_check_fn: Callable | None = None,
     ) -> None:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
@@ -407,6 +409,14 @@ class PluginContext:
         same name (e.g. swap the default ``browser_navigate`` for a custom
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
+
+        ``platform_capabilities`` declares static operations exposed by this
+        actual model tool for platform session guidance. The declaration is
+        emitted only when the tool is selected and an uncached capability
+        check passes. ``platform_capability_check_fn`` should strictly verify
+        the active profile's credentials and external identity; when omitted,
+        ``check_fn`` is reused without its normal availability cache/grace.
+        Never include credentials or per-turn state in this metadata.
 
         ``override=True`` against a built-in tool requires the operator to
         opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
@@ -427,6 +437,10 @@ class PluginContext:
 
         from tools.registry import registry
 
+        profile_scope = None
+        if self.manifest.source == "user":
+            profile_scope = str(get_hermes_home())
+
         registry.register(
             name=name,
             toolset=toolset,
@@ -438,6 +452,9 @@ class PluginContext:
             description=description,
             emoji=emoji,
             override=override,
+            platform_capabilities=platform_capabilities,
+            platform_capability_check_fn=platform_capability_check_fn,
+            profile_scope=profile_scope,
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug(

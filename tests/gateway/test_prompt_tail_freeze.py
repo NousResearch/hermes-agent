@@ -18,7 +18,9 @@ is guarded by the parity test below.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -41,6 +43,7 @@ def _make_runner(**attrs):
 
     runner = object.__new__(GatewayRunner)
     runner._session_ephemeral_pin = {}
+    runner._session_platform_capabilities = {}
     runner._session_vc_last = {}
     runner._pending_turn_sidecar_notes = {}
     runner._session_model_overrides = {}
@@ -65,6 +68,7 @@ def _make_context(
     user_id: str | None = "9001",
     guild_id: str | None = "777888999",
     message_id: str | None = "1357",
+    profile: str | None = None,
     shared_multi_user: bool = False,
     connected: list[Platform] | None = None,
     home_channels: dict | None = None,
@@ -81,6 +85,7 @@ def _make_context(
         parent_chat_id=parent_chat_id,
         scope_id=guild_id,
         message_id=message_id,
+        profile=profile,
     )
     connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
     if home_channels is None:
@@ -201,6 +206,44 @@ class TestEphemeralChangeKeyParity:
         assert _render(a) == _render(b)
         assert _key(runner, a) == _key(runner, b)
 
+    def test_slack_capability_change_changes_render_and_key(self):
+        from tools.registry import PlatformCapability
+
+        runner = _make_runner()
+        context = _make_context(
+            platform=Platform.SLACK,
+            thread_id=None,
+            parent_chat_id=None,
+        )
+        read_capability = (
+            PlatformCapability(
+                tool_name="approved_slack_read",
+                operations=("search_channel_history",),
+            ),
+        )
+        write_capability = (
+            PlatformCapability(
+                tool_name="approved_slack_write",
+                operations=("post_message",),
+            ),
+        )
+
+        read_prompt = build_session_context_prompt(
+            context, platform_capabilities=read_capability
+        )
+        write_prompt = build_session_context_prompt(
+            context, platform_capabilities=write_capability
+        )
+        read_key = runner._ephemeral_change_key(
+            context, False, platform_capabilities=read_capability
+        )
+        write_key = runner._ephemeral_change_key(
+            context, False, platform_capabilities=write_capability
+        )
+
+        assert read_prompt != write_prompt
+        assert read_key != write_key
+
     def test_key_is_deterministic(self):
         runner = _make_runner()
         ctx = _make_context()
@@ -212,6 +255,107 @@ class TestEphemeralChangeKeyParity:
 # ---------------------------------------------------------------------------
 
 class TestSessionContextPin:
+    @pytest.mark.asyncio
+    async def test_cold_capability_check_does_not_block_event_loop(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_resolver(_context):
+            started.set()
+            release.wait(timeout=2.0)
+            return ()
+
+        runner = _make_runner(_resolve_platform_capabilities=blocked_resolver)
+        context = _make_context(
+            platform=Platform.SLACK,
+            thread_id=None,
+            parent_chat_id=None,
+        )
+
+        resolution = asyncio.create_task(
+            runner._ensure_session_platform_capabilities(context, "slack:slow")
+        )
+        try:
+            worker_started = await asyncio.wait_for(
+                asyncio.to_thread(started.wait, 2.0), timeout=3.0
+            )
+            assert worker_started
+            await asyncio.sleep(0)
+            assert not resolution.done()
+        finally:
+            release.set()
+        await asyncio.wait_for(resolution, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_non_slack_session_skips_capability_worker(self):
+        resolver = MagicMock(side_effect=AssertionError("must not run"))
+        runner = _make_runner(_resolve_platform_capabilities=resolver)
+        context = _make_context(platform=Platform.DISCORD)
+
+        await runner._ensure_session_platform_capabilities(context, "discord:one")
+
+        resolver.assert_not_called()
+        assert "discord:one" not in runner._session_platform_capabilities
+
+    def test_slack_capability_resolution_uses_source_profile_home(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+        from tools.registry import PlatformCapability
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+        runner = _make_runner(config=SimpleNamespace(multiplex_profiles=True))
+        runner._resolve_profile_home_for_source = lambda source: {
+            "a": home_a,
+            "b": home_b,
+        }[source.profile]
+        seen_homes = []
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_args, **_kwargs: set(),
+        )
+
+        def _capabilities_for_active_home(*_args, **_kwargs):
+            active_home = get_hermes_home()
+            seen_homes.append(active_home)
+            return (
+                PlatformCapability(
+                    tool_name=f"slack_ops_{active_home.name}",
+                    operations=("search_channel_history",),
+                ),
+            )
+
+        monkeypatch.setattr(
+            "model_tools.get_platform_capabilities",
+            _capabilities_for_active_home,
+        )
+
+        caps_a = runner._resolve_platform_capabilities(
+            _make_context(
+                platform=Platform.SLACK,
+                profile="a",
+                thread_id=None,
+                parent_chat_id=None,
+            )
+        )
+        caps_b = runner._resolve_platform_capabilities(
+            _make_context(
+                platform=Platform.SLACK,
+                profile="b",
+                thread_id=None,
+                parent_chat_id=None,
+            )
+        )
+
+        assert [cap.tool_name for cap in caps_a] == ["slack_ops_profile-a"]
+        assert [cap.tool_name for cap in caps_b] == ["slack_ops_profile-b"]
+        assert seen_homes == [home_a, home_b]
+
     def test_pin_hit_returns_identical_object(self):
         runner = _make_runner()
         ctx = _make_context()
@@ -220,6 +364,50 @@ class TestSessionContextPin:
         # Identity, not just equality: the pinned bytes are reused verbatim,
         # immunizing against renderer nondeterminism.
         assert second is first
+
+    def test_slack_capability_snapshot_is_reused_verbatim_for_session(self):
+        from tools.registry import PlatformCapability
+
+        first_capability = (
+            PlatformCapability(
+                tool_name="approved_slack_ops",
+                operations=("post_message",),
+            ),
+        )
+        later_capability = (
+            PlatformCapability(
+                tool_name="different_slack_ops",
+                operations=("search_channel_history",),
+            ),
+        )
+        resolver = MagicMock(side_effect=[first_capability, later_capability])
+        runner = _make_runner(_resolve_platform_capabilities=resolver)
+        context = _make_context(
+            platform=Platform.SLACK,
+            thread_id=None,
+            parent_chat_id=None,
+            message_id="1712345678.000100",
+        )
+
+        asyncio.run(
+            runner._ensure_session_platform_capabilities(context, "slack:session")
+        )
+        first = runner._pinned_session_context_prompt(context, False, "slack:session")
+        second = runner._pinned_session_context_prompt(
+            _make_context(
+                platform=Platform.SLACK,
+                thread_id=None,
+                parent_chat_id=None,
+                message_id="1712345679.000200",
+            ),
+            False,
+            "slack:session",
+        )
+
+        assert second is first
+        assert "`approved_slack_ops`" in first
+        assert "different_slack_ops" not in first
+        resolver.assert_called_once()
 
     def test_auto_thread_rename_busts_exactly_once(self):
         """Turn 1: placeholder title.  Turn 2: gateway auto-rename lands (one
@@ -239,15 +427,20 @@ class TestSessionContextPin:
         assert t3 is t2
         assert "Fixing the flaky deploy" in t2
 
-    def test_eviction_drops_pin_and_vc_state(self):
+    def test_agent_eviction_preserves_conversation_capability_snapshot(self):
         runner = _make_runner(
             _agent_cache={}, _running_agents={},
         )
-        runner._session_ephemeral_pin["sk"] = ("k", "text")
+        runner._session_ephemeral_pin["sk"] = ("key", "text")
+        runner._session_platform_capabilities["sk"] = ("capability",)
         runner._session_vc_last["sk"] = "vc"
         runner._evict_cached_agent("sk")  # noqa: SLF001
         assert "sk" not in runner._session_ephemeral_pin
+        assert runner._session_platform_capabilities["sk"] == ("capability",)
         assert "sk" not in runner._session_vc_last
+
+        runner._clear_conversation_scope("sk", reason="test-boundary")
+        assert "sk" not in runner._session_platform_capabilities
 
     def test_no_session_key_never_pins(self):
         runner = _make_runner()

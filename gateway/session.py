@@ -401,10 +401,22 @@ def neutralize_untrusted_inline_text(value: Any, *, max_chars: int = _MAX_PROMPT
     return text
 
 
+def _is_capability_identifier(value: Any, *, max_chars: int) -> bool:
+    """Accept only inert lowercase identifiers in capability prompt data."""
+    if not isinstance(value, str) or not 1 <= len(value) <= max_chars:
+        return False
+    return (
+        value.isascii()
+        and value[0].islower()
+        and all(ch.islower() or ch.isdigit() or ch == "_" for ch in value)
+    )
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
     redact_pii: bool = False,
+    platform_capabilities: Optional[tuple[Any, ...]] = None,
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
@@ -519,12 +531,61 @@ def build_session_context_prompt(
     if context.source.platform == Platform.SLACK:
         lines.append("")
         lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
+            "**Slack capabilities:** The live Slack gateway receives events and "
+            "delivers your normal reply to the current Slack conversation outside "
+            "the model tool loop."
+        )
+        capabilities: tuple[Any, ...] = (
+            platform_capabilities if platform_capabilities is not None else ()
+        )
+        capability_lines = []
+        for capability in capabilities:
+            tool_name = getattr(capability, "tool_name", "")
+            if not _is_capability_identifier(tool_name, max_chars=128):
+                continue
+            operations = [
+                operation
+                for operation in getattr(capability, "operations", ())
+                if _is_capability_identifier(operation, max_chars=64)
+            ]
+            rendered_operations = ", ".join(
+                f"`{operation}` ({operation.replace('_', ' ')})"
+                for operation in operations
+                if operation
+            )
+            if tool_name and rendered_operations:
+                capability_lines.append(
+                    f"- `{tool_name}` — supported operations: {rendered_operations}"
+                )
+        if capability_lines:
+            lines.append(
+                "A declared and currently verified agent-callable operational "
+                "Slack capability is available:"
+            )
+            lines.extend(capability_lines)
+            lines.append(
+                "Use only the named capability and operations declared above; do "
+                "not assume any unlisted Slack operation is available. Follow the "
+                "owning authorization, approval, and write contract. Before each "
+                "operation, verify the Slack workspace and bot or user identity and "
+                "fail closed on any mismatch. For writes, run the owning duplicate "
+                "and target prechecks, then read back and verify the result. Do not "
+                "improvise raw-token scripts when the named capability supports the "
+                "operation."
+            )
+        else:
+            lines.append(
+                "No agent-callable operational Slack capability has been both "
+                "declared and currently verified for this conversation. Do not "
+                "assume or promise channel history or reply search, user or channel "
+                "lookup, proactive or cross-channel posts, update existing messages, "
+                "pin messages, or channel or workspace management; configured Slack "
+                "app credentials authenticate the gateway, but they do not prove that "
+                "operational API capabilities are exposed to the model."
+            )
+        lines.append(
+            "The gateway may inline the current message's Slack block/attachment "
+            "payload when available."
         )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has

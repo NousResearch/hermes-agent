@@ -18,13 +18,83 @@ import ast
 import importlib
 import json
 import logging
+import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Set
 
 logger = logging.getLogger(__name__)
+
+_CAPABILITY_PLATFORM_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_CAPABILITY_OPERATION_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_CAPABILITY_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+
+
+@dataclass(frozen=True)
+class PlatformCapability:
+    """Static operational capability exposed by one real model tool."""
+
+    tool_name: str
+    operations: tuple[str, ...]
+
+
+def _normalize_platform_capabilities(
+    tool_name: str,
+    value: Optional[Mapping[str, Sequence[str]]],
+) -> Dict[str, tuple[str, ...]]:
+    """Validate and freeze inert machine-readable capability identifiers."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError("platform_capabilities must be a mapping")
+
+    normalized: Dict[str, tuple[str, ...]] = {}
+    for platform, raw_operations in value.items():
+        if not isinstance(platform, str):
+            raise TypeError("platform capability names must be strings")
+        platform_name = platform
+        if not _CAPABILITY_PLATFORM_RE.fullmatch(platform_name):
+            raise ValueError(
+                "platform capability names must match [a-z][a-z0-9_]{0,31}"
+            )
+        if isinstance(raw_operations, (str, bytes)):
+            raise TypeError("platform capability operations must be a list of strings")
+
+        operations: List[str] = []
+        for raw_operation in raw_operations:
+            if not isinstance(raw_operation, str):
+                raise TypeError("platform capability operations must be strings")
+            operation = raw_operation
+            if not _CAPABILITY_OPERATION_RE.fullmatch(operation):
+                raise ValueError(
+                    "platform capability operations must match "
+                    "[a-z][a-z0-9_]{0,63}"
+                )
+            if operation not in operations:
+                operations.append(operation)
+        if not operations:
+            raise ValueError("platform capabilities must declare at least one operation")
+        normalized[platform_name] = tuple(operations)
+    if normalized and not _CAPABILITY_TOOL_NAME_RE.fullmatch(tool_name):
+        raise ValueError(
+            "tools declaring platform capabilities must use an identifier-style name"
+        )
+    return normalized
+
+
+def _entry_matches_active_profile(entry: "ToolEntry") -> bool:
+    """Return whether a profile-scoped plugin entry belongs to this profile."""
+    if not entry.profile_scope:
+        return True
+    try:
+        from hermes_constants import get_hermes_home
+
+        return str(Path(get_hermes_home()).resolve()) == entry.profile_scope
+    except Exception:
+        return False
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -91,11 +161,14 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "platform_capabilities", "platform_capability_check_fn", "profile_scope",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 platform_capabilities=None, platform_capability_check_fn=None,
+                 profile_scope=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -114,6 +187,9 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.platform_capabilities = platform_capabilities or {}
+        self.platform_capability_check_fn = platform_capability_check_fn
+        self.profile_scope = profile_scope
 
 
 # ---------------------------------------------------------------------------
@@ -145,10 +221,20 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache: Dict[tuple[Callable, str], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_last_good: Dict[tuple[Callable, str], float] = {}
 _check_fn_cache_lock = threading.Lock()
+
+
+def _check_fn_scope_key() -> str:
+    """Return a non-secret cache partition for the active Hermes profile."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return str(get_hermes_home())
+    except Exception:
+        return ""
 
 
 def _check_fn_cached(fn: Callable) -> bool:
@@ -161,8 +247,9 @@ def _check_fn_cached(fn: Callable) -> bool:
     contention, probe timeout) from silently stripping tools mid-session.
     """
     now = time.monotonic()
+    cache_key = (fn, _check_fn_scope_key())
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -177,11 +264,11 @@ def _check_fn_cached(fn: Callable) -> bool:
 
     with _check_fn_cache_lock:
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
             return True
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -202,7 +289,7 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
+        _check_fn_cache[cache_key] = (now, False)
         return False
 
 
@@ -368,14 +455,17 @@ class ToolRegistry:
         toolset: str,
         schema: dict,
         handler: Callable,
-        check_fn: Callable = None,
-        requires_env: list = None,
+        check_fn: Optional[Callable] = None,
+        requires_env: Optional[list] = None,
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
-        dynamic_schema_overrides: Callable = None,
+        dynamic_schema_overrides: Optional[Callable] = None,
         override: bool = False,
+        platform_capabilities: Optional[Mapping[str, Sequence[str]]] = None,
+        platform_capability_check_fn: Optional[Callable] = None,
+        profile_scope: str | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -433,6 +523,18 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                     return
+            normalized_capabilities = _normalize_platform_capabilities(
+                name, platform_capabilities
+            )
+            capability_check = platform_capability_check_fn or check_fn
+            if normalized_capabilities and capability_check is None:
+                raise ValueError(
+                    "platform capabilities require check_fn or "
+                    "platform_capability_check_fn"
+                )
+            normalized_scope = (
+                str(Path(profile_scope).resolve()) if profile_scope else None
+            )
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
@@ -445,6 +547,9 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                platform_capabilities=normalized_capabilities,
+                platform_capability_check_fn=capability_check,
+                profile_scope=normalized_scope,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -548,6 +653,8 @@ class ToolRegistry:
             entry = entries_by_name.get(name)
             if not entry:
                 continue
+            if not _entry_matches_active_profile(entry):
+                continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
                     check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
@@ -623,6 +730,10 @@ class ToolRegistry:
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        if not _entry_matches_active_profile(entry):
+            # Match the unknown-tool response so another multiplexed profile
+            # cannot probe whether a private plugin is installed elsewhere.
+            return json.dumps({"error": f"Unknown tool: {name}"})
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -660,6 +771,58 @@ class ToolRegistry:
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
         return sorted(entry.name for entry in self._snapshot_entries())
+
+    def get_platform_capabilities(
+        self,
+        platform: str,
+        selected_tool_names: Set[str],
+    ) -> tuple[PlatformCapability, ...]:
+        """Return declarations attached to already-resolved model tools.
+
+        A token, executable, tool name, or platform connection is never inferred
+        as capability. Callers pass names from the normal requirement-gated model
+        schema; this accessor joins those names to static metadata, enforces active
+        profile scope, and runs the capability's strict check uncached.
+        """
+        platform_name = str(platform).strip().lower()
+        entries_by_name = {
+            entry.name: entry for entry in self._snapshot_entries()
+        }
+        capabilities: List[PlatformCapability] = []
+        for tool_name in sorted(selected_tool_names):
+            entry = entries_by_name.get(tool_name)
+            if entry is None:
+                continue
+            if not _entry_matches_active_profile(entry):
+                continue
+            operations = entry.platform_capabilities.get(platform_name)
+            if not operations:
+                continue
+            capability_check = entry.platform_capability_check_fn
+            if capability_check is None:
+                continue
+            try:
+                if not bool(capability_check()):
+                    continue
+            except Exception as exc:
+                logger.debug(
+                    "Platform capability check failed for tool %s (%s)",
+                    entry.name,
+                    type(exc).__name__,
+                )
+                continue
+            capabilities.append(
+                PlatformCapability(
+                    tool_name=entry.name,
+                    operations=operations,
+                )
+            )
+        return tuple(capabilities)
+
+    def is_tool_exposed_to_active_profile(self, name: str) -> bool:
+        """Return whether a registered tool belongs to the active profile."""
+        entry = self.get_entry(name)
+        return entry is not None and _entry_matches_active_profile(entry)
 
     def get_schema(self, name: str) -> Optional[dict]:
         """Return a tool's raw schema dict, bypassing check_fn filtering.

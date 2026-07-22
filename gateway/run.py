@@ -2040,6 +2040,10 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # and run_sync) must not leak into a future conversation's first user
     # message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes",
+    # Static operational capability guidance belongs to the conversation, not
+    # a particular cached AIAgent. Model/fallback rebuilds must preserve it;
+    # true conversation boundaries clear it through this central funnel.
+    "_session_platform_capabilities",
 )
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
@@ -3089,6 +3093,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_service_tier_overrides: Dict[str, Optional[str]] = {}
     _pending_turn_sidecar_notes: Dict[str, List[str]] = {}
     _session_ephemeral_pin: Dict[str, tuple] = {}
+    _session_platform_capabilities: Dict[str, tuple] = {}
     _session_vc_last: Dict[str, str] = {}
     _startup_restore_in_progress: bool = False
     # Loop-liveness heartbeat / shutdown-watchdog handles (#66892). Class-level
@@ -3313,6 +3318,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # key.  Key hit → reuse pinned bytes verbatim; key miss → re-render
         # + re-pin (a legitimate cache bust).
         self._session_ephemeral_pin: Dict[str, tuple] = {}
+        # Static operational capability descriptors resolved once per cached
+        # session. They are profile-scoped and contain no live message state.
+        self._session_platform_capabilities: Dict[str, tuple] = {}
         # Last voice-channel context delivered per session — the VC note is
         # injected only when the live state differs from this value.
         self._session_vc_last: Dict[str, str] = {}
@@ -12202,6 +12210,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so the composed system prompt cannot drift turn-over-turn; a key
         # miss (thread rename, /sethome, redact_pii flip, ...) re-renders
         # once — the only legitimate cache busts.
+        await self._ensure_session_platform_capabilities(context, session_key)
         context_prompt = self._pinned_session_context_prompt(
             context, _redact_pii, session_key
         )
@@ -18041,17 +18050,91 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not hasattr(self, "_session_ephemeral_pin"):
             self._session_ephemeral_pin = {}
-        _eph_key = self._ephemeral_change_key(context, redact_pii)
+        if not hasattr(self, "_session_platform_capabilities"):
+            self._session_platform_capabilities = {}
+        if session_key:
+            platform_capabilities = self._session_platform_capabilities.get(
+                session_key, ()
+            )
+        else:
+            platform_capabilities = ()
+        _eph_key = self._ephemeral_change_key(
+            context,
+            redact_pii,
+            platform_capabilities=platform_capabilities,
+        )
         _eph_pin = self._session_ephemeral_pin.get(session_key) if session_key else None
         if _eph_pin is not None and _eph_pin[0] == _eph_key:
             return _eph_pin[1]
-        text = build_session_context_prompt(context, redact_pii=redact_pii)
+        text = build_session_context_prompt(
+            context,
+            redact_pii=redact_pii,
+            platform_capabilities=platform_capabilities,
+        )
         if session_key:
             self._session_ephemeral_pin[session_key] = (_eph_key, text)
         return text
 
+    async def _ensure_session_platform_capabilities(
+        self, context, session_key: Optional[str]
+    ) -> None:
+        """Resolve one immutable capability snapshot without blocking adapters."""
+        if not session_key or context.source.platform != Platform.SLACK:
+            return
+        if not hasattr(self, "_session_platform_capabilities"):
+            self._session_platform_capabilities = {}
+        if session_key in self._session_platform_capabilities:
+            return
+        capabilities = await asyncio.to_thread(
+            self._resolve_platform_capabilities, context
+        )
+        # Concurrent first events for one session converge on the first completed
+        # snapshot instead of replacing capability guidance mid-conversation.
+        self._session_platform_capabilities.setdefault(session_key, capabilities)
+
+    def _resolve_platform_capabilities(self, context) -> tuple:
+        """Resolve declared capabilities from this profile's actual tool schema."""
+        if context.source.platform != Platform.SLACK:
+            return ()
+
+        def _resolve() -> tuple:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import _get_platform_tools
+            from model_tools import get_platform_capabilities
+
+            user_config = load_config()
+            enabled_toolsets = sorted(
+                _get_platform_tools(user_config, context.source.platform.value)
+            )
+            agent_cfg = user_config.get("agent", {}) or {}
+            disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            return get_platform_capabilities(
+                context.source.platform.value,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+            )
+
+        try:
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(
+                    self._resolve_profile_home_for_source(context.source)
+                ):
+                    return _resolve()
+            return _resolve()
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve operational capabilities for Slack; "
+                "using the conservative unavailable state: %s",
+                type(exc).__name__,
+            )
+            return ()
+
     @staticmethod
-    def _ephemeral_change_key(context, redact_pii: bool) -> str:
+    def _ephemeral_change_key(
+        context,
+        redact_pii: bool,
+        platform_capabilities: tuple = (),
+    ) -> str:
         """Hash the exact inputs ``build_session_context_prompt`` renders.
 
         This key decides when the pinned per-session context-prompt bytes are
@@ -18114,6 +18197,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
             bool(redact_pii),
             home_display,
+            tuple(
+                (
+                    str(getattr(capability, "tool_name", "")),
+                    tuple(
+                        str(operation)
+                        for operation in getattr(capability, "operations", ())
+                    ),
+                )
+                for capability in platform_capabilities
+            ),
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
@@ -18141,9 +18234,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``_agent_cache_lock`` on slow socket teardown — mirrors the
         cap-enforcer and idle-sweeper paths.
         """
-        # Prompt-stability state rides the agent-cache lifecycle: a fresh
-        # agent must re-render its session-context bytes (the pin) and re-see
-        # the current voice-channel state once.
+        # Render pins and voice state ride the agent-cache lifecycle. Static
+        # capability guidance is conversation-scoped and intentionally survives
+        # model/fallback agent rebuilds.
         _pin_store = getattr(self, "_session_ephemeral_pin", None)
         if isinstance(_pin_store, dict):
             _pin_store.pop(session_key, None)

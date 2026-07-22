@@ -1215,6 +1215,151 @@ class TestPluginContext:
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
 
+    def test_register_tool_forwards_platform_capability_metadata(self):
+        from tools.registry import registry
+
+        manifest = PluginManifest(name="slack_ops", key="slack_ops")
+        manager = PluginManager()
+        context = PluginContext(manifest, manager)
+        try:
+            context.register_tool(
+                name="plugin_slack_ops",
+                toolset="plugin_slack_ops",
+                schema={
+                    "name": "plugin_slack_ops",
+                    "description": "Approved Slack operations",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+                handler=lambda args, **kw: "ok",
+                check_fn=lambda: True,
+                platform_capabilities={
+                    "slack": ["search_channel_history", "post_message"],
+                },
+            )
+
+            capabilities = registry.get_platform_capabilities(
+                "slack", {"plugin_slack_ops"}
+            )
+            assert capabilities[0].tool_name == "plugin_slack_ops"
+            assert capabilities[0].operations == (
+                "search_channel_history",
+                "post_message",
+            )
+        finally:
+            registry.deregister("plugin_slack_ops")
+
+    def test_user_plugin_capability_is_scoped_to_discovery_profile(
+        self, tmp_path, monkeypatch, request
+    ):
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from model_tools import (
+            _clear_tool_defs_cache,
+            get_platform_capabilities,
+            get_tool_definitions,
+        )
+        from tools.registry import registry
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_b.mkdir()
+        (home_b / "config.yaml").write_text("{}\n", encoding="utf-8")
+        register_body = (
+            "ctx.register_tool(name='profile_a_slack_ops', "
+            "toolset='profile_a_slack', "
+            "schema={'name': 'profile_a_slack_ops', 'parameters': {}}, "
+            "handler=lambda args: 'ok', check_fn=lambda: True, "
+            "platform_capabilities={'slack': ['search_channel_history']})"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        home_tokens = [set_hermes_home_override(str(home_a))]
+        request.addfinalizer(
+            lambda: reset_hermes_home_override(home_tokens[-1])
+        )
+        _make_plugin_dir(
+            home_a / "plugins",
+            "profile_slack",
+            register_body=register_body,
+        )
+
+        import hermes_cli.plugins as plugins_module
+
+        manager = PluginManager()
+        manager.discover_and_load()
+        monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
+        entry = registry.get_entry("profile_a_slack_ops")
+        assert entry is not None
+        assert entry.profile_scope == str(home_a.resolve())
+        _clear_tool_defs_cache()
+        try:
+            selected_a = sorted(_get_platform_tools(load_config(), "slack"))
+            assert "profile_a_slack" in selected_a
+            defs_a = get_tool_definitions(
+                enabled_toolsets=selected_a,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            names_a = {item["function"]["name"] for item in defs_a}
+            assert "profile_a_slack_ops" in names_a
+            assert len(
+                get_platform_capabilities("slack", enabled_toolsets=selected_a)
+            ) == 1
+
+            monkeypatch.setenv("HERMES_HOME", str(home_b))
+            reset_hermes_home_override(home_tokens[-1])
+            home_tokens[-1] = set_hermes_home_override(str(home_b))
+            _clear_tool_defs_cache()
+            selected_b = sorted(_get_platform_tools(load_config(), "slack"))
+            assert "profile_a_slack" in selected_b  # Global registry sees it.
+            defs_b = get_tool_definitions(
+                enabled_toolsets=selected_b,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            names_b = {item["function"]["name"] for item in defs_b}
+            assert "profile_a_slack_ops" not in names_b
+            assert (
+                get_platform_capabilities("slack", enabled_toolsets=selected_b)
+                == ()
+            )
+        finally:
+            registry.deregister("profile_a_slack_ops")
+            _clear_tool_defs_cache()
+
+    def test_register_tool_preserves_legacy_positional_override(self, monkeypatch):
+        from tools.registry import registry
+
+        registry.register(
+            name="plugin_legacy_override",
+            toolset="core",
+            schema={"name": "plugin_legacy_override", "parameters": {}},
+            handler=lambda _args: "core",
+        )
+        context = PluginContext(
+            PluginManifest(name="legacy", key="legacy"), PluginManager()
+        )
+        monkeypatch.setattr(context, "_tool_override_allowed", lambda _name: True)
+        try:
+            context.register_tool(
+                "plugin_legacy_override",
+                "plugin_legacy",
+                {"name": "plugin_legacy_override", "parameters": {}},
+                lambda _args: "plugin",
+                None,
+                None,
+                False,
+                "",
+                "",
+                True,
+            )
+            assert registry.get_entry("plugin_legacy_override").toolset == "plugin_legacy"
+        finally:
+            registry.deregister("plugin_legacy_override")
+
     def test_register_tool_rejects_shadow_without_override(self, tmp_path, monkeypatch, caplog):
         """Without override=True, registering a tool name claimed by a different toolset is rejected."""
         from tools.registry import registry

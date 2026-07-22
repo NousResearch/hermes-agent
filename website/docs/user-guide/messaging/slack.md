@@ -25,6 +25,33 @@ the steps below.
 | **Auth tokens needed** | Bot Token (`xoxb-`) + App-Level Token (`xapp-`) |
 | **User identification** | Slack Member IDs (e.g., `U01ABC2DEF3`) |
 
+### Gateway replies vs. operational Slack tools
+
+The built-in Slack gateway and agent-callable Slack Web API tools are separate
+capabilities:
+
+- The Bolt/Socket Mode gateway receives an event, gives the message to Hermes,
+  and sends Hermes's normal reply back to that conversation. This delivery
+  happens outside the model tool loop.
+- Operations such as searching history, resolving users or channels, posting
+  proactively or across channels, updating messages, and workspace management
+  require a separately installed and enabled model tool or plugin.
+
+An `xoxb-` bot token and the scopes below authenticate the gateway; they do not
+by themselves expose operational Web API calls to the model. When an enabled
+plugin explicitly declares Slack operations, Hermes advertises only
+machine-readable operation identifiers on the actual selected tool after an
+uncached, strict capability check passes for the active profile. Capability
+declarations contain only identifier-style tool/operation names—never tokens,
+free-form instructions, or live message state. User-directory plugin tools are
+restricted to the `HERMES_HOME` that loaded them.
+
+Operational plugins must resolve credentials from the active profile, verify
+the workspace and bot/user identity before use, enforce their own approval and
+write gates, and read back writes. If you enable or change such a plugin,
+restart the gateway so the plugin registry and in-memory session capability
+snapshot are rebuilt; the next turn can resume the same persisted conversation.
+
 ---
 
 ## Step 1: Create a Slack App

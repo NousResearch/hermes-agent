@@ -1,6 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+import os
 from unittest.mock import ANY, call, patch
 
 
@@ -29,6 +30,40 @@ class TestHandleFunctionCall:
         result = json.loads(handle_function_call("totally_fake_tool_xyz", {}))
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
+
+    def test_cross_profile_private_plugin_handler_cannot_execute(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.registry import registry
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+        calls = []
+        tool_name = "profile_a_private_tool"
+        registry.register(
+            name=tool_name,
+            toolset="profile_a_private",
+            schema={"name": tool_name, "parameters": {}},
+            handler=lambda _args, **_kwargs: calls.append(True) or "executed",
+            check_fn=lambda: True,
+            profile_scope=str(home_a),
+        )
+        token = set_hermes_home_override(home_b)
+        try:
+            with patch(
+                "hermes_cli.middleware.apply_tool_request_middleware"
+            ) as middleware:
+                result = json.loads(handle_function_call(tool_name, {}))
+            assert result == {"error": f"Unknown tool: {tool_name}"}
+            middleware.assert_not_called()
+            assert calls == []
+        finally:
+            reset_hermes_home_override(token)
+            registry.deregister(tool_name)
 
     def test_exception_returns_json_error(self):
         # Even if something goes wrong, should return valid JSON
@@ -587,3 +622,151 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+class TestPlatformCapabilityResolution:
+    def test_selected_tools_and_capabilities_do_not_bleed_across_profiles(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+        from model_tools import (
+            _clear_tool_defs_cache,
+            get_platform_capabilities,
+            get_tool_definitions,
+        )
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+        for home in (home_a, home_b):
+            (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        # Keep stat fingerprints identical so the profile path itself must
+        # partition the model-tool memo, not an incidental mtime difference.
+        same_ns = 1_700_000_000_000_000_000
+        os.utime(home_a / "config.yaml", ns=(same_ns, same_ns))
+        os.utime(home_b / "config.yaml", ns=(same_ns, same_ns))
+        (home_a / "slack-capability-ready").write_text("ready", encoding="utf-8")
+
+        tool_name = "test_profile_scoped_slack_capability"
+        toolset = "test_profile_scoped_slack"
+        registry.register(
+            name=tool_name,
+            toolset=toolset,
+            schema={
+                "name": tool_name,
+                "description": "Profile-scoped Slack test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **kw: "{}",
+            check_fn=lambda: (get_hermes_home() / "slack-capability-ready").is_file(),
+            platform_capabilities={"slack": ["search_channel_history"]},
+        )
+        invalidate_check_fn_cache()
+        _clear_tool_defs_cache()
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(home_a))
+            defs_a = get_tool_definitions(
+                enabled_toolsets=[toolset],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            caps_a = get_platform_capabilities(
+                "slack",
+                enabled_toolsets=[toolset],
+            )
+            assert tool_name in {item["function"]["name"] for item in defs_a}
+            assert [cap.tool_name for cap in caps_a] == [tool_name]
+
+            monkeypatch.setenv("HERMES_HOME", str(home_b))
+            defs_b = get_tool_definitions(
+                enabled_toolsets=[toolset],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            caps_b = get_platform_capabilities(
+                "slack",
+                enabled_toolsets=[toolset],
+            )
+            assert tool_name not in {item["function"]["name"] for item in defs_b}
+            assert caps_b == ()
+        finally:
+            registry.deregister(tool_name)
+            invalidate_check_fn_cache()
+            _clear_tool_defs_cache()
+
+    def test_capability_identity_transition_bypasses_tool_definition_cache(self):
+        from model_tools import (
+            _clear_tool_defs_cache,
+            get_platform_capabilities,
+        )
+        from tools.registry import registry
+
+        identity = {"matches": True}
+        tool_name = "test_strict_slack_identity"
+        toolset = "test_strict_slack_identity"
+        registry.register(
+            name=tool_name,
+            toolset=toolset,
+            schema={
+                "name": tool_name,
+                "description": "Strict identity test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args, **_kw: "{}",
+            check_fn=lambda: True,
+            platform_capability_check_fn=lambda: identity["matches"],
+            platform_capabilities={"slack": ["post_message"]},
+        )
+        _clear_tool_defs_cache()
+        try:
+            assert len(
+                get_platform_capabilities("slack", enabled_toolsets=[toolset])
+            ) == 1
+            identity["matches"] = False
+            assert (
+                get_platform_capabilities("slack", enabled_toolsets=[toolset])
+                == ()
+            )
+        finally:
+            registry.deregister(tool_name)
+            _clear_tool_defs_cache()
+
+    def test_capability_resolution_retries_one_registry_generation_change(
+        self, monkeypatch
+    ):
+        from model_tools import _clear_tool_defs_cache, get_platform_capabilities
+        from tools.registry import registry
+
+        tool_name = "test_generation_guard_slack"
+        toolset = "test_generation_guard_slack"
+        registry.register(
+            name=tool_name,
+            toolset=toolset,
+            schema={"name": tool_name, "parameters": {}},
+            handler=lambda _args: "{}",
+            check_fn=lambda: True,
+            platform_capabilities={"slack": ["search_channel_history"]},
+        )
+        original = registry.get_platform_capabilities
+        calls = {"count": 0}
+
+        def mutate_once(platform, selected_tool_names):
+            calls["count"] += 1
+            result = original(platform, selected_tool_names)
+            if calls["count"] == 1:
+                registry._generation += 1
+            return result
+
+        monkeypatch.setattr(registry, "get_platform_capabilities", mutate_once)
+        _clear_tool_defs_cache()
+        try:
+            capabilities = get_platform_capabilities(
+                "slack", enabled_toolsets=[toolset]
+            )
+            assert [cap.tool_name for cap in capabilities] == [tool_name]
+            assert calls["count"] == 2
+        finally:
+            registry.deregister(tool_name)
+            _clear_tool_defs_cache()

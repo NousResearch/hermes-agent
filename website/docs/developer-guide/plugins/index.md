@@ -552,11 +552,61 @@ For tools that depend on optional libraries:
 ```python
 ctx.register_tool(
     name="my_tool",
+    toolset="plugin_my_plugin",
     schema={...},
     handler=my_handler,
     check_fn=lambda: _has_optional_lib(),  # False = tool hidden from model
 )
 ```
+
+### Advertise platform operations accurately
+
+If a registered model tool provides bounded operational access to a messaging
+platform, declare only those operations with `platform_capabilities`. Hermes
+uses this metadata to keep platform session guidance aligned with the actual
+selected, requirement-gated model schema:
+
+```python
+def register(ctx):
+    ctx.register_tool(
+        name="approved_slack_ops",
+        toolset="plugin_slack_ops",
+        schema=APPROVED_SLACK_OPS_SCHEMA,
+        handler=handle_slack_operation,
+        check_fn=slack_requirements_ready,
+        # Strict, uncached identity check used only for session guidance.
+        platform_capability_check_fn=slack_identity_matches_active_profile,
+        platform_capabilities={
+            "slack": [
+                "search_channel_history",
+                "post_message",
+                "update_bot_message",
+            ],
+        },
+    )
+```
+
+The declaration is static metadata attached to a real model tool. Hermes emits
+it only when the tool's toolset is enabled for the active platform/profile, the
+normal availability check selects the tool, and a strict capability check passes.
+The capability check is evaluated uncached when a new conversation snapshot is
+created, so a credential or external-identity mismatch fails closed immediately.
+When `platform_capability_check_fn` is omitted, Hermes reuses `check_fn` without
+its normal availability cache or last-good grace.
+
+Platform and operation values are machine-readable identifiers, not free-form
+instructions. Use lowercase letters, numbers, and underscores; never include
+tokens, channel IDs, message timestamps, API responses, or other per-turn state.
+User-directory plugin tool entries are automatically scoped to the `HERMES_HOME`
+that loaded them, preventing another multiplexed profile from selecting or
+invoking them.
+Do not advertise capability based only on a token, executable path, terminal
+access, or service name.
+
+The tool implementation remains responsible for authorization, approval/write
+gates, identity verification on every operation, duplicate prevention, and write
+readback. Capability metadata affects guidance only; it is not an authorization
+boundary.
 
 ### Overriding a built-in tool
 

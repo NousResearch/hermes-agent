@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import PlatformCapability, discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -309,9 +309,11 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     if quiet_mode:
+        cfg_scope = ""
         try:
             from hermes_cli.config import get_config_path
             cfg_path = get_config_path()
+            cfg_scope = str(cfg_path)
             cfg_stat = cfg_path.stat()
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
@@ -320,6 +322,7 @@ def get_tool_definitions(
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
+            cfg_scope,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
@@ -352,6 +355,43 @@ def get_tool_definitions(
         _tool_defs_cache[cache_key] = result
         return list(result)
     return result
+
+
+def get_platform_capabilities(
+    platform: str,
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
+) -> tuple[PlatformCapability, ...]:
+    """Return strict platform capabilities for selected, available model tools.
+
+    The normal schema pass identifies the real selected tools. Capability checks
+    then run uncached so credential or external-identity mismatches fail closed;
+    gateway callers run this cold path in a worker thread. A registry generation
+    guard prevents joining metadata across a concurrent plugin/MCP mutation.
+    """
+    for _attempt in range(2):
+        generation = registry._generation
+        definitions = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        selected_tool_names = {
+            definition["function"]["name"]
+            for definition in definitions
+            if definition.get("type") == "function"
+        }
+        capabilities = registry.get_platform_capabilities(
+            platform, selected_tool_names
+        )
+        if registry._generation == generation:
+            return capabilities
+    logger.warning(
+        "Tool registry changed repeatedly while resolving platform capabilities; "
+        "using the conservative unavailable state"
+    )
+    return ()
 
 
 def _compute_tool_definitions(
@@ -1092,6 +1132,17 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # User-directory plugins are private to the HERMES_HOME that loaded them.
+    # Enforce that boundary before schema coercion, tool-search handling,
+    # middleware, hooks, or the handler itself so a forged cross-profile call
+    # cannot execute any plugin-owned path or disclose that the tool exists.
+    _registered_entry = registry.get_entry(function_name)
+    if (
+        _registered_entry is not None
+        and not registry.is_tool_exposed_to_active_profile(function_name)
+    ):
+        return json.dumps({"error": f"Unknown tool: {function_name}"})
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):

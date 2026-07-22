@@ -3827,9 +3827,18 @@ class GatewaySlashCommandsMixin:
             name = name[1:-1].strip()
 
         async def _list_titled_sessions() -> list[dict]:
+            from hermes_cli.session_listing import query_session_listing
+
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            current_entry = await self.async_session_store.get_or_create_session(source)
+            current_session_id = current_entry.session_id
+            return await asyncio.to_thread(
+                query_session_listing,
+                getattr(self._session_db, "_db", self._session_db),
+                source=user_source,
+                current_session_id=current_session_id,
+                limit=10,
+            )
 
         if not name:
             # List recent titled sessions for this user/platform

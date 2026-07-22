@@ -121,14 +121,11 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
-def _fake_runner(thread_meta):
-    """Build a fake GatewayRunner-like object with the helper methods needed by
-    _deliver_media_from_response."""
-    runner = SimpleNamespace(
-        _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
-        _reply_anchor_for_event=lambda event: None,
-    )
-    return runner
+def _runner():
+    """Stand-in for the GatewayRunner ``self``. ``_deliver_media_from_response``
+    takes the reply/thread metadata as an argument, so the runner itself is an
+    inert placeholder."""
+    return SimpleNamespace()
 
 
 @pytest.mark.asyncio
@@ -147,10 +144,11 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({"thread_id": "topic-1"}),
+        _runner(),
         f"MEDIA:{media_file}",
-        event,
+        event.source,
         adapter,
+        {"thread_id": "topic-1"},
     )
 
     adapter.send_document.assert_awaited_once_with(
@@ -177,10 +175,11 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({"thread_id": "topic-1"}),
+        _runner(),
         f"MEDIA:{media_file}",
-        event,
+        event.source,
         adapter,
+        {"thread_id": "topic-1"},
     )
 
     adapter.send_document.assert_awaited_once_with(
@@ -209,15 +208,54 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({"thread_id": "topic-1"}),
+        _runner(),
         f"MEDIA:{media_file}",
-        event,
+        event.source,
         adapter,
+        {"thread_id": "topic-1"},
     )
 
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
         audio_path=str(media_file),
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delivery_attaches_bare_image_path_from_response(tmp_path, monkeypatch):
+    """A bare local image path in the response body (as ``image_generate``
+    emits, without a MEDIA: tag) is delivered as a native attachment rather
+    than surviving as plain text. This is the contract the queued-follow-up
+    resend relies on after it sends the body text."""
+    from urllib.parse import quote
+
+    event = _event(thread_id="topic-1")
+    image_file = _allowed_media_path(tmp_path, monkeypatch, "avatar.png")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _runner(),
+        f"Here are your images:\n{image_file}",
+        event.source,
+        adapter,
+        {"thread_id": "topic-1"},
+    )
+
+    adapter.send_multiple_images.assert_awaited_once_with(
+        chat_id="chat-1",
+        images=[(f"file://{quote(str(image_file))}", "")],
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_document.assert_not_awaited()
@@ -253,10 +291,11 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
     )
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({"thread_id": "topic-1"}),
+        _runner(),
         f"MEDIA:{secret}",
-        event,
+        event.source,
         adapter,
+        {"thread_id": "topic-1"},
     )
 
     adapter.send_document.assert_not_awaited()

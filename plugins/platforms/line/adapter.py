@@ -423,8 +423,9 @@ def _allowed_for_source(
     user_ids: Set[str],
     group_ids: Set[str],
     room_ids: Set[str],
+    allow_groups_from_allowed_users: bool = False,
 ) -> bool:
-    """Three-list gate — credit PR #18153."""
+    """Apply LINE allowlists, optionally admitting groups by allowed sender."""
     if allow_all:
         return True
     src_type = (source or {}).get("type", "")
@@ -433,7 +434,12 @@ def _allowed_for_source(
         return bool(uid) and uid in user_ids
     if src_type == "group":
         gid = source.get("groupId", "")
-        return bool(gid) and gid in group_ids
+        if bool(gid) and gid in group_ids:
+            return True
+        if allow_groups_from_allowed_users:
+            uid = source.get("userId", "")
+            return bool(gid and uid) and uid in user_ids
+        return False
     if src_type == "room":
         rid = source.get("roomId", "")
         return bool(rid) and rid in room_ids
@@ -690,6 +696,16 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
+        self.allow_groups_from_allowed_users = _truthy_env(
+            "LINE_ALLOW_GROUPS_FROM_ALLOWED_USERS",
+            bool(extra.get("allow_groups_from_allowed_users", False)),
+        )
+        self.group_sender_dispatch_gate = str(
+            extra.get("group_sender_dispatch_gate", "") or ""
+        ).strip()
+        self._sender_group_admission_enabled = bool(
+            self.allow_groups_from_allowed_users and self.group_sender_dispatch_gate
+        )
 
         # Slow-LLM postback button threshold
         try:
@@ -918,12 +934,25 @@ class LineAdapter(BasePlatformAdapter):
             user_ids=self.allowed_users,
             group_ids=self.allowed_groups,
             room_ids=self.allowed_rooms,
+            allow_groups_from_allowed_users=self._sender_group_admission_enabled,
         ):
             logger.info("LINE: rejecting unauthorized source %s", source)
             return
 
+        sender_admitted_group = bool(
+            not self.allow_all
+            and source.get("type") == "group"
+            and source.get("groupId")
+            and source.get("groupId") not in self.allowed_groups
+            and self._sender_group_admission_enabled
+            and source.get("userId") in self.allowed_users
+        )
+
         if event_type == "message":
-            await self._handle_message_event(event)
+            await self._handle_message_event(
+                event,
+                sender_admitted_group=sender_admitted_group,
+            )
         elif event_type == "postback":
             await self._handle_postback_event(event)
         elif event_type in {"follow", "unfollow", "join", "leave"}:
@@ -931,7 +960,12 @@ class LineAdapter(BasePlatformAdapter):
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
 
-    async def _handle_message_event(self, event: Dict[str, Any]) -> None:
+    async def _handle_message_event(
+        self,
+        event: Dict[str, Any],
+        *,
+        sender_admitted_group: bool = False,
+    ) -> None:
         msg = event.get("message") or {}
         msg_type = msg.get("type", "")
         message_id = msg.get("id", "")
@@ -939,6 +973,14 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
+        webhook_event_id = event.get("webhookEventId")
+        event_timestamp = event.get("timestamp")
+        platform_event_id = webhook_event_id if isinstance(webhook_event_id, str) and webhook_event_id else None
+        platform_event_timestamp_ms = (
+            event_timestamp
+            if isinstance(event_timestamp, int) and not isinstance(event_timestamp, bool) and event_timestamp >= 0
+            else None
+        )
 
         # Stash the reply token for outbound use.
         if chat_id and reply_token:
@@ -989,6 +1031,14 @@ class LineAdapter(BasePlatformAdapter):
             source=source_obj,
             raw_message=event,
             message_id=message_id,
+            platform_event_id=platform_event_id,
+            platform_event_timestamp_ms=platform_event_timestamp_ms,
+            platform_reply_token=(
+                reply_token if isinstance(reply_token, str) and reply_token else None
+            ),
+            required_dispatch_gate=(
+                self.group_sender_dispatch_gate if sender_admitted_group else None
+            ),
             media_urls=media_urls,
             media_types=media_types,
         )
@@ -1077,6 +1127,34 @@ class LineAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Outbound send (text)
     # ------------------------------------------------------------------
+
+    async def send_control_reply(self, event: MessageEvent, content: str) -> SendResult:
+        """Reply to one inbound LINE event without touching slow-response state."""
+        if not self._client or not event or not event.source:
+            return SendResult(success=False, error="LINE control reply is unavailable")
+        chat_id = str(event.source.chat_id or "")
+        if not chat_id:
+            return SendResult(success=False, error="LINE control reply requires a chat id")
+        chunks = split_for_line(strip_markdown_preserving_urls(str(content or "")))
+        if not chunks:
+            return SendResult(success=True, message_id=None)
+        messages = [_text_message(chunk) for chunk in chunks][:LINE_MAX_MESSAGES_PER_CALL]
+        reply_token = getattr(event, "platform_reply_token", None)
+        if isinstance(reply_token, str) and reply_token:
+            cached = self._reply_tokens.get(chat_id)
+            if cached is not None and cached[0] == reply_token:
+                self._reply_tokens.pop(chat_id, None)
+            try:
+                await self._client.reply(reply_token, messages)
+                return SendResult(success=True, message_id=reply_token)
+            except Exception as exc:
+                logger.info("LINE: control reply token rejected (%s); falling back to push", exc)
+        try:
+            await self._client.push(chat_id, messages)
+            return SendResult(success=True, message_id=None)
+        except Exception as exc:
+            logger.error("LINE: control-reply push failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
 
     async def send(
         self,
@@ -1500,7 +1578,12 @@ def validate_config(config) -> bool:
     has_secret = bool(
         os.getenv("LINE_CHANNEL_SECRET") or extra.get("channel_secret")
     )
-    return has_token and has_secret
+    allow_sender_groups = _truthy_env(
+        "LINE_ALLOW_GROUPS_FROM_ALLOWED_USERS",
+        bool(extra.get("allow_groups_from_allowed_users", False)),
+    )
+    dispatch_gate = str(extra.get("group_sender_dispatch_gate", "") or "").strip()
+    return has_token and has_secret and (not allow_sender_groups or bool(dispatch_gate))
 
 
 def is_connected(config) -> bool:

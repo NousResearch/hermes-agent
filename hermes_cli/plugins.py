@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.metadata
 import importlib.util
 import inspect
@@ -330,6 +331,33 @@ class LoadedPlugin:
     # imported) loader. The module loads on first real use via the
     # platform_registry; see PluginManager._register_deferred_platform.
     deferred: bool = False
+
+
+@dataclass(frozen=True)
+class HookRegistration:
+    """Stable, non-secret metadata for one plugin hook callback."""
+
+    callback: Callable
+    plugin_name: str
+    gate_owner: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class HookInvocation:
+    """Result of one isolated hook callback invocation."""
+
+    plugin_name: str
+    callback_name: str
+    gate_owner: Optional[str]
+    result: Any = None
+    error_type: Optional[str] = None
+    # The post-callback event copy is intentionally available only to the
+    # caller of ``invoke_hook_isolated``.  Gateway's guarded ingress resolver
+    # uses it to collect a tightly-controlled set of enrichments after it has
+    # verified that the callback did not alter the authenticated routing or
+    # trust boundary.  It is excluded from repr so diagnostics never render
+    # message text, tokens, or raw platform payloads.
+    event: Any = field(default=None, repr=False, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1155,7 +1183,13 @@ class PluginContext:
             display_name,
         )
 
-    def register_hook(self, hook_name: str, callback: Callable) -> None:
+    def register_hook(
+        self,
+        hook_name: str,
+        callback: Callable,
+        *,
+        gate_owner: Optional[str] = None,
+    ) -> None:
         """Register a lifecycle hook callback.
 
         Unknown hook names produce a warning but are still stored so
@@ -1169,8 +1203,26 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        if gate_owner is not None:
+            if hook_name != "pre_gateway_dispatch":
+                raise ValueError("gate_owner is only supported for pre_gateway_dispatch")
+            if not isinstance(gate_owner, str) or not gate_owner.strip():
+                raise ValueError("gate_owner must be a non-empty string")
+            gate_owner = gate_owner.strip()
         self._manager._hooks.setdefault(hook_name, []).append(callback)
-        logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+        self._manager._hook_registrations.setdefault(hook_name, []).append(
+            HookRegistration(
+                callback=callback,
+                plugin_name=self.manifest.name,
+                gate_owner=gate_owner,
+            )
+        )
+        logger.debug(
+            "Plugin %s registered hook: %s%s",
+            self.manifest.name,
+            hook_name,
+            f" (gate owner: {gate_owner})" if gate_owner else "",
+        )
 
     # -- middleware registration -------------------------------------------
 
@@ -1251,6 +1303,7 @@ class PluginManager:
     def __init__(self) -> None:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
+        self._hook_registrations: Dict[str, List[HookRegistration]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
@@ -1292,6 +1345,7 @@ class PluginManager:
         if force:
             self._plugins.clear()
             self._hooks.clear()
+            self._hook_registrations.clear()
             self._middleware.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
@@ -1925,6 +1979,101 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def invoke_hook_isolated(
+        self,
+        hook_name: str,
+        *,
+        required_gate: Optional[str] = None,
+        **kwargs: Any,
+    ) -> List[HookInvocation]:
+        """Invoke hooks with a fresh event copy for every callback.
+
+        This is the guarded counterpart to :meth:`invoke_hook`. It records
+        callback identity and exceptions without exposing callback objects,
+        message bodies, tokens, or other secret-bearing values in diagnostics.
+        Existing hook callers keep the legacy ``invoke_hook`` behavior.
+        """
+        registrations = list(self._hook_registrations.get(hook_name, []))
+        if required_gate:
+            registrations.sort(
+                key=lambda registration: registration.gate_owner != required_gate
+            )
+        invocations: List[HookInvocation] = []
+        for registration in registrations:
+            callback_name = getattr(registration.callback, "__name__", "callback")
+            callback_kwargs = dict(kwargs)
+            if "event" in callback_kwargs:
+                try:
+                    callback_kwargs["event"] = copy.deepcopy(callback_kwargs["event"])
+                except Exception as exc:
+                    logger.warning(
+                        "Hook '%s' callback %s received an uncopyable event: %s",
+                        hook_name,
+                        callback_name,
+                        type(exc).__name__,
+                    )
+                    invocations.append(
+                        HookInvocation(
+                            plugin_name=registration.plugin_name,
+                            callback_name=callback_name,
+                            gate_owner=registration.gate_owner,
+                            error_type=type(exc).__name__,
+                        )
+                    )
+                    continue
+            callback_kwargs.setdefault(
+                "telemetry_schema_version", OBSERVER_SCHEMA_VERSION
+            )
+            try:
+                result = registration.callback(**callback_kwargs)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    hook_name,
+                    callback_name,
+                    type(exc).__name__,
+                )
+                invocations.append(
+                    HookInvocation(
+                        plugin_name=registration.plugin_name,
+                        callback_name=callback_name,
+                        gate_owner=registration.gate_owner,
+                        error_type=type(exc).__name__,
+                    )
+                )
+                continue
+            invocations.append(
+                HookInvocation(
+                    plugin_name=registration.plugin_name,
+                    callback_name=callback_name,
+                    gate_owner=registration.gate_owner,
+                    result=result,
+                    event=callback_kwargs.get("event"),
+                )
+            )
+            if required_gate:
+                action = result.get("action") if isinstance(result, dict) else None
+                is_owner = registration.gate_owner == required_gate
+                owner_approved = (
+                    is_owner
+                    and action == "approve"
+                    and result.get("gate") == required_gate
+                )
+                if (is_owner and not owner_approved) or action == "skip":
+                    break
+        return invocations
+
+    def list_hook_callbacks(self, hook_name: str) -> List[Dict[str, Optional[str]]]:
+        """Return stable callback metadata suitable for runtime diagnostics."""
+        return [
+            {
+                "plugin_name": registration.plugin_name,
+                "callback_name": getattr(registration.callback, "__name__", "callback"),
+                "gate_owner": registration.gate_owner,
+            }
+            for registration in self._hook_registrations.get(hook_name, [])
+        ]
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""

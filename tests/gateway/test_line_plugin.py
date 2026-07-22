@@ -141,6 +141,27 @@ class TestAllowlist:
         assert _allowed_for_source(src, allow_all=False, user_ids={"Uany"}, group_ids={"Cok"}, room_ids=set())
         assert not _allowed_for_source(src, allow_all=False, user_ids={"Uany"}, group_ids=set(), room_ids=set())
 
+    def test_group_sender_admission_requires_an_allowed_sender(self):
+        allowed_source = {"type": "group", "groupId": "Cnew", "userId": "Uok"}
+        denied_source = {"type": "group", "groupId": "Cnew", "userId": "Uother"}
+
+        assert _allowed_for_source(
+            allowed_source,
+            allow_all=False,
+            user_ids={"Uok"},
+            group_ids=set(),
+            room_ids=set(),
+            allow_groups_from_allowed_users=True,
+        )
+        assert not _allowed_for_source(
+            denied_source,
+            allow_all=False,
+            user_ids={"Uok"},
+            group_ids=set(),
+            room_ids=set(),
+            allow_groups_from_allowed_users=True,
+        )
+
     def test_room_uses_room_list(self):
         src = {"type": "room", "roomId": "Rok"}
         assert _allowed_for_source(src, allow_all=False, user_ids=set(), group_ids=set(), room_ids={"Rok"})
@@ -348,6 +369,63 @@ class TestSendRouting:
         assert result.success
         adapter._client.reply.assert_called_once()
         adapter._client.push.assert_called_once()
+
+    def test_control_reply_uses_its_own_event_token_and_bypasses_pending_cache(self, adapter):
+        import time as _time
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+
+        pending_id = adapter._cache.register_pending("Cgroup")
+        adapter._pending_buttons["Cgroup"] = pending_id
+        adapter._reply_tokens["Cgroup"] = ("other-event-token", _time.time() + 30)
+        event = MessageEvent(
+            text="/onboarding",
+            source=SessionSource(
+                platform=Platform("line"),
+                chat_id="Cgroup",
+                chat_type="group",
+                user_id="Uowner",
+            ),
+            platform_reply_token="this-event-token",
+        )
+
+        result = asyncio.run(adapter.send_control_reply(event, "First question"))
+
+        assert result.success
+        adapter._client.reply.assert_called_once()
+        assert adapter._client.reply.call_args.args[0] == "this-event-token"
+        adapter._client.push.assert_not_called()
+        assert adapter._cache.get(pending_id).state is State.PENDING
+        assert adapter._reply_tokens["Cgroup"][0] == "other-event-token"
+
+    def test_control_reply_pushes_after_its_exact_token_fails(self, adapter):
+        """A failed control reply never consumes a different event's token."""
+        import time as _time
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+
+        adapter._reply_tokens["Cgroup"] = ("this-event-token", _time.time() + 30)
+        adapter._client.reply.side_effect = RuntimeError("expired")
+        event = MessageEvent(
+            text="/onboarding",
+            source=SessionSource(
+                platform=Platform("line"),
+                chat_id="Cgroup",
+                chat_type="group",
+                user_id="Uowner",
+            ),
+            platform_reply_token="this-event-token",
+        )
+
+        result = asyncio.run(adapter.send_control_reply(event, "First question"))
+
+        assert result.success
+        adapter._client.reply.assert_called_once()
+        assert adapter._client.reply.call_args.args[0] == "this-event-token"
+        adapter._client.push.assert_called_once()
+        assert "Cgroup" not in adapter._reply_tokens
 
     def test_send_returns_failure_when_push_fails(self, adapter):
         adapter._client.push.side_effect = RuntimeError("network")
@@ -587,6 +665,30 @@ class TestValidateConfig:
         cfg = PlatformConfig(enabled=True, extra={})
         assert not validate_config(cfg)
 
+    def test_sender_group_admission_requires_a_dispatch_gate(self):
+        from gateway.config import PlatformConfig
+
+        missing_gate = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "t",
+                "channel_secret": "s",
+                "allow_groups_from_allowed_users": True,
+            },
+        )
+        configured_gate = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "t",
+                "channel_secret": "s",
+                "allow_groups_from_allowed_users": True,
+                "group_sender_dispatch_gate": "line-group-context",
+            },
+        )
+
+        assert not validate_config(missing_gate)
+        assert validate_config(configured_gate)
+
 
 class TestAdapterInit:
 
@@ -632,6 +734,47 @@ class TestAdapterInit:
         ad = LineAdapter(PlatformConfig(enabled=True))
         assert ad.allowed_users == {"U1", "U2", "U3"}
         assert ad.allowed_groups == {"C1"}
+
+
+@pytest.mark.asyncio
+async def test_sender_admitted_group_carries_a_required_gate_and_signed_event_identity():
+    from gateway.config import PlatformConfig
+
+    adapter = LineAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "token",
+                "channel_secret": "secret",
+                "allowed_users": ["Uowner"],
+                "allow_groups_from_allowed_users": True,
+                "group_sender_dispatch_gate": "line-group-context",
+            },
+        )
+    )
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+
+    await adapter._dispatch_event(
+        {
+            "type": "message",
+            "webhookEventId": "01JLINEEVENT",
+            "timestamp": 1_784_678_400_000,
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "Cnew", "userId": "Uowner"},
+            "message": {"type": "text", "id": "message-1", "text": "hello"},
+        }
+    )
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.required_dispatch_gate == "line-group-context"
+    assert event.platform_event_id == "01JLINEEVENT"
+    assert event.platform_event_timestamp_ms == 1_784_678_400_000
 
     def test_get_chat_info_infers_type_from_prefix(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")

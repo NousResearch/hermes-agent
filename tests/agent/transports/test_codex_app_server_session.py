@@ -468,6 +468,63 @@ class TestRunTurn:
         # Each tool item produces (assistant, tool) — 2*2 + final assistant = 5 msgs
         assert len(r.projected_messages) == 5
 
+    def test_callback_interrupt_stops_server_request_notification_drain(self):
+        """A lifecycle callback can fence the turn while notifications are
+        being drained ahead of a server request. Later provider events and the
+        pending request must remain untouched after that boundary."""
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "mcpToolCall",
+                "id": "terminal-1",
+                "server": "hermes-tools",
+                "tool": "kanban_complete",
+                "status": "completed",
+                "arguments": {},
+                "result": {"content": [{"type": "text", "text": "ok"}]},
+                "error": None,
+            },
+            threadId="t",
+            turnId="tu1",
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "late", "text": "too late"},
+            threadId="t",
+            turnId="tu1",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="approval-after-terminal",
+        )
+
+        session = None
+
+        def on_event(note):
+            if (
+                note.get("method") == "item/completed"
+                and (note.get("params") or {}).get("item", {}).get("tool")
+                == "kanban_complete"
+            ):
+                assert session is not None
+                session.request_interrupt()
+
+        session = make_session(client, on_event=on_event)
+        result = session.run_turn("finish", turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.final_text == ""
+        assert result.tool_iterations == 1
+        assert len(client._notifications) == 2
+        assert client.responses == []
+        assert any(method == "turn/interrupt" for method, _ in client.requests)
+
     def test_turn_start_failure_returns_error(self):
         client = FakeClient()
         from agent.transports.codex_app_server import CodexAppServerError

@@ -19,6 +19,7 @@ from hermes_cli.commands import (
     _clamp_command_names,
     _clamp_telegram_names,
     _sanitize_telegram_name,
+    _telegram_quick_menu_commands,
     discord_skill_commands,
     gateway_help_lines,
     resolve_command,
@@ -1374,6 +1375,81 @@ class TestTelegramMenuCommands:
             "        max_commands: nope\n"
         )
         assert telegram_menu_max_commands() == 60
+
+    def test_quick_commands_only_menu_reads_top_level_quick_commands(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        mode: quick_commands_only\n"
+            "quick_commands:\n"
+            "  agent-health:\n"
+            "    type: exec\n"
+            "    command: scripts/health.sh\n"
+            "    description: Show agent health\n"
+            "  hidden:\n"
+            "    type: exec\n"
+            "    command: scripts/internal.sh\n"
+            "    show_in_telegram_menu: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, hidden = telegram_menu_commands(max_commands=30)
+
+        assert menu == [("agent_health", "Show agent health")]
+        assert hidden == 0
+
+    def test_quick_commands_only_menu_sanitizes_deduplicates_and_caps(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        mode: quick_commands_only\n"
+            "quick_commands:\n"
+            "  agent-health:\n"
+            f"    description: {'A' * 80}\n"
+            "  agent_health:\n"
+            "    description: Duplicate after sanitizing\n"
+            "  second:\n"
+            "    description: Second command\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, hidden = telegram_menu_commands(max_commands=1)
+
+        assert menu == [("agent_health", ("A" * 37) + "...")]
+        assert hidden == 1
+
+    def test_quick_commands_only_menu_clamps_long_collisions_and_keeps_mapping(self):
+        from hermes_cli.commands import resolve_telegram_quick_command_key
+
+        prefix = "a" * 32
+        quick_commands = {
+            f"{prefix}-one": {"description": "First"},
+            f"{prefix}-two": {"description": "Second"},
+        }
+
+        menu, hidden = _telegram_quick_menu_commands(quick_commands, max_commands=10)
+
+        assert menu == [(prefix, "First"), (prefix[:31] + "0", "Second")]
+        assert hidden == 0
+        assert all(len(name) <= 32 for name, _description in menu)
+        assert (
+            resolve_telegram_quick_command_key(prefix, quick_commands, 10)
+            == f"{prefix}-one"
+        )
+        assert (
+            resolve_telegram_quick_command_key(prefix[:31] + "0", quick_commands, 10)
+            == f"{prefix}-two"
+        )
 
     def test_telegram_menu_ignores_undocumented_command_menu_paths(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

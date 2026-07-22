@@ -383,6 +383,27 @@ async def test_admin_runs_quick_command_when_gating_enabled():
     assert result == "quick-command-admin"
 
 
+@pytest.mark.asyncio
+async def test_telegram_sanitized_menu_name_dispatches_raw_quick_command_key():
+    """A registered /agent_health menu click must run `agent-health`."""
+    runner = _make_runner(platform=Platform.TELEGRAM)
+    runner.config.quick_commands = {
+        "agent-health": {
+            "type": "exec",
+            "command": "printf telegram-sanitized-quick-command",
+        }
+    }
+
+    result = await runner._handle_message(
+        _make_event(
+            "/agent_health",
+            _make_source(platform=Platform.TELEGRAM, user_id="111"),
+        )
+    )
+
+    assert result == "telegram-sanitized-quick-command"
+
+
 # ---------------------------------------------------------------------------
 # Running-agent fast-path gating — admin/user split must hold even when an
 # agent is already running. The fast-path block in _handle_message dispatches

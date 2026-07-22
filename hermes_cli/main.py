@@ -7224,9 +7224,13 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             cwd=cwd,
             capture_output=True,
             check=True,
+            timeout=60,
         )
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
+        return
+    except subprocess.TimeoutExpired:
+        print("  ✗ Upstream fetch timed out. Skipping upstream sync.")
         return
 
     # Compare origin/main with upstream/main
@@ -10208,12 +10212,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _resolve_update_branch(args)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin", branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            print("✗ Network timeout — cannot reach origin.")
+            print("  Try again later or check your network/SSH configuration.")
+            sys.exit(1)
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
@@ -10395,12 +10405,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                print("✗ Network timeout during git pull — update aborted.")
+                print("  Try again later or check your network/SSH configuration.")
+                sys.exit(1)
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already

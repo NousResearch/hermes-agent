@@ -239,8 +239,20 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
 
+        # run_gateway()'s success path ends in _exit_after_graceful_shutdown()
+        # -> os._exit(0) (fd96e138b), which would hard-exit the whole pytest
+        # process here and silently truncate the rest of this file (#69218).
+        # Stub it the same way tests/hermes_cli/test_gateway_run_hard_exit.py
+        # does, and record that the boot path did reach the hard-exit backstop.
+        exit_codes: list[int] = []
+        monkeypatch.setattr(
+            "gateway.run._exit_after_graceful_shutdown",
+            lambda code: exit_codes.append(code),
+        )
+
         gateway_cli.run_gateway()
 
+        assert exit_codes == [0]
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
 
@@ -1539,6 +1551,20 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _stub_user_systemd_preflight(self, monkeypatch):
+        """Isolate restart-routing logic from the user D-Bus preflight.
+
+        ``systemd_restart()`` calls ``_preflight_user_systemd()``, which raises
+        ``UserSystemdUnavailableError`` on any host without a reachable user
+        D-Bus session (macOS, CI runners with no lingering user session). These
+        routing tests mock systemctl/scope but assume the preflight passes — the
+        preflight's own behavior is covered separately by
+        ``TestPreflightUserSystemd``. Individual tests that mock the preflight
+        themselves still win (autouse applies first).
+        """
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

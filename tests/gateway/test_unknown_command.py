@@ -5,6 +5,7 @@ text, which often leads to silent failure (e.g. the model inventing a bogus
 delegate_task call instead of telling the user the command doesn't exist).
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -359,10 +360,17 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
         "get_plugin_commands",
         lambda: {"metricas": {"description": "Metrics", "args_hint": "dias:7"}},
     )
+    expected_session_key = build_session_key(_make_source())
+
+    def _handler(args, *, session_id, gateway_session_key):
+        assert session_id == "sess-1"
+        assert gateway_session_key == expected_session_key
+        return f"metrics {args}"
+
     monkeypatch.setattr(
         _plugins_mod,
         "get_plugin_command_handler",
-        lambda name: (lambda args: f"metrics {args}") if name == "metricas" else None,
+        lambda name: _handler if name == "metricas" else None,
     )
 
     result = await runner._handle_message(_make_event("/status"))
@@ -371,3 +379,48 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_command_hook_rewrite_awaits_future_plugin_result(monkeypatch):
+    """Gateway plugin commands await all awaitables, not only coroutines."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("rewritten command leaked to the agent")
+    )
+
+    async def _emit_collect(event_type, _ctx):
+        if event_type == "command:status":
+            return [
+                {
+                    "decision": "rewrite",
+                    "command_name": "metricas",
+                    "raw_args": "dias:7",
+                }
+            ]
+        return []
+
+    runner.hooks.emit_collect = AsyncMock(side_effect=_emit_collect)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {"metricas": {"description": "Metrics", "args_hint": "dias:7"}},
+    )
+    future = asyncio.get_running_loop().create_future()
+    future.set_result("future metrics dias:7")
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: (lambda _args: future) if name == "metricas" else None,
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert result == "future metrics dias:7"

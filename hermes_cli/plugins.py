@@ -1914,7 +1914,34 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                # Hook context grows over time. Preserve strict legacy callbacks
+                # by forwarding additive fields only when they are explicitly
+                # declared; callbacks using **kwargs retain the full schema.
+                try:
+                    signature = inspect.signature(cb)
+                    accepts_kwargs = any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in signature.parameters.values()
+                    )
+                    callback_kwargs = (
+                        kwargs
+                        if accepts_kwargs
+                        else {
+                            name: value
+                            for name, value in kwargs.items()
+                            if (parameter := signature.parameters.get(name)) is not None
+                            and parameter.kind
+                            in (
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                inspect.Parameter.KEYWORD_ONLY,
+                            )
+                        }
+                    )
+                except (TypeError, ValueError):
+                    # Retain the established full-kwargs behavior for opaque
+                    # callables that do not expose a Python signature.
+                    callback_kwargs = kwargs
+                ret = cb(**callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
@@ -2107,6 +2134,7 @@ def _get_pre_tool_call_directive_details(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    gateway_session_key: str = "",
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
@@ -2148,6 +2176,7 @@ def _get_pre_tool_call_directive_details(
         args=args if isinstance(args, dict) else {},
         task_id=task_id,
         session_id=session_id,
+        gateway_session_key=gateway_session_key,
         tool_call_id=tool_call_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
@@ -2184,6 +2213,7 @@ def get_pre_tool_call_directive(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    gateway_session_key: str = "",
 ) -> tuple[Optional[str], Optional[str]]:
     """Check ``pre_tool_call`` hooks for a blocking or approval directive.
 
@@ -2196,6 +2226,7 @@ def get_pre_tool_call_directive(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
+        gateway_session_key=gateway_session_key,
     )
     return (details.action, details.message)
 
@@ -2209,6 +2240,7 @@ def get_pre_tool_call_block_message(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    gateway_session_key: str = "",
 ) -> Optional[str]:
     """Back-compat shim: return only a ``block`` message (or ``None``).
 
@@ -2221,6 +2253,7 @@ def get_pre_tool_call_block_message(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
+        gateway_session_key=gateway_session_key,
     )
     return message if directive == "block" else None
 
@@ -2234,6 +2267,7 @@ def resolve_pre_tool_block(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    gateway_session_key: str = "",
 ) -> Optional[str]:
     """Resolve the pre_tool_call directive to a final block message (or None).
 
@@ -2253,6 +2287,7 @@ def resolve_pre_tool_block(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
+        gateway_session_key=gateway_session_key,
     )
     if details.action == "block":
         return details.message
@@ -2348,7 +2383,97 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     return entry["handler"] if entry else None
 
 
+def call_plugin_command_handler(
+    handler: Callable,
+    raw_args: str,
+    *,
+    session_id: str = "",
+    gateway_session_key: str = "",
+    **kwargs: Any,
+) -> Any:
+    """Invoke a plugin command handler with its supported runtime context.
+
+    ``raw_args`` remains the first positional argument, preserving the public
+    legacy command contract of ``handler(raw_args)``.  Handlers may opt into
+    ``session_id``, ``gateway_session_key``, or additional named context
+    keyword arguments.  ``gateway_session_key`` identifies a gateway-backed
+    conversation when available and may be empty outside a gateway; it does
+    not replace the live agent ``session_id``.
+    """
+    context = {
+        "session_id": session_id,
+        "gateway_session_key": gateway_session_key,
+        **kwargs,
+    }
+    try:
+        signature = inspect.signature(handler)
+        bound = signature.bind_partial(raw_args)
+    except (TypeError, ValueError):
+        # Some callable objects do not expose an inspectable Python signature.
+        # Their historic contract is the one positional raw-arguments value.
+        return handler(raw_args)
+
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    supported_context = {
+        name: value
+        for name, value in context.items()
+        if name not in bound.arguments
+        and (
+            accepts_kwargs
+            or (
+                (parameter := signature.parameters.get(name)) is not None
+                and parameter.kind
+                in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            )
+        )
+    }
+    return handler(raw_args, **supported_context)
+
+
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+async def _await_plugin_command_result(result: Any) -> Any:
+    """Adapt a general awaitable to the coroutine contract of ``asyncio.run``."""
+    return await result
+
+
+def _resolve_plugin_command_future(result: asyncio.Future) -> Any:
+    """Synchronously resolve a Future on the event loop that owns it.
+
+    A Future pending on the caller's active loop cannot be synchronously
+    awaited without deadlocking that loop, so that case fails explicitly.
+    """
+    if result.done():
+        return result.result()
+
+    owner_loop = result.get_loop()
+    try:
+        caller_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        caller_loop = None
+
+    if owner_loop is caller_loop:
+        raise RuntimeError(
+            "Cannot synchronously resolve a pending plugin command Future on "
+            "the caller's active event loop"
+        )
+    if owner_loop.is_running():
+        scheduled = asyncio.run_coroutine_threadsafe(
+            _await_plugin_command_result(result), owner_loop
+        )
+        try:
+            return scheduled.result(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS)
+        except TimeoutError:
+            scheduled.cancel()
+            raise TimeoutError(
+                "Plugin command async handler did not complete within "
+                f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s"
+            ) from None
+    return owner_loop.run_until_complete(result)
 
 
 def resolve_plugin_command_result(result: Any) -> Any:
@@ -2363,11 +2488,13 @@ def resolve_plugin_command_result(result: Any) -> Any:
     """
     if not inspect.isawaitable(result):
         return result
+    if isinstance(result, asyncio.Future):
+        return _resolve_plugin_command_future(result)
 
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(result)
+        return asyncio.run(_await_plugin_command_result(result))
 
     outcome: Dict[str, Any] = {}
     failure: Dict[str, BaseException] = {}
@@ -2375,7 +2502,7 @@ def resolve_plugin_command_result(result: Any) -> Any:
 
     def _runner() -> None:
         try:
-            outcome["value"] = asyncio.run(result)
+            outcome["value"] = asyncio.run(_await_plugin_command_result(result))
         except BaseException as exc:  # pragma: no cover - re-raised below
             failure["exc"] = exc
         finally:

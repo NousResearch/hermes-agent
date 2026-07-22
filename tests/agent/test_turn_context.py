@@ -201,6 +201,19 @@ def test_task_id_passthrough():
     assert agent._current_task_id == "fixed-task"
 
 
+def test_pre_llm_hook_receives_gateway_session_key_once():
+    agent = _FakeAgent()
+    agent._gateway_session_key = "agent:main:telegram:dm:42"
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]) as invoke_hook:
+        _build(agent)
+
+    invoke_hook.assert_called_once()
+    assert invoke_hook.call_args.args == ("pre_llm_call",)
+    assert invoke_hook.call_args.kwargs["session_id"] == "sess-1"
+    assert invoke_hook.call_args.kwargs["gateway_session_key"] == "agent:main:telegram:dm:42"
+
+
 def test_persist_user_message_becomes_original():
     agent = _FakeAgent()
     ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")

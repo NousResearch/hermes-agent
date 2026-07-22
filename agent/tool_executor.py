@@ -483,6 +483,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     middleware_trace=list(middleware_trace),
+                    gateway_session_key=getattr(agent, "_gateway_session_key", "") or "",
                 )
             except Exception:
                 block_message = None
@@ -1148,6 +1149,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     middleware_trace=list(middleware_trace),
+                    gateway_session_key=getattr(agent, "_gateway_session_key", "") or "",
                 )
             except Exception:
                 pass
@@ -1519,6 +1521,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
+                    gateway_session_key=getattr(agent, "_gateway_session_key", "") or "",
                 )
                 _spinner_result = function_result
             except KeyboardInterrupt:
@@ -1561,6 +1564,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
+                    gateway_session_key=getattr(agent, "_gateway_session_key", "") or "",
                 )
             except KeyboardInterrupt:
                 _emit_cancelled_terminal_post_tool_call(

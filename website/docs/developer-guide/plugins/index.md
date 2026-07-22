@@ -288,7 +288,8 @@ def handle_scan(ctx, raw_args: str):
     return result  # returned to the caller's chat UI
 
 def register(ctx):
-    # Handlers receive a single raw_args string; close over ctx via a lambda.
+    # Handlers receive positional raw_args; close over ctx via a lambda.
+    # They may also opt into keyword-only session context.
     ctx.register_command(
         "scan",
         lambda raw: handle_scan(ctx, raw),
@@ -771,7 +772,12 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 Plugins can register in-session slash commands — commands users type during a conversation (like `/lcm status` or `/ping`). These work in both CLI and gateway (Telegram, Discord, etc.).
 
 ```python
-def _handle_status(raw_args: str) -> str:
+def _handle_status(
+    raw_args: str,
+    *,
+    session_id: str = "",
+    gateway_session_key: str = "",
+) -> str:
     """Handler for /mystatus — called with everything after the command name."""
     if raw_args.strip() == "help":
         return "Usage: /mystatus [help|check]"
@@ -792,7 +798,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
-| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `handler` | `Callable[[str], str \| None]` | Called with `raw_args` as its first positional argument. Handlers may optionally declare keyword-only `session_id` and `gateway_session_key`; may also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
 
 **Key differences from `register_cli_command()`:**
@@ -803,6 +809,22 @@ After registration, users can type `/mystatus` in any session. The command appea
 | Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
 | Handler receives | Raw args string | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
+
+**Optional session context:** `raw_args` remains the first positional argument, so existing `handler(raw_args)` implementations remain compatible. A handler may opt in to keyword-only session context:
+
+```python
+def _handle_status(
+    raw_args: str,
+    *,
+    session_id: str = "",
+    gateway_session_key: str = "",
+) -> str:
+    # session_id is the current live agent session.
+    # gateway_session_key is a stable gateway conversation key, or "" outside gateway sessions.
+    return f"session={session_id} gateway={gateway_session_key} args={raw_args}"
+```
+
+`session_id` identifies the current live session and can change after a reset or rotation. `gateway_session_key` identifies the stable gateway-backed conversation or routing scope and does not replace `session_id`.
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 

@@ -15,6 +15,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    call_plugin_command_handler,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -694,6 +695,71 @@ class TestPluginHooks:
             "hermes.observer.v1"
         ]
 
+    def test_strict_legacy_pre_tool_hook_still_returns_block_directive(self):
+        """Additive hook context must not silently bypass legacy policy hooks."""
+        def hook(tool_name, args, task_id, session_id):
+            assert tool_name == "terminal"
+            assert args == {"command": "whoami"}
+            assert task_id == "task-1"
+            assert session_id == "live-session"
+            return {"action": "block", "message": "legacy policy"}
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [hook]
+
+        assert mgr.invoke_hook(
+            "pre_tool_call",
+            tool_name="terminal",
+            args={"command": "whoami"},
+            task_id="task-1",
+            session_id="live-session",
+            gateway_session_key="agent:main:discord:channel:42",
+            telemetry_schema_version="future-schema",
+        ) == [{"action": "block", "message": "legacy policy"}]
+
+    def test_strict_legacy_pre_llm_hook_still_returns_context(self):
+        """Strict pre_llm_call callbacks remain compatible with new context."""
+        def hook(session_id, user_message, conversation_history, is_first_turn, model):
+            assert session_id == "live-session"
+            assert user_message == "hello"
+            assert conversation_history == []
+            assert is_first_turn is True
+            assert model == "test-model"
+            return {"context": "legacy context"}
+
+        mgr = PluginManager()
+        mgr._hooks["pre_llm_call"] = [hook]
+
+        assert mgr.invoke_hook(
+            "pre_llm_call",
+            session_id="live-session",
+            gateway_session_key="agent:main:discord:channel:42",
+            task_id="task-1",
+            turn_id="turn-1",
+            user_message="hello",
+            conversation_history=[],
+            is_first_turn=True,
+            model="test-model",
+            platform="discord",
+            sender_id="42",
+        ) == [{"context": "legacy context"}]
+
+    def test_strict_hook_receives_declared_gateway_session_key(self):
+        """Strict callbacks can opt in to the new gateway identity field."""
+        def hook(tool_name, gateway_session_key):
+            assert tool_name == "terminal"
+            return gateway_session_key
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [hook]
+
+        assert mgr.invoke_hook(
+            "pre_tool_call",
+            tool_name="terminal",
+            args={},
+            gateway_session_key="agent:main:discord:channel:42",
+        ) == ["agent:main:discord:channel:42"]
+
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
         """A hook callback that raises does NOT crash the caller."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -927,9 +993,30 @@ class TestResolvePreToolBlock:
 
     def test_no_directive_returns_none(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
-        monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
         assert resolve_pre_tool_block("terminal", {}) is None
+
+    def test_forwards_distinct_gateway_session_key_to_pre_tool_hook(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        seen = {}
+
+        def invoke_hook(hook_name, **kwargs):
+            seen["hook_name"] = hook_name
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+
+        assert resolve_pre_tool_block(
+            "terminal",
+            {"command": "pwd"},
+            session_id="agent-session",
+            gateway_session_key="agent:main:discord:channel:42",
+        ) is None
+        assert seen["hook_name"] == "pre_tool_call"
+        assert seen["session_id"] == "agent-session"
+        assert seen["gateway_session_key"] == "agent:main:discord:channel:42"
 
     def test_approve_denied_blocks(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
@@ -1797,6 +1884,57 @@ class TestPreLlmCallTargetRouting:
 class TestPluginCommands:
     """Tests for plugin slash command registration via register_command()."""
 
+    def test_call_handler_preserves_legacy_raw_args_signature(self):
+        """Handlers written for the original one-argument API keep working."""
+        def handler(raw_args):
+            return f"legacy:{raw_args}"
+
+        assert call_plugin_command_handler(
+            handler,
+            "hello world",
+            session_id="agent-session",
+            gateway_session_key="agent:main:discord:channel:42",
+        ) == "legacy:hello world"
+
+    def test_call_handler_forwards_supported_named_context(self):
+        """Opt-in handlers receive only the context parameters they declare."""
+        def handler(raw_args, *, session_id, gateway_session_key, platform):
+            return raw_args, session_id, gateway_session_key, platform
+
+        assert call_plugin_command_handler(
+            handler,
+            "hello world",
+            session_id="agent-session",
+            gateway_session_key="agent:main:discord:channel:42",
+            platform="discord",
+            ignored="not forwarded",
+        ) == (
+            "hello world",
+            "agent-session",
+            "agent:main:discord:channel:42",
+            "discord",
+        )
+
+    def test_call_handler_forwards_all_context_to_kwargs_handler(self):
+        """Handlers accepting ``**kwargs`` receive the complete runtime context."""
+        def handler(raw_args, **context):
+            return raw_args, context
+
+        assert call_plugin_command_handler(
+            handler,
+            "hello world",
+            session_id="agent-session",
+            gateway_session_key="agent:main:discord:channel:42",
+            platform="discord",
+        ) == (
+            "hello world",
+            {
+                "session_id": "agent-session",
+                "gateway_session_key": "agent:main:discord:channel:42",
+                "platform": "discord",
+            },
+        )
+
     def test_register_command_basic(self):
         """register_command() stores handler, description, and plugin name."""
         mgr = PluginManager()
@@ -2075,6 +2213,81 @@ class TestPluginCommandResultResolution:
 
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         assert resolve_plugin_command_result(_handler()) == "threaded-ok"
+
+    def test_awaits_completed_future_without_running_loop(self):
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result("future-ok")
+
+        assert resolve_plugin_command_result(future) == "future-ok"
+
+    def test_awaits_completed_future_with_running_loop(self, monkeypatch):
+        import asyncio
+
+        class _Loop:
+            pass
+
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result("threaded-future-ok")
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        assert resolve_plugin_command_result(future) == "threaded-future-ok"
+
+    def test_awaits_pending_future_on_its_own_running_loop(self):
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            async def _make_future():
+                future = loop.create_future()
+                loop.call_later(0.01, future.set_result, "pending-future-ok")
+                return future
+
+            future = asyncio.run_coroutine_threadsafe(_make_future(), loop).result(timeout=1)
+            assert resolve_plugin_command_result(future) == "pending-future-ok"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1)
+            loop.close()
+
+    def test_awaits_pending_task_on_its_own_running_loop(self):
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            async def _answer():
+                await asyncio.sleep(0.01)
+                return "pending-task-ok"
+
+            async def _make_task():
+                return asyncio.create_task(_answer())
+
+            task = asyncio.run_coroutine_threadsafe(_make_task(), loop).result(timeout=1)
+            assert resolve_plugin_command_result(task) == "pending-task-ok"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1)
+            loop.close()
+
+    def test_rejects_pending_future_on_callers_active_loop(self):
+        import asyncio
+
+        async def _resolve_from_own_loop():
+            future = asyncio.get_running_loop().create_future()
+            with pytest.raises(RuntimeError, match="caller's active event loop"):
+                resolve_plugin_command_result(future)
+            future.cancel()
+
+        asyncio.run(_resolve_from_own_loop())
 
     def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
         """Threaded path must abort a hung async handler instead of blocking the caller."""

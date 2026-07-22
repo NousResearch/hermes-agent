@@ -590,6 +590,14 @@ def _is_gateway_owned_source(source: str) -> bool:
         return False
 
 
+def _session_context_id(session: dict | None) -> str:
+    """Return the live agent session id, falling back to the TUI session key."""
+    if not session:
+        return ""
+    agent = session.get("agent")
+    return getattr(agent, "session_id", None) or session.get("session_key", "") or ""
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit for a session.
 
@@ -5160,6 +5168,7 @@ def _make_agent(
         provider_data_collection=_pr.get("data_collection"),
         platform=_resolve_agent_platform(platform_override),
         session_id=session_id or key,
+        gateway_session_key=key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
@@ -13365,13 +13374,21 @@ def _(rid, params: dict) -> dict:
 
     try:
         from hermes_cli.plugins import (
+            call_plugin_command_handler,
             get_plugin_command_handler,
             resolve_plugin_command_result,
         )
 
         handler = get_plugin_command_handler(name)
         if handler:
-            result = resolve_plugin_command_result(handler(arg))
+            result = resolve_plugin_command_result(
+                call_plugin_command_handler(
+                    handler,
+                    arg,
+                    session_id=_session_context_id(session),
+                    gateway_session_key=(session or {}).get("session_key", ""),
+                )
+            )
             return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
         pass
@@ -15005,10 +15022,12 @@ def _(rid, params: dict) -> dict:
         pass
 
     plugin_handler = None
+    call_plugin_command_handler = None
     resolve_plugin_command_result = None
     if _cmd_base:
         try:
             from hermes_cli.plugins import (
+                call_plugin_command_handler,
                 get_plugin_command_handler,
                 resolve_plugin_command_result,
             )
@@ -15016,11 +15035,19 @@ def _(rid, params: dict) -> dict:
             plugin_handler = get_plugin_command_handler(_cmd_base)
         except Exception:
             plugin_handler = None
+            call_plugin_command_handler = None
             resolve_plugin_command_result = None
 
-    if plugin_handler and resolve_plugin_command_result:
+    if plugin_handler and call_plugin_command_handler and resolve_plugin_command_result:
         try:
-            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            result = resolve_plugin_command_result(
+                call_plugin_command_handler(
+                    plugin_handler,
+                    _cmd_arg,
+                    session_id=_session_context_id(session),
+                    gateway_session_key=(session or {}).get("session_key", ""),
+                )
+            )
             return _ok(rid, {"output": str(result or "(no output)")})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})

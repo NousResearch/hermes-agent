@@ -1,5 +1,6 @@
 """Tests for tui_gateway JSON-RPC protocol plumbing."""
 
+import asyncio
 import io
 import json
 import sys
@@ -1289,6 +1290,42 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["model_config"] == {"_branched_from": parent_key}
 
 
+def test_make_agent_forwards_distinct_gateway_session_key(server, monkeypatch):
+    """TUI agents retain their stable gateway key beside the live session ID."""
+    captured = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.model = kwargs.get("model", "")
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "test",
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("test/model", "test"))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent(
+        "tui-session",
+        "agent:main:discord:channel:42",
+        session_id="live-agent-session",
+    )
+
+    assert captured["session_id"] == "live-agent-session"
+    assert captured["gateway_session_key"] == "agent:main:discord:channel:42"
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 
@@ -1433,7 +1470,7 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
 
 
 def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
-    """Plugin slash commands return normal slash.exec output without using the worker."""
+    """Plugin slash commands receive both agent and stable gateway session context."""
     sid = "test-session"
 
     class Worker:
@@ -1445,11 +1482,21 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
             return f"worker:{cmd}"
 
     worker = Worker()
-    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+        "slash_worker": worker,
+    }
+
+    def handler(arg, *, session_id, gateway_session_key):
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result(f"plugin:{arg}:{session_id}:{gateway_session_key}")
+        return future
 
     with patch(
         "hermes_cli.plugins.get_plugin_command_handler",
-        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+        lambda name: handler if name == "plugin-cmd" else None,
     ):
         resp = server.handle_request({
             "id": "r-plugin-slash",
@@ -1458,8 +1505,47 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
         })
 
     assert "error" not in resp
-    assert resp["result"] == {"output": "plugin:hello"}
+    assert resp["result"] == {"output": "plugin:hello:agent-session:gateway-key"}
     assert worker.calls == []
+
+
+def test_slash_exec_awaits_pending_future_plugin_handler(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        async def _make_future():
+            future = loop.create_future()
+            loop.call_later(0.01, future.set_result, "pending-future:hello")
+            return future
+
+        future = asyncio.run_coroutine_threadsafe(_make_future(), loop).result(timeout=1)
+
+        def handler(arg, *, session_id, gateway_session_key):
+            assert (arg, session_id, gateway_session_key) == ("hello", "agent-session", "gateway-key")
+            return future
+
+        with patch(
+            "hermes_cli.plugins.get_plugin_command_handler",
+            lambda name: handler if name == "pending-future-cmd" else None,
+        ):
+            resp = server.handle_request({
+                "id": "r-plugin-slash-pending-future",
+                "method": "slash.exec",
+                "params": {"command": "pending-future-cmd hello", "session_id": sid},
+            })
+
+        assert "error" not in resp
+        assert resp["result"] == {"output": "pending-future:hello"}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1)
+        loop.close()
 
 
 def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
@@ -1865,8 +1951,14 @@ def test_command_dispatch_returns_custom_bundle_payload(server):
 
 
 def test_command_dispatch_awaits_async_plugin_handler(server):
-    async def _handler(arg):
-        return f"async:{arg}"
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+
+    async def _handler(arg, *, session_id, gateway_session_key):
+        return f"async:{arg}:{session_id}:{gateway_session_key}"
 
     with patch(
         "hermes_cli.plugins.get_plugin_command_handler",
@@ -1875,11 +1967,83 @@ def test_command_dispatch_awaits_async_plugin_handler(server):
         resp = server.handle_request({
             "id": "r-plugin",
             "method": "command.dispatch",
-            "params": {"name": "async-cmd", "arg": "hello"},
+            "params": {"name": "async-cmd", "arg": "hello", "session_id": sid},
         })
 
     assert "error" not in resp
-    assert resp["result"] == {"type": "plugin", "output": "async:hello"}
+    assert resp["result"] == {
+        "type": "plugin",
+        "output": "async:hello:agent-session:gateway-key",
+    }
+
+
+def test_command_dispatch_awaits_future_plugin_handler(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+
+    def _handler(arg, *, session_id, gateway_session_key):
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result(f"future:{arg}:{session_id}:{gateway_session_key}")
+        return future
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: _handler if name == "future-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-future",
+            "method": "command.dispatch",
+            "params": {"name": "future-cmd", "arg": "hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "plugin",
+        "output": "future:hello:agent-session:gateway-key",
+    }
+
+
+def test_command_dispatch_awaits_pending_future_plugin_handler(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        async def _make_future():
+            future = loop.create_future()
+            loop.call_later(0.01, future.set_result, "pending-future:hello")
+            return future
+
+        future = asyncio.run_coroutine_threadsafe(_make_future(), loop).result(timeout=1)
+
+        def _handler(arg, *, session_id, gateway_session_key):
+            assert (arg, session_id, gateway_session_key) == ("hello", "agent-session", "gateway-key")
+            return future
+
+        with patch(
+            "hermes_cli.plugins.get_plugin_command_handler",
+            lambda name: _handler if name == "pending-future-cmd" else None,
+        ):
+            resp = server.handle_request({
+                "id": "r-plugin-pending-future",
+                "method": "command.dispatch",
+                "params": {"name": "pending-future-cmd", "arg": "hello", "session_id": sid},
+            })
+
+        assert "error" not in resp
+        assert resp["result"] == {"type": "plugin", "output": "pending-future:hello"}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1)
+        loop.close()
 
 
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────

@@ -1063,9 +1063,11 @@ class DockerEnvironment(BaseEnvironment):
         if stdin_data is not None:
             cmd.append("-i")
 
-        # Only inject -e env args during init_session (login=True).
-        # Subsequent commands get env vars from the snapshot.
-        if login:
+        # Inject -e env args until the snapshot exists: the ambient-PATH probe
+        # and login bootstrap must see the same env, else the probe captures the
+        # image-default PATH instead of a configured one. Later commands get env
+        # from the snapshot.
+        if not self._snapshot_ready:
             cmd.extend(self._init_env_args)
 
         cmd.extend([self._container_id])

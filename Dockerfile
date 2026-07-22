@@ -334,6 +334,16 @@ ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
 ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+
+# Debian's /etc/profile hardcodes PATH for login shells, discarding the ENV PATH
+# above *before* it sources /etc/profile.d/*.sh. init_session snapshots the
+# environment through a login shell (`bash -l -c ... export -p`), so without a
+# profile.d drop-in the snapshot -- and every later terminal command that sources
+# it -- loses the venv and bare `python3` resolves to the system interpreter
+# (no Pillow, etc.). The drop-in below is sourced after the reset and re-prepends
+# the venv dirs. See issue #56634.
+COPY --chmod=0644 docker/profile.d/99-hermes-venv-path.sh /etc/profile.d/99-hermes-venv-path.sh
+
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

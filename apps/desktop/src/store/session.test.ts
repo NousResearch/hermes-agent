@@ -11,10 +11,14 @@ import {
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
+  getRememberedRoute,
+  getRememberedSessionId,
   mergeSessionPage,
   resolveComposerSessionKey,
   sessionPinId,
   setCurrentCwd,
+  setRememberedRoute,
+  setRememberedSessionId,
   setSelectedStoredSessionId,
   workspaceCwdForNewSession
 } from './session'
@@ -201,6 +205,38 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+})
+
+describe('remembered navigation storage', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('scopes the default profile and ignores ambiguous legacy keys', () => {
+    window.localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
+    window.localStorage.setItem('hermes.desktop.lastRoute', '/legacy-session')
+
+    setRememberedSessionId('default-session', 'default')
+    setRememberedRoute('/skills', 'default')
+
+    expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('default-session')
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/skills')
+    expect(window.localStorage.getItem('hermes.desktop.lastSessionId')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.lastRoute')).toBeNull()
+    expect(getRememberedSessionId('default')).toBe('default-session')
+    expect(getRememberedRoute('default')).toBe('/skills')
+  })
+
+  it('isolates and encodes named profile keys', () => {
+    setRememberedSessionId('coder-session', 'coder')
+    setRememberedRoute('/skills', 'coder')
+    setRememberedSessionId('ops-session', 'research/ops')
+    setRememberedRoute('/cron', 'research/ops')
+
+    expect(getRememberedSessionId('coder')).toBe('coder-session')
+    expect(getRememberedRoute('coder')).toBe('/skills')
+    expect(getRememberedSessionId('research/ops')).toBe('ops-session')
+    expect(getRememberedRoute('research/ops')).toBe('/cron')
+    expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.research%2Fops')).toBe('ops-session')
   })
 })
 

@@ -1984,6 +1984,18 @@ export const ja = defineLocale({
     reloadRetry: '再読み込みして再試行'
   },
 
+  firstRun: {
+    title: 'Hermes をセットアップ',
+    subtitle: 'エージェントの実行場所を選択してください。後で設定から変更できます。',
+    installTitle: 'このコンピューターにインストール',
+    installDesc: 'Hermes エージェントをローカルにダウンロードして実行します。',
+    installHint: 'このマシンにエージェントランタイムをダウンロードしてセットアップします。数分かかることがあります。',
+    connectTitle: 'サーバーに接続',
+    connectDesc: 'ホームサーバーなど、別の場所で既に実行中の Hermes エージェントを使用します。',
+    install: 'インストール',
+    installFailed: 'インストールを開始できませんでした'
+  },
+
   onboarding: {
     headerTitle: 'Hermes Agent のセットアップをしましょう',
     headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',

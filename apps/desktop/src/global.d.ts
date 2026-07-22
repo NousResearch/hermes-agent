@@ -215,6 +215,16 @@ declare global {
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
+      // First-run choice gate: on a fresh machine main waits (before any local
+      // install) for the user to pick install-vs-connect. `get` seeds a
+      // late-mounting renderer; `onChanged` tracks the waiting state;
+      // `choose('install')` releases the wait. The remote path goes through the
+      // existing applyConnectionConfig, not `choose`.
+      firstRun: {
+        get: () => Promise<DesktopFirstRunState>
+        choose: (choice: 'install') => Promise<DesktopFirstRunState>
+        onChanged: (cb: (state: DesktopFirstRunState) => void) => () => void
+      }
       getVersion: () => Promise<DesktopVersionInfo>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
@@ -587,6 +597,13 @@ export interface DesktopCloudAgentSignInResult {
   baseUrl: string
   // Whether the agent's gateway session cookie landed (silent cascade done).
   connected: boolean
+}
+
+// First-run choice gate state. `required` is true while main is parked waiting
+// for the user to choose "install on this computer" vs "connect to an existing
+// server" (the fresh-machine bootstrap-needed path). See electron/first-run-gate.ts.
+export interface DesktopFirstRunState {
+  required: boolean
 }
 
 export interface DesktopBootProgress {

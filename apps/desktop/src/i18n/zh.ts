@@ -2234,6 +2234,18 @@ export const zh: Translations = {
     reloadRetry: '重新加载并重试'
   },
 
+  firstRun: {
+    title: '设置 Hermes',
+    subtitle: '选择代理的运行位置。稍后可在设置中更改。',
+    installTitle: '安装到这台计算机',
+    installDesc: '在本地下载并运行 Hermes 代理。',
+    installHint: 'Hermes 将在这台计算机上下载并设置代理运行时，这可能需要几分钟。',
+    connectTitle: '连接到服务器',
+    connectDesc: '使用已在其他位置（例如家庭服务器）运行的 Hermes 代理。',
+    install: '安装',
+    installFailed: '无法开始安装'
+  },
+
   onboarding: {
     headerTitle: '开始设置 Hermes Agent',
     headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',

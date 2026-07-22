@@ -2048,6 +2048,18 @@ export const en: Translations = {
     reloadRetry: 'Reload and retry'
   },
 
+  firstRun: {
+    title: 'Set up Hermes',
+    subtitle: 'Choose where your agent should run. You can change this later in Settings.',
+    installTitle: 'Install on this computer',
+    installDesc: 'Downloads and runs the Hermes agent locally.',
+    installHint: 'Hermes will download and set up the agent runtime on this machine. This can take a few minutes.',
+    connectTitle: 'Connect to a server',
+    connectDesc: "Use a Hermes agent that's already running somewhere else, like a home server.",
+    install: 'Install',
+    installFailed: 'Could not start the install'
+  },
+
   onboarding: {
     headerTitle: "Let's get you setup with Hermes Agent",
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',

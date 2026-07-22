@@ -4324,6 +4324,75 @@ class TestRegisterMcpServers:
         _servers.pop("srv", None)
 
 
+class TestDiscoverMcpToolsForServers:
+    """Verify targeted, bounded discovery for explicitly named servers."""
+
+    def test_only_requested_servers_are_attempted_and_failures_are_isolated(self):
+        from tools import mcp_tool
+
+        fresh_servers = {}
+        attempted = []
+
+        async def fake_register(name, cfg):
+            attempted.append(name)
+            if name == "broken":
+                raise ConnectionError("cannot connect")
+            server = _make_mock_server(name)
+            server._registered_tool_names = [f"mcp__{name}__ping"]
+            fresh_servers[name] = server
+            return list(server._registered_tool_names)
+
+        configured = {
+            "requested": {"command": "requested"},
+            "broken": {"command": "broken"},
+            "unrequested": {"command": "unrequested"},
+        }
+
+        with patch.object(mcp_tool, "_MCP_AVAILABLE", True), \
+             patch.object(mcp_tool, "_servers", fresh_servers), \
+             patch.object(mcp_tool, "_server_connecting", set()), \
+             patch.object(mcp_tool, "_server_connect_errors", {}), \
+             patch.object(mcp_tool, "_server_connect_retry_after", {}), \
+             patch.object(mcp_tool, "_load_mcp_config", return_value=configured), \
+             patch.object(mcp_tool, "_discover_and_register_server", side_effect=fake_register):
+            result = mcp_tool.discover_mcp_tools_for_servers(
+                ["requested", "broken"], timeout=1.0
+            )
+
+        assert set(attempted) == {"requested", "broken"}
+        assert "unrequested" not in attempted
+        assert "mcp__requested__ping" in result
+        assert "mcp__broken__ping" not in result
+
+    def test_total_discovery_wait_is_bounded(self):
+        from tools import mcp_tool
+
+        async def never_finishes(_name, _cfg):
+            await asyncio.sleep(30)
+
+        with patch.object(mcp_tool, "_MCP_AVAILABLE", True), \
+             patch.object(mcp_tool, "_servers", {}), \
+             patch.object(mcp_tool, "_server_connecting", set()), \
+             patch.object(mcp_tool, "_server_connect_errors", {}), \
+             patch.object(mcp_tool, "_server_connect_retry_after", {}), \
+             patch.object(
+                 mcp_tool,
+                 "_load_mcp_config",
+                 return_value={"slow": {"command": "slow"}},
+             ), \
+             patch.object(
+                 mcp_tool,
+                 "_discover_and_register_server",
+                 side_effect=never_finishes,
+             ):
+            started = time.monotonic()
+            with pytest.raises(TimeoutError, match="timed out"):
+                mcp_tool.discover_mcp_tools_for_servers(["slow"], timeout=0.05)
+            elapsed = time.monotonic() - started
+
+        assert elapsed < 2.0
+
+
 # ---------------------------------------------------------------------------
 # Tests for parallel tool call support (port from openai/codex#17667)
 # ---------------------------------------------------------------------------

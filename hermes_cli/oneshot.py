@@ -50,15 +50,18 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
-def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
+def _validate_explicit_toolsets_with_mcp(
+    toolsets: object = None,
+) -> tuple[list[str] | None, list[str], str | None]:
+    """Validate explicit toolsets and retain the MCP-only subset."""
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
-        return None, None
+        return None, [], None
 
     try:
         from toolsets import validate_toolset
     except Exception as exc:
-        return None, f"hermes -z: failed to validate --toolsets: {exc}\n"
+        return None, [], f"hermes -z: failed to validate --toolsets: {exc}\n"
 
     built_in = [name for name in normalized if validate_toolset(name)]
     unresolved = [name for name in normalized if name not in built_in]
@@ -83,17 +86,16 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
                 "hermes -z: --toolsets all enables every toolset; "
                 f"ignoring additional entries: {', '.join(ignored)}\n"
             )
-        return None, None
+        return None, [], None
 
     mcp_names: set[str] = set()
     mcp_disabled: set[str] = set()
     if unresolved:
         try:
-            from hermes_cli.config import read_raw_config
             from hermes_cli.tools_config import _parse_enabled_flag
+            from tools.mcp_tool import get_configured_mcp_servers
 
-            cfg = read_raw_config()
-            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            mcp_servers = get_configured_mcp_servers()
             for name, server_cfg in mcp_servers.items():
                 if not isinstance(server_cfg, dict):
                     continue
@@ -119,9 +121,15 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
         )
 
     if not valid:
-        return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
+        return None, [], "hermes -z: --toolsets did not contain any valid toolsets.\n"
 
-    return valid, None
+    return valid, mcp_valid, None
+
+
+def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
+    """Backward-compatible validation result without discovery metadata."""
+    valid, _mcp_toolsets, error = _validate_explicit_toolsets_with_mcp(toolsets)
+    return valid, error
 
 
 def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:
@@ -210,7 +218,11 @@ def run_oneshot(
         )
         return 2
 
-    explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
+    (
+        explicit_toolsets,
+        requested_mcp_toolsets,
+        toolsets_error,
+    ) = _validate_explicit_toolsets_with_mcp(toolsets)
     if toolsets_error:
         sys.stderr.write(toolsets_error)
         return 2
@@ -247,6 +259,7 @@ def run_oneshot(
                     model=model,
                     provider=provider,
                     toolsets=explicit_toolsets,
+                    requested_mcp_toolsets=requested_mcp_toolsets,
                     use_config_toolsets=use_config_toolsets,
                 )
             except BaseException as exc:  # noqa: BLE001
@@ -315,6 +328,7 @@ def _run_agent(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    requested_mcp_toolsets: object = None,
     use_config_toolsets: bool = True,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
@@ -394,6 +408,16 @@ def _run_agent(
     toolsets_list = _normalize_toolsets(toolsets)
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+
+    # Explicit MCP toolsets must be registered before AIAgent snapshots the
+    # enabled tool schemas. The validation step passes only configured MCP
+    # names, so a built-in/plugin toolset that collides with an MCP server name
+    # never starts that server.
+    mcp_toolsets_list = _normalize_toolsets(requested_mcp_toolsets)
+    if mcp_toolsets_list:
+        from hermes_cli.mcp_startup import discover_requested_mcp_toolsets
+
+        discover_requested_mcp_toolsets(mcp_toolsets_list)
 
     session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the SQLite store

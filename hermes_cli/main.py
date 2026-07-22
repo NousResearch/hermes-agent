@@ -13252,7 +13252,14 @@ def _prepare_agent_startup(args) -> None:
             exc_info=True,
         )
     _run_inline_mcp_discovery = True
-    if _is_tui_chat_launch(args):
+    if getattr(args, "oneshot", None) and getattr(args, "toolsets", None):
+        # ``run_oneshot`` validates the explicit list and synchronously starts
+        # only its MCP subset before constructing AIAgent. Starting the generic
+        # all-server discovery here would race that snapshot and could start a
+        # configured MCP server whose name collides with a built-in/plugin
+        # toolset selected by the user.
+        _run_inline_mcp_discovery = False
+    elif _is_tui_chat_launch(args):
         # The TUI launcher hands off to a dedicated startup path that already
         # backgrounds MCP discovery with a bounded join before the first tool
         # snapshot.

@@ -123,8 +123,13 @@ async def test_prepare_image_routing_falls_back_to_text_for_text_only_session_ov
     monkeypatch.setattr("agent.image_routing._lookup_supports_vision", fake_supports)
 
     async def fake_enrich(user_text, image_paths):
+        from agent import auxiliary_client as aux
+
         assert user_text == "look"
         assert image_paths == ["/tmp/cashback.png"]
+        runtime = aux._normalize_main_runtime(None)
+        assert runtime["provider"] == "xiaomi"
+        assert runtime["model"] == "mimo-v2.5-pro"
         return "[vision summary]\n\nlook"
 
     monkeypatch.setattr(runner, "_enrich_message_with_vision", fake_enrich)
@@ -138,3 +143,48 @@ async def test_prepare_image_routing_falls_back_to_text_for_text_only_session_ov
     session_key = runner._session_key_for_source(source)
     assert result == "[vision summary]\n\nlook"
     assert runner._pending_native_image_paths_by_session.get(session_key) is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_image_routing_runs_off_the_event_loop(monkeypatch):
+    """The image-routing decision does blocking network I/O — a models.dev fetch
+    on cache miss, and the Ollama ``/api/show`` capability probe for local
+    servers — so it must run on a worker thread. Run inline on the gateway
+    event loop it would freeze *every* session for up to the request timeout
+    while a single image is routed.
+    """
+    import threading
+
+    runner = _make_runner()
+    source = _source()
+    event = _image_event()
+    cfg = _auto_config()
+
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "xiaomi")
+    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "mimo-v2.5-pro")
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **_: ("gpt-5.5", {"provider": "openai-codex"}),
+    )
+
+    main_thread = threading.current_thread()
+    seen: dict = {}
+
+    def recording_supports(provider, model, config):
+        # Stands in for the real, blocking capability lookup and records the
+        # thread it executes on.
+        seen["thread"] = threading.current_thread()
+        return True  # vision-capable → native routing (skips _enrich_message_with_vision)
+
+    monkeypatch.setattr("agent.image_routing._lookup_supports_vision", recording_supports)
+
+    await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert seen.get("thread") is not None, "capability lookup was never reached"
+    assert seen["thread"] is not main_thread, (
+        "the blocking image-routing decision must be offloaded off the gateway "
+        "event loop, not run inline on it"
+    )

@@ -69,12 +69,11 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.7-plus",                      ""),
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
-    ("moonshotai/kimi-k2.6",                   "recommended"),
-    ("moonshotai/kimi-k2.7-code",              ""),
+    ("moonshotai/kimi-k3",                     "recommended"),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
-    ("z-ai/glm-5.2",                           ""),
+    ("z-ai/glm-5.2",                           "default"),
     ("z-ai/glm-5.1",                           ""),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
@@ -220,8 +219,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.7-plus",
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
-        "moonshotai/kimi-k2.6",
-        "moonshotai/kimi-k2.7-code",
+        "moonshotai/kimi-k3",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
@@ -283,6 +281,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
         "claude-sonnet-4.6",
+        "claude-sonnet-5",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
@@ -320,16 +319,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimaxai/minimax-m3",
     ],
     "kimi-coding": [
+        "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
+        "kimi-for-coding-highspeed",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -341,6 +345,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "step-3.5-flash-2603",
     ],
     "moonshot": [
+        "kimi-k3",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -368,6 +373,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -404,6 +410,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
@@ -428,6 +435,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5-codex",
         "gpt-5-nano",
         "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -460,6 +468,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
     ],
     "opencode-go": [
+        "kimi-k3",
         "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
@@ -494,6 +503,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "kimi-k2.5",
         "qwen3.5-plus",
@@ -507,9 +517,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
+        "qwen3-max-2026-01-23",
         "qwen3-coder-plus",
         "qwen3-coder-next",
         "kimi-k2.5",
@@ -534,6 +545,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # prefers live discovery via ListFoundationModels + ListInferenceProfiles.
     # Use inference profile IDs (us.*) since most models require them.
     "bedrock": [
+        "us.anthropic.claude-sonnet-5",
         "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1052,6 +1064,7 @@ class ProviderEntry(NamedTuple):
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
+    ProviderEntry("fireworks",      "Fireworks AI",             "Fireworks AI (OpenAI-compatible direct model API)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
@@ -1081,7 +1094,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (Cloud-hosted open models, ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models, direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (Multi-model direct API)"),
-    ProviderEntry("fireworks",      "Fireworks AI",             "Fireworks AI (OpenAI-compatible direct model API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (Curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
@@ -1142,6 +1154,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
@@ -1301,25 +1314,72 @@ _PROVIDER_ALIASES = {
 }
 
 
-# Cost-safe overrides for the *silent* auto-default
-# (``get_default_model_for_provider``). Most providers' curated lists lead with a
-# sensible default, but Nous Portal is a per-token *metered aggregator* whose
-# list is ordered best-/most-capable-first — entry [0] is the priciest flagship
-# (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the
-# non-interactive fallback when a profile sets ``provider: nous`` with no model
-# silently bills the most expensive model for traffic the user never opted into
-# (a missing default escalated to Opus and billed 863 requests before the user
-# noticed). Pin the silent default to a low-cost curated model instead so a
-# missing model can never escalate to the flagship.
+# In-repo fallback for the model Hermes silently lands on when the user never
+# picked one (GUI onboarding confirm card, empty ``model.default``,
+# provider-set-but-model-missing resolution). The AUTHORITATIVE source is the
+# remote model catalog: the manifest labels exactly one entry per provider
+# with ``"default": true`` (see get_default_model_from_cache in
+# model_catalog.py), so maintainers can rotate the default without shipping a
+# release. This constant is the offline/fresh-install fallback and MUST match
+# the labeled entry in website/static/api/model-catalog.json. Deliberately a
+# capable low-cost model rather than the curated lists' entry [0]: aggregator
+# lists are ordered most-capable-first, so [0] is the priciest Anthropic
+# flagship (claude-fable-5 / opus) — silently billing the most expensive model
+# for traffic the user never opted into.
+PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
+
+
+def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
+    """Return the silent-default model id — catalog label first, constant second.
+
+    Reads the ``"default": true`` label from the cached remote catalog
+    (never hits the network — safe on hot resolution paths), falling back to
+    :data:`PREFERRED_SILENT_DEFAULT_MODEL` when no cached manifest exists or
+    the provider block carries no label.
+    """
+    try:
+        from hermes_cli.model_catalog import get_default_model_from_cache
+        labeled = get_default_model_from_cache(provider)
+        if labeled:
+            return labeled
+    except Exception:
+        pass
+    return PREFERRED_SILENT_DEFAULT_MODEL
+
+
+def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter") -> str:
+    """Pick the silent default from an available-models list.
+
+    Returns the catalog-labeled default (see
+    :func:`get_preferred_silent_default_model`) when the list carries it,
+    else the first entry, else "". Used by every surface that must choose a
+    model on the user's behalf without an interactive picker (GUI onboarding
+    recommended-default, empty-model runtime fallback).
+    """
+    preferred = get_preferred_silent_default_model(provider)
+    if preferred in model_ids:
+        return preferred
+    return model_ids[0] if model_ids else ""
+
+
+# Providers whose *silent* auto-default must go through the cost-safe
+# catalog-labeled default (``get_preferred_silent_default_model``) instead of
+# curated-list entry [0]. Metered aggregators (Nous Portal, OpenRouter) order
+# their lists best-/most-capable-first — entry [0] is the priciest flagship
+# (``anthropic/claude-fable-5``). Using that as the non-interactive fallback
+# when a profile sets a provider with no model silently bills the most
+# expensive model for traffic the user never opted into (a missing default
+# escalated to Opus and billed 863 requests before the user noticed). The
+# catalog manifest labels the default entry (``"default": true``) so it can
+# rotate without a release; a missing model must never escalate to the
+# flagship.
 #
-# This is deliberately a fixed, side-effect-free default for the hot resolution
-# path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
-# richer free/paid-tier-aware resolver — see ``get_recommended_default_model``
-# in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
-# hit the Portal; this fallback must stay cheap and network-free.
-_PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
-    "nous": "deepseek/deepseek-v4-flash",
-}
+# This is deliberately a network-free lookup for the hot resolution path
+# (cache-only catalog read). The *interactive* default (GUI onboarding /
+# ``hermes model``) uses the richer free/paid-tier-aware resolver — see
+# ``get_recommended_default_model`` in hermes_cli/web_server.py and
+# ``partition_nous_models_by_tier`` — which can hit the Portal.
+_SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
 
 def get_default_model_for_provider(provider: str) -> str:
@@ -1332,15 +1392,19 @@ def get_default_model_for_provider(provider: str) -> str:
     For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
     same model the ``hermes model`` picker offers first. For metered aggregators
     whose curated list is ordered most-capable-first, that entry is also the
-    most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
-    providers carry an explicit low-cost override in
-    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
-    auto-escalate to the flagship.
+    most EXPENSIVE one, so silently defaulting to it is a billing footgun.
+    Those providers (``_SILENT_DEFAULT_PROVIDERS``) resolve through the
+    catalog-labeled default instead; a missing model must never auto-escalate
+    to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
-    override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
-    if override and override in models:
-        return override
+    if provider in _SILENT_DEFAULT_PROVIDERS:
+        preferred = get_preferred_silent_default_model(provider)
+        # Trust the preferred default even when the provider has no static
+        # catalog (OpenRouter's picker list is fetched live; its curated
+        # snapshot carries the default).
+        if preferred and (preferred in models or not models):
+            return preferred
     return models[0] if models else ""
 
 
@@ -1426,6 +1490,7 @@ def fetch_openrouter_models(
         live_by_id[mid] = item
 
     curated: list[tuple[str, str]] = []
+    silent_default = get_preferred_silent_default_model("openrouter")
     for preferred_id in preferred_ids:
         live_item = live_by_id.get(preferred_id)
         if live_item is None:
@@ -1435,14 +1500,20 @@ def fetch_openrouter_models(
         # when the user selects them. Ported from Kilo-Org/kilocode#9068.
         if not _openrouter_model_supports_tools(live_item):
             continue
-        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
+        if preferred_id == silent_default:
+            # Keep the silent-default badge through the live refresh so the
+            # picker shows which model Hermes lands on when none is selected.
+            desc = "default"
+        else:
+            desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
-    first_id, _ = curated[0]
-    curated[0] = (first_id, "recommended")
+    first_id, first_desc = curated[0]
+    if not first_desc:
+        curated[0] = (first_id, "recommended")
     _openrouter_catalog_cache = curated
     return list(curated)
 
@@ -1596,6 +1667,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
         return _fetch_novita_pricing(force_refresh=force_refresh)
     if normalized == "deepinfra":
         return _fetch_deepinfra_pricing(force_refresh=force_refresh)
+    if normalized == "fireworks":
+        return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
@@ -1610,6 +1683,55 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
                 force_refresh=force_refresh,
             )
     return {}
+
+
+def _fireworks_pricing_from_models_dev(
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Derive Fireworks picker pricing from the models.dev registry cache.
+
+    No dedicated network fetch: ``fetch_models_dev()`` already maintains an
+    in-memory + disk cache (1h TTL) that every picker surface shares, so this
+    is a pure dict transform on the picker path — no added latency and no
+    per-render network call. Results are additionally memoized in
+    ``_pricing_cache`` so repeated menu renders within a process are free.
+
+    models.dev publishes Fireworks costs in USD per 1M tokens; the shared
+    pricing formatter expects per-token strings, so divide by 1M.
+    """
+    cache_key = "models.dev/fireworks"
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from agent.models_dev import _get_provider_models
+
+        models = _get_provider_models("fireworks") or {}
+        for mid, entry in models.items():
+            if not isinstance(entry, dict):
+                continue
+            cost = entry.get("cost")
+            if not isinstance(cost, dict):
+                continue
+            inp = cost.get("input")
+            out = cost.get("output")
+            if inp is None and out is None:
+                continue
+            row: dict[str, str] = {
+                "prompt": str(float(inp or 0) / 1_000_000),
+                "completion": str(float(out or 0) / 1_000_000),
+            }
+            cache_read = cost.get("cache_read")
+            if cache_read:
+                row["input_cache_read"] = str(float(cache_read) / 1_000_000)
+            result[str(mid)] = row
+    except Exception:
+        result = {}
+
+    _pricing_cache[cache_key] = result
+    return result
 
 
 def _fetch_novita_pricing(
@@ -1946,7 +2068,18 @@ def detect_static_provider_for_model(
             and default_models
             and resolved_provider not in current_keys
         ):
-            return (resolved_provider, default_models[0])
+            # Route through the cost-safe default rather than picking
+            # ``default_models[0]`` directly. For metered aggregators whose
+            # curated list is ordered most-capable-first (e.g. Nous Portal),
+            # entry [0] is the priciest flagship, and typing ``/model nous``
+            # would silently escalate to it — the exact billing footgun the
+            # catalog-labeled silent default (``_SILENT_DEFAULT_PROVIDERS``)
+            # exists to prevent. For providers outside that set this is
+            # unchanged (it returns ``models[0]``).
+            return (
+                resolved_provider,
+                get_default_model_for_provider(resolved_provider) or default_models[0],
+            )
 
     # Aggregators list other providers' models — never auto-switch TO them
     # If the model belongs to the current provider's catalog, don't suggest switching
@@ -3186,6 +3319,54 @@ def lmstudio_model_reasoning_options(
     return []
 
 
+def ollama_model_supports_thinking(
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[bool]:
+    """Return True if an Ollama (Cloud or local) model advertises ``thinking``.
+
+    Probes the native ``/api/show`` endpoint and checks the ``capabilities``
+    list, which Ollama populates from the model's metadata (e.g.
+    ``deepseek-v4-pro`` → ``["completion", "tools", "thinking"]`` while
+    ``gemma3:27b`` → ``["completion", "vision"]``). This is the authoritative
+    capability source — the OpenAI-compat ``/v1/models`` endpoint omits it.
+
+    Returns:
+        True  — the model declares the ``thinking`` capability.
+        False — ``/api/show`` succeeded but the model has no ``thinking`` cap.
+        None  — the probe failed (unreachable / non-Ollama / error); the caller
+                decides the fallback (we treat None as "don't emit").
+    """
+    import httpx
+
+    server_url = (base_url or "").strip().rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+    if not server_url:
+        return None
+
+    bare_model = _strip_ollama_cloud_suffix((model or "").strip())
+    if not bare_model:
+        return None
+
+    token = str(api_key or "").strip()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    try:
+        with httpx.Client(timeout=timeout, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return None
+            caps = resp.json().get("capabilities")
+            if isinstance(caps, list):
+                return "thinking" in caps
+    except Exception:
+        return None
+    return None
+
+
 def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
     catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
     if not catalog:
@@ -3210,6 +3391,7 @@ _COPILOT_MODEL_ALIASES = {
     "openai/o3-mini": "gpt-5-mini",
     "openai/o4-mini": "gpt-5-mini",
     "anthropic/claude-opus-4.6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4": "claude-sonnet-4",
     "anthropic/claude-sonnet-4.5": "claude-sonnet-4.5",
@@ -3219,12 +3401,14 @@ _COPILOT_MODEL_ALIASES = {
     # dot-notation.  Accept both so users who configure copilot + a
     # default hyphenated Claude model don't hit HTTP 400
     # "model_not_supported".  See issue #6879.
+    "claude-sonnet-5": "claude-sonnet-5",
     "claude-opus-4-6": "claude-opus-4.6",
     "claude-sonnet-4-6": "claude-sonnet-4.6",
     "claude-sonnet-4-0": "claude-sonnet-4",
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
     "anthropic/claude-sonnet-4-5": "claude-sonnet-4.5",

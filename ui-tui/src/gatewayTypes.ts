@@ -168,11 +168,20 @@ export interface SessionCreateResponse {
   session_id: string
 }
 
+export type SessionPendingPrompt =
+  | {
+      event: 'clarify.request'
+      payload: { choices: string[] | null; question: string; request_id: string }
+    }
+  | { event: 'sudo.request'; payload: { request_id: string } }
+  | { event: 'secret.request'; payload: { env_var: string; prompt: string; request_id: string } }
+
 export interface SessionResumeResponse {
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_prompt?: SessionPendingPrompt
   resumed?: string
   running?: boolean
   session_id: string
@@ -210,6 +219,7 @@ export interface SessionActivateResponse {
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_prompt?: SessionPendingPrompt
   running?: boolean
   session_id: string
   session_key?: string

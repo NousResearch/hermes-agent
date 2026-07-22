@@ -50,8 +50,10 @@ for the bundled `docker-compose.yml` workflow. The helper wraps common Compose
 commands and passes your host UID/GID automatically so files created by the
 container stay owned by your host user.
 
-The helper supports Linux and macOS shells, including Bash and zsh, and native
-Windows through Git Bash. In Git Bash it automatically selects
+The helper supports Linux and macOS shells, including Bash and zsh. On native
+Windows, the only supported shell is Git Bash; PowerShell cannot source this
+helper. WSL follows the Linux path and is not part of the native Windows
+support. In Git Bash the helper automatically selects
 `docker-compose.windows.yml` for every helper command, replacing Linux host
 networking and bind-mount paths while retaining local image builds. Optional
 project and user override files are applied afterward. Run

@@ -1205,6 +1205,41 @@ class TestRunJobSessionPersistence:
             tip_session_id, "cron_complete"
         )
 
+    @pytest.mark.parametrize("tip_value", ["__same__", None, ""])
+    def test_run_job_no_rotation_finalizes_original_session_id(
+        self, tmp_path, tip_value
+    ):
+        """No-op path: with compression.in_place defaulting True, the session
+        id never rotates. get_compression_tip returns the input id (or a
+        falsy value); title + end_session must target the ORIGINAL cron id —
+        byte-for-byte the pre-fix behavior."""
+        job = {
+            "id": "no-rotation-job",
+            "name": "No rotation",
+            "prompt": "hello",
+        }
+
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            if tip_value == "__same__":
+                fake_db.get_compression_tip.side_effect = (
+                    lambda session_id: session_id
+                )
+            else:
+                fake_db.get_compression_tip.return_value = tip_value
+
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        original_session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
+        assert (
+            fake_db.set_session_title.call_args.args[0] == original_session_id
+        )
+        fake_db.end_session.assert_called_once_with(
+            original_session_id, "cron_complete"
+        )
+
     @pytest.mark.parametrize(
         ("agent_session_id", "expected_suffix"),
         [("agent-live-tip", "agent-live-tip"), ("", "original")],

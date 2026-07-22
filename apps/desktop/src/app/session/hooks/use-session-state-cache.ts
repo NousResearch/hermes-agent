@@ -6,8 +6,10 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
+  $activeSessionId,
   $busy,
   $messages,
+  setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -109,10 +111,21 @@ export function useSessionStateCache({
         // rotates (e.g. auto-compression forks a continuation). Leaving the
         // stale key lets getRuntimeIdForStoredSession resolve the old stored id
         // to this runtime, which the compression route-follow logic relies on
-        // being absent. The rotation signal itself is emitted centrally from
-        // handleTransition (session-states.ts) off the published diff.
+        // being absent. The rotation signal was previously emitted centrally
+        // from handleTransition (session-states.ts), but updateSessionState
+        // now skips publishSessionState (and thus handleTransition) when the
+        // updater is a no-op — fire it here so the route-follow effect still
+        // tracks compression without needing a dummy state write.
         if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+
+          if (sessionId === $activeSessionId.get()) {
+            setActiveSessionStoredIdRotation({
+              nextStoredSessionId: storedSessionId,
+              previousStoredSessionId: existing.storedSessionId,
+              runtimeSessionId: sessionId
+            })
+          }
         }
 
         if (storedSessionId) {
@@ -264,7 +277,22 @@ export function useSessionStateCache({
       storedSessionId?: string | null
     ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
-      const next = updater({ ...previous, messages: previous.messages })
+      // Give the updater the raw previous state so it can return the same
+      // reference when nothing changed (the caller sees a no-op). Previously
+      // the param was always a fresh spread, so every call looked like a
+      // change — including periodic ~1/s session.info heartbeats that churn
+      // $sessionStates and its computed atoms on every tick.
+      const next = updater(previous)
+
+      // If the updater returned the same reference, nothing changed for this
+      // session — skip the store write, publishSessionState, and view sync.
+      // The cache entry was already updated by ensureSessionState (if
+      // storedSessionId rotated); the caller gets its return value from the
+      // cache, so stale reads don't regress.
+      if (next === previous) {
+        return previous
+      }
+
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
       // Publishing to $sessionStates automatically fires transition side-effects
       // (watchdog, settle grace, unread marker, compression id rotation) inside

@@ -159,10 +159,25 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 /** Publish one session's state. Automatically fires transition side-effects
  *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
  *  by diffing previous vs next — callers never need to manually call a
- *  transition handler. */
+ *  transition handler.
+ *
+ *  Skips the publish when the new state is identical to the existing one
+ *  (same reference) to avoid churning `$sessionStates` on periodic
+ *  `session.info` heartbeats that carry no change — otherwise every ~1/s
+ *  heartbeat creates a new Record spread, triggering computed atoms
+ *  ($workingSessionIds, $attentionSessionIds) and their subscribers
+ *  unnecessarily. The runtime-id→state cache (sessionStateByRuntimeIdRef)
+ *  is updated independently by the caller, so the visual path stays live
+ *  without the store churn. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
-  const prev = $sessionStates.get()[runtimeId] ?? null
-  $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: state })
+  const current = $sessionStates.get()
+  const prev = current[runtimeId] ?? null
+
+  if (prev === state) {
+    return
+  }
+
+  $sessionStates.set({ ...current, [runtimeId]: state })
   handleTransition(prev, state, runtimeId)
 }
 

@@ -2761,7 +2761,7 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
-    async def _handle_background_command(self, event: MessageEvent) -> str:
+    async def _handle_background_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
         Spawns a new AIAgent in a background thread with its own session.
@@ -2796,7 +2796,14 @@ class GatewaySlashCommandsMixin:
         _task.add_done_callback(self._background_tasks.discard)
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-        return t("gateway.background.started", preview=preview, task_id=task_id)
+        # EphemeralReply so extract_local_files() (run on every non-ephemeral
+        # response) skips this ack — otherwise a bare path echoed from the
+        # prompt gets uploaded from the ack itself, and the background task's
+        # own intentional delivery of the same file uploads it again (#64661).
+        # ttl_seconds=0 keeps prior behavior (no auto-delete of the ack).
+        return EphemeralReply(
+            t("gateway.background.started", preview=preview, task_id=task_id), ttl_seconds=0
+        )
 
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast

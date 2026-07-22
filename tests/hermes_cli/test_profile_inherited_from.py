@@ -44,7 +44,7 @@ class TestDeepMergeWithConflicts:
         merged, conflicts = _deep_merge_with_conflicts({"a": 1}, {"a": 2})
         assert merged == {"a": 1}  # base wins
         assert len(conflicts) == 1
-        assert "a: 1 (base) vs 2 (overlay)" in conflicts[0]
+        assert conflicts[0] == ("a", 1, 2, "base", "overlay")
 
     def test_nested_dict_merge(self):
         base = {"display": {"compact": True, "bell": True}}
@@ -54,7 +54,7 @@ class TestDeepMergeWithConflicts:
             "display": {"compact": True, "bell": True, "editor": False}
         }
         assert len(conflicts) == 1
-        assert "display.compact" in conflicts[0]
+        assert conflicts[0][0] == "display.compact"
 
     def test_nested_dict_no_conflict(self):
         base = {"display": {"compact": True}}
@@ -81,7 +81,7 @@ class TestDeepMergeWithConflicts:
         _, conflicts = _deep_merge_with_conflicts(
             {"a": {"b": {"c": 1}}}, {"a": {"b": {"c": 2}}}
         )
-        assert "a.b.c" in conflicts[0]
+        assert conflicts[0][0] == "a.b.c"
 
 
 class TestResolveInheritedConfig:

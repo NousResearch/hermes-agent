@@ -116,11 +116,22 @@ class TestBuildAnthropicClient:
     def test_custom_base_url_strips_trailing_v1(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
-                "sk-ant-api03-x",
+                "sk-test",
                 base_url="https://proxy.example.com/anthropic/v1",
             )
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
+
+    def test_custom_extra_headers_override_protocol_defaults(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-test",
+                base_url="https://proxy.example.com/anthropic",
+                extra_headers={"anthropic-version": "vertex-2023-10-16"},
+            )
+            headers = mock_sdk.Anthropic.call_args[1]["default_headers"]
+            assert headers["anthropic-version"] == "vertex-2023-10-16"
+            assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

@@ -7279,6 +7279,89 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
+    def test_anthropic_messages_create_falls_back_on_empty_stream_assertion(self):
+        """A complete-JSON proxy response can make the SDK stream path assert."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-test",
+                base_url="https://proxy.example.com/anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = AssertionError()
+        agent._anthropic_client.messages.create.return_value = response
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+
+        agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        assert result is response
+
+    def test_swap_credential_reresolves_headers_on_endpoint_change(self):
+        """Pool rotation to a different endpoint must not carry the previous
+        endpoint's extra_headers along — they are matched per base_url, so
+        stale headers can break auth/protocol on the new gateway. Rotating
+        within the same endpoint keeps the current headers untouched."""
+        url_a = "https://gw-a.example.com/anthropic"
+        url_b = "https://gw-b.example.com/anthropic"
+        headers_a = {"anthropic-version": "vertex-2023-10-16"}
+        headers_b = {"x-gateway-b": "1"}
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-test",
+                base_url=url_a,
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_base_url = url_a
+        agent._anthropic_extra_headers = dict(headers_a)
+        by_url = {url_a: headers_a, url_b: headers_b}
+
+        def _headers_for(base_url, *args, **kwargs):
+            return dict(by_url.get(str(base_url).rstrip("/"), {}))
+
+        def _entry(key, url):
+            return SimpleNamespace(runtime_api_key=key, runtime_base_url=url)
+
+        with (
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as build_client,
+            patch("hermes_cli.config.get_custom_provider_extra_headers", side_effect=_headers_for) as resolve_headers,
+        ):
+            agent._swap_credential(_entry("key-b", url_b))
+            assert agent._anthropic_extra_headers == headers_b
+            assert agent._anthropic_base_url == url_b
+            assert build_client.call_args.kwargs["extra_headers"] == headers_b
+
+            agent._swap_credential(_entry("key-a", url_a))
+            assert agent._anthropic_extra_headers == headers_a
+            assert build_client.call_args.kwargs["extra_headers"] == headers_a
+            assert resolve_headers.call_count == 2
+
+            # Same-endpoint rotation: headers preserved without re-resolution,
+            # so inline fallback-entry headers absent from config survive.
+            agent._swap_credential(_entry("key-a2", url_a))
+            assert agent._anthropic_extra_headers == headers_a
+            assert build_client.call_args.kwargs["extra_headers"] == headers_a
+            assert resolve_headers.call_count == 2
+
     def test_anthropic_messages_create_honors_disable_streaming(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),

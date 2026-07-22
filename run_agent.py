@@ -4769,11 +4769,33 @@ class AIAgent:
             except Exception:
                 pass
 
+            # extra_headers are resolved per endpoint (providers[].extra_headers
+            # matches on base_url), so a pool entry that moves the runtime to a
+            # different endpoint must not carry the previous endpoint's headers
+            # along. Re-resolve for the new URL; empty when no config entry
+            # matches. Same-endpoint rotations keep the current headers, which
+            # may have been set inline by a fallback entry rather than config.
+            _prev_base = str(getattr(self, "_anthropic_base_url", "") or "").rstrip("/").lower()
+            _next_base = str(runtime_base or "").rstrip("/").lower()
+            if _next_base != _prev_base:
+                _rotated_headers: dict = {}
+                try:
+                    from hermes_cli.config import get_custom_provider_extra_headers
+
+                    _rotated_headers = get_custom_provider_extra_headers(runtime_base) or {}
+                except Exception:
+                    logger.debug(
+                        "custom Anthropic-provider extra_headers re-resolution skipped",
+                        exc_info=True,
+                    )
+                self._anthropic_extra_headers = _rotated_headers
+
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
             self._anthropic_client = build_anthropic_client(
                 runtime_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                extra_headers=getattr(self, "_anthropic_extra_headers", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -4869,6 +4891,7 @@ class AIAgent:
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                extra_headers=getattr(self, "_anthropic_extra_headers", None),
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):

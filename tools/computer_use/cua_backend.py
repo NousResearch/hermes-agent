@@ -55,6 +55,7 @@ from tools.computer_use.backend import (
     ComputerUseBackend,
     UIElement,
 )
+from tools.computer_use.browser_route import CuaTypedBrowserRoute
 
 logger = logging.getLogger(__name__)
 
@@ -637,6 +638,11 @@ class _CuaDriverSession:
         # Empty until the session starts; consumers should call
         # `supports_capability` rather than reading directly.
         self._capabilities: Dict[str, set] = {}
+        # Raw input schemas are the compatibility source of truth for action
+        # properties.  cua-driver 0.9-era builds advertise delivery_mode in
+        # inputSchema while intentionally omitting the old, fabricated
+        # ``input.delivery_mode`` capability token.
+        self._tool_schemas: Dict[str, Dict[str, Any]] = {}
         self._capability_version: str = ""
         # Lifecycle plumbing — see class docstring above.
         self._ready_event = threading.Event()
@@ -740,6 +746,9 @@ class _CuaDriverSession:
         """Surface 4: cache per-tool capability sets + capability_version
         from tools/list. Soft prerequisite — discovery failure leaves
         the map empty and supports_capability degrades to False."""
+        self._capabilities = {}
+        self._tool_schemas = {}
+        self._capability_version = ""
         try:
             tools_list = await session.list_tools()
             for tool in getattr(tools_list, "tools", []) or []:
@@ -758,6 +767,14 @@ class _CuaDriverSession:
                     }
                 else:
                     self._capabilities[tool_name] = set()
+                schema = getattr(tool, "inputSchema", None)
+                if schema is None:
+                    schema = (getattr(tool, "model_extra", None) or {}).get(
+                        "inputSchema"
+                    )
+                self._tool_schemas[tool_name] = (
+                    dict(schema) if isinstance(schema, dict) else {}
+                )
             # capability_version is a top-level sibling of `tools` on the
             # tools/list response. cua-driver-core/src/tool.rs:354 emits
             # it; cua-driver-core/src/protocol.rs:150 leaves it OUT of
@@ -888,6 +905,17 @@ class _CuaDriverSession:
         treat that as "unknown" and probe defensively rather than trusting it.
         """
         return name in self._capabilities
+
+    def supports_input_property(self, tool: str, property_name: str) -> bool:
+        """Return whether a live action schema accepts ``property_name``.
+
+        This deliberately inspects tools/list rather than guessing from the
+        package version or requiring a capability token the driver never
+        shipped.  A missing/invalid schema fails closed.
+        """
+        schema = getattr(self, "_tool_schemas", {}).get(tool, {})
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        return isinstance(properties, dict) and property_name in properties
 
     @property
     def capabilities_discovered(self) -> bool:
@@ -1306,6 +1334,23 @@ class CuaDriverBackend(ComputerUseBackend):
         # degrade to the anonymous / unsynced path documented in the
         # MCP server instructions.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
+        self._typed_browser = CuaTypedBrowserRoute(
+            session_id=self._session_id,
+            call_tool=self._session.call_tool,
+            has_tool=self._session._has_tool,
+        )
+
+    def _browser_route(self) -> CuaTypedBrowserRoute:
+        """Return the per-backend typed route, including test-constructed instances."""
+        route = getattr(self, "_typed_browser", None)
+        if route is None:
+            route = CuaTypedBrowserRoute(
+                session_id=self._session_id,
+                call_tool=self._session.call_tool,
+                has_tool=self._session._has_tool,
+            )
+            self._typed_browser = route
+        return route
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -1862,13 +1907,12 @@ class CuaDriverBackend(ComputerUseBackend):
         action: str,
         args: Dict[str, Any],
         delivery_mode: Optional[str],
-        bring_to_front: bool,
     ) -> Optional[ActionResult]:
         """Attach delivery_mode to an input-action args dict.
 
         Background is the default and never needs a flag. Foreground is only
-        sent when the driver advertises support for it; on an older driver
-        that lacks the capability we refuse with a structured
+        sent when the live action schema accepts it; on an older driver that
+        lacks the property we refuse with a structured
         ``foreground_unsupported`` result instead of silently downgrading to
         background (which would land the input somewhere the model didn't
         expect). Returns an ActionResult to short-circuit on refusal, or None
@@ -1882,22 +1926,73 @@ class CuaDriverBackend(ComputerUseBackend):
                 message=f"unknown delivery_mode {delivery_mode!r} — use background|foreground.",
             )
         # Foreground requested. Only send it if the driver understands it.
-        if not self._session.supports_capability(
-            "input.delivery_mode", tool=action
-        ):
+        if not self._session.supports_input_property(action, "delivery_mode"):
             return ActionResult(
                 ok=False, action=action, code="foreground_unsupported",
                 delivery_mode="foreground",
                 message=(
-                    "This cua-driver build does not support foreground "
-                    "delivery (no `input.delivery_mode` capability). Update "
-                    "cua-driver to escalate to the foreground rung."
+                    "The connected cua-driver action schema does not accept "
+                    "delivery_mode, so foreground delivery is unavailable. "
+                    "Use another verified rung without assuming the reported "
+                    "package version describes the live schema."
                 ),
             )
         args["delivery_mode"] = "foreground"
-        if bring_to_front:
-            args["bring_to_front"] = True
         return None
+
+    def _run_input_action(
+        self,
+        action: str,
+        args: Dict[str, Any],
+        delivery_mode: Optional[str],
+        bring_to_front: bool,
+    ) -> ActionResult:
+        """Apply one delivery rung, optionally focusing via its own tool.
+
+        ``bring_to_front`` is never an input-action property.  When explicitly
+        requested, the separately approved standalone focus action runs first,
+        then the original foreground input runs unchanged.
+        """
+        refusal = self._apply_delivery(action, args, delivery_mode)
+        if refusal is not None:
+            return refusal
+        if bring_to_front:
+            if delivery_mode != "foreground":
+                return ActionResult(
+                    ok=False,
+                    action=action,
+                    code="bring_to_front_requires_foreground",
+                    message="bring_to_front requires delivery_mode='foreground'.",
+                )
+            if not self._session._has_tool("bring_to_front"):
+                return ActionResult(
+                    ok=False,
+                    action=action,
+                    code="bring_to_front_unsupported",
+                    delivery_mode="foreground",
+                    message="The connected cua-driver does not advertise the standalone bring_to_front tool.",
+                )
+            if self._active_pid is None or self._active_window_id is None:
+                return ActionResult(
+                    ok=False,
+                    action=action,
+                    code="bring_to_front_target_required",
+                    delivery_mode="foreground",
+                    message="Capture an exact target before requesting persistent foreground focus.",
+                )
+            focused = self.bring_to_front(
+                pid=self._active_pid,
+                window_id=self._active_window_id,
+            )
+            if not focused.ok:
+                return focused
+        result = self._action(action, args)
+        if bring_to_front:
+            result.meta["foreground_focus"] = {
+                "invoked": True,
+                "tool": "bring_to_front",
+            }
+        return result
 
     def click(
         self,
@@ -1950,10 +2045,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if modifiers:
             args["modifier"] = modifiers
 
-        refusal = self._apply_delivery(tool, args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action(tool, args)
+        return self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
     def drag(
         self,
@@ -1989,10 +2081,7 @@ class CuaDriverBackend(ComputerUseBackend):
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
-        refusal = self._apply_delivery("drag", args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action("drag", args)
+        return self._run_input_action("drag", args, delivery_mode, bring_to_front)
 
     def scroll(
         self,
@@ -2034,10 +2123,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 args["x"] = x
                 args["y"] = y
             args["window_id"] = self._active_window_id
-        refusal = self._apply_delivery("scroll", args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action("scroll", args)
+        return self._run_input_action("scroll", args, delivery_mode, bring_to_front)
 
     # ── Keyboard ───────────────────────────────────────────────────
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
@@ -2048,10 +2134,7 @@ class CuaDriverBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
         args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
-        refusal = self._apply_delivery("type_text", args, delivery_mode, bring_to_front)
-        if refusal is not None:
-            return refusal
-        return self._action("type_text", args)
+        return self._run_input_action("type_text", args, delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None,
             bring_to_front: bool = False) -> ActionResult:
@@ -2070,16 +2153,10 @@ class CuaDriverBackend(ComputerUseBackend):
             # hotkey requires at least one modifier + one key.
             args: Dict[str, Any] = {"pid": pid, "window_id": window_id,
                                     "keys": modifiers + [key_name]}
-            refusal = self._apply_delivery("hotkey", args, delivery_mode, bring_to_front)
-            if refusal is not None:
-                return refusal
-            return self._action("hotkey", args)
+            return self._run_input_action("hotkey", args, delivery_mode, bring_to_front)
         else:
             args = {"pid": pid, "window_id": window_id, "key": key_name}
-            refusal = self._apply_delivery("press_key", args, delivery_mode, bring_to_front)
-            if refusal is not None:
-                return refusal
-            return self._action("press_key", args)
+            return self._run_input_action("press_key", args, delivery_mode, bring_to_front)
 
     # ── Value setter ────────────────────────────────────────────────
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -2127,7 +2204,7 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._load_windows()
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        """Target an app for subsequent actions without stealing system focus.
+        """Target an app, optionally invoking standalone foreground focus.
 
         cua-driver background-automation never needs to bring a window to the
         front: capture(app=...) already selects the right window via
@@ -2136,8 +2213,9 @@ class CuaDriverBackend(ComputerUseBackend):
         its pid/window_id so that subsequent click/type calls hit the right
         process.
 
-        raise_window=True is intentionally ignored: stealing the user's focus
-        is exactly what this backend is designed to avoid.
+        The default remains non-disruptive. ``raise_window=True`` is explicit,
+        separately approved by the Hermes adapter, and uses cua-driver's
+        standalone ``bring_to_front`` tool rather than an action property.
         """
         try:
             windows = self._load_windows()
@@ -2160,6 +2238,23 @@ class CuaDriverBackend(ComputerUseBackend):
                 "pid": self._active_pid,
                 "window_id": self._active_window_id,
             }
+            if raise_window:
+                if not self._session._has_tool("bring_to_front"):
+                    return ActionResult(
+                        ok=False,
+                        action="focus_app",
+                        code="bring_to_front_unsupported",
+                        message="The connected cua-driver does not advertise the standalone bring_to_front tool.",
+                    )
+                focused = self.bring_to_front(
+                    pid=self._active_pid,
+                    window_id=self._active_window_id,
+                )
+                if not focused.ok:
+                    return focused
+                focused.action = "focus_app"
+                focused.meta["target_selected"] = True
+                return focused
             return ActionResult(
                 ok=True, action="focus_app",
                 message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
@@ -2221,7 +2316,29 @@ class CuaDriverBackend(ComputerUseBackend):
         args: Dict[str, Any] = {"pid": int(pid)}
         if window_id is not None:
             args["window_id"] = int(window_id)
-        return self._action("bring_to_front", args)
+        # The live 0.9-era schema is strict and deliberately has no session
+        # property. It is a standalone native focus operation, not a
+        # session-scoped input action.
+        return self._action("bring_to_front", args, inject_session=False)
+
+    # ── Typed browser (cua-driver 0.9 contract) ───────────────────
+    def typed_browser_state(self, **kwargs: Any) -> Dict[str, Any]:
+        """Exact-bind a native browser window or read fresh semantic state."""
+        return self._browser_route().observe(**kwargs)
+
+    def typed_browser_prepare(self, **kwargs: Any) -> Dict[str, Any]:
+        """Prepare an explicitly approved driver-owned browser profile."""
+        return self._browser_route().prepare(**kwargs)
+
+    def typed_browser_action(
+        self,
+        driver_tool: str,
+        *,
+        tab_id: Optional[str] = None,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Run one namespaced typed-browser mutation in this exact route."""
+        return self._browser_route().mutate(driver_tool, tab_id=tab_id, args=args)
 
     # ── Pointer + display introspection ─────────────────────────────
 
@@ -2471,7 +2588,13 @@ class CuaDriverBackend(ComputerUseBackend):
             return
         args["element_token"] = token
 
-    def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
+    def _action(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        *,
+        inject_session: bool = True,
+    ) -> ActionResult:
         # Attach the snapshot's element_token whenever the call carries
         # an element_index and the target tool advertises support.
         self._maybe_attach_element_token(name, args)
@@ -2479,7 +2602,8 @@ class CuaDriverBackend(ComputerUseBackend):
         # and per-session state (config overrides, recording ownership)
         # stay tied to this run. setdefault preserves any explicit
         # session a caller already supplied.
-        args.setdefault("session", self._session_id)
+        if inject_session:
+            args.setdefault("session", self._session_id)
         try:
             out = self._session.call_tool(name, args)
         except Exception as e:
@@ -2504,4 +2628,3 @@ class CuaDriverBackend(ComputerUseBackend):
             meta.update(structured)
         return _action_result_from(name, ok, message, meta, structured,
                                    requested_delivery=args.get("delivery_mode"))
-

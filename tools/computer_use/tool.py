@@ -77,12 +77,17 @@ def set_approval_callback(cb) -> None:
 
 
 # Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+_SAFE_ACTIONS = frozenset({
+    "capture", "wait", "list_apps", "list_windows", "cua_browser_state",
+})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "cua_browser_prepare", "cua_browser_navigate", "cua_browser_click",
+    "cua_browser_type", "cua_browser_pointer", "cua_browser_dialog",
+    "cua_browser_set_input_files", "cua_browser_download",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -136,9 +141,13 @@ def _is_blocked_type(text: str) -> Optional[str]:
 # Backend selection — env-swappable for tests
 # ---------------------------------------------------------------------------
 
-# Per-process cached backend; lazily instantiated on first call.
+# Per-Hermes-session cached backends. Each backend owns its own cua-driver
+# session, native target, typed-browser binding, refs, and grant namespace.
 _backend_lock = threading.Lock()
+# Backward-compatible empty-session injection hook used by older tests.
 _backend: Optional[ComputerUseBackend] = None
+_backends: Dict[str, ComputerUseBackend] = {}
+_backend_call_locks: Dict[str, threading.RLock] = {}
 # Approval state, scoped per conversation/run (keyed by session_id) so a
 # gateway serving concurrent sessions can't leak one run's "always approve"
 # unlock into another. Falls back to a shared "" bucket for callers that
@@ -151,40 +160,53 @@ _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
 
 
-def _get_backend() -> ComputerUseBackend:
+def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
+    sid = str(session_id or "")
     with _backend_lock:
-        if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
-                from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
-            elif backend_name == "noop":  # pragma: no cover
-                _backend = _NoopBackend()
-            else:
-                raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            try:
-                _backend.start()
-            except Exception:
-                # Don't cache a backend whose start() failed (e.g. a lazy
-                # dependency install was declined / failed). The next call
-                # retries cleanly instead of returning a half-initialised
-                # backend.
-                _backend = None
-                raise
-        return _backend
+        if sid == "" and _backend is not None:
+            return _backend
+        cached = _backends.get(sid)
+        if cached is not None:
+            return cached
+        backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+        if backend_name in {"cua", "cua-driver", ""}:
+            from tools.computer_use.cua_backend import CuaDriverBackend
+
+            backend = CuaDriverBackend()
+        elif backend_name == "noop":  # pragma: no cover
+            backend = _NoopBackend()
+        else:
+            raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
+        try:
+            backend.start()
+        except Exception:
+            # Don't cache a backend whose start() failed (e.g. a lazy
+            # dependency install was declined / failed). The next call
+            # retries cleanly instead of returning a half-initialised backend.
+            raise
+        _backends[sid] = backend
+        _backend_call_locks[sid] = threading.RLock()
+        if sid == "":
+            _backend = backend
+        return backend
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
     global _backend
     with _backend_lock:
+        unique = {id(item): item for item in _backends.values()}
         if _backend is not None:
+            unique[id(_backend)] = _backend
+        for backend in unique.values():
             try:
-                _backend.stop()
+                backend.stop()
             except Exception:
                 pass
         _backend = None
+        _backends.clear()
+        _backend_call_locks.clear()
     with _approval_lock:
         _session_auto_approve.clear()
         _always_allow.clear()
@@ -269,7 +291,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     session_id = str(kwargs.get("session_id") or "")
 
     # Safety: validate actions before approval prompt.
-    if action == "type":
+    if action in {"type", "cua_browser_type"}:
         text = args.get("text", "")
         pat = _is_blocked_type(text)
         if pat:
@@ -288,15 +310,30 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
+    if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
+        return json.dumps({
+            "error": "bring_to_front requires delivery_mode='foreground'",
+            "code": "bring_to_front_requires_foreground",
+        })
+
     # Approval gate (destructive actions only).
     if action in _DESTRUCTIVE_ACTIONS:
         err = _request_approval(action, args, session_id)
         if err is not None:
             return err
+    # Persistent focus is a separate, visible side effect from the input
+    # itself. Keep its approval scope distinct even when the input rung has
+    # already been approved for this session.
+    if args.get("bring_to_front") or (
+        action == "focus_app" and args.get("raise_window")
+    ):
+        err = _request_approval("bring_to_front", args, session_id)
+        if err is not None:
+            return err
 
     # Dispatch to backend.
     try:
-        backend = _get_backend()
+        backend = _get_backend(session_id=session_id)
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
@@ -305,7 +342,10 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         })
 
     try:
-        return _dispatch(backend, action, args)
+        with _backend_lock:
+            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
+        with call_lock:
+            return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -415,6 +455,93 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _maybe_follow_capture(backend, res, capture_after)
 
+    # cua-driver's typed browser surface is namespaced inside the existing
+    # computer_use tool so it cannot collide with native browser/MCP tools.
+    # The backend owns the opaque driver session, target, tab and ref state;
+    # none of those capabilities can be supplied across Hermes sessions.
+    if action == "cua_browser_state":
+        state_args: Dict[str, Any] = {}
+        for public, internal in (
+            ("pid", "pid"),
+            ("window_id", "window_id"),
+            ("tab_id", "tab_id"),
+            ("snapshot_format", "snapshot_format"),
+            ("query", "query"),
+            ("scope_ref", "scope_ref"),
+            ("continuation", "continuation"),
+        ):
+            if args.get(public) is not None:
+                state_args[internal] = args[public]
+        return json.dumps(backend.typed_browser_state(**state_args))
+
+    if action == "cua_browser_prepare":
+        return json.dumps(backend.typed_browser_prepare(
+            pid=args.get("pid"),
+            window_id=args.get("window_id"),
+            profile_mode=args.get("profile_mode", "isolated_new"),
+            profile_name=args.get("profile_name"),
+            allow_launch=bool(args.get("allow_launch")),
+        ))
+
+    browser_tools = {
+        "cua_browser_navigate": "browser_navigate",
+        "cua_browser_click": "browser_click",
+        "cua_browser_type": "browser_type",
+        "cua_browser_pointer": "browser_pointer",
+        "cua_browser_dialog": "browser_dialog",
+        "cua_browser_set_input_files": "browser_set_input_files",
+        "cua_browser_download": "browser_download",
+    }
+    driver_tool = browser_tools.get(action)
+    if driver_tool is not None:
+        call_args: Dict[str, Any] = {}
+        allowed_fields = {
+            "browser_navigate": ("url",),
+            "browser_click": ("ref", "input_route", "x", "y"),
+            "browser_type": ("ref", "text"),
+            "browser_pointer": (
+                "ref", "destination_ref", "input_route", "x", "y",
+                "to_x", "to_y", "delta_x", "delta_y",
+            ),
+            "browser_dialog": (
+                "dialog_id", "prompt_text", "delivery_mode",
+            ),
+            "browser_set_input_files": ("ref", "files"),
+            "browser_download": ("ref", "destination_root"),
+        }
+        for field in allowed_fields[driver_tool]:
+            if args.get(field) is not None:
+                call_args[field] = args[field]
+        if (
+            driver_tool in {"browser_click", "browser_pointer"}
+            and args.get("coordinate") is not None
+        ):
+            coordinate = args["coordinate"]
+            if isinstance(coordinate, (list, tuple)) and len(coordinate) == 2:
+                call_args["x"], call_args["y"] = coordinate
+        pointer_action = args.get("browser_pointer_action")
+        dialog_action = args.get("browser_dialog_action")
+        # Direct adapter callers may omit the public discriminator from args;
+        # retain this narrow compatibility path without making it usable to
+        # override the namespaced action selected by handle_computer_use.
+        nested_action = args.get("action")
+        if nested_action not in browser_tools:
+            if driver_tool == "browser_pointer" and pointer_action is None:
+                pointer_action = nested_action
+            if driver_tool == "browser_dialog" and dialog_action is None:
+                dialog_action = nested_action
+        if pointer_action is not None:
+            call_args["action"] = pointer_action
+        if dialog_action is not None:
+            call_args["action"] = dialog_action
+        if args.get("browser_type_mode") is not None:
+            call_args["mode"] = args["browser_type_mode"]
+        return json.dumps(backend.typed_browser_action(
+            driver_tool,
+            tab_id=args.get("tab_id"),
+            args=call_args,
+        ))
+
     # delivery_mode / bring_to_front thread through every input action so the
     # model can escalate background → foreground per cua-driver's ladder.
     delivery_mode = args.get("delivery_mode")
@@ -497,7 +624,27 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 # Response shaping
 # ---------------------------------------------------------------------------
 
-def _text_response(res: ActionResult) -> str:
+def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
+    """Choose the next ladder step from semantic evidence, in precedence order.
+
+    An escalation recommendation is advisory. It never overrides a confirmed
+    effect and it never turns an unverifiable action into permission to repeat
+    input. The model must first obtain fresh evidence.
+    """
+    if res.effect == "confirmed" or res.verified is True:
+        return {"decision": "done"}
+    if res.effect == "unverifiable":
+        return {"decision": "verify_fresh_state"}
+    if res.effect == "suspected_noop" or not res.ok or res.code is not None:
+        decision: Dict[str, Any] = {"decision": "escalate"}
+        if isinstance(res.escalation, dict):
+            decision["recommended"] = res.escalation.get("recommended")
+        return decision
+    # Transport success without semantic proof is not proof of effect.
+    return {"decision": "verify_fresh_state"}
+
+
+def _action_payload(res: ActionResult) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
@@ -521,7 +668,12 @@ def _text_response(res: ActionResult) -> str:
         payload["code"] = res.code
     if res.meta:
         payload["meta"] = res.meta
-    return json.dumps(payload)
+    payload["verdict"] = _classify_action_result(res)
+    return payload
+
+
+def _text_response(res: ActionResult) -> str:
+    return json.dumps(_action_payload(res))
 
 
 # Default cap for the AX `elements` array returned by capture. Dense UIs
@@ -937,19 +1089,20 @@ def _maybe_follow_capture(
     # Combine action summary with the capture.
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):
-        prefix = f"[{res.action}] ok={res.ok}" + (f" — {res.message}" if res.message else "")
+        # Keep the complete evidence/verdict contract visible when an image is
+        # attached; otherwise capture_after would accidentally discard the
+        # very signal that governs whether repeating input is allowed.
+        prefix = json.dumps(_action_payload(res))
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]
         resp["text_summary"] = prefix + "\n\n" + resp["text_summary"]
+        resp["action_result"] = _action_payload(res)
         return resp
     # Fallback: action + text capture merged.
     try:
         data = json.loads(resp)
     except (TypeError, json.JSONDecodeError):
         data = {"capture": resp}
-    data["action"] = res.action
-    data["ok"] = res.ok
-    if res.message:
-        data["message"] = res.message
+    data.update(_action_payload(res))
     return json.dumps(data)
 
 

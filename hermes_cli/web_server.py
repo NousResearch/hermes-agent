@@ -830,7 +830,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.elevenlabs.model_id": {
         "type": "select",
         "description": "ElevenLabs Scribe model",
-        "options": ["scribe_v2", "scribe_v1"],
+        "options": ["scribe_v2", "scribe_v1", "scribe_v1_experimental"],
     },
     "display.skin": {
         "type": "select",

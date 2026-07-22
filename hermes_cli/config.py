@@ -2254,7 +2254,7 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "xai" | "elevenlabs" (Scribe) | "deepinfra"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -2266,10 +2266,13 @@ DEFAULT_CONFIG = {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
         },
         "elevenlabs": {
-            "model_id": "scribe_v2",  # scribe_v2, scribe_v1
+            "model_id": "scribe_v2",  # scribe_v2, scribe_v1, scribe_v1_experimental
             "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
             "tag_audio_events": False,
             "diarize": False,
+            "timestamps_granularity": "",  # "", "none", "word", "character"
+            # Additional API keys for quota fallback are read from
+            # ELEVENLABS_API_KEY_2, ELEVENLABS_API_KEY_3, ... in ~/.hermes/.env.
         },
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog

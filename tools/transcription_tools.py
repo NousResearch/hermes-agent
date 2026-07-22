@@ -12,6 +12,9 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+    Defaults to ``scribe_v2``; 99 languages, word-level timestamps, optional
+    diarization. Additional keys (``ELEVENLABS_API_KEY_2``, ``_3``, ...) are
+    used as fallbacks when the primary key hits its quota.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -99,6 +102,11 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
+ELEVENLABS_STT_MODELS = {"scribe_v1", "scribe_v1_experimental", "scribe_v2"}
+# How far to scan ELEVENLABS_API_KEY_<N> when collecting fallback keys for
+# quota rotation.  Ten is well past anything a real user would set up but
+# keeps the env scan bounded.
+ELEVENLABS_MAX_FALLBACK_KEYS = 10
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
@@ -143,6 +151,29 @@ def _has_openai_audio_backend() -> bool:
         return True
     except ValueError:
         return False
+
+
+def _get_elevenlabs_api_keys() -> list:
+    """Return the ordered list of ElevenLabs API keys for STT.
+
+    Reads ``ELEVENLABS_API_KEY`` first, then ``ELEVENLABS_API_KEY_2``,
+    ``_3``, ... up to ``ELEVENLABS_MAX_FALLBACK_KEYS``.  Empty entries
+    are skipped and duplicates dropped while preserving order, so the
+    primary key is always tried first when rotating on quota errors.
+    """
+    keys: list = []
+    primary = get_env_value("ELEVENLABS_API_KEY")
+    if primary:
+        keys.append(primary)
+    for n in range(2, ELEVENLABS_MAX_FALLBACK_KEYS + 1):
+        extra = get_env_value(f"ELEVENLABS_API_KEY_{n}")
+        if extra and extra not in keys:
+            keys.append(extra)
+    return keys
+
+
+def _has_elevenlabs_credentials() -> bool:
+    return bool(_get_elevenlabs_api_keys())
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -751,7 +782,7 @@ def _get_provider(stt_config: dict) -> str:
 
     When ``stt.provider`` is explicitly set in config, that choice is
     honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq (free) > openai (paid).
+    auto-detect tries: local > groq > openai > mistral > xai > elevenlabs.
     """
     if not is_stt_enabled(stt_config):
         return "none"
@@ -823,7 +854,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "elevenlabs":
-            if get_env_value("ELEVENLABS_API_KEY"):
+            if _has_elevenlabs_credentials():
                 return "elevenlabs"
             logger.warning(
                 "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
@@ -876,7 +907,7 @@ def _get_provider(stt_config: dict) -> str:
             return "xai"
     except Exception:
         pass
-    if get_env_value("ELEVENLABS_API_KEY"):
+    if _has_elevenlabs_credentials():
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
     if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
@@ -1570,11 +1601,72 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+_ELEVENLABS_QUOTA_STATUSES = {401, 402, 429}
+_ELEVENLABS_QUOTA_BODY_MARKERS = (
+    "quota_exceeded",
+    "out_of_credits",
+    "insufficient_credits",
+    "quota exceeded",
+)
+
+
+def _summarise_elevenlabs_error(response) -> str:
+    """Best-effort one-liner describing an ElevenLabs error response."""
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return (response.text or "")[:300]
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, dict):
+            return str(
+                detail.get("message")
+                or detail.get("status")
+                or detail
+            )[:300]
+        if isinstance(detail, str):
+            return detail[:300]
+        message = body.get("message") or body.get("error")
+        if isinstance(message, str):
+            return message[:300]
+    return str(body)[:300]
+
+
+def _is_elevenlabs_quota_response(response) -> bool:
+    """Return True when the response indicates we should rotate keys."""
+    if response.status_code in _ELEVENLABS_QUOTA_STATUSES:
+        return True
+    body_text = (response.text or "").lower()
+    return any(marker in body_text for marker in _ELEVENLABS_QUOTA_BODY_MARKERS)
+
+
 def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using ElevenLabs Scribe STT API."""
-    api_key = get_env_value("ELEVENLABS_API_KEY")
-    if not api_key:
+    """Transcribe using the ElevenLabs Scribe API.
+
+    Uses ``POST /v1/speech-to-text`` with multipart/form-data and the
+    ``xi-api-key`` header. Defaults to ``scribe_v2`` for accuracy; callers
+    may opt into ``scribe_v1`` or ``scribe_v1_experimental`` via
+    ``stt.elevenlabs.model_id``.
+
+    Supports key rotation: when the primary ``ELEVENLABS_API_KEY`` returns
+    a quota/auth error (HTTP 401/402/429 or a JSON body indicating
+    ``quota_exceeded``), the next key in ``ELEVENLABS_API_KEY_2``,
+    ``_3``, ... is tried automatically. Non-quota errors (e.g. 400, 5xx)
+    are not retried.
+    """
+    api_keys = _get_elevenlabs_api_keys()
+    if not api_keys:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
+
+    if not model_name:
+        model_name = DEFAULT_ELEVENLABS_STT_MODEL
+    elif model_name not in ELEVENLABS_STT_MODELS:
+        logger.debug(
+            "ElevenLabs STT model '%s' is not in the known set %s; "
+            "passing through to the API anyway.",
+            model_name,
+            sorted(ELEVENLABS_STT_MODELS),
+        )
 
     stt_config = _load_stt_config()
     elevenlabs_config = stt_config.get("elevenlabs") or {}
@@ -1584,71 +1676,103 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
     language_code = str(elevenlabs_config.get("language_code") or "").strip()
-    tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
+    tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
+    timestamps_granularity = str(
+        elevenlabs_config.get("timestamps_granularity") or ""
+    ).strip().lower()
 
     try:
         import requests
-
-        data: Dict[str, str] = {
-            "model_id": model_name,
-            "tag_audio_events": "true" if tag_audio_events else "false",
-            "diarize": "true" if diarize else "false",
+    except ImportError:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "requests package not installed",
         }
-        if language_code:
-            data["language_code"] = language_code
 
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                f"{base_url}/speech-to-text",
-                headers={"xi-api-key": api_key},
-                files={"file": (Path(file_path).name, audio_file)},
-                data=data,
-                timeout=120,
+    form_data: Dict[str, str] = {
+        "model_id": model_name,
+        "tag_audio_events": "true" if tag_audio_events else "false",
+        "diarize": "true" if diarize else "false",
+    }
+    if language_code:
+        form_data["language_code"] = language_code
+    if timestamps_granularity in {"none", "word", "character"}:
+        form_data["timestamps_granularity"] = timestamps_granularity
+
+    last_error = ""
+    for index, api_key in enumerate(api_keys):
+        key_label = f"key #{index + 1}" if len(api_keys) > 1 else "key"
+        try:
+            with open(file_path, "rb") as audio_file:
+                response = requests.post(
+                    f"{base_url}/speech-to-text",
+                    headers={"xi-api-key": api_key},
+                    files={"file": (Path(file_path).name, audio_file)},
+                    data=form_data,
+                    timeout=120,
+                )
+        except PermissionError:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Permission denied: {file_path}",
+            }
+        except Exception as e:
+            logger.error(
+                "ElevenLabs STT request failed (%s): %s", key_label, e, exc_info=True,
             )
+            last_error = f"Request failed: {type(e).__name__}: {e}"
+            break
 
-        if response.status_code != 200:
-            detail = ""
+        if response.status_code == 200:
             try:
-                err_body = response.json()
-                error_value = err_body.get("detail") or err_body.get("error")
-                if isinstance(error_value, dict):
-                    detail = str(error_value.get("message") or error_value)
-                elif error_value:
-                    detail = str(error_value)
-                else:
-                    detail = response.text[:300]
-            except Exception:
-                detail = response.text[:300]
+                result = response.json() or {}
+            except ValueError:
+                last_error = "ElevenLabs STT returned non-JSON response"
+                break
+            transcript_text = _extract_transcript_text(result)
+            if not transcript_text:
+                last_error = "ElevenLabs STT returned empty transcript"
+                break
+            logger.info(
+                "Transcribed %s via ElevenLabs Scribe (%s, lang=%s, %d chars, %s)",
+                Path(file_path).name,
+                model_name,
+                result.get("language_code") or language_code or "auto",
+                len(transcript_text),
+                key_label,
+            )
             return {
-                "success": False,
-                "transcript": "",
-                "error": f"ElevenLabs STT API error (HTTP {response.status_code}): {detail}",
+                "success": True,
+                "transcript": transcript_text,
+                "provider": "elevenlabs",
+                "model": model_name,
+                "language_code": result.get("language_code"),
+                "language_probability": result.get("language_probability"),
             }
 
-        result = response.json()
-        transcript_text = _extract_transcript_text(result)
-        if not transcript_text:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": "ElevenLabs STT returned empty transcript",
-            }
-
-        logger.info(
-            "Transcribed %s via ElevenLabs Scribe (%s, %d chars)",
-            Path(file_path).name,
-            model_name,
-            len(transcript_text),
+        summary = _summarise_elevenlabs_error(response)
+        last_error = (
+            f"ElevenLabs STT error (HTTP {response.status_code}, {key_label}): "
+            f"{summary}"
         )
+        if _is_elevenlabs_quota_response(response) and index + 1 < len(api_keys):
+            logger.warning(
+                "ElevenLabs %s exhausted (HTTP %d): %s - rotating to next key",
+                key_label,
+                response.status_code,
+                summary,
+            )
+            continue
+        break
 
-        return {"success": True, "transcript": transcript_text, "provider": "elevenlabs"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("ElevenLabs STT transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"ElevenLabs STT transcription failed: {e}"}
+    return {
+        "success": False,
+        "transcript": "",
+        "error": last_error or "ElevenLabs STT failed",
+    }
 
 
 # ---------------------------------------------------------------------------

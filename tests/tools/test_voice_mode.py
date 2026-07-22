@@ -134,6 +134,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
@@ -424,6 +425,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record" if cmd == "termux-microphone-record" else None)
         monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
@@ -497,6 +499,46 @@ class TestCheckVoiceRequirements:
         assert result["available"] is False
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
+        # The MISSING hint should mention every supported provider's env var
+        # so users with mistral/xai/elevenlabs keys know to set them too.
+        # (Mistral returned to the hint once the quarantined `mistralai`
+        # package was restored on PyPI as 2.4.8.)
+        details = result["details"]
+        assert "ELEVENLABS_API_KEY" in details
+        assert "XAI_API_KEY" in details
+        assert "MISTRAL_API_KEY" in details
+        assert "DEEPINFRA_API_KEY" in details
+
+    @pytest.mark.parametrize(
+        "provider,label",
+        [
+            ("local_command", "local whisper CLI"),
+            ("mistral", "Mistral Voxtral"),
+            ("xai", "xAI Grok STT"),
+            ("elevenlabs", "ElevenLabs Scribe"),
+            ("deepinfra", "DeepInfra Whisper"),
+        ],
+    )
+    def test_provider_recognised_in_requirements_check(self, monkeypatch, provider, label):
+        # Pin the broadened recognition: every provider the dispatch can
+        # return must be a real branch in check_voice_requirements, not the
+        # catch-all MISSING.  Pre-PR, mistral / xai support was added to
+        # the dispatch but never wired into this hint; elevenlabs is new
+        # in this PR.
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr(
+            "tools.voice_mode.detect_audio_environment",
+            lambda: {"available": True, "warnings": []},
+        )
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: provider)
+
+        from tools.voice_mode import check_voice_requirements
+        result = check_voice_requirements()
+
+        assert result["stt_available"] is True
+        details = result["details"]
+        assert "STT provider: MISSING" not in details
+        assert f"STT provider: OK ({label})" in details
 
 
 # ============================================================================

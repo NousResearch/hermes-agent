@@ -245,6 +245,38 @@ def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assign
         conn.close()
 
 
+def test_failure_handoff_summary_is_persisted_on_run(kanban_home, all_assignees_spawnable):
+    """Budget guards should leave an exploitable run summary, not an
+    empty timed_out/gave_up row after useful work.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="long worker", assignee="worker", max_retries=1)
+        kb.claim_task(conn, tid)
+        summary = "Partial handoff: files inspected, next action is split card."
+        tripped = kb._record_task_failure(
+            conn,
+            tid,
+            error="Iteration budget exhausted/handoff (55/60)",
+            outcome="timed_out",
+            summary=summary,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 55, "budget_max": 60},
+        )
+        assert tripped is True
+        run = conn.execute(
+            "SELECT status, outcome, summary, error, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["status"] == "gave_up"
+        assert run["outcome"] == "gave_up"
+        assert run["summary"] == summary
+        assert "handoff_summary_len" in json.loads(run["metadata"])
+    finally:
+        conn.close()
+
+
 def test_per_task_max_retries_allows_more_than_default(kanban_home, all_assignees_spawnable):
     """A task with ``max_retries=5`` does NOT auto-block at the default
     limit of 2 — it must reach the per-task override first."""

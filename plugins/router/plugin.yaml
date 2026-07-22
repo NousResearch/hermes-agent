@@ -1,0 +1,7 @@
+name: router
+version: 1.1.0
+description: "Pre-turn classifier that routes complex tasks to the orchestrator profile with progressive streaming."
+author: "NousResearch"
+kind: standalone
+hooks:
+  - pre_agent_dispatch

@@ -2364,6 +2364,27 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
+    # Flash → Orchestrator gateway-level router.
+    # Pre-turn classifier that routes complex tasks to the orchestrator profile.
+    # Simple tasks stay on the default Flash model — fast and cheap.
+    "router": {
+        "enabled": False,          # master on/off switch (opt-in)
+        "classifier": {
+            "task": "triage_specifier",  # aux task for the classification call
+            "model": "",                 # explicit override (empty = use task default)
+        },
+        "orchestrator": {
+            "profile": "orchestrator",   # profile name for heavy tasks
+            "timeout": 600,              # subprocess timeout in seconds
+            "pass_history": True,        # whether to pass session history
+        },
+        "rules": {
+            "always_simple": [],         # regex patterns that always stay local
+            "always_complex": [],        # regex patterns that always escalate
+            "threshold": 0.5,            # minimum confidence to route to Pro
+        },
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.

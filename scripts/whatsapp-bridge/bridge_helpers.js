@@ -40,6 +40,35 @@ export function getContextInfo(messageContent) {
   return {};
 }
 
+// Decide whether — and with which key — an inbound message should be marked
+// read via sock.readMessages([...]). Kept pure so the read-receipt policy can
+// be unit-tested without a live Baileys socket.
+//
+// Returns a Baileys message key ({ remoteJid, id, participant? }) when a read
+// receipt is appropriate, or null to skip. Skips:
+//   - fromMe messages   — our own / owner-typed; already "read" by definition.
+//   - status@broadcast  — status updates aren't a conversation.
+//   - @broadcast lists  — broadcast recipients don't get individual reads.
+//   - @newsletter JIDs  — channels/newsletters aren't 1:1/group chats.
+// For groups the sender's participant JID is included so the WhatsApp server
+// can attribute the read to the right member; DMs omit it.
+export function readReceiptKeyForMessage(msg) {
+  const key = msg?.key;
+  if (!key || !key.id || !key.remoteJid) return null;
+  if (key.fromMe) return null;
+
+  const remoteJid = String(key.remoteJid);
+  if (remoteJid === 'status@broadcast') return null;
+  if (remoteJid.endsWith('@broadcast')) return null;
+  if (remoteJid.endsWith('@newsletter')) return null;
+
+  const receiptKey = { remoteJid, id: key.id };
+  if (remoteJid.endsWith('@g.us') && key.participant) {
+    receiptKey.participant = key.participant;
+  }
+  return receiptKey;
+}
+
 export function createBoundedMessageStore(limit = 512) {
   const byId = new Map();
 

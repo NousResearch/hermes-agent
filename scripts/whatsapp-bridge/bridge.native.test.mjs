@@ -21,6 +21,7 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  readReceiptKeyForMessage,
 } from './bridge_helpers.js';
 
 // -- quoted outbound text -------------------------------------------------
@@ -381,6 +382,72 @@ import {
   assert.equal(event.body, 'see attached\n[document could not be downloaded]');
   assert.equal(event.mediaUrls.length, 0);
   console.log('  ✓ captioned failed download keeps caption and appends note');
+}
+
+// -- read receipts (mark accepted inbound messages as read) ---------------
+{
+  // DM: participant is omitted, receipt carries remoteJid + id.
+  const dm = readReceiptKeyForMessage({
+    key: { id: 'in-dm-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+  });
+  assert.deepEqual(dm, { remoteJid: '15551234567@s.whatsapp.net', id: 'in-dm-1' });
+  assert.equal('participant' in dm, false);
+  console.log('  ✓ DM read receipt omits participant');
+}
+
+{
+  // Group: sender participant JID must be included for correct attribution.
+  const group = readReceiptKeyForMessage({
+    key: {
+      id: 'in-grp-1',
+      remoteJid: '120363000000000000@g.us',
+      participant: '15550001111@s.whatsapp.net',
+      fromMe: false,
+    },
+  });
+  assert.deepEqual(group, {
+    remoteJid: '120363000000000000@g.us',
+    id: 'in-grp-1',
+    participant: '15550001111@s.whatsapp.net',
+  });
+  console.log('  ✓ group read receipt includes sender participant');
+}
+
+{
+  // fromMe (our own / owner-typed) messages are never marked read.
+  assert.equal(
+    readReceiptKeyForMessage({
+      key: { id: 'mine-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
+    }),
+    null,
+  );
+  console.log('  ✓ fromMe messages are not marked read');
+}
+
+{
+  // Status / broadcast / newsletter (channel) JIDs must never get a read.
+  assert.equal(
+    readReceiptKeyForMessage({ key: { id: 's', remoteJid: 'status@broadcast', fromMe: false } }),
+    null,
+  );
+  assert.equal(
+    readReceiptKeyForMessage({ key: { id: 'b', remoteJid: '99999999@broadcast', fromMe: false } }),
+    null,
+  );
+  assert.equal(
+    readReceiptKeyForMessage({ key: { id: 'n', remoteJid: '12345@newsletter', fromMe: false } }),
+    null,
+  );
+  console.log('  ✓ status/broadcast/newsletter messages are not marked read');
+}
+
+{
+  // Malformed keys are skipped rather than throwing.
+  assert.equal(readReceiptKeyForMessage(undefined), null);
+  assert.equal(readReceiptKeyForMessage({}), null);
+  assert.equal(readReceiptKeyForMessage({ key: { remoteJid: 'x@s.whatsapp.net' } }), null);
+  assert.equal(readReceiptKeyForMessage({ key: { id: 'x' } }), null);
+  console.log('  ✓ malformed message keys yield null (no throw)');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

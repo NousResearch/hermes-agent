@@ -184,6 +184,37 @@ whatsapp:
 
 ---
 
+## Read Receipts (Blue Ticks)
+
+By default Hermes does **not** send read receipts, so senders see only the delivered
+(double grey) ticks — even after the agent has processed their message. Turn on read
+receipts so accepted inbound messages are marked read (blue ticks), matching how a
+human — or OpenClaw's WhatsApp bridge — behaves:
+
+```yaml
+# ~/.hermes/config.yaml
+whatsapp:
+  read_receipts: true   # default false — opt-in (emits blue ticks to senders)
+```
+
+This is most useful in `bot` mode when a person also has the bot's WhatsApp account
+linked on their own phone: marking handled messages read keeps unread badges from
+piling up on their real client.
+
+Notes:
+
+- Only messages the agent actually accepts are marked read — the receipt is sent
+  *after* full admission (allowlist / DM policy, and for groups the group policy
+  **and** the require-mention / free-response gate). A group message that is
+  ignored for lacking a mention, or blocked by policy, never gets a receipt.
+- Direct chats, groups, status updates, broadcast lists, and channels/newsletters are
+  handled correctly (group receipts carry the sender's participant; status/broadcast/
+  channel messages are skipped).
+- Read receipts are a visible, privacy-relevant signal to the sender, which is why
+  this is opt-in rather than on by default.
+
+---
+
 ## Message Formatting & Delivery
 
 WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.

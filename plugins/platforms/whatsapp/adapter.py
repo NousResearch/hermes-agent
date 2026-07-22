@@ -406,6 +406,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        # Opt-in read receipts (blue ticks). Same WHATSAPP_READ_RECEIPTS env
+        # the bridge reads (set from config.yaml whatsapp.read_receipts by
+        # _apply_yaml_config). We gate here too so a disabled deployment never
+        # makes the extra /mark-read round-trip per accepted message.
+        self._read_receipts: bool = str(
+            os.getenv("WHATSAPP_READ_RECEIPTS", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
@@ -1249,12 +1256,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         messages = await resp.json()
                         for msg_data in messages:
-                            event = await self._build_message_event(msg_data)
-                            if event:
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                            await self._dispatch_incoming(msg_data)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1266,6 +1268,55 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _dispatch_incoming(self, msg_data: Dict[str, Any]) -> None:
+        """Admit one polled bridge message, then dispatch it.
+
+        ``_build_message_event`` returns ``None`` when the adapter's admission
+        gate (``_should_process_message`` — broadcast/status, group allowlist,
+        DM policy, group require-mention / free-response) rejects the message.
+        Only once it returns a real event do we (a) send the read receipt —
+        after admission, so a policy/mention-rejected group message never gets
+        a blue tick — and (b) dispatch it (text is debounce-batched).
+        """
+        event = await self._build_message_event(msg_data)
+        if not event:
+            return
+        await self._mark_read_if_enabled(msg_data)
+        if event.message_type == MessageType.TEXT:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
+    async def _mark_read_if_enabled(self, msg_data: Dict[str, Any]) -> None:
+        """Best-effort read receipt for an admitted inbound message.
+
+        Fire-and-forget: a failed receipt must never interrupt message
+        processing. The bridge (POST /mark-read) re-checks the receipts flag
+        and applies the skip rules (fromMe, status/broadcast/newsletter, DM vs
+        group participant); we gate on the same flag here only to avoid an
+        unnecessary round-trip when receipts are disabled.
+        """
+        if not self._read_receipts or not self._http_session:
+            return
+        chat_id = msg_data.get("chatId")
+        message_id = msg_data.get("messageId")
+        if not chat_id or not message_id:
+            return
+        payload = {"chatId": chat_id, "messageId": message_id}
+        # Group receipts must carry the sender's participant JID; DMs omit it.
+        if msg_data.get("isGroup") and msg_data.get("senderId"):
+            payload["participant"] = msg_data["senderId"]
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/mark-read",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ):
+                pass
+        except Exception:
+            pass  # never let a read-receipt failure break processing
 
     # ── Text debounce batching ──────────────────────────────────────
 
@@ -1718,6 +1769,10 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
     take precedence over YAML. Returns None — everything flows through env.
     """
     import json as _json
+    if "read_receipts" in whatsapp_cfg and not os.getenv("WHATSAPP_READ_RECEIPTS"):
+        # Opt-in read receipts (blue ticks) for accepted inbound messages. The
+        # Node bridge reads WHATSAPP_READ_RECEIPTS and accepts 1/true/yes/on.
+        os.environ["WHATSAPP_READ_RECEIPTS"] = str(whatsapp_cfg["read_receipts"]).lower()
     if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
         os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
     if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):

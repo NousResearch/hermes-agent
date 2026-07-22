@@ -43,6 +43,7 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  readReceiptKeyForMessage,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -74,6 +75,25 @@ const FORWARD_OWNER_MESSAGES =
   process.env &&
   typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
+
+// Send WhatsApp read receipts (blue ticks) for inbound messages once they're
+// accepted for processing. Mirrors OpenClaw's WhatsApp bridge: when a human
+// shares the bot's WhatsApp account via a linked device (common in `bot`
+// mode), marking handled messages read stops them piling up as unread badges
+// on that person's real WhatsApp client, and the original sender sees that
+// their message was read.
+//
+// Opt-in (default OFF) so existing deployments see no behavior change —
+// emitting a read receipt is a visible, privacy-relevant signal to the
+// sender, so operators turn it on explicitly. User-facing surface is
+// `whatsapp.read_receipts` in config.yaml, which the Python adapter bridges
+// into this WHATSAPP_READ_RECEIPTS env var (1/true/yes/on). See
+// NousResearch/hermes-agent#6539.
+const READ_RECEIPTS_ENABLED =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_READ_RECEIPTS === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_READ_RECEIPTS.trim().toLowerCase());
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -197,6 +217,33 @@ function trackSentMessageId(sent) {
 function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');
+}
+
+// Send a WhatsApp read receipt for an accepted inbound message. Best-effort:
+// a failed read must never interrupt message processing, so errors are
+// swallowed (surfaced only under WHATSAPP_DEBUG). Skipping rules (fromMe,
+// status/broadcast/newsletter, DM vs group participant) live in the pure
+// readReceiptKeyForMessage() helper so they can be unit-tested.
+async function markMessageReadIfEnabled(msg) {
+  if (!READ_RECEIPTS_ENABLED) return;
+  if (!sock || typeof sock.readMessages !== 'function') return;
+  const receiptKey = readReceiptKeyForMessage(msg);
+  if (!receiptKey) return;
+  try {
+    await sock.readMessages([receiptKey]);
+    emitDebugEvent({
+      stage: 'marked_read',
+      chatId: redactWhatsAppId(receiptKey.remoteJid),
+      messageId: receiptKey.id,
+    });
+  } catch (err) {
+    emitDebugEvent({
+      stage: 'mark_read_failed',
+      chatId: redactWhatsAppId(receiptKey.remoteJid),
+      messageId: receiptKey.id,
+      error: err?.message || String(err),
+    });
+  }
 }
 
 function redactWhatsAppId(value) {
@@ -749,6 +796,12 @@ async function startSocket() {
 
       messageStore.remember(msg);
       messageQueue.push(event);
+      // NOTE: read receipts are intentionally NOT sent here. The bridge's
+      // intake gates are only the first admission layer; the Python adapter
+      // applies a second one (group policy + require-mention in
+      // _should_process_message) after polling /messages. Marking read here
+      // would blue-tick group messages the adapter later drops. Instead the
+      // adapter calls POST /mark-read once it has admitted the message.
       emitDebugEvent({
         stage: 'queued',
         chatId: redactWhatsAppId(chatId),
@@ -1042,6 +1095,37 @@ app.post('/typing', async (req, res) => {
   }
 });
 
+// Mark a single inbound message as read (blue ticks). Called by the Python
+// adapter *after* it has admitted the message (i.e. after its group-policy /
+// require-mention gate), so rejected messages never get a receipt. The
+// READ_RECEIPTS_ENABLED flag and all skip rules (fromMe, status/broadcast/
+// newsletter, DM vs group participant) are enforced in
+// markMessageReadIfEnabled → readReceiptKeyForMessage.
+app.post('/mark-read', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, participant, fromMe } = req.body || {};
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    await markMessageReadIfEnabled({
+      key: {
+        remoteJid: chatId,
+        id: messageId,
+        participant: participant || undefined,
+        fromMe: !!fromMe,
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Chat info
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
@@ -1111,6 +1195,9 @@ if (PAIR_ONLY) {
     }
     if (WHATSAPP_MODE === 'bot' && FORWARD_OWNER_MESSAGES) {
       console.log(`👤 WHATSAPP_FORWARD_OWNER_MESSAGES=true — owner-typed messages will be forwarded with fromOwner:true`);
+    }
+    if (READ_RECEIPTS_ENABLED) {
+      console.log(`👁️  WHATSAPP_READ_RECEIPTS=on — accepted inbound messages will be marked read (blue ticks).`);
     }
     console.log();
     startSocket();

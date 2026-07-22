@@ -48,6 +48,7 @@ export function ComposerControls({
   state,
   voiceStatus,
   onDictate,
+  onQueue,
   onToggleAutoSpeak
 }: {
   autoSpeak: boolean
@@ -61,6 +62,7 @@ export function ComposerControls({
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
+  onQueue: () => void
   onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
@@ -76,7 +78,23 @@ export function ComposerControls({
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      {busyAction === 'steer' ? (
+        <Tip label={c.queueMessage}>
+          <Button
+            aria-label={c.queueMessage}
+            className={GHOST_ICON_BTN}
+            disabled={disabled}
+            onClick={onQueue}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Layers3 className={iconSize.sm} />
+          </Button>
+        </Tip>
+      ) : (
+        <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      )}
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>

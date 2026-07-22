@@ -86,10 +86,11 @@ test.describe('chat interaction with mock backend', () => {
     await expectVisualSnapshot(fixture!.page, { name: 'chat-with-messages', app: fixture!.app })
   })
 
-  test('changes the busy composer action from stop to steer or queue', async ({}, testInfo) => {
+  test('offers stop, steer, and queue actions while busy', async ({}, testInfo) => {
     const page = fixture!.page
     const composer = page.locator('[contenteditable="true"]').first()
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+    const queue = page.locator('[data-slot="composer-root"] button[aria-label="Queue message"]')
 
     await composer.click()
     await composer.type(BLOCKING_CLARIFY_TRIGGER)
@@ -102,27 +103,15 @@ test.describe('chat interaction with mock backend', () => {
     await composer.click()
     await composer.type('please answer tersely')
     await expect(primary).toHaveAttribute('aria-label', /Steer/)
+    await expect(queue).toBeVisible()
+    await expect(queue.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
     await expect(primary.locator('svg.tabler-icon-steering-wheel')).toBeVisible()
 
-    await page.evaluate(() => {
-      const composer = document.querySelector<HTMLElement>('[contenteditable="true"]')
-      const bytes = Uint8Array.from(
-        atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqOQAAAABJRU5ErkJggg=='),
-        char => char.charCodeAt(0)
-      )
-      const image = new File([bytes], 'queued.png', { type: 'image/png' })
-      const transfer = new DataTransfer()
-
-      transfer.items.add(image)
-      composer?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
-    })
-    await page.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible' })
-    await expect(primary).toHaveAttribute('aria-label', /Queue/)
+    await queue.click()
+    await expect(primary).toHaveAttribute('aria-label', 'Stop')
+    await expect(queue).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('busy-composer-queue.png') })
-    await expect(primary.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
-
-    await primary.click()
     await expect(page.getByText('1 Queued')).toBeVisible()
 
     await primary.click()

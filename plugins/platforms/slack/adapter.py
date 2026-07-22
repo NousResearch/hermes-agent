@@ -4480,11 +4480,16 @@ class SlackAdapter(BasePlatformAdapter):
                 return
 
             if (
-                channel_id in self._slack_free_response_channels()
-                or not self._slack_require_mention()
+                channel_id not in self._slack_require_mention_channels()
+                and (
+                    channel_id in self._slack_free_response_channels()
+                    or not self._slack_require_mention()
+                )
             ):
                 # Free-response channel, or mention requirement disabled
-                # globally.  thread_require_mention still gates thread
+                # globally — unless the channel is force-mention-gated via
+                # require_mention_channels, which overrides both.
+                # thread_require_mention still gates thread
                 # replies: top-level messages stay free-response, but a bot
                 # must be re-mentioned to join thread follow-ups.
                 if (
@@ -6887,6 +6892,25 @@ class SlackAdapter(BasePlatformAdapter):
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
 
+    def _slack_require_mention_channels(self) -> set:
+        """Return channel IDs where a bot @mention is ALWAYS required.
+
+        Per-channel override in the opposite direction of
+        ``free_response_channels``: even when ``require_mention`` is disabled
+        globally (or the channel would otherwise be free-response), messages
+        in these channels only reach the bot via an explicit mention or one
+        of the wake checks in :meth:`_should_wake_on_unmentioned_message`.
+        Empty set means no per-channel force-mention override (#13855).
+        """
+        raw = self.config.extra.get("require_mention_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_REQUIRE_MENTION_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile optional regex wake-word patterns for channel triggers.
 
@@ -7313,6 +7337,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
+    rmc = slack_cfg.get("require_mention_channels")
+    if rmc is not None and not os.getenv("SLACK_REQUIRE_MENTION_CHANNELS"):
+        if isinstance(rmc, list):
+            rmc = ",".join(str(v) for v in rmc)
+        os.environ["SLACK_REQUIRE_MENTION_CHANNELS"] = str(rmc)
     if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
         os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
     ac = slack_cfg.get("allowed_channels")

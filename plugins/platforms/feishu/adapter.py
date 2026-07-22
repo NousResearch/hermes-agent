@@ -268,6 +268,9 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_MERGE_FORWARD_MAX_ITEMS = 20
+_MERGE_FORWARD_MAX_DEPTH = 2
+_MERGE_FORWARD_MAX_CHARS = 8000
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1030,6 +1033,77 @@ def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
     return _unique_lines(entries)
 
 
+def _read_feishu_field(value: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        if isinstance(value, dict) and name in value:
+            return value.get(name)
+        if hasattr(value, name):
+            return getattr(value, name)
+    return default
+
+
+def _read_feishu_body_content(item: Any) -> str:
+    body = _read_feishu_field(item, "body")
+    content = _read_feishu_field(body, "content", default="")
+    return str(content or "")
+
+
+def _read_feishu_sender_label(item: Any) -> str:
+    sender = _read_feishu_field(item, "sender")
+    return _first_non_empty_text(
+        _read_feishu_field(sender, "sender_name", "name"),
+        _read_feishu_field(item, "sender_name", "user_name", "name"),
+        _read_feishu_field(sender, "id"),
+    )
+
+
+def _read_feishu_message_id(item: Any) -> str:
+    return str(_read_feishu_field(item, "message_id", default="") or "").strip()
+
+
+def _read_feishu_message_type(item: Any) -> str:
+    return str(_read_feishu_field(item, "msg_type", "message_type", default="") or "").strip().lower()
+
+
+def _read_feishu_parent_id(item: Any, fallback_root_id: str) -> str:
+    return str(
+        _read_feishu_field(item, "upper_message_id", "parent_id", "root_id", default="")
+        or fallback_root_id
+    ).strip()
+
+
+def _read_feishu_mentions(item: Any) -> Optional[Sequence[Any]]:
+    mentions = _read_feishu_field(item, "mentions")
+    return mentions if isinstance(mentions, (list, tuple)) else None
+
+
+def _forward_sort_key(item: Any) -> int:
+    raw = str(_read_feishu_field(item, "create_time", default="") or "").strip()
+    try:
+        parsed = int(float(raw))
+    except (TypeError, ValueError):
+        return 0
+    return parsed * 1000 if parsed < 1_000_000_000_000 else parsed
+
+
+def _format_forward_timestamp(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = int(float(raw))
+    except (TypeError, ValueError):
+        return ""
+    # Feishu message APIs may return seconds or milliseconds depending on
+    # endpoint/version; normalize both to local wall-clock time for readability.
+    if parsed < 1_000_000_000_000:
+        parsed *= 1000
+    try:
+        return datetime.fromtimestamp(parsed / 1000).strftime("%H:%M")
+    except (OSError, ValueError):
+        return ""
+
+
 def _collect_card_lines(payload: Any) -> List[str]:
     lines = _collect_text_segments(payload, in_rich_block=False)
     normalized = [_normalize_feishu_text(line) for line in lines]
@@ -1494,6 +1568,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._message_type_cache: "OrderedDict[str, str]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -3293,14 +3368,30 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
-        reply_to_message_id = (
-            getattr(message, "parent_id", None)
-            or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
-            or None
-        )
+        is_merge_forward = str(getattr(message, "message_type", "") or "").strip().lower() == "merge_forward"
+        if is_merge_forward:
+            # Feishu surfaces merge_forward internals through root/parent fields.
+            # Reusing those as reply anchors makes Hermes replies render inside
+            # the merged-forward container instead of the active chat.
+            thread_id = None
+            reply_to_message_id = None
+            suppress_reply_anchor = True
+        else:
+            thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+            reply_to_message_id = (
+                getattr(message, "parent_id", None)
+                or getattr(message, "upper_message_id", None)
+                or getattr(message, "root_id", None)
+                or None
+            )
+            suppress_reply_anchor = False
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        if (
+            reply_to_message_id
+            and self._cached_message_type(reply_to_message_id) == "merge_forward"
+        ):
+            thread_id = None
+            suppress_reply_anchor = True
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3344,6 +3435,7 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            suppress_reply_anchor=suppress_reply_anchor,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -3685,9 +3777,22 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
         """Only merge text events when reply/thread context is identical."""
+        if FeishuAdapter._is_merge_forward_followup(existing, incoming):
+            return True
         return (
             existing.reply_to_message_id == incoming.reply_to_message_id
             and existing.reply_to_text == incoming.reply_to_text
+            and existing.source.thread_id == incoming.source.thread_id
+        )
+
+    @staticmethod
+    def _is_merge_forward_followup(existing: MessageEvent, incoming: MessageEvent) -> bool:
+        """Treat a prompt replying to a just-arrived merge_forward as one turn."""
+        return bool(
+            getattr(existing, "suppress_reply_anchor", False)
+            and getattr(incoming, "suppress_reply_anchor", False)
+            and incoming.reply_to_message_id
+            and incoming.reply_to_message_id == existing.message_id
             and existing.source.thread_id == incoming.source.thread_id
         )
 
@@ -3726,6 +3831,8 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+        if getattr(event, "suppress_reply_anchor", False):
+            existing.suppress_reply_anchor = True
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 
@@ -3801,6 +3908,10 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
+        if message_id and self._should_expand_merge_forward(normalized):
+            expanded = await self._try_expand_merge_forward_with_bot(message_id)
+            if expanded:
+                normalized = expanded
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id,
             normalized=normalized,
@@ -4227,9 +4338,10 @@ class FeishuAdapter(BasePlatformAdapter):
             items = getattr(getattr(response, "data", None), "items", None) or []
             parent = items[0] if items else None
             body = getattr(parent, "body", None)
-            msg_type = getattr(parent, "msg_type", "") or ""
+            msg_type = _read_feishu_message_type(parent)
             raw_content = getattr(body, "content", "") or ""
             parent_mentions = getattr(parent, "mentions", None) if parent else None
+            self._remember_message_type(message_id, msg_type)
             text = self._extract_text_from_raw_content(
                 msg_type=msg_type,
                 raw_content=raw_content,
@@ -4242,6 +4354,148 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    def _remember_message_type(self, message_id: str, msg_type: str) -> None:
+        if not message_id or not msg_type:
+            return
+        cache = getattr(self, "_message_type_cache", None)
+        if cache is None:
+            cache = OrderedDict()
+            self._message_type_cache = cache
+        cache[message_id] = str(msg_type or "").strip().lower()
+        cache.move_to_end(message_id)
+        while len(cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+            cache.popitem(last=False)
+
+    def _cached_message_type(self, message_id: str) -> Optional[str]:
+        cache = getattr(self, "_message_type_cache", None)
+        if cache is None or message_id not in cache:
+            return None
+        cache.move_to_end(message_id)
+        return cache[message_id]
+
+    async def _try_expand_merge_forward_with_bot(self, message_id: str) -> Optional[FeishuNormalizedMessage]:
+        if not getattr(self, "_client", None) or not message_id:
+            return None
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning("[Feishu] Failed to expand merge_forward %s: [%s] %s", message_id, code, msg)
+                return self._merge_forward_expand_failure(f"[{code}] {msg}")
+            items = list(getattr(getattr(response, "data", None), "items", None) or [])
+            expanded = self._render_expanded_merge_forward(items, root_message_id=message_id)
+            if not expanded:
+                logger.warning("[Feishu] merge_forward %s expansion returned no children", message_id)
+                return self._merge_forward_expand_failure("empty")
+            return FeishuNormalizedMessage(
+                raw_type="merge_forward",
+                text_content=expanded,
+                relation_kind="merge_forward",
+                metadata={"expanded": True, "source": "bot"},
+            )
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to expand merge_forward %s", message_id, exc_info=True)
+            return self._merge_forward_expand_failure(exc.__class__.__name__)
+
+    def _render_expanded_merge_forward(self, items: Sequence[Any], *, root_message_id: str) -> str:
+        if not items:
+            return ""
+        parent = items[0]
+        root_id = _read_feishu_message_id(parent) or root_message_id
+        children_by_parent: Dict[str, List[Any]] = {}
+        for item in items:
+            item_id = _read_feishu_message_id(item)
+            parent_id = _read_feishu_parent_id(item, root_id)
+            if item_id == root_id and parent_id == root_id:
+                continue
+            if item_id and parent_id == item_id:
+                parent_id = root_id
+            children_by_parent.setdefault(parent_id, []).append(item)
+
+        for children in children_by_parent.values():
+            children.sort(key=_forward_sort_key)
+
+        lines: List[str] = [FALLBACK_FORWARD_TEXT, ""]
+        count = 0
+        truncated = False
+
+        def render_children(parent_id: str, depth: int) -> List[str]:
+            nonlocal count, truncated
+            rendered: List[str] = []
+            if depth > _MERGE_FORWARD_MAX_DEPTH:
+                truncated = True
+                return rendered
+            for item in children_by_parent.get(parent_id, []):
+                if count >= _MERGE_FORWARD_MAX_ITEMS:
+                    truncated = True
+                    break
+                count += 1
+                sender = _read_feishu_sender_label(item) or "Unknown"
+                timestamp = _format_forward_timestamp(_read_feishu_field(item, "create_time"))
+                header = f"{count}. {sender}{f' {timestamp}' if timestamp else ''}"
+                body = self._render_forward_item_body(item, depth=depth)
+                if not body:
+                    body = f"[{_read_feishu_message_type(item) or 'message'}]"
+                indented = "\n".join(f"   {line}" for line in body.splitlines() if line.strip())
+                rendered.append(f"{header}\n{indented}")
+                child_id = _read_feishu_message_id(item)
+                if child_id and _read_feishu_message_type(item) == "merge_forward":
+                    rendered.extend(render_children(child_id, depth + 1))
+            return rendered
+
+        lines.extend(render_children(root_id, 0))
+        if truncated:
+            lines.append("... (truncated)")
+        rendered_text = "\n\n".join(part for part in lines if part).strip()
+        if len(rendered_text) > _MERGE_FORWARD_MAX_CHARS:
+            return rendered_text[:_MERGE_FORWARD_MAX_CHARS].rstrip() + "\n... (truncated)"
+        return rendered_text
+
+    def _render_forward_item_body(self, item: Any, *, depth: int) -> str:
+        msg_type = _read_feishu_message_type(item)
+        if msg_type == "merge_forward":
+            if depth >= _MERGE_FORWARD_MAX_DEPTH:
+                return FALLBACK_FORWARD_TEXT
+            title = self._extract_text_from_raw_content(
+                msg_type=msg_type,
+                raw_content=_read_feishu_body_content(item),
+                mentions=_read_feishu_mentions(item),
+            )
+            return title or FALLBACK_FORWARD_TEXT
+        text = self._extract_text_from_raw_content(
+            msg_type=msg_type,
+            raw_content=_read_feishu_body_content(item),
+            mentions=_read_feishu_mentions(item),
+        )
+        if text:
+            return text
+        if msg_type == "image":
+            return FALLBACK_IMAGE_TEXT
+        if msg_type in {"file", "audio", "media"}:
+            return FALLBACK_ATTACHMENT_TEXT
+        return ""
+
+    @staticmethod
+    def _merge_forward_expand_failure(reason: str) -> FeishuNormalizedMessage:
+        safe_reason = _normalize_feishu_text(str(reason or "unknown"))[:160] or "unknown"
+        return FeishuNormalizedMessage(
+            raw_type="merge_forward",
+            text_content=f"{FALLBACK_FORWARD_TEXT}\n(failed to expand: {safe_reason})",
+            relation_kind="merge_forward",
+            metadata={"expanded": False, "error": safe_reason},
+        )
+
+    @staticmethod
+    def _should_expand_merge_forward(normalized: FeishuNormalizedMessage) -> bool:
+        if normalized.raw_type != "merge_forward":
+            return False
+        metadata = normalized.metadata if isinstance(normalized.metadata, dict) else {}
+        entry_count = metadata.get("entry_count")
+        text = (normalized.text_content or "").strip()
+        return text == FALLBACK_FORWARD_TEXT or entry_count == 0
 
     def _extract_text_from_raw_content(
         self,

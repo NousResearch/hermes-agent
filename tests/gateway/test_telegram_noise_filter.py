@@ -154,6 +154,18 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
+def test_codex_gpt55_autoraise_notice_is_not_sent_to_gateway_chats():
+    """One-time local configuration notices should not appear as IM replies."""
+    message = (
+        "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
+        "to 85% (from 50%) to use more of the window before summarizing.\n"
+        "  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+    )
+
+    assert _prepare_gateway_status_message(Platform.FEISHU, "lifecycle", message) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

@@ -14,6 +14,7 @@ History:
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from unittest.mock import patch, MagicMock
@@ -23,6 +24,7 @@ import pytest
 from hermes_cli.main import (
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _record_dashboard_action_success_from_env,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -47,6 +49,7 @@ def _refresh_bindings_against_live_module():
     """
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _record_dashboard_action_success_from_env
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
@@ -55,6 +58,7 @@ def _refresh_bindings_against_live_module():
 
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _record_dashboard_action_success_from_env = live._record_dashboard_action_success_from_env
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -78,6 +82,23 @@ def _ps_runner(stdout: str):
         # Any other subprocess.run (e.g. taskkill) — benign success stub.
         return MagicMock(returncode=0, stdout="", stderr="")
     return _side_effect
+
+
+def test_record_dashboard_action_success_from_env_writes_result_marker(tmp_path, monkeypatch):
+    result_path = tmp_path / "action-hermes-update.result.json"
+    monkeypatch.setenv("HERMES_DASHBOARD_ACTION_RESULT_FILE", str(result_path))
+
+    _record_dashboard_action_success_from_env()
+
+    data = json.loads(result_path.read_text(encoding="utf-8"))
+    assert data["exit_code"] == 0
+    assert data["pid"] == os.getpid()
+
+
+def test_record_dashboard_action_success_from_env_ignores_missing_env(monkeypatch):
+    monkeypatch.delenv("HERMES_DASHBOARD_ACTION_RESULT_FILE", raising=False)
+
+    _record_dashboard_action_success_from_env()
 
 
 class TestFindStaleDashboardPids:

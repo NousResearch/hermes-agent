@@ -6557,6 +6557,39 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _record_dashboard_action_success_from_env() -> None:
+    """Persist dashboard-spawned update success before restarting dashboards.
+
+    ``hermes update`` kills or restarts the dashboard near the end of a
+    successful run. When the update was launched from the dashboard, that can
+    destroy the in-memory action state before the frontend's status poll sees
+    exit code 0. The dashboard server passes a result-file path in the child
+    environment; stamp it here after update work succeeds but before restart.
+
+    Must be invoked from EVERY successful dashboard-kill/restart path —
+    including the Windows ZIP-fallback ``_update_via_zip`` branch — before
+    any teardown/exit, otherwise the dashboard never observes exit code 0
+    for that run (#47902 follow-up).
+    """
+    dashboard_result_file = os.environ.get("HERMES_DASHBOARD_ACTION_RESULT_FILE")
+    if not dashboard_result_file:
+        return
+    try:
+        result_path = Path(dashboard_result_file)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = result_path.with_suffix(result_path.suffix + ".tmp")
+        tmp_path.write_text(
+            json.dumps({"exit_code": 0, "pid": os.getpid()}),
+            encoding="utf-8",
+        )
+        tmp_path.replace(result_path)
+    except OSError:
+        pass
+
+
+# --- Browser helpers ---------------------------------------------------------
+
+
 def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace directory *dst* with *src* without leaving *dst* half-deleted.
 
@@ -10190,11 +10223,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
 
     if use_zip_update:
-        # ZIP-based update for Windows when git is broken
+        # ZIP-based update for Windows when git is broken.
+        # Stamp dashboard action success BEFORE gateway resume (which can
+        # tear down child state) so a dashboard-spawned `hermes update`
+        # on the ZIP fallback path still surfaces exit_code=0 to the
+        # frontend status poll (#47902 follow-up). The stamp runs only
+        # on the success path: any exception / SystemExit from
+        # ``_update_via_zip`` propagates without the stamp being written,
+        # matching the non-ZIP path's semantics.
         try:
             _update_via_zip(args)
-        finally:
+        except BaseException:
             _resume_windows_gateways_after_update(_windows_gateway_resume)
+            raise
+        _record_dashboard_action_success_from_env()
+        _resume_windows_gateways_after_update(_windows_gateway_resume)
         return
 
     # Fetch and pull
@@ -10954,6 +10997,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 install_cua_driver(upgrade=True)
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
+
+        _record_dashboard_action_success_from_env()
 
         # Write exit code *before* the gateway restart attempt.
         # When running as ``hermes update --gateway`` (spawned by the gateway's

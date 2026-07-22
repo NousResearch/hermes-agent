@@ -401,8 +401,25 @@ class HonchoMemoryProvider(MemoryProvider):
         except ImportError:
             logger.debug("honcho-ai package not installed — plugin inactive")
         except Exception as e:
+            self._init_error = self._describe_init_error(e)
             logger.warning("Honcho init failed: %s", e)
             self._manager = None
+
+    def _describe_init_error(self, exc: Exception) -> str:
+        """Return a sanitized, user-facing Honcho init failure message."""
+        status = getattr(exc, "status", None)
+        code = getattr(exc, "code", None)
+        message = str(exc).strip() or exc.__class__.__name__
+        exc_type = exc.__class__.__name__
+        prefix = "Honcho memory unavailable for this operation"
+
+        if status:
+            return f"{prefix}: session bootstrap failed: {message} (HTTP {status})."
+        if code == "timeout" or "timeout" in message.lower() or "timed out" in message.lower():
+            return f"{prefix}: session bootstrap timed out ({exc_type})."
+        if code == "connection_error":
+            return f"{prefix}: connection error during session bootstrap ({exc_type})."
+        return f"{prefix}: session bootstrap failed: {message} ({exc_type})."
 
     def _resolve_session_key(self, cfg, session_id: str, **kwargs) -> str:
         """Resolve the Honcho session key without touching the network."""
@@ -451,7 +468,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._lazy_init_session_id = None
                     self._init_error = ""
                 except Exception as e:
-                    self._init_error = str(e)
+                    self._init_error = self._describe_init_error(e)
                     self._manager = None
                     logger.warning("Honcho background session init failed: %s", e)
 
@@ -574,6 +591,7 @@ class HonchoMemoryProvider(MemoryProvider):
             self._lazy_init_session_id = None
             return self._manager is not None
         except Exception as e:
+            self._init_error = self._describe_init_error(e)
             self._manager = None
             self._session_initialized = False
             logger.warning("Honcho lazy session init failed: %s", e)
@@ -1430,7 +1448,9 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
-                return tool_error("Honcho session could not be initialized.")
+                return tool_error(
+                    self._init_error or "Honcho session could not be initialized."
+                )
 
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")

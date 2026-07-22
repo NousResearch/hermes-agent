@@ -896,6 +896,91 @@ class TestToolsModeInitBehavior:
         )
         assert provider.prefetch("test query") == ""
 
+    def test_tools_lazy_init_accepts_empty_kwargs_on_tool_call(self):
+        """Empty init kwargs should still allow tools-only lazy init."""
+        import json
+        from unittest.mock import patch
+
+        provider, _, _ = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=False,
+        )
+        assert provider._lazy_init_kwargs == {}
+
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+        mock_manager.get_peer_card.return_value = []
+
+        with patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            result = provider.handle_tool_call("honcho_profile", {})
+
+        parsed = json.loads(result)
+        assert parsed["result"] == "No profile facts available yet."
+        assert "hint" in parsed
+        assert provider._session_initialized is True
+        assert provider._session_key
+        mock_manager.get_or_create.assert_called_once_with(provider._session_key)
+
+    def test_tools_lazy_init_surfaces_bootstrap_error_through_tool(self):
+        """Lazy bootstrap failures should be returned by Honcho tools."""
+        import json
+        from unittest.mock import patch
+
+        class BootstrapError(Exception):
+            status = 500
+
+        provider, _, _ = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=False,
+        )
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.side_effect = BootstrapError("workspace bootstrap failed")
+
+        with patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            result = provider.handle_tool_call("honcho_profile", {})
+
+        parsed = json.loads(result)
+        assert "Honcho memory unavailable for this operation" in parsed["error"]
+        assert "workspace bootstrap failed" in parsed["error"]
+        assert "HTTP 500" in parsed["error"]
+        assert provider._init_error == parsed["error"]
+        assert provider._manager is None
+        assert provider._session_initialized is False
+
+    def test_background_init_failure_surfaces_through_tool_call(self):
+        """A failed background init followed by a tool call returns the preserved error."""
+        import json
+        from unittest.mock import patch
+
+        class BootstrapError(Exception):
+            status = 503
+
+        provider, _, _ = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=False,
+        )
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.side_effect = BootstrapError("backend down")
+
+        with patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider._start_session_init_background(wait_timeout=5.0)
+            if provider._init_thread is not None:
+                provider._init_thread.join(timeout=5.0)
+
+            assert "Honcho memory unavailable for this operation" in provider._init_error
+            assert "HTTP 503" in provider._init_error
+
+            result = provider.handle_tool_call("honcho_profile", {})
+
+        parsed = json.loads(result)
+        assert "Honcho memory unavailable for this operation" in parsed["error"]
+        assert "backend down" in parsed["error"]
+
     def test_explicit_peer_name_not_overridden_by_user_id(self):
         """Explicit peerName in config must not be replaced by gateway user_id."""
         _, cfg, _ = self._make_provider_with_config(

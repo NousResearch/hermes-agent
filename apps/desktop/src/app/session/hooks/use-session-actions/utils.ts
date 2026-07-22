@@ -342,6 +342,226 @@ export function appendLiveSessionProjection(
   return projected.length ? [...messages, ...projected] : messages
 }
 
+function normalizedMessageText(message: ChatMessage): string {
+  return chatMessageText(message).replace(/\s+/g, ' ').trim()
+}
+
+function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== b.role) {
+    return false
+  }
+
+  const aText = normalizedMessageText(a)
+  const bText = normalizedMessageText(b)
+
+  if (a.timestamp !== undefined && b.timestamp !== undefined) {
+    return a.timestamp === b.timestamp && aText === bText
+  }
+
+  return Boolean(aText) && aText === bText
+}
+
+/**
+ * Remove only an already-materialized `inflight.user` from a live projection.
+ *
+ * A running gateway returns two independent truths: its compressed runtime
+ * history plus the current in-flight turn, while REST may already have flushed
+ * that user row into the complete persisted transcript. Global text dedupe is
+ * unsafe because users may intentionally submit the same prompt twice. Instead,
+ * find the last runtime message inside the persisted transcript and inspect only
+ * the newer persisted suffix.
+ *
+ * If the histories have no safe common anchor, keep the projection unchanged —
+ * a duplicate is recoverable, but dropping a real accepted prompt is not.
+ */
+export function dedupeInflightUserAgainstTranscript(
+  persistedMessages: ChatMessage[],
+  runtimeMessages: ChatMessage[],
+  projection: SessionResumeResponse
+): SessionResumeResponse {
+  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+
+  if (!inflightUser) {
+    return projection
+  }
+
+  let suffixStart = 0
+
+  if (runtimeMessages.length) {
+    const runtimeAnchor = runtimeMessages[runtimeMessages.length - 1]
+    let persistedAnchorIndex = -1
+
+    for (let index = persistedMessages.length - 1; index >= 0; index -= 1) {
+      if (transcriptAnchorMatches(persistedMessages[index], runtimeAnchor)) {
+        persistedAnchorIndex = index
+
+        break
+      }
+    }
+
+    if (persistedAnchorIndex < 0) {
+      return projection
+    }
+
+    suffixStart = persistedAnchorIndex + 1
+  }
+
+  const persistedTail = persistedMessages.slice(suffixStart)
+  const lastPersistedMessage = persistedTail[persistedTail.length - 1]
+
+  const persistedUserPresent =
+    lastPersistedMessage?.role === 'user' && normalizedMessageText(lastPersistedMessage) === inflightUser
+
+  if (!persistedUserPresent) {
+    return projection
+  }
+
+  return {
+    ...projection,
+    inflight: {
+      ...projection.inflight,
+      user: undefined
+    }
+  }
+}
+
+/**
+ * Drop only synthetic local tail rows that the activation snapshot replaces.
+ * Unmatched optimistic rows survive so a submit racing with activation is not
+ * lost; completed transcript rows before the open tail are never considered.
+ */
+export function removeRepresentedLocalLiveProjection(
+  previousMessages: ChatMessage[],
+  projection: Pick<SessionResumeResponse, 'inflight' | 'queued'>
+): ChatMessage[] {
+  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
+  const queuedUser = projection.queued?.user?.replace(/\s+/g, ' ').trim() ?? ''
+
+  const hasAssistantProjection = Boolean(
+    projection.inflight?.assistant || projection.inflight?.streaming || (inflightUser && queuedUser)
+  )
+
+  if (!inflightUser || !hasAssistantProjection) {
+    return previousMessages
+  }
+
+  let openTailStart = 0
+
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    const message = previousMessages[index]
+
+    if (message.role === 'assistant' && !message.pending) {
+      openTailStart = index + 1
+
+      break
+    }
+  }
+
+  const inflightUserIndex = previousMessages.findIndex(
+    (message, index) =>
+      index >= openTailStart &&
+      message.role === 'user' &&
+      message.id.startsWith('user-') &&
+      normalizedMessageText(message) === inflightUser
+  )
+
+  const assistantIndex = inflightUserIndex + 1
+  const assistant = previousMessages[assistantIndex]
+
+  const assistantMatches =
+    inflightUserIndex >= openTailStart &&
+    assistant?.role === 'assistant' &&
+    assistant.id.startsWith('assistant-stream-') &&
+    normalizedMessageText(assistant) === inflightAssistant
+
+  if (!assistantMatches) {
+    return previousMessages
+  }
+
+  let queuedUserIndex = -1
+
+  if (queuedUser) {
+    queuedUserIndex = previousMessages.findIndex(
+      (message, index) =>
+        index > assistantIndex &&
+        message.role === 'user' &&
+        message.id.startsWith('user-queued-') &&
+        normalizedMessageText(message) === queuedUser
+    )
+  }
+
+  return previousMessages.filter(
+    (_message, index) => index !== inflightUserIndex && index !== assistantIndex && index !== queuedUserIndex
+  )
+}
+
+/**
+ * Overlay messages that changed while activation waited on REST. Existing ids
+ * replace the older activation row; only rows added or changed since the warm
+ * cache baseline are appended. This is identity-based, never text-based.
+ */
+export function overlayConcurrentMessageChanges(
+  nextMessages: ChatMessage[],
+  baselineMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
+  const baselineById = new Map(baselineMessages.map(message => [message.id, message]))
+  const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
+  let changed = false
+  const overlaid = [...nextMessages]
+
+  let activationStreamIndex = overlaid.findIndex(
+    message =>
+      message.role === 'assistant' && message.id.startsWith('assistant-stream-') && !baselineById.has(message.id)
+  )
+
+  for (const current of currentMessages) {
+    const baseline = baselineById.get(current.id)
+    const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
+
+    if (!changedSinceBaseline) {
+      continue
+    }
+
+    const nextIndex = nextIndexById.get(current.id)
+
+    if (nextIndex !== undefined) {
+      if (!chatMessagesEquivalent(overlaid[nextIndex], current)) {
+        overlaid[nextIndex] = current
+        changed = true
+      }
+
+      continue
+    }
+
+    if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {
+      const activationStream = overlaid[activationStreamIndex]
+      const activationText = chatMessageText(activationStream)
+      const currentText = chatMessageText(current)
+
+      const replacement =
+        activationText && !currentText.startsWith(activationText)
+          ? { ...current, parts: [...activationStream.parts, ...current.parts] }
+          : current
+
+      nextIndexById.delete(activationStream.id)
+      nextIndexById.set(current.id, activationStreamIndex)
+      overlaid[activationStreamIndex] = replacement
+      activationStreamIndex = -1
+      changed = true
+
+      continue
+    }
+
+    nextIndexById.set(current.id, overlaid.length)
+    overlaid.push(current)
+    changed = true
+  }
+
+  return changed ? overlaid : nextMessages
+}
+
 export interface BranchMessage {
   content: string
   role: ChatMessage['role']

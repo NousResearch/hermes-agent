@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $activeGatewayProfile } from '@/store/profile'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -11,9 +11,12 @@ import {
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
+  dedupeInflightUserAgainstTranscript,
   isSessionGoneError,
+  overlayConcurrentMessageChanges,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  removeRepresentedLocalLiveProjection,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages
@@ -358,5 +361,155 @@ describe('appendLiveSessionProjection', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 
     expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
+  })
+})
+
+const runningProjection = (user: string): SessionResumeResponse =>
+  ({
+    session_id: 'runtime-1',
+    session_key: 'stored-1',
+    resumed: 'stored-1',
+    message_count: 2,
+    messages: [],
+    running: true,
+    inflight: { user, assistant: 'partial answer', streaming: true }
+  }) as SessionResumeResponse
+
+describe('dedupeInflightUserAgainstTranscript', () => {
+  it('removes the in-flight user only when it already exists after the runtime anchor', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [...runtime, msg('persisted-current', 'user', 'current prompt', { timestamp: 3 })]
+
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, runningProjection('current prompt'))
+
+    expect(deduped.inflight?.user).toBeUndefined()
+    expect(deduped.inflight?.assistant).toBe('partial answer')
+  })
+
+  it('preserves an intentionally repeated prompt when the match is before the runtime anchor', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'repeat this', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'finished answer', { timestamp: 2 })
+    ]
+
+    const projection = runningProjection('repeat this')
+    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, projection)
+
+    expect(unchanged).toBe(projection)
+    expect(unchanged.inflight?.user).toBe('repeat this')
+  })
+
+  it('preserves a repeated in-flight prompt when the persisted match already has an answer', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [
+      ...runtime,
+      msg('persisted-repeat', 'user', 'repeat this', { timestamp: 3 }),
+      msg('persisted-repeat-answer', 'assistant', 'finished repeat answer', { timestamp: 4 })
+    ]
+
+    const projection = runningProjection('repeat this')
+    const unchanged = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+
+    expect(unchanged).toBe(projection)
+    expect(unchanged.inflight?.user).toBe('repeat this')
+  })
+})
+
+describe('removeRepresentedLocalLiveProjection', () => {
+  it('removes only matched synthetic rows from the open local tail', () => {
+    const previous = [
+      msg('user-old-optimistic', 'user', 'current prompt'),
+      msg('assistant-complete', 'assistant', 'finished answer'),
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer', { pending: true }),
+      msg('user-queued-runtime', 'user', 'queued prompt'),
+      msg('user-racing', 'user', 'new racing prompt')
+    ]
+
+    const projection = {
+      ...runningProjection('current prompt'),
+      queued: { user: 'queued prompt' }
+    }
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining.map(message => message.id)).toEqual(['user-old-optimistic', 'assistant-complete', 'user-racing'])
+  })
+
+  it('preserves an ambiguous text-identical local race prompt without a matching stream boundary', () => {
+    const previous = [
+      msg('runtime-assistant', 'assistant', 'finished answer'),
+      msg('user-racing', 'user', 'repeat this')
+    ]
+
+    const projection = runningProjection('repeat this')
+
+    expect(removeRepresentedLocalLiveProjection(previous, projection)).toBe(previous)
+  })
+
+  it('does not consume a generic racing user as the activation-owned queued row', () => {
+    const previous = [
+      msg('runtime-assistant', 'assistant', 'finished answer'),
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer', { pending: true }),
+      msg('user-racing', 'user', 'repeat this')
+    ]
+
+    const projection = {
+      ...runningProjection('current prompt'),
+      queued: { user: 'repeat this' }
+    }
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining.map(message => message.id)).toEqual(['runtime-assistant', 'user-racing'])
+  })
+})
+
+describe('overlayConcurrentMessageChanges', () => {
+  it('does not replace an authoritative row with an unchanged baseline cache row', () => {
+    const baseline = [msg('shared-assistant', 'assistant', 'stale cached answer')]
+    const authoritative = [msg('shared-assistant', 'assistant', 'completed persisted answer')]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, baseline, baseline)
+
+    expect(overlaid).toBe(authoritative)
+    expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'completed persisted answer' }])
+  })
+
+  it('replaces an activation stream placeholder and appends rows created after the baseline', () => {
+    const baseline = [msg('assistant-stream-runtime', 'assistant', 'partial A', { pending: true })]
+    const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
+
+    const current = [
+      msg('assistant-stream-runtime', 'assistant', 'partial A + delta B', { pending: true }),
+      msg('user-racing', 'user', 'racing prompt')
+    ]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, baseline, current)
+
+    expect(overlaid.map(message => message.id)).toEqual(['assistant-stream-runtime', 'user-racing'])
+    expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'partial A + delta B' }])
+  })
+
+  it('merges an activation prefix with a baseline-new runtime delta chunk', () => {
+    const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
+    const current = [msg('assistant-stream-runtime', 'assistant', ' + delta B', { pending: true })]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, [], current)
+
+    expect(overlaid.map(message => message.id)).toEqual(['assistant-stream-runtime'])
+    expect(overlaid[0].parts).toEqual([
+      { type: 'text', text: 'partial A' },
+      { type: 'text', text: ' + delta B' }
+    ])
   })
 })

@@ -216,6 +216,37 @@ def test_is_user_authorized_from_message_allow_from():
     assert adapter._is_user_authorized_from_message(msg) is False
 
 
+def test_is_user_authorized_from_message_comma_string_allow_from():
+    """A comma-string allow_from is the canonical wire format (a list is
+    ",".join(...)-ed onto TELEGRAM_ALLOWED_USERS). The adapter branch must
+    split it instead of iterating it char-wise, otherwise "111,222" builds an
+    allow-set of single characters and every real id is rejected — locking the
+    owner out.
+    """
+    adapter = _make_adapter(allow_from="111,222")
+
+    assert adapter._is_user_authorized_from_message(_make_message(from_user_id=111)) is True
+    assert adapter._is_user_authorized_from_message(_make_message(from_user_id=222)) is True
+    # An unlisted id is still rejected (and not admitted by a stray char match).
+    assert adapter._is_user_authorized_from_message(_make_message(from_user_id=333)) is False
+
+
+def test_is_user_authorized_from_message_comma_string_with_spaces():
+    """Surrounding whitespace in a comma-string is tolerated (same .strip() as
+    the env branch)."""
+    adapter = _make_adapter(allow_from=" 111 , 222 ")
+
+    assert adapter._is_user_authorized_from_message(_make_message(from_user_id=222)) is True
+    assert adapter._is_user_authorized_from_message(_make_message(from_user_id=333)) is False
+
+
+def test_is_user_authorized_from_message_comma_string_wildcard():
+    """A comma-string carrying '*' still wildcards."""
+    adapter = _make_adapter(allow_from="*")
+
+    assert adapter._is_user_authorized_from_message(_make_message(from_user_id=999)) is True
+
+
 def test_is_user_authorized_from_message_wildcard():
     """_is_user_authorized_from_message should accept wildcard '*'."""
     adapter = _make_adapter(allow_from=["*"])

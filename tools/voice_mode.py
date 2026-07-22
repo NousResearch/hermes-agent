@@ -1121,6 +1121,46 @@ def play_audio_file(file_path: str) -> bool:
 # ============================================================================
 # Requirements check
 # ============================================================================
+def _check_plugin_stt_provider(provider: str) -> bool:
+    """Return True when *provider* resolves to an available STT plugin."""
+    if not provider:
+        return False
+    key = provider.lower().strip()
+    if key == "none":
+        return False
+    try:
+        from agent.transcription_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            # Match the transcription dispatcher: long-lived processes may
+            # need one refresh after plugins or configuration change.
+            _ensure_plugins_discovered(force=True)
+            plugin_provider = get_provider(key)
+    except Exception as exc:  # noqa: BLE001 - discovery failure is non-fatal
+        logger.debug(
+            "STT plugin requirements check skipped for '%s': %s", key, exc,
+        )
+        return False
+
+    if plugin_provider is None:
+        return False
+
+    try:
+        return bool(plugin_provider.is_available())
+    except Exception as exc:  # noqa: BLE001 - plugins must not break status
+        logger.warning(
+            "STT plugin provider '%s' is_available() raised during requirements "
+            "check: %s - treating as unavailable",
+            key,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
 def check_voice_requirements() -> Dict[str, Any]:
     """Check if all voice mode requirements are met.
 
@@ -1129,11 +1169,37 @@ def check_voice_requirements() -> Dict[str, Any]:
         ``missing_packages``, and ``details``.
     """
     # Determine STT provider availability
-    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
+    from tools.transcription_tools import (
+        _get_provider,
+        _load_stt_config,
+        _resolve_command_stt_provider_config,
+        is_stt_enabled,
+    )
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
-    stt_available = stt_enabled and stt_provider != "none"
+    native_stt_available = stt_provider in {
+        "local",
+        "local_command",
+        "groq",
+        "openai",
+        "mistral",
+        "xai",
+        "elevenlabs",
+    }
+    command_stt_config = None
+    plugin_stt_available = False
+    if stt_enabled and not native_stt_available:
+        command_stt_config = _resolve_command_stt_provider_config(
+            stt_provider, stt_config,
+        )
+        if command_stt_config is None:
+            plugin_stt_available = _check_plugin_stt_provider(stt_provider)
+    stt_available = stt_enabled and (
+        native_stt_available
+        or command_stt_config is not None
+        or plugin_stt_available
+    )
 
     missing: List[str] = []
     termux_capture = _termux_voice_capture_available()
@@ -1159,10 +1225,22 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")
     elif stt_provider == "local":
         details_parts.append("STT provider: OK (local faster-whisper)")
+    elif stt_provider == "local_command":
+        details_parts.append("STT provider: OK (local command)")
     elif stt_provider == "groq":
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "mistral":
+        details_parts.append("STT provider: OK (Mistral Voxtral)")
+    elif stt_provider == "xai":
+        details_parts.append("STT provider: OK (xAI Grok STT)")
+    elif stt_provider == "elevenlabs":
+        details_parts.append("STT provider: OK (ElevenLabs Scribe)")
+    elif command_stt_config is not None:
+        details_parts.append(f"STT provider: OK (command: {stt_provider})")
+    elif plugin_stt_available:
+        details_parts.append(f"STT provider: OK (plugin: {stt_provider})")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "

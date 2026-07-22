@@ -498,6 +498,118 @@ class TestCheckVoiceRequirements:
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
 
+    def test_command_stt_provider_selected(self, monkeypatch):
+        """Catch-all branch fires for a selected command provider (not any provider)."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "enabled": True,
+                "provider": "my-custom-stt",
+                "providers": {
+                    "my-custom-stt": {
+                        "type": "command",
+                        "command": "whisper_cpp {input}",
+                    },
+                },
+            },
+        )
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (command: my-custom-stt)" in result["details"]
+
+    def test_unrelated_command_provider_not_confused(self, monkeypatch):
+        """Unrelated command provider does NOT make a different selected provider appear OK."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "enabled": True,
+                "provider": "unknown-selected",
+                "providers": {
+                    "unrelated-command": {
+                        "type": "command",
+                        "command": "whisper_cpp {input}",
+                    },
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "agent.transcription_registry.get_provider", lambda p: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: None,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is False
+        assert result["stt_available"] is False
+        assert "STT provider: MISSING" in result["details"]
+
+    def test_plugin_stt_provider(self, monkeypatch):
+        """Plugin STT provider is recognized."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": "my-plugin-stt"},
+        )
+        plugin_provider = MagicMock()
+        plugin_provider.is_available.return_value = True
+        monkeypatch.setattr(
+            "agent.transcription_registry.get_provider",
+            lambda p: plugin_provider if p == "my-plugin-stt" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: None,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (plugin: my-plugin-stt)" in result["details"]
+
+    def test_unavailable_plugin_stt_provider(self, monkeypatch):
+        """A registered but unavailable plugin does not satisfy requirements."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": "my-plugin-stt"},
+        )
+        plugin_provider = MagicMock()
+        plugin_provider.is_available.return_value = False
+        monkeypatch.setattr(
+            "agent.transcription_registry.get_provider",
+            lambda p: plugin_provider if p == "my-plugin-stt" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: None,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is False
+        assert result["stt_available"] is False
+        assert "STT provider: MISSING" in result["details"]
+
 
 # ============================================================================
 # AudioRecorder

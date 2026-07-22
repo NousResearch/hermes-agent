@@ -11,6 +11,7 @@ import struct
 import subprocess
 import types
 import wave
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1578,3 +1579,144 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+# ============================================================================
+# CAF (iMessage voice note) conversion tests
+# ============================================================================
+
+class TestCafConversion:
+    """Tests for _convert_caf_to_wav and CAF dispatch in transcribe_audio."""
+
+    def test_convert_caf_with_ffmpeg(self, tmp_path, monkeypatch):
+        """_convert_caf_to_wav uses ffmpeg when available."""
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+        wav_path = str(tmp_path / "voice.wav")
+
+        def fake_run(cmd, **kwargs):
+            Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_ffmpeg_binary",
+            lambda: "/usr/bin/ffmpeg",
+        )
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        from tools.transcription_tools import _convert_caf_to_wav
+        result = _convert_caf_to_wav(str(caf_path))
+        assert result == wav_path
+        assert Path(result).exists()
+
+    def test_convert_caf_fallback_to_afconvert(self, tmp_path, monkeypatch):
+        """When ffmpeg is not found, falls back to afconvert (macOS)."""
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+        wav_path = str(tmp_path / "voice.wav")
+
+        call_count = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            call_count["n"] += 1
+            if cmd[0] == "/usr/bin/ffmpeg":
+                raise subprocess.CalledProcessError(1, cmd)
+            Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_ffmpeg_binary",
+            lambda: "/usr/bin/ffmpeg",
+        )
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_tools.shutil.which",
+            lambda name: "/usr/bin/afconvert" if name == "afconvert" else None,
+        )
+
+        from tools.transcription_tools import _convert_caf_to_wav
+        result = _convert_caf_to_wav(str(caf_path))
+        assert result == wav_path
+        assert call_count["n"] == 2
+
+    def test_convert_caf_all_converters_fail(self, tmp_path, monkeypatch):
+        """When both ffmpeg and afconvert are unavailable, returns None."""
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_ffmpeg_binary", lambda: None
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools.shutil.which", lambda name: None
+        )
+
+        from tools.transcription_tools import _convert_caf_to_wav
+        result = _convert_caf_to_wav(str(caf_path))
+        assert result is None
+
+    def test_transcribe_caf_converted_before_groq(self, tmp_path, monkeypatch):
+        """transcribe_audio converts .caf to .wav before dispatching to Groq."""
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+        wav_path = str(tmp_path / "voice.wav")
+
+        def fake_convert(file_path):
+            Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
+            return wav_path
+
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "groq"}), \
+             patch("tools.transcription_tools._get_provider",
+                   return_value="groq"), \
+             patch("tools.transcription_tools._convert_caf_to_wav",
+                   side_effect=fake_convert) as mock_convert, \
+             patch("tools.transcription_tools._transcribe_groq",
+                   return_value={"success": True, "transcript": "hello",
+                                 "provider": "groq"}) as mock_groq:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(caf_path))
+
+        assert result["success"] is True
+        mock_convert.assert_called_once_with(str(caf_path))
+        mock_groq.assert_called_once()
+        call_args = mock_groq.call_args
+        sent_path = call_args[0][0] if call_args[0] else call_args[1].get("file_path")
+        assert sent_path == wav_path
+
+    def test_transcribe_caf_conversion_failure_returns_error(
+        self, tmp_path, monkeypatch
+    ):
+        """When CAF conversion fails, transcribe_audio returns an error."""
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "groq"}), \
+             patch("tools.transcription_tools._get_provider",
+                   return_value="groq"), \
+             patch("tools.transcription_tools._convert_caf_to_wav",
+                   return_value=None):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(caf_path))
+
+        assert result["success"] is False
+        assert "could not be converted" in result["error"]
+
+    def test_transcribe_caf_not_converted_for_local(self, tmp_path, monkeypatch):
+        """CAF conversion is skipped for local provider (native handling)."""
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+
+        with patch("tools.transcription_tools._load_stt_config",
+                   return_value={"provider": "local"}), \
+             patch("tools.transcription_tools._get_provider",
+                   return_value="local"), \
+             patch("tools.transcription_tools._convert_caf_to_wav") as mock_convert, \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(caf_path))
+
+        assert result["success"] is True
+        mock_convert.assert_not_called()

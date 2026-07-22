@@ -490,6 +490,11 @@ class PhotonAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._inbound_task = None
+        # Cancel any pending U+FFFC placeholder tasks.
+        for chat_key, (_, fffc_task) in list(self._pending_fffc.items()):
+            if fffc_task and not fffc_task.done():
+                fffc_task.cancel()
+        self._pending_fffc.clear()
         await self._stop_sidecar()
         if self._http_client is not None:
             try:
@@ -683,8 +688,10 @@ class PhotonAdapter(BasePlatformAdapter):
             is_voice = payload.get("type") == "voice"
             name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = payload.get("mimeType") or ""
-            # Only .caf files are promoted to VOICE (iMessage voice notes use CAF).
-            if not is_voice and name.lower().endswith(".caf"):
+            # Promote CAF attachments to VOICE (iMessage voice notes use CAF).
+            # Check both filename and MIME: the sidecar may send "(unnamed)"
+            # when no name is supplied, so the MIME type is the reliable signal.
+            if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
                 is_voice = True
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
             cached = _cache_inbound_attachment(
@@ -756,6 +763,28 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # U+FFFC placeholder — wait for the real attachment instead of
+        # dispatching. Detected before _record_last_inbound so the placeholder
+        # is not recorded as the reaction target — the real attachment will be.
+        if ctype == "text" and (content.get("text") or "").strip() == "\ufffc":
+            chat_key = space_id
+            prev = self._pending_fffc.pop(chat_key, None)
+            if prev and prev[1] and not prev[1].done():
+                prev[1].cancel()
+            task = asyncio.create_task(
+                self._fffc_timeout_handler(chat_key, event.get("messageId") or "")
+            )
+            self._pending_fffc[chat_key] = (time.monotonic(), task)
+            logger.debug("[photon] U+FFFC placeholder received — waiting for attachment")
+            return
+
+        # Cancel any pending U+FFFC timeout — the real message arrived.
+        if ctype in {"attachment", "voice"}:
+            prev = self._pending_fffc.pop(space_id, None)
+            if prev and prev[1] and not prev[1].done():
+                prev[1].cancel()
+                logger.debug("[photon] attachment arrived — cancelling U+FFFC timeout")
+
         # Anything past here is a real (reactable) message — remember it as
         # the chat's latest inbound so `add_reaction` can target it when the
         # caller doesn't pass an explicit message id. Recorded before the
@@ -763,25 +792,8 @@ class PhotonAdapter(BasePlatformAdapter):
         self._record_last_inbound(space_id, event.get("messageId"))
         if ctype == "text":
             text = content.get("text") or ""
-            # U+FFFC placeholder — wait for the real attachment instead of dispatching.
-            if text.strip() == "\ufffc":
-                chat_key = space_id
-                prev = self._pending_fffc.pop(chat_key, None)
-                if prev and prev[1] and not prev[1].done():
-                    prev[1].cancel()
-                task = asyncio.create_task(
-                    self._fffc_timeout_handler(chat_key, event.get("messageId") or "")
-                )
-                self._pending_fffc[chat_key] = (time.monotonic(), task)
-                logger.debug("[photon] U+FFFC placeholder received — waiting for attachment")
-                return
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
-            # Cancel any pending U+FFFC timeout — the real attachment arrived.
-            prev = self._pending_fffc.pop(space_id, None)
-            if prev and prev[1] and not prev[1].done():
-                prev[1].cancel()
-                logger.debug("[photon] attachment arrived — cancelling U+FFFC timeout")
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
         elif ctype == "group":
             text_parts: List[str] = []

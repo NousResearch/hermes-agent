@@ -1535,6 +1535,36 @@ class GatewaySlashCommandsMixin:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
+        def _config_context_length_for_target(target_model: str, target_provider: str) -> Optional[int]:
+            """Return model.context_length only when it belongs to the target route.
+
+            Gateway /model switches are session-scoped by default.  A global
+            ``model.context_length`` override belongs to the configured
+            ``model.default``/``model.provider`` pair, not to an arbitrary
+            session-only switch.  Without this guard, selecting Codex gpt-5.5
+            from a profile configured for a 1M-token Z.AI/Xiaomi model reports
+            1M even though Codex OAuth is hard-capped at 272K.
+            """
+            try:
+                _sw_cfg = _load_gateway_config()
+                _sw_model_cfg = _sw_cfg.get("model", {})
+                if not isinstance(_sw_model_cfg, dict):
+                    return None
+                _cfg_model = str(
+                    _sw_model_cfg.get("default") or _sw_model_cfg.get("model") or ""
+                ).strip()
+                _cfg_provider = str(_sw_model_cfg.get("provider") or "").strip()
+                if _cfg_model and _cfg_model != (target_model or ""):
+                    return None
+                if _cfg_provider and _cfg_provider != (target_provider or ""):
+                    return None
+                _raw = _sw_model_cfg.get("context_length")
+                if _raw is not None:
+                    return int(_raw)
+            except Exception:
+                return None
+            return None
+
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
@@ -1763,16 +1793,10 @@ class GatewaySlashCommandsMixin:
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
-                        _sw_config_ctx = None
-                        try:
-                            _sw_cfg = _load_gateway_config()
-                            _sw_model_cfg = _sw_cfg.get("model", {})
-                            if isinstance(_sw_model_cfg, dict):
-                                _sw_raw = _sw_model_cfg.get("context_length")
-                                if _sw_raw is not None:
-                                    _sw_config_ctx = int(_sw_raw)
-                        except Exception:
-                            pass
+                        _sw_config_ctx = _config_context_length_for_target(
+                            result.new_model,
+                            result.target_provider,
+                        )
                         ctx = resolve_display_context_length(
                             result.new_model,
                             result.target_provider,
@@ -2063,16 +2087,10 @@ class GatewaySlashCommandsMixin:
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.
             mi = result.model_info
             from hermes_cli.model_switch import resolve_display_context_length
-            _sw2_config_ctx = None
-            try:
-                _sw2_cfg = _load_gateway_config()
-                _sw2_model_cfg = _sw2_cfg.get("model", {})
-                if isinstance(_sw2_model_cfg, dict):
-                    _sw2_raw = _sw2_model_cfg.get("context_length")
-                    if _sw2_raw is not None:
-                        _sw2_config_ctx = int(_sw2_raw)
-            except Exception:
-                pass
+            _sw2_config_ctx = _config_context_length_for_target(
+                result.new_model,
+                result.target_provider,
+            )
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,

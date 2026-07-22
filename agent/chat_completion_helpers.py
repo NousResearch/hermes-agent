@@ -1105,6 +1105,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         or base_url_host_matches(agent.base_url, "moonshot.ai")
         or base_url_host_matches(agent.base_url, "moonshot.cn")
     )
+    _is_zai = (agent.provider or "").strip().lower() == "zai" or "api.z.ai" in (agent._base_url_lower or "")
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
 
@@ -1201,6 +1202,22 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
+
+    # z.ai (GLM Coding Plan) silently rejects system prompts containing
+    # "Hermes Agent" — returns HTTP 429 code 1305 (mislabeled content
+    # filter).  Redact brand strings in system messages so the provider
+    # doesn't trip its filter.  See issue #60118.
+    if _is_zai:
+        for _msg in _msgs_for_chat:
+            if _msg.get("role") == "system":
+                _content = _msg.get("content", "")
+                if isinstance(_content, str) and "Hermes Agent" in _content:
+                    _msg["content"] = (
+                        _content
+                        .replace("Hermes Agent", "the assistant")
+                        .replace("Hermes agent", "the assistant")
+                        .replace("Nous Research", "the development team")
+                    )
 
     return _ct.build_kwargs(
         model=agent.model,

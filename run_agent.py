@@ -1331,10 +1331,12 @@ class AIAgent:
 
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
+        if est_tokens > 200_000:
+            return max(stale_base, 3600.0)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
+            return max(stale_base, 1200.0)
         if est_tokens > 50_000:
-            return max(stale_base, 150.0)
+            return max(stale_base, 600.0)
         return stale_base
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:

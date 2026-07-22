@@ -135,12 +135,12 @@ def test_long_codex_request_bumps_to_50k_tier(monkeypatch, tmp_path):
     agent = _make_agent(tmp_path)
     payload = {"model": "gpt-5.5", "input": "x" * 240_000, "instructions": ""}
     timeout = agent._compute_non_stream_stale_timeout(payload)
-    assert timeout >= 150.0
-    assert timeout < 240.0
+    assert timeout >= 600.0
+    assert timeout < 1200.0
 
 
 def test_very_long_codex_request_bumps_to_100k_tier(monkeypatch, tmp_path):
-    """Codex payload > 100k tokens -> at least 240s."""
+    """Codex payload > 100k tokens -> at least 1200s."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
@@ -148,7 +148,7 @@ def test_very_long_codex_request_bumps_to_100k_tier(monkeypatch, tmp_path):
 
     agent = _make_agent(tmp_path)
     payload = {"model": "gpt-5.5", "input": "x" * 500_000, "instructions": ""}
-    assert agent._compute_non_stream_stale_timeout(payload) >= 240.0
+    assert agent._compute_non_stream_stale_timeout(payload) >= 1200.0
 
 
 def test_chat_completions_long_messages_bumps_tier(monkeypatch, tmp_path):

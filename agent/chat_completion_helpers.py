@@ -282,10 +282,12 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     else:
         _base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
     _est_tokens = estimate_request_context_tokens(api_kwargs)
-    if _est_tokens > 100_000:
-        _timeout = max(_base, 300.0)
+    if _est_tokens > 200_000:
+        _timeout = max(_base, 1800.0)
+    elif _est_tokens > 100_000:
+        _timeout = max(_base, 1200.0)
     elif _est_tokens > 50_000:
-        _timeout = max(_base, 240.0)
+        _timeout = max(_base, 600.0)
     else:
         _timeout = _base
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
@@ -3588,29 +3590,52 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             agent.base_url, _stream_stale_timeout,
         )
     else:
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = estimate_request_context_tokens(api_kwargs)
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-        else:
-            _stream_stale_timeout = _stream_stale_timeout_base
-        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
-        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
-        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
-        # model threshold during their thinking phase.  The cloud gateway
-        # upstream kills the socket first, surfacing as BrokenPipeError.
-        # Raises the floor only — never overrides explicit user config
-        # (handled by get_provider_stale_timeout above).
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
-            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+        _stream_stale_timeout = _stream_stale_timeout_base
+
+    # ── Context-size scaling ────────────────────────────────────────────
+    # Slow models (Opus, Qwen 3.5 122B, local 120B+ GGUF) can take many
+    # *minutes* of prefill/thinking before producing the first token when
+    # the context is large.  Scale the stale timeout by estimated context
+    # size so the detector doesn't kill healthy connections during the
+    # model's thinking/prefill phase.  Applied to both local and cloud paths
+    # (local defaults to 900s but gets a further bump for extreme contexts).
+    _est_tokens = estimate_request_context_tokens(api_kwargs)
+    if _est_tokens > 200_000:
+        _stream_stale_timeout = max(_stream_stale_timeout, 1800.0)
+    elif _est_tokens > 100_000:
+        _stream_stale_timeout = max(_stream_stale_timeout, 1200.0)
+    elif _est_tokens > 50_000:
+        _stream_stale_timeout = max(_stream_stale_timeout, 600.0)
+    elif _est_tokens > 10_000:
+        _stream_stale_timeout = max(_stream_stale_timeout, _stream_stale_timeout_base)
+
+    # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+    # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
+    # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
+    # model threshold during their thinking phase.  The cloud gateway
+    # upstream kills the socket first, surfacing as BrokenPipeError.
+    # Raises the floor only — never overrides explicit user config
+    # (handled by get_provider_stale_timeout above).
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    if _reasoning_floor is not None:
+        _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+
+    # ── Stale-streak backoff (#69424) ───────────────────────────────────
+    # After consecutive stale kills in the same session, the retry loop
+    # restarts the same large-context request from scratch, hitting the
+    # same short timeout each time → infinite retry loop.  Apply a
+    # progressive multiplier so each retry waits longer, eventually
+    # outlasting the prefill.  Resets on success (see _reset_stale_streak).
+    _streak = _stale_streak(agent)
+    if _streak >= 2:
+        _multiplier = min(1.0 + (_streak - 1) * 1.5, 10.0)
+        _previous = _stream_stale_timeout
+        _stream_stale_timeout = _stream_stale_timeout * _multiplier
+        logger.info(
+            "Stale-streak %s — bumped stale timeout from %.0fs to %.0fs",
+            _streak, _previous, _stream_stale_timeout,
+        )
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()

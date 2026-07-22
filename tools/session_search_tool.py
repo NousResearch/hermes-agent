@@ -56,6 +56,112 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 _DISCOVER_SCAN_LIMIT = 300
 
 
+def _session_search_profile_scope() -> str:
+    """Return the configured profile scope for session_search.
+
+    ``all`` preserves the historical behavior: explicit ``profile=...``,
+    ``profile/session_id`` values, and bare-id fallback scanning may read any
+    profile's session DB read-only.
+
+    ``current`` confines the tool to the active profile: explicit foreign
+    profiles are rejected, embedded foreign-profile links are rejected, and
+    bare session-id misses do not scan other profiles. ``allow_cross_profile``
+    is accepted as a boolean compatibility alias for operators who prefer a
+    direct security switch.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        raw = cfg.get("session_search", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(raw, dict):
+            return "all"
+
+        value = raw.get("profile_scope") or raw.get("scope")
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("-", "_")
+            if normalized in {"current", "self", "own", "local", "profile", "current_profile"}:
+                return "current"
+            if normalized in {"all", "any", "cross_profile", "cross_profiles"}:
+                return "all"
+
+        allow_cross_profile = raw.get("allow_cross_profile")
+        if isinstance(allow_cross_profile, bool):
+            return "all" if allow_cross_profile else "current"
+    except Exception:
+        logging.debug("Failed to read session_search.profile_scope", exc_info=True)
+    return "all"
+
+
+def _current_profile_name() -> Optional[str]:
+    """Best-effort name for the active HERMES_HOME profile."""
+    try:
+        from pathlib import Path
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles as profiles_mod
+
+        current_home = get_hermes_home().resolve()
+        for info in profiles_mod.list_profiles():
+            try:
+                if Path(info.path).resolve() == current_home:
+                    return info.name
+            except Exception:
+                continue
+
+        default_home = profiles_mod.get_profile_dir("default").resolve()
+        if current_home == default_home:
+            return "default"
+        if current_home.parent.name == "profiles" and current_home.name:
+            return profiles_mod.normalize_profile_name(current_home.name)
+    except Exception:
+        logging.debug("Failed to determine current Hermes profile", exc_info=True)
+    return None
+
+
+def _canonical_profile_name(profile: str) -> str:
+    from hermes_cli import profiles as profiles_mod
+
+    canon = profiles_mod.normalize_profile_name(profile)
+    profiles_mod.validate_profile_name(canon)
+    return canon
+
+
+def _enforce_current_profile_scope(profile: str) -> Optional[str]:
+    """Return an error JSON string when a foreign profile is requested.
+
+    When the requested profile is the current profile, returns None and the
+    caller should treat it as a same-profile no-op rather than reopening the DB
+    through the cross-profile path.
+    """
+    try:
+        requested = _canonical_profile_name(profile)
+    except Exception as e:
+        return tool_error(f"profile '{profile}': {e}", success=False)
+
+    current = _current_profile_name()
+    if current is None:
+        return tool_error(
+            "cross-profile session_search blocked by config "
+            "session_search.profile_scope=current: could not determine the active profile",
+            success=False,
+        )
+
+    try:
+        current = _canonical_profile_name(current)
+    except Exception:
+        current = str(current).strip().lower()
+
+    if requested == current:
+        return None
+
+    return tool_error(
+        "cross-profile session_search blocked by config "
+        f"session_search.profile_scope=current: requested profile '{requested}', "
+        f"active profile '{current}'",
+        success=False,
+    )
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -651,6 +757,8 @@ def session_search(
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
+    profile_scope = _session_search_profile_scope()
+
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -662,6 +770,14 @@ def session_search(
             session_id = emb_id
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
+
+    if profile_scope == "current" and profile is not None and str(profile).strip():
+        scope_error = _enforce_current_profile_scope(str(profile))
+        if scope_error is not None:
+            return scope_error
+        # Same-profile requests are no-ops in current-profile scope. Keep the
+        # caller's already-open DB and prevent the cross-profile fallback path.
+        profile = ""
 
     # Cross-profile read: swap in the named profile's DB (read-only) for every
     # shape below. The current-session-lineage guards no longer apply across
@@ -695,15 +811,16 @@ def session_search(
         # Miss in the target profile — the model may have dropped the owning
         # profile from the link. Scan every profile and read it from wherever
         # it lives, tagging the profile it was found in.
-        located, owner = _locate_session_db(sid)
-        if located is not None:
-            try:
-                found = json.loads(_read_session(located, sid))
-            finally:
-                located.close()
-            if found.get("success"):
-                found["profile"] = owner
-                return json.dumps(found, ensure_ascii=False)
+        if profile_scope != "current":
+            located, owner = _locate_session_db(sid)
+            if located is not None:
+                try:
+                    found = json.loads(_read_session(located, sid))
+                finally:
+                    located.close()
+                if found.get("success"):
+                    found["profile"] = owner
+                    return json.dumps(found, ensure_ascii=False)
         return result
 
     # Limit clamp [1, 10]

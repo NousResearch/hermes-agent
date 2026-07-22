@@ -94,6 +94,18 @@ def main():
                 })
                 if script == "slow_requests":
                     time.sleep(5.0)  # stay long enough for the client to shut down mid-request
+                elif script == "multi_requests":
+                    # Send three distinct server-to-client requests to exercise
+                    # multiple simultaneous task tracking in the reader loop.
+                    for req_id in (9001, 9002, 9003):
+                        write_message({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "method": "window/workDoneProgress/create",
+                            "params": {
+                                "token": f"token_{req_id}",
+                            },
+                        })
             continue
 
         if msg.get("method") == "workspace/didChangeConfiguration":

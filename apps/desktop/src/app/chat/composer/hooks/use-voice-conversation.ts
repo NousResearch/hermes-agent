@@ -360,6 +360,10 @@ export function useVoiceConversation({
           resetSpeechBuffer()
           pendingStartRef.current = true
           setStatus('idle')
+          // Status may already be 'idle' (speak() reset it in its finally),
+          // so setStatus is a no-op and won't re-fire this effect. Kick the
+          // listen loop directly instead of waiting for a re-render.
+          void startListening()
 
           return
         }
@@ -370,6 +374,7 @@ export function useVoiceConversation({
         resetSpeechBuffer()
         pendingStartRef.current = true
         setStatus('idle')
+        void startListening()
 
         return
       }

@@ -1038,7 +1038,7 @@ text-* variant utilities. */ .btn-arc {
 }
 
 [data-slot='aui_intro'] > div {
-  max-width: min(var(--composer-width), 82vw);
+  max-width: var(--composer-width);
 }
 
 [data-slot='aui_intro'] p:last-child {

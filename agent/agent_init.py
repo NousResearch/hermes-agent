@@ -1736,7 +1736,7 @@ def init_agent(
 
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):
-        _config_context_length = _model_cfg.get("context_length")
+        _config_context_length = _model_cfg.get("context_length") or _model_cfg.get("context_window")
     else:
         _config_context_length = None
     if _config_context_length is not None:

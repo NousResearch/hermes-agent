@@ -38,6 +38,37 @@ const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 export const getRememberedRoute = (): null | string => storedString(LAST_ROUTE_KEY)
 export const setRememberedRoute = (path: null | string) => persistString(LAST_ROUTE_KEY, path)
 
+// Archive is optimistic, but list reads can return the pre-archive row while
+// the PATCH is in flight. Keep those reads from publishing until the archive
+// and its local success/rollback reconciliation have both settled.
+let sessionArchiveGeneration = 0
+let sessionArchivesInFlight = 0
+
+export const $sessionArchiveSettledGeneration = atom(0)
+export const getSessionArchiveGeneration = (): number => sessionArchiveGeneration
+
+export function beginSessionArchive(): number {
+  sessionArchivesInFlight += 1
+  sessionArchiveGeneration += 1
+
+  return sessionArchiveGeneration
+}
+
+export function endSessionArchive(): number {
+  sessionArchivesInFlight = Math.max(0, sessionArchivesInFlight - 1)
+  sessionArchiveGeneration += 1
+
+  if (sessionArchivesInFlight === 0) {
+    $sessionArchiveSettledGeneration.set(sessionArchiveGeneration)
+  }
+
+  return sessionArchiveGeneration
+}
+
+export function canApplySessionListResponse(generation: number): boolean {
+  return sessionArchivesInFlight === 0 && sessionArchiveGeneration === generation
+}
+
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {

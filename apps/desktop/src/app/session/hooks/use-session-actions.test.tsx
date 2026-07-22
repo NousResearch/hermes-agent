@@ -1,38 +1,52 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
-import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { $projectScope, $projectTree, $removedSessionIds, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
+  $cronSessions,
   $currentCwd,
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $messages,
+  $messagingPlatformTotals,
+  $messagingSessions,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessionProfileTotals,
+  $sessions,
+  $sessionsTotal,
+  canApplySessionListResponse,
+  getSessionArchiveGeneration,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
+  setCronSessions,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setMessages,
+  setMessagingPlatformTotals,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
-  setSessions
+  setSessionProfileTotals,
+  setSessions,
+  setSessionsTotal
 } from '@/store/session'
+import { $sessionTiles, discardSessionTileForProfile, openSessionTile } from '@/store/session-states'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
@@ -56,13 +70,15 @@ vi.mock('@/store/profile', async importOriginal => ({
 const RUNTIME_SESSION_ID = 'rt-new-001'
 
 function deferred<T>() {
+  let reject!: (reason?: unknown) => void
   let resolve!: (value: T | PromiseLike<T>) => void
 
-  const promise = new Promise<T>(done => {
+  const promise = new Promise<T>((done, fail) => {
+    reject = fail
     resolve = done
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 type HarnessHandle = Pick<
@@ -115,6 +131,66 @@ function Harness({
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  useEffect(() => {
+    onReady(actions)
+  }, [actions, onReady])
+
+  return null
+}
+
+type ArchiveHandle = Pick<ReturnType<typeof useSessionActions>, 'archiveSession'>
+
+function ArchiveHarness({
+  activeSessionId = 'runtime-1',
+  getRouteToken = () => 'token',
+  navigate = vi.fn(),
+  onReady,
+  runtimeIdByStoredSessionIdRef,
+  runtimeProfileByStoredSessionIdRef,
+  selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
+  sessionStateByRuntimeIdRef,
+  selectedStoredSessionId
+}: {
+  activeSessionId?: null | string
+  getRouteToken?: () => string
+  navigate?: ReturnType<typeof vi.fn>
+  onReady: (handle: ArchiveHandle) => void
+  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
+  runtimeProfileByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
+  selectedStoredSessionIdRef?: MutableRefObject<string | null>
+  sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
+  selectedStoredSessionId: string
+}) {
+  const activeSessionIdRef: MutableRefObject<string | null> = { current: activeSessionId }
+
+  const selectedStoredSessionIdRef: MutableRefObject<string | null> = selectedStoredSessionIdRefProp ?? {
+    current: selectedStoredSessionId
+  }
+
+  const busyRef: MutableRefObject<boolean> = { current: false }
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId,
+    activeSessionIdRef,
+    busyRef,
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken,
+    getRoutedStoredSessionId: () => selectedStoredSessionId,
+    navigate: navigate as never,
+    requestGateway: async () => ({}) as never,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef:
+      runtimeIdByStoredSessionIdRef ?? ref(new Map([[selectedStoredSessionId, activeSessionId ?? 'runtime-1']])),
+    runtimeProfileByStoredSessionIdRef,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
   })
@@ -1320,5 +1396,696 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+})
+
+describe('archiveSession refresh races', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+  })
+
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setCronSessions([])
+    setMessages([])
+    setMessagingPlatformTotals({})
+    setMessagingSessions([])
+    setSelectedStoredSessionId(null)
+    setSessionProfileTotals({})
+    setSessions([])
+    setSessionsTotal(0)
+    vi.restoreAllMocks()
+  })
+
+  it('blocks stale list publication while archiving the selected compression lineage', async () => {
+    const continuation = storedSession({ id: 'tip-2', _lineage_root_id: 'root-1', message_count: 2 })
+    const archive = deferred<{ ok: boolean }>()
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['root-1', 'runtime-1']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-1', createClientSessionState('root-1')]])
+    }
+
+    setSessions([continuation])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setSelectedStoredSessionId('root-1')
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="root-1"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('tip-2', 'default', 'desktop')
+    await waitFor(() => expect($sessions.get()).toEqual([]))
+
+    const generation = getSessionArchiveGeneration()
+    expect(canApplySessionListResponse(generation)).toBe(false)
+    expect($selectedStoredSessionId.get()).toBe('root-1')
+
+    archive.resolve({ ok: true })
+    await pending
+
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+    expect($sessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(0)
+    expect($sessionProfileTotals.get()).toEqual({ default: 0 })
+    expect($selectedStoredSessionId.get()).toBeNull()
+    expect(runtimeIdByStoredSessionIdRef.current.has('root-1')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-1')).toBe(false)
+  })
+
+  it('does not clear a newer selection when a selected archive settles', async () => {
+    const session = storedSession({ id: 'selected-archive', message_count: 2, profile: 'default', source: 'desktop' })
+    const archive = deferred<{ ok: boolean }>()
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSelectedStoredSessionId('selected-archive')
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'selected-archive' }
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        selectedStoredSessionId="selected-archive"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('selected-archive', 'default', 'desktop')
+
+    setSelectedStoredSessionId('new-selection')
+    selectedStoredSessionIdRef.current = 'new-selection'
+    archive.resolve({ ok: true })
+    await pending
+
+    expect($selectedStoredSessionId.get()).toBe('new-selection')
+  })
+
+  it('does not clear newer route intent while selection synchronization lags', async () => {
+    const session = storedSession({ id: 'selected-archive', message_count: 2, profile: 'default', source: 'desktop' })
+    const archive = deferred<{ ok: boolean }>()
+    const routeToken = { current: 'route-a' }
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSelectedStoredSessionId('selected-archive')
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        getRouteToken={() => routeToken.current}
+        onReady={value => (handle = value)}
+        selectedStoredSessionId="selected-archive"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('selected-archive', 'default', 'desktop')
+
+    routeToken.current = 'route-b'
+    archive.resolve({ ok: true })
+    await pending
+
+    expect($selectedStoredSessionId.get()).toBe('selected-archive')
+  })
+
+  it('restores the selected compression lineage and totals when archive fails', async () => {
+    const continuation = storedSession({ id: 'tip-2', _lineage_root_id: 'root-1', message_count: 2 })
+
+    const previousMessages = [
+      {
+        id: 'message-1',
+        role: 'user' as const,
+        parts: [{ type: 'text' as const, text: 'Keep me' }]
+      }
+    ]
+
+    setSessions([continuation])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setSelectedStoredSessionId('root-1')
+    setMessages(previousMessages)
+    vi.mocked(setSessionArchived).mockRejectedValue(new Error('boom'))
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="root-1" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('tip-2', 'default', 'desktop')
+
+    expect($selectedStoredSessionId.get()).toBe('root-1')
+    expect($messages.get()).toBe(previousMessages)
+    expect($sessions.get()).toEqual([continuation])
+    expect($sessionsTotal.get()).toBe(1)
+    expect($sessionProfileTotals.get()).toEqual({ default: 1 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('does not restore a failed archive into a newly active profile', async () => {
+    const session = storedSession({ id: 'work-session', message_count: 2, profile: 'work', source: 'desktop' })
+    const archive = deferred<{ ok: boolean }>()
+
+    $activeGatewayProfile.set('work')
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ work: 1 })
+    setSelectedStoredSessionId('other-session')
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('work-session', 'work', 'desktop')
+
+    $activeGatewayProfile.set('default')
+    setSessions([])
+    setSessionsTotal(0)
+    setSessionProfileTotals({ default: 0 })
+    archive.reject(new Error('archive failed'))
+    await pending
+
+    expect($sessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(0)
+    expect($sessionProfileTotals.get()).toEqual({ default: 0 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('evicts the owning profile tile and runtime after switching profiles', async () => {
+    const session = storedSession({ id: 'profile-tile', message_count: 2, profile: 'work', source: 'desktop' })
+    const archive = deferred<{ ok: boolean }>()
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['profile-tile', 'runtime-work']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-work', createClientSessionState('profile-tile')]])
+    }
+
+    $activeGatewayProfile.set('work')
+    discardSessionTileForProfile('profile-tile', 'work')
+    setSelectedStoredSessionId('other-session')
+    openSessionTile('profile-tile')
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ work: 1 })
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="other-session"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('profile-tile', 'work', 'desktop')
+
+    $activeGatewayProfile.set('default')
+    archive.resolve({ ok: true })
+    await pending
+
+    $activeGatewayProfile.set('work')
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'profile-tile')).toBe(false)
+    expect(runtimeIdByStoredSessionIdRef.current.has('profile-tile')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-work')).toBe(false)
+  })
+
+  it('evicts an inactive profile runtime without touching the active profile', async () => {
+    const session = storedSession({ id: 'inactive-runtime', message_count: 2, profile: 'work', source: 'desktop' })
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['inactive-runtime', 'runtime-work']])
+    }
+
+    const runtimeProfileByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['inactive-runtime', 'work']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-work', createClientSessionState('inactive-runtime')]])
+    }
+
+    $activeGatewayProfile.set('default')
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ work: 1 })
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        runtimeProfileByStoredSessionIdRef={runtimeProfileByStoredSessionIdRef}
+        selectedStoredSessionId="other-session"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('inactive-runtime', 'work', 'desktop')
+
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect(runtimeIdByStoredSessionIdRef.current.has('inactive-runtime')).toBe(false)
+    expect(runtimeProfileByStoredSessionIdRef.current.has('inactive-runtime')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-work')).toBe(false)
+  })
+
+  it('preserves a runtime binding reassigned to another profile while archive is pending', async () => {
+    const session = storedSession({ id: 'shared-runtime', message_count: 2, profile: 'work', source: 'desktop' })
+    const archive = deferred<{ ok: boolean }>()
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['shared-runtime', 'runtime-shared']])
+    }
+
+    const runtimeProfileByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['shared-runtime', 'work']])
+    }
+
+    const activeState = createClientSessionState('shared-runtime')
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-shared', activeState]])
+    }
+
+    $activeGatewayProfile.set('default')
+    setSessions([session])
+    setSessionsTotal(1)
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        runtimeProfileByStoredSessionIdRef={runtimeProfileByStoredSessionIdRef}
+        selectedStoredSessionId="other-session"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('shared-runtime', 'work', 'desktop')
+
+    runtimeProfileByStoredSessionIdRef.current.set('shared-runtime', 'default')
+    archive.resolve({ ok: true })
+    await pending
+
+    expect(runtimeIdByStoredSessionIdRef.current.get('shared-runtime')).toBe('runtime-shared')
+    expect(runtimeProfileByStoredSessionIdRef.current.get('shared-runtime')).toBe('default')
+    expect(sessionStateByRuntimeIdRef.current.get('runtime-shared')).toBe(activeState)
+  })
+
+  it('restores totals when a row subscriber throws during backend rollback', async () => {
+    const session = storedSession({
+      id: 'rollback-subscriber',
+      message_count: 2,
+      profile: 'default',
+      source: 'desktop'
+    })
+
+    const archive = deferred<{ ok: boolean }>()
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('rollback-subscriber', 'default', 'desktop')
+    await waitFor(() => expect($sessions.get()).toEqual([]))
+
+    const unlisten = $sessions.listen(() => {
+      throw new Error('rollback subscriber boom')
+    })
+
+    try {
+      archive.reject(new Error('archive failed'))
+      await pending
+    } finally {
+      unlisten()
+    }
+
+    expect($sessions.get()).toEqual([session])
+    expect($sessionsTotal.get()).toBe(1)
+    expect($sessionProfileTotals.get()).toEqual({ default: 1 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('releases the archive barrier after a synchronous mutation failure', async () => {
+    const session = storedSession({ id: 'sync-failure', message_count: 2, profile: 'default', source: 'desktop' })
+
+    setSessions([session])
+    setSessionsTotal(1)
+    vi.mocked(setSessionArchived).mockImplementation(() => {
+      throw new Error('sync boom')
+    })
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('sync-failure', 'default', 'desktop')
+
+    expect($sessions.get()).toEqual([session])
+    expect($sessionsTotal.get()).toBe(1)
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('releases the archive barrier when optimistic rollback subscribers throw', async () => {
+    const session = storedSession({ id: 'subscriber-failure', message_count: 2, profile: 'default', source: 'desktop' })
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    const removedBefore = new Set($removedSessionIds.get())
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const unlisten = $sessions.listen(() => {
+      throw new Error('subscriber boom')
+    })
+
+    try {
+      await handle!.archiveSession('subscriber-failure', 'default', 'desktop')
+    } finally {
+      unlisten()
+    }
+
+    expect($sessions.get()).toEqual([session])
+    expect($sessionsTotal.get()).toBe(1)
+    expect($sessionProfileTotals.get()).toEqual({ default: 1 })
+    expect($removedSessionIds.get()).toEqual(removedBefore)
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('restores messaging totals when a row subscriber throws during backend rollback', async () => {
+    const session = storedSession({ id: 'telegram-rollback', message_count: 2, profile: 'work', source: 'telegram' })
+    const archive = deferred<{ ok: boolean }>()
+
+    $activeGatewayProfile.set('work')
+    setMessagingSessions([session])
+    setMessagingPlatformTotals({ telegram: 1 })
+    vi.mocked(setSessionArchived).mockReturnValue(archive.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('telegram-rollback', 'work', 'telegram')
+    await waitFor(() => expect($messagingSessions.get()).toEqual([]))
+
+    const unlisten = $messagingSessions.listen(() => {
+      throw new Error('messaging rollback subscriber boom')
+    })
+
+    try {
+      archive.reject(new Error('archive failed'))
+      await pending
+    } finally {
+      unlisten()
+    }
+
+    expect($messagingSessions.get()).toEqual([session])
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 1 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('removes an archived messaging session from its platform bucket', async () => {
+    const telegram = storedSession({ id: 'telegram-1', message_count: 2, profile: 'work', source: 'telegram' })
+
+    setMessagingSessions([telegram])
+    setMessagingPlatformTotals({ telegram: 1 })
+    setSelectedStoredSessionId('telegram-1')
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="telegram-1" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('telegram-1', 'work', 'telegram')
+
+    expect(setSessionArchived).toHaveBeenCalledWith('telegram-1', true, 'work')
+    expect($messagingSessions.get()).toEqual([])
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 0 })
+  })
+
+  it('preserves an unknown messaging total while archiving', async () => {
+    const telegram = storedSession({ id: 'telegram-unknown', message_count: 2, profile: 'work', source: 'telegram' })
+
+    setMessagingSessions([telegram])
+    setMessagingPlatformTotals({})
+    setSelectedStoredSessionId('telegram-unknown')
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="telegram-unknown" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('telegram-unknown', 'work', 'telegram')
+
+    expect($messagingSessions.get()).toEqual([])
+    expect($messagingPlatformTotals.get()).toEqual({})
+  })
+
+  it('removes only the matching profile when a messaging bucket contains duplicate ids', async () => {
+    const defaultRow = storedSession({
+      id: 'same-message-id',
+      message_count: 2,
+      profile: 'default',
+      source: 'telegram'
+    })
+
+    const workRow = storedSession({ id: 'same-message-id', message_count: 2, profile: 'work', source: 'telegram' })
+
+    setMessagingSessions([defaultRow, workRow])
+    setMessagingPlatformTotals({ telegram: 2 })
+    setSelectedStoredSessionId('same-message-id')
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="same-message-id" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('same-message-id', 'work', 'telegram')
+
+    expect(setSessionArchived).toHaveBeenCalledWith('same-message-id', true, 'work')
+    expect($messagingSessions.get()).toEqual([defaultRow])
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 1 })
+  })
+
+  it('removes an archived cron session from the cron bucket', async () => {
+    const cron = storedSession({ id: 'cron-1', message_count: 2, profile: 'work', source: 'cron' })
+
+    setCronSessions([cron])
+    setSelectedStoredSessionId('cron-1')
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="cron-1" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('cron-1', 'work', 'cron')
+
+    expect(setSessionArchived).toHaveBeenCalledWith('cron-1', true, 'work')
+    expect($cronSessions.get()).toEqual([])
+  })
+
+  it('does not touch a loaded sibling when a profile-bound tile row is paged out', async () => {
+    const defaultRow = storedSession({ id: 'paged-out-id', message_count: 2, profile: 'default', source: 'desktop' })
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['paged-out-id', 'runtime-work']])
+    }
+
+    $activeGatewayProfile.set('work')
+    setSessions([defaultRow])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setSelectedStoredSessionId('other-session')
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="other-session"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('paged-out-id', 'work')
+
+    expect(setSessionArchived).toHaveBeenCalledWith('paged-out-id', true, 'work')
+    expect($sessions.get()).toEqual([defaultRow])
+    expect($sessionsTotal.get()).toBe(1)
+    expect($sessionProfileTotals.get()).toEqual({ default: 1 })
+    expect(runtimeIdByStoredSessionIdRef.current.has('paged-out-id')).toBe(false)
+  })
+
+  it('uses profile and source to disambiguate identical sidebar ids', async () => {
+    const local = storedSession({ id: 'same-id', message_count: 2, profile: 'default', source: 'desktop' })
+    const telegram = storedSession({ id: 'same-id', message_count: 2, profile: 'work', source: 'telegram' })
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['same-id', 'runtime-default']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-default', createClientSessionState('same-id')]])
+    }
+
+    setSessions([local])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setMessagingSessions([telegram])
+    setMessagingPlatformTotals({ telegram: 1 })
+    setSelectedStoredSessionId('same-id')
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    let handle: ArchiveHandle | null = null
+    render(
+      <ArchiveHarness
+        onReady={value => (handle = value)}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="same-id"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.archiveSession('same-id', 'work', 'telegram')
+
+    expect(setSessionArchived).toHaveBeenCalledWith('same-id', true, 'work')
+    expect($sessions.get()).toEqual([local])
+    expect($sessionsTotal.get()).toBe(1)
+    expect($sessionProfileTotals.get()).toEqual({ default: 1 })
+    expect($messagingSessions.get()).toEqual([])
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 0 })
+    expect($selectedStoredSessionId.get()).toBe('same-id')
+    expect(runtimeIdByStoredSessionIdRef.current.get('same-id')).toBe('runtime-default')
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-default')).toBe(true)
+  })
+
+  it('does not let an older failed archive roll back a newer success', async () => {
+    const session = storedSession({ id: 'same-target', message_count: 2, profile: 'default', source: 'desktop' })
+    const first = deferred<{ ok: boolean }>()
+    const second = deferred<{ ok: boolean }>()
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setSelectedStoredSessionId('other-session')
+    vi.mocked(setSessionArchived).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const older = handle!.archiveSession('same-target', 'default', 'desktop')
+    const newer = handle!.archiveSession('same-target', 'default', 'desktop')
+
+    second.resolve({ ok: true })
+    await newer
+    first.reject(new Error('older request failed'))
+    await older
+
+    expect($sessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(0)
+    expect($sessionProfileTotals.get()).toEqual({ default: 0 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('does not let a newer failed archive roll back an older success', async () => {
+    const session = storedSession({ id: 'same-target', message_count: 2, profile: 'default', source: 'desktop' })
+    const first = deferred<{ ok: boolean }>()
+    const second = deferred<{ ok: boolean }>()
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setSelectedStoredSessionId('other-session')
+    vi.mocked(setSessionArchived).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const older = handle!.archiveSession('same-target', 'default', 'desktop')
+    const newer = handle!.archiveSession('same-target', 'default', 'desktop')
+
+    first.resolve({ ok: true })
+    await older
+    second.reject(new Error('newer request failed'))
+    await newer
+
+    expect($sessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(0)
+    expect($sessionProfileTotals.get()).toEqual({ default: 0 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
+  })
+
+  it('shares concurrent archive ownership across lineage and source aliases', async () => {
+    const session = storedSession({
+      id: 'lineage-tip',
+      _lineage_root_id: 'lineage-root',
+      message_count: 2,
+      profile: 'default',
+      source: 'desktop'
+    })
+
+    const first = deferred<{ ok: boolean }>()
+    const second = deferred<{ ok: boolean }>()
+
+    setSessions([session])
+    setSessionsTotal(1)
+    setSessionProfileTotals({ default: 1 })
+    setSelectedStoredSessionId('other-session')
+    vi.mocked(setSessionArchived).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    let handle: ArchiveHandle | null = null
+    render(<ArchiveHarness onReady={value => (handle = value)} selectedStoredSessionId="other-session" />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const older = handle!.archiveSession('lineage-tip', 'default', 'desktop')
+    const newer = handle!.archiveSession('lineage-root', 'default')
+
+    second.resolve({ ok: true })
+    await newer
+    first.reject(new Error('older request failed'))
+    await older
+
+    expect($sessions.get()).toEqual([])
+    expect($sessionsTotal.get()).toBe(0)
+    expect($sessionProfileTotals.get()).toEqual({ default: 0 })
+    expect(canApplySessionListResponse(getSessionArchiveGeneration())).toBe(true)
   })
 })

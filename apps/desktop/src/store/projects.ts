@@ -11,7 +11,7 @@ import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -54,9 +54,43 @@ function projectsStaleBackendError(): Error {
 // the live `$sessions` cache exactly — same as the flat Recents list. Pruned on
 // refresh once the server snapshot has caught up.
 export const $removedSessionIds = atom<Set<string>>(new Set())
+const removedSessionIdsByProfile = new Map<string, Set<string>>()
 
-export function tombstoneSessions(ids: Array<null | string | undefined>): void {
-  const next = new Set($removedSessionIds.get())
+function removedSessionProfileKey(profile?: string): string {
+  return normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+}
+
+function setRemovedSessionIds(ids: Set<string>, profile?: string): void {
+  const key = removedSessionProfileKey(profile)
+
+  if (ids.size) {
+    removedSessionIdsByProfile.set(key, new Set(ids))
+  } else {
+    removedSessionIdsByProfile.delete(key)
+  }
+
+  if (key === removedSessionProfileKey()) {
+    $removedSessionIds.set(new Set(ids))
+  }
+}
+
+$removedSessionIds.listen(ids => {
+  const key = removedSessionProfileKey()
+
+  if (ids.size) {
+    removedSessionIdsByProfile.set(key, new Set(ids))
+  } else {
+    removedSessionIdsByProfile.delete(key)
+  }
+})
+
+$activeGatewayProfile.subscribe(profile => {
+  $removedSessionIds.set(new Set(removedSessionIdsByProfile.get(removedSessionProfileKey(profile)) ?? []))
+})
+
+export function tombstoneSessions(ids: Array<null | string | undefined>, profile?: string): void {
+  const key = removedSessionProfileKey(profile)
+  const next = new Set(removedSessionIdsByProfile.get(key) ?? [])
   const before = next.size
 
   for (const id of ids) {
@@ -68,12 +102,13 @@ export function tombstoneSessions(ids: Array<null | string | undefined>): void {
   }
 
   if (next.size !== before) {
-    $removedSessionIds.set(next)
+    setRemovedSessionIds(next, key)
   }
 }
 
-export function untombstoneSessions(ids: Array<null | string | undefined>): void {
-  const current = $removedSessionIds.get()
+export function untombstoneSessions(ids: Array<null | string | undefined>, profile?: string): void {
+  const key = removedSessionProfileKey(profile)
+  const current = removedSessionIdsByProfile.get(key) ?? new Set<string>()
 
   if (!current.size) {
     return
@@ -90,7 +125,7 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
   }
 
   if (next.size !== current.size) {
-    $removedSessionIds.set(next)
+    setRemovedSessionIds(next, key)
   }
 }
 
@@ -344,7 +379,7 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
       const pending = new Set([...tombstones].filter(id => scoped.has(id)))
 
       if (pending.size !== tombstones.size) {
-        $removedSessionIds.set(pending)
+        setRemovedSessionIds(pending)
       }
     }
 

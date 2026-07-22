@@ -3,10 +3,11 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { deleteSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
@@ -16,15 +17,22 @@ import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalize
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $activeSessionStoredIdRotation,
+  $cronSessions,
   $currentCwd,
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $messages,
+  $messagingPlatformTotals,
+  $messagingSessions,
   $newChatWorkspaceTarget,
+  $sessionProfileTotals,
   $sessions,
+  $sessionsTotal,
   $yoloActive,
+  beginSessionArchive,
+  endSessionArchive,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -32,6 +40,7 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentCwdTransient,
@@ -40,10 +49,13 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setMessagingPlatformTotals,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeExhaustedSessionId,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
+  setSessionProfileTotals,
   setSessions,
   setSessionStartedAt,
   setSessionsTotal,
@@ -52,6 +64,7 @@ import {
 } from '@/store/session'
 import {
   closeSessionTile,
+  discardSessionTileForProfile,
   dropSessionState,
   openSessionTile,
   patchSessionTile,
@@ -95,6 +108,7 @@ interface SessionActionsOptions {
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resetViewSync: () => void
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
+  runtimeProfileByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
@@ -114,6 +128,195 @@ interface SessionActionsOptions {
 // bounded retry rebinds it when the backend returns. Boot-into-a-stale-last-id
 // (NOT in this set) still legitimately drops to a draft.
 const createdThisRun = new Set<string>()
+
+function findSidebarSession(
+  storedSessionId: string,
+  profile?: string,
+  source?: null | string
+): SessionInfo | undefined {
+  const profileKey = profile ? normalizeProfileKey(profile) : null
+  const sourceKey = normalizeSessionSource(source)
+
+  const matches = (session: SessionInfo) =>
+    sessionMatchesStoredId(session, storedSessionId) &&
+    (!profileKey || normalizeProfileKey(session.profile) === profileKey) &&
+    (!sourceKey || normalizeSessionSource(session.source) === sourceKey)
+
+  return $sessions.get().find(matches) ?? $cronSessions.get().find(matches) ?? $messagingSessions.get().find(matches)
+}
+
+interface ArchiveMutationState {
+  aliasKeys: Set<string>
+  archived?: SessionInfo
+  cleanupApplied: boolean
+  pending: number
+  pinnedIds: Set<string>
+  profileKey: string
+  runtimeBindings: Map<string, string>
+  storedSessionId: string
+  succeeded: boolean
+}
+
+const archiveMutations = new Map<string, ArchiveMutationState>()
+const archiveMutationAliases = new Map<string, string>()
+
+function removeArchivedSessionFromSidebar(
+  session: SessionInfo | undefined,
+  storedSessionId: string,
+  profile?: string,
+  sourceHint?: null | string
+): void {
+  const profileKey = normalizeProfileKey(session?.profile ?? profile)
+  const source = normalizeSessionSource(session?.source ?? sourceHint)
+
+  const matches = (candidate: SessionInfo) =>
+    sessionMatchesStoredId(candidate, storedSessionId) &&
+    normalizeProfileKey(candidate.profile) === profileKey &&
+    (!source || normalizeSessionSource(candidate.source) === source)
+
+  if (source === 'cron') {
+    const previous = $cronSessions.get()
+
+    try {
+      setCronSessions(previous.filter(candidate => !matches(candidate)))
+    } catch (error) {
+      try {
+        setCronSessions(previous)
+      } catch {
+        // Preserve the original subscriber failure after best-effort rollback.
+      }
+
+      throw error
+    }
+
+    return
+  }
+
+  if (source && isMessagingSource(source)) {
+    const previousSessions = $messagingSessions.get()
+    const previousTotals = $messagingPlatformTotals.get()
+    const removed = previousSessions.some(matches)
+
+    try {
+      setMessagingSessions(previousSessions.filter(candidate => !matches(candidate)))
+
+      if (removed) {
+        setMessagingPlatformTotals(previous =>
+          typeof previous[source] === 'number' ? { ...previous, [source]: Math.max(0, previous[source] - 1) } : previous
+        )
+      }
+    } catch (error) {
+      try {
+        setMessagingSessions(previousSessions)
+      } catch {
+        // Preserve the original subscriber failure after best-effort rollback.
+      }
+
+      try {
+        setMessagingPlatformTotals(previousTotals)
+      } catch {
+        // Preserve the original subscriber failure after best-effort rollback.
+      }
+
+      throw error
+    }
+
+    return
+  }
+
+  const previousSessions = $sessions.get()
+  const previousTotal = $sessionsTotal.get()
+  const previousProfileTotals = $sessionProfileTotals.get()
+  const removed = previousSessions.some(matches)
+
+  try {
+    setSessions(previousSessions.filter(candidate => !matches(candidate)))
+
+    if (removed) {
+      setSessionsTotal(Math.max(0, previousTotal - 1))
+      const profileKey = normalizeProfileKey(session?.profile)
+
+      if (typeof previousProfileTotals[profileKey] === 'number') {
+        setSessionProfileTotals({
+          ...previousProfileTotals,
+          [profileKey]: Math.max(0, previousProfileTotals[profileKey] - 1)
+        })
+      }
+    }
+  } catch (error) {
+    for (const restore of [
+      () => setSessions(previousSessions),
+      () => setSessionsTotal(previousTotal),
+      () => setSessionProfileTotals(previousProfileTotals)
+    ]) {
+      try {
+        restore()
+      } catch {
+        // Preserve the original subscriber failure after best-effort rollback.
+      }
+    }
+
+    throw error
+  }
+}
+
+function applySidebarRestores(restores: Array<() => void>): void {
+  for (const restore of restores) {
+    try {
+      restore()
+    } catch {
+      // Nanostore writes commit before notifying subscribers; continue restoring sibling counters.
+    }
+  }
+}
+
+function restoreArchivedSessionToSidebar(session: SessionInfo, storedSessionId: string): void {
+  const matches = (candidate: SessionInfo) =>
+    sessionMatchesStoredId(candidate, storedSessionId) &&
+    normalizeProfileKey(candidate.profile) === normalizeProfileKey(session.profile) &&
+    normalizeSessionSource(candidate.source) === normalizeSessionSource(session.source)
+
+  const source = normalizeSessionSource(session.source)
+
+  if (source === 'cron') {
+    applySidebarRestores([
+      () => setCronSessions(previous => (previous.some(matches) ? previous : [session, ...previous]))
+    ])
+
+    return
+  }
+
+  if (source && isMessagingSource(source)) {
+    if (!$messagingSessions.get().some(matches)) {
+      applySidebarRestores([
+        () => setMessagingSessions(previous => [session, ...previous]),
+        () =>
+          setMessagingPlatformTotals(previous =>
+            typeof previous[source] === 'number' ? { ...previous, [source]: previous[source] + 1 } : previous
+          )
+      ])
+    }
+
+    return
+  }
+
+  if (!$sessions.get().some(matches)) {
+    const profileKey = normalizeProfileKey(session.profile)
+
+    const restores = [
+      () => setSessions(previous => [session, ...previous]),
+      () => setSessionsTotal(previous => previous + 1)
+    ]
+
+    if (typeof $sessionProfileTotals.get()[profileKey] === 'number') {
+      restores.push(() =>
+        setSessionProfileTotals(previous => ({ ...previous, [profileKey]: previous[profileKey] + 1 }))
+      )
+    }
+
+    applySidebarRestores(restores)
+  }
+}
 
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
@@ -199,6 +402,7 @@ export function useSessionActions({
   requestGateway,
   resetViewSync,
   runtimeIdByStoredSessionIdRef,
+  runtimeProfileByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
   sessionStateByRuntimeIdRef,
@@ -1262,60 +1466,228 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, profile?: string, source?: null | string) => {
       clearNotifications()
+      beginSessionArchive()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
-      const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
-
-      // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
-      // Archived sessions are hidden by the listSessions(min_messages=1) query
-      // on the next refresh, so they count as "removed" for the load-more
-      // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
-
-      if (wasSelected) {
-        startFreshSessionDraft(true)
-      }
+      let archiveKey: null | string = null
+      let mutation: ArchiveMutationState | null = null
 
       try {
-        await setSessionArchived(storedSessionId, true, archived?.profile)
-        // A sidebar refresh can race the optimistic removal while the PATCH is
-        // in flight and briefly reinsert the still-unarchived backend row. Win
-        // that race after the mutation succeeds so right-click → Archive does
-        // not appear to do nothing until the next full refresh.
-        setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
-        // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
+        const foundSession = findSidebarSession(storedSessionId, profile, source)
+        const targetProfileKey = normalizeProfileKey(foundSession?.profile ?? profile)
+        const requestedSourceKey = normalizeSessionSource(source) ?? ''
+        const resolvedSourceKey = normalizeSessionSource(foundSession?.source ?? source) ?? ''
+        const requestedKey = [targetProfileKey, requestedSourceKey, storedSessionId].join('\0')
+        const lineageId = foundSession?._lineage_root_id ?? foundSession?.id ?? storedSessionId
 
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
+        archiveKey =
+          archiveMutationAliases.get(requestedKey) ?? [targetProfileKey, resolvedSourceKey, lineageId].join('\0')
+
+        const existingMutation = archiveMutations.get(archiveKey)
+        const previousPinned = $pinnedSessionIds.get()
+        const foundPinId = foundSession ? sessionPinId(foundSession) : storedSessionId
+
+        mutation = existingMutation ?? {
+          aliasKeys: new Set<string>(),
+          archived: foundSession,
+          cleanupApplied: false,
+          pending: 0,
+          pinnedIds: new Set<string>(),
+          profileKey: targetProfileKey,
+          runtimeBindings: new Map<string, string>(),
+          storedSessionId,
+          succeeded: false
         }
 
-        notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
-      } catch (err) {
-        if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
-          setSessionsTotal(prev => prev + 1)
+        if (!existingMutation) {
+          archiveMutations.set(archiveKey, mutation)
+        } else if (!mutation.archived && foundSession) {
+          mutation.archived = foundSession
         }
 
-        untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
-        $pinnedSessionIds.set(previousPinned)
-        notifyError(err, copy.archiveFailed)
+        const aliasIds = [storedSessionId, foundSession?.id, foundSession?._lineage_root_id].filter(
+          (id): id is string => Boolean(id)
+        )
+
+        const aliasSources = new Set([requestedSourceKey, resolvedSourceKey, ''])
+
+        for (const aliasId of aliasIds) {
+          for (const aliasSource of aliasSources) {
+            const aliasKey = [targetProfileKey, aliasSource, aliasId].join('\0')
+
+            archiveMutationAliases.set(aliasKey, archiveKey)
+            mutation.aliasKeys.add(aliasKey)
+          }
+        }
+
+        mutation.pending += 1
+
+        for (const id of previousPinned) {
+          if (id === storedSessionId || id === foundPinId) {
+            mutation.pinnedIds.add(id)
+          }
+        }
+
+        const archived = mutation.archived ?? foundSession
+        const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
+        const activeProfileAtStart = normalizeProfileKey($activeGatewayProfile.get())
+
+        const storedIds = new Set(
+          [storedSessionId, archived?.id, archived?._lineage_root_id].filter((id): id is string => Boolean(id))
+        )
+
+        for (const id of storedIds) {
+          const runtimeProfile = runtimeProfileByStoredSessionIdRef?.current.get(id) ?? activeProfileAtStart
+
+          if (runtimeProfile !== targetProfileKey) {
+            continue
+          }
+
+          const runtimeId = runtimeIdByStoredSessionIdRef.current.get(id)
+
+          if (runtimeId) {
+            mutation.runtimeBindings.set(id, runtimeId)
+          }
+        }
+
+        const selectedAtStart = selectedStoredSessionIdRef.current
+        const routeTokenAtStart = getRouteToken()
+        const routedStoredSessionIdAtStart = getRoutedStoredSessionId()
+
+        const wasSelected =
+          activeProfileAtStart === targetProfileKey &&
+          selectedAtStart != null &&
+          (selectedAtStart === storedSessionId ||
+            (archived != null && sessionMatchesStoredId(archived, selectedAtStart)))
+
+        // Soft-hide: drop from the owning sidebar slice immediately, keep the data.
+        removeArchivedSessionFromSidebar(archived, storedSessionId, profile, source)
+        mutation.cleanupApplied = true
+        tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id], targetProfileKey)
+
+        if (activeProfileAtStart === targetProfileKey) {
+          $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+        }
+
+        try {
+          await setSessionArchived(storedSessionId, true, archived?.profile ?? profile)
+          mutation.succeeded = true
+
+          // A sidebar refresh can race the optimistic removal while the PATCH is
+          // in flight and briefly reinsert the still-unarchived backend row. Win
+          // that race after the mutation succeeds so right-click → Archive does
+          // not appear to do nothing until the next full refresh.
+          removeArchivedSessionFromSidebar(archived, storedSessionId, profile, source)
+
+          const stillOwnsActiveProfile = normalizeProfileKey($activeGatewayProfile.get()) === targetProfileKey
+
+          for (const id of storedIds) {
+            discardSessionTileForProfile(id, targetProfileKey)
+          }
+
+          for (const [id, runtimeId] of mutation.runtimeBindings) {
+            const bindingUnchanged =
+              runtimeIdByStoredSessionIdRef.current.get(id) === runtimeId &&
+              (!runtimeProfileByStoredSessionIdRef ||
+                runtimeProfileByStoredSessionIdRef.current.get(id) === targetProfileKey)
+
+            if (bindingUnchanged) {
+              runtimeIdByStoredSessionIdRef.current.delete(id)
+              runtimeProfileByStoredSessionIdRef?.current.delete(id)
+              sessionStateByRuntimeIdRef.current.delete(runtimeId)
+              dropSessionState(runtimeId)
+            }
+          }
+
+          if (stillOwnsActiveProfile) {
+            $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
+          }
+
+          const selectionUnchanged =
+            selectedStoredSessionIdRef.current === selectedAtStart &&
+            getRouteToken() === routeTokenAtStart &&
+            getRoutedStoredSessionId() === routedStoredSessionIdAtStart
+
+          if (stillOwnsActiveProfile && wasSelected && selectionUnchanged) {
+            startFreshSessionDraft(true)
+          }
+
+          notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
+        } catch (err) {
+          notifyError(err, copy.archiveFailed)
+        }
+      } finally {
+        try {
+          if (mutation && archiveKey) {
+            const settledMutation = mutation
+
+            settledMutation.pending -= 1
+
+            if (settledMutation.pending === 0) {
+              const archived = settledMutation.archived
+
+              const stillOwnsProfile =
+                archived != null &&
+                normalizeProfileKey($activeGatewayProfile.get()) === normalizeProfileKey(archived.profile)
+
+              const attemptRollback = (restore: () => void) => {
+                try {
+                  restore()
+                } catch {
+                  // Keep finalization moving so aliases and the response barrier are always released.
+                }
+              }
+
+              if (!settledMutation.succeeded && stillOwnsProfile) {
+                attemptRollback(() => restoreArchivedSessionToSidebar(archived, settledMutation.storedSessionId))
+              }
+
+              if (!settledMutation.succeeded && settledMutation.cleanupApplied) {
+                attemptRollback(() =>
+                  untombstoneSessions(
+                    [
+                      settledMutation.storedSessionId,
+                      settledMutation.archived?.id,
+                      settledMutation.archived?._lineage_root_id
+                    ],
+                    settledMutation.profileKey
+                  )
+                )
+                const currentPinned = $pinnedSessionIds.get()
+
+                attemptRollback(() =>
+                  $pinnedSessionIds.set([
+                    ...currentPinned,
+                    ...[...settledMutation.pinnedIds].filter(id => !currentPinned.includes(id))
+                  ])
+                )
+              }
+
+              for (const aliasKey of settledMutation.aliasKeys) {
+                if (archiveMutationAliases.get(aliasKey) === archiveKey) {
+                  archiveMutationAliases.delete(aliasKey)
+                }
+              }
+
+              archiveMutations.delete(archiveKey)
+            }
+          }
+        } finally {
+          endSessionArchive()
+        }
       }
     },
-    [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
+    [
+      copy,
+      getRouteToken,
+      getRoutedStoredSessionId,
+      runtimeIdByStoredSessionIdRef,
+      runtimeProfileByStoredSessionIdRef,
+      selectedStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
   )
 
   return {

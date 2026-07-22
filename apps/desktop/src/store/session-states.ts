@@ -601,6 +601,28 @@ export function discardSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 
+/** Evict an archived tile from its owning profile even when another profile is
+ * active. Persisted tiles are profile-scoped; the live atom only mirrors one. */
+export function discardSessionTileForProfile(storedSessionId: string, profile: string): void {
+  const key = normalizeProfileKey(profile)
+
+  if (key === profileKey()) {
+    discardSessionTile(storedSessionId)
+
+    return
+  }
+
+  const next = (tilesByProfile[key] ?? []).filter(tile => tile.storedSessionId !== storedSessionId)
+
+  if (next.length) {
+    tilesByProfile[key] = next
+  } else {
+    delete tilesByProfile[key]
+  }
+
+  persistTiles()
+}
+
 /** ⌘⇧T — reopen the most recently closed tab where it was. Skips ids that are
  *  live again (reopened, or now the primary). */
 export function reopenLastClosedTile(): void {

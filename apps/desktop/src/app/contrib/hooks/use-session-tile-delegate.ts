@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 
 import { getSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
+import { $activeGatewayProfile } from '@/store/profile'
 import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
@@ -12,7 +13,7 @@ import type { GatewayRequester } from '../types'
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 interface SessionTileDelegateParams {
-  archiveSession: (storedSessionId: string) => Promise<unknown>
+  archiveSession: (storedSessionId: string, profile?: string) => Promise<unknown>
   branchStoredSession: (storedSessionId: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
   removeSession: (storedSessionId: string) => Promise<unknown>
@@ -42,7 +43,7 @@ export function useSessionTileDelegate({
   useEffect(() => {
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {
-        await archiveSession(storedSessionId)
+        await archiveSession(storedSessionId, $activeGatewayProfile.get())
       },
       branchSession: async storedSessionId => {
         await branchStoredSession(storedSessionId)

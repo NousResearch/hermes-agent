@@ -10,6 +10,7 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $removedSessionIds,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
@@ -21,7 +22,9 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
-  scanAndRecordRepos
+  scanAndRecordRepos,
+  tombstoneSessions,
+  untombstoneSessions
 } from './projects'
 
 vi.mock('@/i18n', () => ({
@@ -102,6 +105,28 @@ describe('project scope', () => {
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+})
+
+describe('project session tombstones', () => {
+  it('keeps raw session ids isolated by profile', () => {
+    $activeGatewayProfile.set('default')
+    $removedSessionIds.set(new Set())
+    tombstoneSessions(['same-id'])
+
+    $activeGatewayProfile.set('work')
+    expect($removedSessionIds.get()).toEqual(new Set())
+    tombstoneSessions(['work-only'])
+
+    $activeGatewayProfile.set('default')
+    expect($removedSessionIds.get()).toEqual(new Set(['same-id']))
+    untombstoneSessions(['same-id'])
+
+    $activeGatewayProfile.set('work')
+    expect($removedSessionIds.get()).toEqual(new Set(['work-only']))
+    untombstoneSessions(['work-only'])
+
+    $activeGatewayProfile.set('default')
   })
 })
 

@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
@@ -7,6 +7,8 @@ import {
   $messagingSessions,
   $sessions,
   $sessionsLoading,
+  beginSessionArchive,
+  endSessionArchive,
   setCronSessions,
   setMessagingSessions,
   setSessions,
@@ -54,6 +56,16 @@ const sidebar = (
 
 const listSidebarSessions = vi.fn()
 const listAllProfileSessions = vi.fn()
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -163,6 +175,58 @@ describe('refreshSessions identity + loading hygiene', () => {
 })
 
 describe('refreshSessions batches slices into one request', () => {
+  it('does not publish a stale response that started before an archive', async () => {
+    const response = deferred<SidebarSessionsResponse>()
+    listSidebarSessions
+      .mockReturnValueOnce(response.promise)
+      .mockResolvedValueOnce(sidebar({ sessions: [], total: 0, profile_totals: { default: 0 } }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    await act(async () => {
+      beginSessionArchive()
+      endSessionArchive()
+      response.resolve(sidebar({ sessions: [row('archived-active')], total: 1, profile_totals: { default: 1 } }))
+      await refresh
+    })
+
+    await waitFor(() => expect(listSidebarSessions).toHaveBeenCalledTimes(2))
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not publish a sidebar response that settles during an archive', async () => {
+    listSidebarSessions
+      .mockResolvedValueOnce(
+        sidebar(
+          { sessions: [row('archived-active')], total: 1, profile_totals: { default: 1 } },
+          [row('archived-cron', { source: 'cron' })],
+          [row('archived-telegram', { source: 'telegram' })]
+        )
+      )
+      .mockResolvedValueOnce(sidebar({ sessions: [], total: 0, profile_totals: { default: 0 } }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    beginSessionArchive()
+
+    try {
+      await act(async () => {
+        await result.current.refreshSessions()
+      })
+
+      expect($sessions.get()).toEqual([])
+      expect($cronSessions.get()).toEqual([])
+      expect($messagingSessions.get()).toEqual([])
+    } finally {
+      await act(async () => {
+        endSessionArchive()
+      })
+    }
+
+    await waitFor(() => expect(listSidebarSessions).toHaveBeenCalledTimes(2))
+    expect($sessions.get()).toEqual([])
+  })
+
   it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
     const recents = [row('a'), row('b')]
     const cron = [row('c1', { source: 'cron', title: 'nightly' })]

@@ -47,7 +47,7 @@ export function __resetBackendSkinSync(): void {
  * change. Built-in names keep the desktop's own palette but can still be applied.
  */
 export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }: { apply: boolean }): void {
-  const name = (skin && typeof skin === 'object' ? skin.name ?? '' : '').trim()
+  const name = (skin && typeof skin === 'object' ? (skin.name ?? '') : '').trim()
 
   if (!name) {
     return

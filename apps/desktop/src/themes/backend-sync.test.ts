@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 
-const skin = (name: string) => ({ name, colors: { background: '#101020', ui_accent: '#ff33aa', banner_text: '#eeeeee' } })
+const skin = (name: string) => ({
+  name,
+  colors: { background: '#101020', ui_accent: '#ff33aa', banner_text: '#eeeeee' }
+})
 
 describe('ingestBackendSkin', () => {
   beforeEach(() => __resetBackendSkinSync())

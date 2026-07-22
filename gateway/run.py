@@ -1419,6 +1419,68 @@ from hermes_constants import get_hermes_home, get_hermes_home_override
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
+
+def _consume_clean_shutdown_marker() -> bool:
+    """Atomically consume one clean-shutdown marker generation.
+
+    Rename first so a cleanup failure cannot leave reusable evidence that
+    poisons a later startup after a genuinely interrupted shutdown.
+    """
+    marker = _hermes_home / ".clean_shutdown"
+    if not marker.exists():
+        return False
+    try:
+        if marker.stat().st_size != 0:
+            # Non-empty files are invalidation tombstones, never clean proof.
+            try:
+                marker.unlink()
+            except Exception:
+                pass
+            return False
+    except Exception as exc:
+        logger.warning("Failed to inspect .clean_shutdown marker: %s", exc)
+        return False
+    consumed = _hermes_home / ".clean_shutdown.consumed"
+    try:
+        os.replace(marker, consumed)
+    except FileNotFoundError:
+        return False
+    except Exception as exc:
+        logger.warning("Failed to consume .clean_shutdown marker: %s", exc)
+        # Never leave evidence that a later process could misattribute to its
+        # immediate predecessor. If atomic rename is unavailable, invalidate
+        # the marker in place before continuing as an unclean startup.
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as unlink_exc:
+            logger.error(
+                "Failed to invalidate unconsumed .clean_shutdown marker: %s",
+                unlink_exc,
+            )
+            try:
+                marker.write_text("invalid\n", encoding="utf-8")
+            except Exception as tombstone_exc:
+                logger.error(
+                    "Failed to tombstone .clean_shutdown marker: %s",
+                    tombstone_exc,
+                )
+        return False
+    try:
+        consumed.unlink()
+    except Exception as exc:
+        # The recognized marker name is already gone; leftover cleanup is
+        # harmless and the next os.replace() overwrites this path atomically.
+        logger.warning("Failed to remove consumed shutdown marker: %s", exc)
+    return True
+
+
+def _write_clean_shutdown_marker() -> None:
+    """Record a clean drain, replacing any stale invalidation tombstone."""
+    (_hermes_home / ".clean_shutdown").write_bytes(b"")
+
+
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # noqa: F401  # backward-compat for tests that monkeypatch this symbol
@@ -3238,6 +3300,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        # Session keys whose recovery markers must survive turn completion
+        # while gateway shutdown is draining or interrupting agents.
+        self._shutdown_resume_pending_keys: set[str] = set()
+        self._previous_shutdown_clean = False
         self._active_session_leases: Dict[str, Any] = {}
         # Per-SESSION_ID turn lease (#64934): serializes the
         # [load history → run → flush] region when two ROUTING KEYS resolve
@@ -7073,14 +7139,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_task = asyncio.create_task(_run_restart())
         return True
 
-    # Drain-timeout reasons set by _stop_impl() when a still-running turn is
-    # force-interrupted; "restart_interrupted" is set by
-    # SessionStore.suspend_recently_active() on crash recovery (no
-    # .clean_shutdown marker).  All three mean "the agent was mid-turn and
-    # we killed it" — eligible for startup auto-resume.
-    _AUTO_RESUME_REASONS = frozenset(
-        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
-    )
+    # Only exact per-session markers written by _stop_impl() may synthesize a
+    # startup turn. ``restart_interrupted`` is a heuristic assigned to recent
+    # sessions after an unclean exit; it is intentionally deferred until the
+    # user's next real message so idle chats can never fan out blank turns.
+    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout"})
+
+    async def _clear_resume_pending_after_success(self, session_key: str) -> None:
+        """Clear recovery state unless shutdown has reserved it for restart.
+
+        The reservation is installed before draining begins, closing the race
+        where a finishing turn could clear its exact marker while shutdown was
+        about to interrupt the still-registered agent.
+        """
+        if session_key in getattr(self, "_shutdown_resume_pending_keys", set()):
+            logger.debug(
+                "Preserving resume_pending for %s during gateway shutdown",
+                session_key,
+            )
+            return
+        try:
+            await self.async_session_store.clear_resume_pending(session_key)
+        except Exception as _e:
+            logger.debug(
+                "clear_resume_pending failed for %s: %s",
+                session_key,
+                _e,
+            )
 
     async def _run_startup_resume_event(
         self,
@@ -7165,8 +7250,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=(type(result), result, result.__traceback__),
                     )
         self._startup_restore_tasks = []
-        drained = await self._drain_startup_restore_queue()
-        self._startup_restore_in_progress = False
+        drained = 0
+        while True:
+            drained += await self._drain_startup_restore_queue()
+            # Keep the gate closed until the queue is observed empty after a
+            # drain. A message can be queued by the final awaited dispatch (or
+            # a test/platform wrapper) just before the drain coroutine returns;
+            # releasing the gate without re-checking would strand that event.
+            if not getattr(self, "_startup_restore_queue", None):
+                self._startup_restore_in_progress = False
+                break
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
 
@@ -7299,6 +7392,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent is already running are skipped regardless, so a session
         scheduled at startup is never resumed a second time.
         """
+        # A clean marker is authoritative: every conversational turn drained.
+        # Even if shutdown could not clear a stale exact flag from storage, do
+        # not synthesize it during this process lifetime.
+        if getattr(self, "_previous_shutdown_clean", False):
+            return 0
+
         window = _auto_continue_freshness_window()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
@@ -7733,13 +7832,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # process already drained active agents, so sessions aren't stuck.
         # This prevents unwanted auto-resets after `hermes update`,
         # `hermes gateway restart`, or `/restart`.
-        _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
+        self._previous_shutdown_clean = _consume_clean_shutdown_marker()
+        if self._previous_shutdown_clean:
             logger.info("Previous gateway exited cleanly — skipping session suspension")
-            try:
-                _clean_marker.unlink()
-            except Exception:
-                pass
         else:
             try:
                 suspended = await self.async_session_store.suspend_recently_active()
@@ -9143,6 +9238,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
             _pre_drain_keys: list[str] = []
+            self._shutdown_resume_pending_keys = {
+                _sk
+                for _sk, _agent in list(self._running_agents.items())
+                if _agent is not _AGENT_PENDING_SENTINEL
+            }
             for _sk, _agent in list(self._running_agents.items()):
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
@@ -9175,19 +9275,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._active_api_run_count(),
             )
 
+            # Any chat that finished during the drain window is not interrupted,
+            # even when unrelated cron/API work keeps the overall drain waiting
+            # until timeout. Clear its durable pre-drain recovery marker before
+            # classifying the work that actually remains.
+            for _sk in _pre_drain_keys:
+                if _sk not in self._running_agents:
+                    try:
+                        await self.async_session_store.clear_resume_pending(_sk)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending after drain failed for %s: %s",
+                            _sk, _e,
+                        )
+
             if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            await self.async_session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+                # Record the clean drain before slower teardown begins. Host
+                # shutdown can terminate the process while memory providers,
+                # adapters, or SQLite handles are still closing. Waiting until
+                # the end made the next boot mistake recently used idle chats
+                # for interrupted turns and fan out synthetic auto-resume
+                # messages even though there was no work left to recover.
+                try:
+                    _write_clean_shutdown_marker()
+                except Exception as _e:
+                    logger.warning("Failed to write .clean_shutdown marker: %s", _e)
 
             if timed_out:
                 logger.warning(
@@ -9223,16 +9335,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
+                _resume_mark_failed = False
+                _interrupted_agents = [
+                    (_sk, _agent)
+                    for _sk, _agent in list(self._running_agents.items())
+                    if _agent is not _AGENT_PENDING_SENTINEL
+                ]
+                self._shutdown_resume_pending_keys.update(
+                    _sk for _sk, _agent in _interrupted_agents
+                )
+                for _sk, _agent in _interrupted_agents:
                     try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
+                        _marked = await self.async_session_store.mark_resume_pending(
+                            _sk, _resume_reason
+                        )
+                        if not _marked:
+                            _resume_mark_failed = True
                     except Exception as _e:
+                        _resume_mark_failed = True
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
+
+                # Every interrupted chat is now represented by an exact
+                # resume_pending marker. Record that broad crash inference is
+                # unnecessary before post-drain teardown: otherwise a timeout
+                # caused only by cron/API work marks unrelated recent chats as
+                # interrupted on the next boot. If an exact marker failed,
+                # retain the missing marker as the conservative fallback.
+                if not _resume_mark_failed and not _interrupted_agents:
+                    try:
+                        _write_clean_shutdown_marker()
+                    except Exception as _e:
+                        logger.warning("Failed to write .clean_shutdown marker: %s", _e)
+                elif _resume_mark_failed:
+                    logger.info(
+                        "Skipping .clean_shutdown marker — at least one "
+                        "interrupted session could not be marked for exact resume."
+                    )
+                else:
+                    logger.info(
+                        "Skipping .clean_shutdown marker — interrupted sessions "
+                        "were marked for exact resume."
+                    )
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
@@ -9378,26 +9524,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
             release_gateway_runtime_lock()
-
-            # Write a clean-shutdown marker so the next startup knows this
-            # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits.  However, if the drain timed out and
-            # agents were force-interrupted, their sessions may be in an
-            # incomplete state (trailing tool response, no final assistant
-            # message).  Skip the marker in that case so the next startup
-            # suspends those sessions — giving users a clean slate instead
-            # of resuming a half-finished tool loop.
-            if not timed_out:
-                try:
-                    (_hermes_home / ".clean_shutdown").touch()
-                except Exception:
-                    pass
-            else:
-                logger.info(
-                    "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
-                )
 
             # Track sessions that were active at shutdown for stuck-loop
             # detection (#7536).  On each restart, the counter increments
@@ -13384,13 +13510,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 self._clear_restart_failure_count(session_key)
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
+                await self._clear_resume_pending_after_success(session_key)
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.

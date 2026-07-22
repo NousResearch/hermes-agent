@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import time
 import zipfile
@@ -1815,6 +1816,43 @@ class TestQuickSnapshot:
         quarantines = list(root.glob(f".{snap_id}.hermes-delete-*"))
         assert len(quarantines) == 1
         assert (quarantines[0] / "config.yaml").exists()
+
+    def test_prune_preserves_directory_replaced_after_owner_validation(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        root = hermes_home / "state-snapshots"
+        snapshot = root / snap_id
+        displaced = root / f"{snap_id}-agent-original"
+        original_remove = backup_mod._remove_owned_snapshot_dir
+        injected = False
+
+        def replace_then_remove(path, expected, **kwargs):
+            nonlocal injected
+            if Path(path) == snapshot and not injected:
+                injected = True
+                backup_mod.os.replace(snapshot, displaced)
+                snapshot.mkdir()
+                shutil.copy2(
+                    displaced / backup_mod._QUICK_OWNERSHIP_MARKER,
+                    snapshot / backup_mod._QUICK_OWNERSHIP_MARKER,
+                )
+                (snapshot / "human.txt").write_text("keep")
+            return original_remove(path, expected, **kwargs)
+
+        monkeypatch.setattr(
+            backup_mod, "_remove_owned_snapshot_dir", replace_then_remove
+        )
+
+        assert backup_mod.prune_quick_snapshots(
+            keep=0, hermes_home=hermes_home
+        ) == 0
+        quarantines = list(root.glob(f".{snap_id}.hermes-delete-*"))
+        assert len(quarantines) == 1
+        assert (quarantines[0] / "human.txt").read_text() == "keep"
+        assert (displaced / "config.yaml").exists()
 
     def test_snapshot_includes_pairing_directories(self, hermes_home):
         """Pairing JSONs live outside state.db — snapshot must capture them

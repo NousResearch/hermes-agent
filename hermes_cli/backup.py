@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
@@ -935,6 +936,10 @@ def _remove_owned_snapshot_dir(
             not os.path.samestat(marker_identity, moved_marker.lstat())
             or json.loads(moved_marker.read_text(encoding="utf-8"))
             != marker_payload
+            or (
+                marker_name == _QUICK_OWNERSHIP_MARKER
+                and os.path.lexists(quarantine / _QUICK_IN_PROGRESS_MARKER)
+            )
         ):
             return False
         shutil.rmtree(quarantine)
@@ -952,19 +957,40 @@ def _snapshot_path_is_link_like(path: Path) -> bool:
         return True
 
 
-def _quick_snapshot_marker_payload(
+def _quick_snapshot_marker_evidence(
     snapshot_dir: Path, marker_name: str
-) -> Optional[Dict[str, Any]]:
+) -> Optional[tuple[Dict[str, Any], os.stat_result, os.stat_result]]:
     marker = snapshot_dir / marker_name
+    fd: Optional[int] = None
     try:
+        directory_stat = snapshot_dir.lstat()
+        marker_stat = marker.lstat()
+        directory_reparse = int(
+            getattr(directory_stat, "st_file_attributes", 0)
+        ) & 0x400
+        marker_reparse = int(getattr(marker_stat, "st_file_attributes", 0)) & 0x400
         if (
-            _snapshot_path_is_link_like(snapshot_dir)
-            or not snapshot_dir.is_dir()
-            or _snapshot_path_is_link_like(marker)
-            or not marker.is_file()
+            directory_reparse
+            or marker_reparse
+            or not stat.S_ISDIR(directory_stat.st_mode)
+            or not stat.S_ISREG(marker_stat.st_mode)
         ):
             return None
-        payload = json.loads(marker.read_text(encoding="utf-8"))
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(marker, flags)
+        opened_marker_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened_marker_stat.st_mode)
+            or not os.path.samestat(marker_stat, opened_marker_stat)
+        ):
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8") as marker_file:
+            fd = None
+            payload = json.load(marker_file)
         token = payload.get("owner_token") if isinstance(payload, dict) else None
         if (
             not isinstance(payload, dict)
@@ -976,9 +1002,24 @@ def _quick_snapshot_marker_payload(
             or any(char not in "0123456789abcdef" for char in token)
         ):
             return None
-        return payload
+        if (
+            not os.path.samestat(directory_stat, snapshot_dir.lstat())
+            or not os.path.samestat(marker_stat, marker.lstat())
+        ):
+            return None
+        return payload, directory_stat, marker_stat
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _quick_snapshot_marker_payload(
+    snapshot_dir: Path, marker_name: str
+) -> Optional[Dict[str, Any]]:
+    evidence = _quick_snapshot_marker_evidence(snapshot_dir, marker_name)
+    return evidence[0] if evidence is not None else None
 
 
 def _snapshot_process_is_running(pid: int) -> bool:
@@ -1426,48 +1467,48 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     deleted = 0
     now = time.time()
     for candidate in root.iterdir():
-        marker = candidate / _QUICK_IN_PROGRESS_MARKER
         try:
-            if (
-                now - marker.stat().st_mtime <= _QUICK_IN_PROGRESS_MAX_AGE_SECONDS
-            ):
-                continue
-            payload = _quick_snapshot_marker_payload(
+            evidence = _quick_snapshot_marker_evidence(
                 candidate, _QUICK_IN_PROGRESS_MARKER
             )
-            if payload is None or _snapshot_process_is_running(payload["pid"]):
+            if evidence is None:
+                continue
+            payload, directory_stat, marker_stat = evidence
+            if (
+                now - marker_stat.st_mtime <= _QUICK_IN_PROGRESS_MAX_AGE_SECONDS
+                or _snapshot_process_is_running(payload["pid"])
+            ):
                 continue
             if _remove_owned_snapshot_dir(
                 candidate,
-                candidate.lstat(),
+                directory_stat,
                 marker_name=_QUICK_IN_PROGRESS_MARKER,
-                marker_identity=marker.lstat(),
+                marker_identity=marker_stat,
                 marker_payload=payload,
             ):
                 deleted += 1
         except (OSError, ValueError, json.JSONDecodeError):
             continue
 
-    dirs = sorted(
-        (
-            d for d in root.iterdir()
-            if _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER)
-            is not None
-            and not (d / _QUICK_IN_PROGRESS_MARKER).exists()
-        ),
-        key=lambda d: d.name,
-        reverse=True,
-    )
+    dirs = []
+    for candidate in root.iterdir():
+        evidence = _quick_snapshot_marker_evidence(
+            candidate, _QUICK_OWNERSHIP_MARKER
+        )
+        if evidence is not None and not os.path.lexists(
+            candidate / _QUICK_IN_PROGRESS_MARKER
+        ):
+            dirs.append((candidate, evidence))
+    dirs.sort(key=lambda item: item[0].name, reverse=True)
 
-    for d in dirs[keep:]:
+    for d, evidence in dirs[keep:]:
         try:
-            marker = d / _QUICK_OWNERSHIP_MARKER
-            payload = _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER)
-            if payload is not None and _remove_owned_snapshot_dir(
+            payload, directory_stat, marker_stat = evidence
+            if _remove_owned_snapshot_dir(
                 d,
-                d.lstat(),
+                directory_stat,
                 marker_name=_QUICK_OWNERSHIP_MARKER,
-                marker_identity=marker.lstat(),
+                marker_identity=marker_stat,
                 marker_payload=payload,
             ):
                 deleted += 1

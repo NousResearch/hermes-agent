@@ -11,6 +11,7 @@ pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
+import gateway.restart as gateway_restart
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -626,7 +627,7 @@ class TestGatewayStopCleanup:
 class TestLaunchdServiceRecovery:
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
-        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
+        monkeypatch.setattr(gateway_restart, "read_raw_config", lambda: {})
 
         assert (
             gateway_cli._get_restart_drain_timeout()
@@ -634,7 +635,7 @@ class TestLaunchdServiceRecovery:
         )
 
         monkeypatch.setattr(
-            gateway_cli,
+            gateway_restart,
             "read_raw_config",
             lambda: {"agent": {"restart_drain_timeout": 14}},
         )

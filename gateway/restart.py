@@ -3,7 +3,9 @@
 import os
 from collections.abc import Mapping
 
-from hermes_cli.config import DEFAULT_CONFIG
+import os
+
+from hermes_cli.config import DEFAULT_CONFIG, read_raw_config
 
 # EX_TEMPFAIL from sysexits.h — used to ask the service manager to restart
 # the gateway after a graceful drain/reload path completes.
@@ -47,8 +49,21 @@ def is_gateway_supervisor_process(
 
 def parse_restart_drain_timeout(raw: object) -> float:
     """Parse a configured drain timeout, falling back to the shared default."""
+    text = str(raw).strip() if raw is not None else ""
     try:
-        value = float(raw) if str(raw or "").strip() else DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        value = float(text) if text else DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     except (TypeError, ValueError):
         return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     return max(0.0, value)
+
+
+def resolve_restart_drain_timeout(raw_config: object = None) -> float:
+    """Resolve the drain timeout using env, raw config, then the default."""
+    raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
+    if not raw:
+        cfg = read_raw_config() if raw_config is None else raw_config
+        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+        raw = agent_cfg.get(
+            "restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        )
+    return parse_restart_drain_timeout(raw)

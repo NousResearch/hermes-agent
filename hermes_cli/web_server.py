@@ -163,13 +163,6 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     provider.start(stop_event, interval=interval)
 
 
-def _warm_gateway_module() -> None:
-    try:
-        import hermes_cli.gateway  # noqa: F401
-    except Exception:
-        pass
-
-
 def _resolve_restart_drain_timeout() -> float:
     try:
         from hermes_cli.gateway import _get_restart_drain_timeout
@@ -189,14 +182,6 @@ async def _lifespan(app: "FastAPI"):
     # On app.state (not a module global) so the Lock binds to the running
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
-
-    # Fire hermes_cli.gateway import into a background thread so the event
-    # loop is not blocked and HERMES_DASHBOARD_READY fires without delay.
-    # On a cold Windows install the module chain triggers .pyc compilation
-    # and Defender real-time scans that can stall the event loop for 15-30s.
-    # Running in an executor means the cost is paid in a worker thread while
-    # the server socket is already open and accepting probes.
-    asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -2983,6 +2968,15 @@ async def get_ssh_ownership(request: Request):
     return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
+@app.get("/api/healthz")
+async def get_healthz():
+    """Return process readiness without loading config or runtime state."""
+    return JSONResponse(
+        content={"ok": True, "status": "ready", "version": __version__},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -3110,12 +3104,8 @@ async def get_status(profile: Optional[str] = None):
             gateway_state=gateway_state,
         )
         # Resolved drain timeout (seconds) so NAS can size its poll deadline
-        # without out-of-band knowledge.  Offload to a thread: on a cold
-        # Windows install the first import of hermes_cli.gateway blocks the
-        # asyncio event loop for 15-30s (.pyc compilation + Defender scans),
-        # exceeding the desktop handshake's 15s socket timeout.  After the
-        # first call the module is in sys.modules and run_in_executor returns
-        # in microseconds.
+        # without out-of-band knowledge. Keep the raw config read off the event
+        # loop while sharing the same env > config > default resolver as the CLI.
         restart_drain_timeout = await asyncio.get_running_loop().run_in_executor(
             None, _resolve_restart_drain_timeout
         )

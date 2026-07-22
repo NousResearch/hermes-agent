@@ -268,6 +268,43 @@ def store(tmp_path, monkeypatch):
     return s
 
 
+class TestMemoryStoreInit:
+    """Tests for MemoryStore.__init__ parameter validation."""
+
+    def test_default_limits_work(self):
+        """Default constructor should succeed with positive limits."""
+        s = MemoryStore()
+        assert s.memory_char_limit == 2200
+        assert s.user_char_limit == 1375
+
+    def test_zero_limits_accepted(self):
+        """Zero limits should be accepted (no-op memory store)."""
+        s = MemoryStore(memory_char_limit=0, user_char_limit=0)
+        assert s.memory_char_limit == 0
+        assert s.user_char_limit == 0
+
+    def test_positive_limits_accepted(self):
+        """Positive limits should be accepted."""
+        s = MemoryStore(memory_char_limit=100, user_char_limit=50)
+        assert s.memory_char_limit == 100
+        assert s.user_char_limit == 50
+
+    def test_negative_memory_char_limit_raises(self):
+        """Negative memory_char_limit should raise ValueError."""
+        with pytest.raises(ValueError, match="memory_char_limit must be >= 0"):
+            MemoryStore(memory_char_limit=-1)
+
+    def test_negative_user_char_limit_raises(self):
+        """Negative user_char_limit should raise ValueError."""
+        with pytest.raises(ValueError, match="user_char_limit must be >= 0"):
+            MemoryStore(user_char_limit=-5)
+
+    def test_both_negative_raises(self):
+        """Both negative limits should raise for the first one checked."""
+        with pytest.raises(ValueError, match="memory_char_limit must be >= 0"):
+            MemoryStore(memory_char_limit=-100, user_char_limit=-50)
+
+
 class TestMemoryStoreAdd:
     def test_add_entry(self, store):
         result = store.add("memory", "Python 3.12 project")

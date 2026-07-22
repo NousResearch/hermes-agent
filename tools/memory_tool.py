@@ -138,6 +138,10 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+        if memory_char_limit < 0:
+            raise ValueError(f"memory_char_limit must be >= 0, got {memory_char_limit}")
+        if user_char_limit < 0:
+            raise ValueError(f"user_char_limit must be >= 0, got {user_char_limit}")
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit

@@ -42,6 +42,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Maximum recursion depth for recursive sanitizers (_sanitize_node,
+# strip_nullable_unions, _strip_ref_siblings).  Circular / deeply-nested
+# schemas (e.g. recursive $defs, self-referencing anyOf branches) can
+# trigger a RecursionError without a guard.  50 levels is far deeper than
+# any real-world tool schema; hitting it means something pathological is
+# in the tree, so we bail out gracefully.
+_DEFAULT_MAX_DEPTH = 50
+
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
     """Return a copy of ``tools`` with each tool's parameter schema sanitized.
@@ -104,7 +112,12 @@ def _sanitize_single_tool(tool: dict) -> dict:
 _REF_FORBIDDEN_SIBLINGS = frozenset({"default"})
 
 
-def _strip_ref_siblings(node: Any) -> Any:
+def _strip_ref_siblings(
+    node: Any,
+    _depth: int = 0,
+    _max_depth: int = _DEFAULT_MAX_DEPTH,
+    _visited: set[int] | None = None,
+) -> Any:
     """Drop forbidden sibling keywords from nodes that carry ``$ref``.
 
     Fireworks (and other draft-07-strict backends) fail tool requests with::
@@ -115,12 +128,26 @@ def _strip_ref_siblings(node: Any) -> Any:
     Nullable-union collapse and MCP ingestion can leave ``default`` on a
     ``$ref`` node; strip it recursively.
     """
+    if _visited is None:
+        _visited = set()
+
+    # ── depth guard ──────────────────────────────────────────────────
+    if _depth > _max_depth:
+        return node
+
+    # ── cycle guard (dict / list nodes) ──────────────────────────────
+    if isinstance(node, (dict, list)):
+        node_id = id(node)
+        if node_id in _visited:
+            return node
+        _visited.add(node_id)
+
     if isinstance(node, list):
-        return [_strip_ref_siblings(item) for item in node]
+        return [_strip_ref_siblings(item, _depth + 1, _max_depth, _visited) for item in node]
     if not isinstance(node, dict):
         return node
 
-    out = {key: _strip_ref_siblings(value) for key, value in node.items()}
+    out = {key: _strip_ref_siblings(value, _depth + 1, _max_depth, _visited) for key, value in node.items()}
     if "$ref" in out:
         for key in _REF_FORBIDDEN_SIBLINGS:
             if key in out:
@@ -167,6 +194,9 @@ def strip_nullable_unions(
     schema: Any,
     *,
     keep_nullable_hint: bool = True,
+    _depth: int = 0,
+    _max_depth: int = _DEFAULT_MAX_DEPTH,
+    _visited: set[int] | None = None,
 ) -> Any:
     """Collapse ``anyOf`` / ``oneOf`` nullable unions to the non-null branch.
 
@@ -194,13 +224,27 @@ def strip_nullable_unions(
         The schema with nullable unions collapsed. Non-union nodes are
         returned unchanged.
     """
+    if _visited is None:
+        _visited = set()
+
+    # ── depth guard ──────────────────────────────────────────────────
+    if _depth > _max_depth:
+        return schema
+
+    # ── cycle guard (dict / list nodes) ──────────────────────────────
+    if isinstance(schema, (dict, list)):
+        node_id = id(schema)
+        if node_id in _visited:
+            return schema
+        _visited.add(node_id)
+
     if isinstance(schema, list):
-        return [strip_nullable_unions(item, keep_nullable_hint=keep_nullable_hint) for item in schema]
+        return [strip_nullable_unions(item, keep_nullable_hint=keep_nullable_hint, _depth=_depth + 1, _max_depth=_max_depth, _visited=_visited) for item in schema]
     if not isinstance(schema, dict):
         return schema
 
     stripped = {
-        k: strip_nullable_unions(v, keep_nullable_hint=keep_nullable_hint)
+        k: strip_nullable_unions(v, keep_nullable_hint=keep_nullable_hint, _depth=_depth + 1, _max_depth=_max_depth, _visited=_visited)
         for k, v in schema.items()
     }
     for key in ("anyOf", "oneOf"):
@@ -224,11 +268,17 @@ def strip_nullable_unions(
                     if meta_key == "default" and "$ref" in replacement:
                         continue
                     replacement[meta_key] = stripped[meta_key]
-            return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint)
+            return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint, _depth=_depth + 1, _max_depth=_max_depth, _visited=_visited)
     return stripped
 
 
-def _sanitize_node(node: Any, path: str) -> Any:
+def _sanitize_node(
+    node: Any,
+    path: str,
+    depth: int = 0,
+    max_depth: int = _DEFAULT_MAX_DEPTH,
+    visited: set[int] | None = None,
+) -> Any:
     """Recursively sanitize a JSON-Schema fragment.
 
     - Replaces bare-string schema values ("object", "string", ...) with
@@ -240,7 +290,35 @@ def _sanitize_node(node: Any, path: str) -> Any:
       branch is dropped (ported from anomalyco/opencode#31877).
     - Recurses into ``properties``, ``items``, ``additionalProperties``,
       ``anyOf``, ``oneOf``, ``allOf``, and ``$defs`` / ``definitions``.
+
+    **Cycle / depth safety**: accepts ``depth``, ``max_depth``, and
+    ``visited`` so callers can guard against circular references and
+    deeply-nested schemas that would otherwise cause a ``RecursionError``.
     """
+    if visited is None:
+        visited = set()
+
+    # ── depth guard ──────────────────────────────────────────────────
+    if depth > max_depth:
+        logger.warning(
+            "schema_sanitizer[%s]: max depth %d exceeded at %r — "
+            "returning node unmodified to avoid RecursionError",
+            path, max_depth, type(node).__name__,
+        )
+        return node
+
+    # ── cycle guard (dict / list nodes) ──────────────────────────────
+    if isinstance(node, (dict, list)):
+        node_id = id(node)
+        if node_id in visited:
+            logger.warning(
+                "schema_sanitizer[%s]: cycle detected at %r — "
+                "returning node unmodified to avoid RecursionError",
+                path, type(node).__name__,
+            )
+            return node
+        visited.add(node_id)
+
     # Malformed: the schema position holds a bare string like "object".
     if isinstance(node, str):
         if node in {"object", "string", "number", "integer", "boolean", "array", "null"}:
@@ -263,7 +341,10 @@ def _sanitize_node(node: Any, path: str) -> Any:
         return {"type": "object", "properties": {}}
 
     if isinstance(node, list):
-        return [_sanitize_node(item, f"{path}[{i}]") for i, item in enumerate(node)]
+        return [
+            _sanitize_node(item, f"{path}[{i}]", depth + 1, max_depth, visited)
+            for i, item in enumerate(node)
+        ]
 
     if not isinstance(node, dict):
         return node
@@ -307,7 +388,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
             out[key] = {
-                sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}")
+                sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}", depth + 1, max_depth, visited)
                 for sub_k, sub_v in value.items()
             }
         elif key in {"items", "additionalProperties"}:
@@ -317,10 +398,10 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 # but we preserve rather than drop.
                 out[key] = value
             else:
-                out[key] = _sanitize_node(value, f"{path}.{key}")
+                out[key] = _sanitize_node(value, f"{path}.{key}", depth + 1, max_depth, visited)
         elif key in {"anyOf", "oneOf", "allOf"} and isinstance(value, list):
             out[key] = [
-                _sanitize_node(item, f"{path}.{key}[{i}]")
+                _sanitize_node(item, f"{path}.{key}[{i}]", depth + 1, max_depth, visited)
                 for i, item in enumerate(value)
             ]
         elif key in {"required", "enum", "examples"}:
@@ -333,7 +414,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             # them with {"type": "object"} dicts. Pass through unchanged.
             out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
-            out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+            out[key] = _sanitize_node(value, f"{path}.{key}", depth + 1, max_depth, visited) if isinstance(value, (dict, list)) else value
 
     # Object nodes without properties: inject empty properties dict.
     # llama.cpp's grammar generator can't constrain a free-form object.

@@ -759,3 +759,132 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cycle / depth safety — guards against RecursionError on pathological
+# schemas with circular references or extreme nesting.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_circular_self_referencing_property_does_not_recurse():
+    """A schema node that contains itself as a property value should not
+    cause RecursionError — the cycle guard returns the node unmodified."""
+    schema: dict = {"type": "object", "properties": {"child": None}}
+    schema["properties"]["child"] = schema  # circular reference
+
+    tools = [_tool("t", schema)]
+    # Must not raise RecursionError.
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert "properties" in params
+
+
+def test_circular_self_referencing_anyof_does_not_recurse():
+    """An anyOf branch that references the parent node should not blow up."""
+    inner: dict = {"type": "object", "properties": {}}
+    # Create anyOf where one branch is the parent itself.
+    inner["anyOf"] = [{"type": "string"}, inner]
+
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"x": inner},
+    })]
+    # Must not raise RecursionError.
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["x"]
+    assert "anyOf" in prop
+
+
+def test_deeply_nested_schema_respects_max_depth():
+    """A schema nested beyond the default max depth (50) should be returned
+    unmodified at the cutoff rather than blowing the stack."""
+    # Build: {"a": {"a": {"a": ...}}} 60 levels deep.
+    root: dict = {"a": None}
+    current = root
+    for _ in range(60):
+        current["a"] = {"a": None}
+        current = current["a"]
+
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"deep": root},
+    })]
+    # Must not raise RecursionError.  Nodes beyond depth 50 should be
+    # returned unmodified (still dicts), not replaced.
+    out = sanitize_tool_schemas(tools)
+    deep = out[0]["function"]["parameters"]["properties"]["deep"]
+    assert isinstance(deep, dict)
+    assert "a" in deep
+
+
+def test_reasonable_depth_schema_still_sanitized():
+    """A moderately-nested schema (well under max_depth=50) should be fully
+    sanitized, proving the depth guard doesn't interfere with normal use."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "l1": {
+                "type": "object",
+                "properties": {
+                    "l2": {
+                        "type": "object",  # bare object — should get properties: {}
+                    },
+                },
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    l1 = out[0]["function"]["parameters"]["properties"]["l1"]
+    l2 = l1["properties"]["l2"]
+    assert l2["type"] == "object"
+    assert l2["properties"] == {}
+
+
+def test_circular_ref_in_defs_does_not_recurse():
+    """A $defs entry that references itself via a property should not
+    cause RecursionError."""
+    defs: dict = {
+        "Recursive": {
+            "type": "object",
+            "properties": {"child": None},
+        },
+    }
+    defs["Recursive"]["properties"]["child"] = defs["Recursive"]  # cycle
+
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"node": {"$ref": "#/$defs/Recursive"}},
+        "$defs": defs,
+    })]
+    out = sanitize_tool_schemas(tools)
+    # Should complete without RecursionError
+    params = out[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert "$defs" in params
+
+
+def test_schema_with_normal_refs_still_works():
+    """Achema with $ref (non-circular) should still be sanitised normally."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"$ref": "#/$defs/Payload"},
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    # Original test already covers this — just making sure cycles guard
+    # doesn't interfere with normal $ref usage.
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload["$ref"] == "#/$defs/Payload"
+    assert out[0]["function"]["parameters"]["$defs"]["Payload"] == {
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
+    }

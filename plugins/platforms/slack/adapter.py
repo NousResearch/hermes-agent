@@ -3532,6 +3532,22 @@ class SlackAdapter(BasePlatformAdapter):
             fallback_event["thread_ts"] = thread_ts
         await self._handle_slack_message(fallback_event)
 
+    def _register_mentioned_thread(self, thread_ts: str) -> None:
+        """Record a thread as bot-mentioned so future replies auto-trigger.
+
+        Centralizes the bounded-set eviction previously inlined at the
+        mention branch of _handle_slack_message.
+        """
+        if not thread_ts:
+            return
+        self._mentioned_threads.add(thread_ts)
+        if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
+            to_remove = list(self._mentioned_threads)[
+                : self._MENTIONED_THREADS_MAX // 2
+            ]
+            for t in to_remove:
+                self._mentioned_threads.discard(t)
+
     async def _bot_authored_thread_root(
         self, channel_id: str, thread_ts: str, team_id: str = ""
     ) -> bool:
@@ -3627,6 +3643,25 @@ class SlackAdapter(BasePlatformAdapter):
             team_id=team_id,
         ):
             return True
+        # 5th check (#24848): the thread PARENT @-mentioned the bot, but the
+        # mention event predates this process (restart) or the parent asked
+        # the bot to wait for a follow-up (e.g. "check this and ask me before
+        # running"). A plain reply like "run" in that thread is addressed to
+        # the bot even though the reply itself carries no mention.
+        if is_thread_reply:
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            if bot_uid:
+                parent_text = await self._fetch_thread_parent_text(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    team_id=team_id,
+                    strip_bot_mention=False,
+                )
+                if f"<@{bot_uid}>" in parent_text:
+                    # Remember the thread so later replies skip the fetch.
+                    if not self._slack_strict_mention():
+                        self._register_mentioned_thread(event_thread_ts)
+                    return True
         return False
 
     async def _handle_slack_message(
@@ -3918,14 +3953,13 @@ class SlackAdapter(BasePlatformAdapter):
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
             # defeat the feature (and re-enable agent-to-agent ack loops).
-            if event_thread_ts and not self._slack_strict_mention():
-                self._mentioned_threads.add(event_thread_ts)
-                if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
-                    to_remove = list(self._mentioned_threads)[
-                        : self._MENTIONED_THREADS_MAX // 2
-                    ]
-                    for t in to_remove:
-                        self._mentioned_threads.discard(t)
+            #
+            # Use the session-scoped ``thread_ts`` (which falls back to the
+            # message ts for top-level mentions) rather than the raw event
+            # thread_ts: a top-level @mention STARTS a thread, and replies to
+            # it must auto-trigger the bot too (#24848).
+            if thread_ts and not self._slack_strict_mention():
+                self._register_mentioned_thread(thread_ts)
 
         # Thread context rules:
         # - First message in a thread session (cold start): hydrate full
@@ -5490,8 +5524,13 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id: str,
         thread_ts: str,
         team_id: str = "",
+        strip_bot_mention: bool = True,
     ) -> str:
-        """Return the raw text of the thread parent message (for reply_to_text).
+        """Return the text of the thread parent message.
+
+        Used for reply_to_text injection (mention stripped) and for the
+        parent-mentioned-bot wake check (#24848 — pass
+        ``strip_bot_mention=False`` so the ``<@bot>`` token is preserved).
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
@@ -5504,7 +5543,14 @@ class SlackAdapter(BasePlatformAdapter):
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
-            return cached.parent_text
+            if strip_bot_mention:
+                return cached.parent_text
+            # The cached parent_text has the bot mention stripped; recover
+            # the raw text from the cached message payloads when available.
+            for msg in cached.messages:
+                if msg.get("ts", "") == thread_ts:
+                    return (msg.get("text") or "").strip()
+            # No raw payloads cached (legacy entry) — fall through to fetch.
 
         try:
             client = self._get_client(channel_id, team_id=team_id)
@@ -5522,6 +5568,8 @@ class SlackAdapter(BasePlatformAdapter):
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = self._render_message_text(parent, bot_uid=bot_uid or "")
+            if strip_bot_mention and bot_uid:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)

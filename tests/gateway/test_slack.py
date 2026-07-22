@@ -3521,6 +3521,90 @@ class TestThreadReplyHandling:
         assert msg_event.text == "Follow-up question"
 
     @pytest.mark.asyncio
+    async def test_thread_reply_routes_when_parent_mentioned_bot(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """A plain thread reply should route when the thread parent mentioned
+        the bot (#24848) — e.g. parent says '<@bot> check this and ask me
+        before running', a later bare 'run' reply must wake the bot even
+        with no session and no in-memory mention tracking (restart-safe)."""
+        mock_session_store._entries = {}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(
+            return_value=False
+        )
+        mock_session_store.get_session_metadata = MagicMock(return_value="")
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(
+            side_effect=[
+                # _bot_authored_thread_root miss path → full context fetch
+                # (parent is human-authored, so check 4 fails).
+                {
+                    "messages": [
+                        {
+                            "ts": "123.000",
+                            "user": "U_USER",
+                            "text": "<@U_BOT> check this and ask me for run",
+                        },
+                    ],
+                },
+                # Any later fetch (cold-start context) reuses cache or refetches.
+                {
+                    "messages": [
+                        {
+                            "ts": "123.000",
+                            "user": "U_USER",
+                            "text": "<@U_BOT> check this and ask me for run",
+                        },
+                        {"ts": "123.456", "user": "U_USER", "text": "run"},
+                    ],
+                },
+            ]
+        )
+        adapter_with_session_store._user_name_cache = {("T_TEAM", "U_USER"): "Kai Yi"}
+
+        event = {
+            "text": "run",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+
+        adapter_with_session_store.handle_message.assert_called_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text == "run"
+        # Cold-start context carries the parent so the agent sees the ask.
+        assert "check this and ask me for run" in msg_event.channel_context
+        # Thread remembered so later replies skip the parent fetch.
+        assert "123.000" in adapter_with_session_store._mentioned_threads
+
+    @pytest.mark.asyncio
+    async def test_top_level_mention_registers_thread_for_replies(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """A TOP-LEVEL @mention starts a thread (session-scoped thread_ts
+        falls back to the message ts); replies to it must auto-trigger, so
+        the synthetic root is registered in _mentioned_threads (#24848)."""
+        mock_session_store._entries = {}
+        adapter_with_session_store._has_active_session_for_thread = MagicMock(
+            return_value=False
+        )
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "<@U_BOT> kick off the deploy checklist",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "555.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store.handle_message.assert_called_once()
+        assert "555.000" in adapter_with_session_store._mentioned_threads
+
+    @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(
         self, adapter_with_session_store, mock_session_store
     ):

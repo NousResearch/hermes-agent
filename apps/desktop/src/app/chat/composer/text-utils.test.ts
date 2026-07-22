@@ -46,12 +46,22 @@ describe('detectTrigger', () => {
     expect(detectTrigger('/path/to/file')).toBeNull()
   })
 
-  it('does not trigger slash popover mid-message', () => {
-    expect(detectTrigger('hello /')).toBeNull()
-    expect(detectTrigger('hello /skill')).toBeNull()
-    expect(detectTrigger('hello there /personality alic')).toBeNull()
-    expect(detectTrigger('text\n/skill')).toBeNull()
-    expect(detectTrigger('multi word message /')).toBeNull()
+  it('triggers slash popover mid-message after whitespace', () => {
+    expect(detectTrigger('hello /')).toEqual({ kind: '/', query: '', tokenLength: 1 })
+    expect(detectTrigger('hello /skill')).toEqual({ kind: '/', query: 'skill', tokenLength: 6 })
+    expect(detectTrigger('hello there /personality alic')).toEqual({
+      kind: '/',
+      query: 'personality alic',
+      tokenLength: 17
+    })
+    expect(detectTrigger('text\n/skill')).toEqual({ kind: '/', query: 'skill', tokenLength: 6 })
+    expect(detectTrigger('multi word message /')).toEqual({ kind: '/', query: '', tokenLength: 1 })
+  })
+
+  it('still does not trigger slash popover without whitespace before the slash', () => {
+    expect(detectTrigger('hello/skill')).toBeNull()
+    expect(detectTrigger('word/skill')).toBeNull()
+    expect(detectTrigger('some/file')).toBeNull()
   })
 
   it('still anchors at-mention triggers strictly at the token edge', () => {

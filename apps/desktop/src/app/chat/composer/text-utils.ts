@@ -12,11 +12,12 @@ export interface TriggerState {
 // Restricting the slash command name to `[a-zA-Z][\w-]*` avoids matching file
 // paths like `src/foo/bar`.
 //
-// Slash commands only execute at the beginning of a message, so the `/`
-// trigger is anchored strictly at position 0 — not after whitespace — to
-// avoid opening the popover mid-message (e.g. `hello /`).
+// Slash triggers are anchored at a word boundary (start of input or after
+// whitespace) so the popover opens mid-message as well as at position 0.
+// File-style paths (`src/foo`) are still excluded because their `/` is not
+// preceded by whitespace and the following segment starts with `[a-zA-Z]`.
 const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
-const SLASH_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
+const SLASH_TRIGGER_RE = /(?:^|[\s])(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {

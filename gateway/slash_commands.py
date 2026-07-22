@@ -502,19 +502,16 @@ class GatewaySlashCommandsMixin:
                         f"To revert: `/profile clear`"
                     )
 
-                _send_picker = getattr(self, "_try_send_choice_picker", None)
-                _key_for = getattr(self, "_session_key_for_source", None)
-                if _send_picker is not None and _key_for is not None:
-                    picker_sent = await _send_picker(
-                        event,
-                        _key_for(source),
-                        title=t(
-                            "gateway.profile.picker_title",
-                            current=profile_name,
-                        ),
-                        choices=_profile_choices(profile_name),
-                        on_choice_selected=_on_profile_selected,
-                    )
+                picker_sent = await self._try_send_choice_picker(
+                    event,
+                    self._session_key_for_source(source),
+                    title=t(
+                        "gateway.profile.picker_title",
+                        current=profile_name,
+                    ),
+                    choices=_profile_choices(profile_name),
+                    on_choice_selected=_on_profile_selected,
+                )
                 if picker_sent:
                     return None  # Picker sent — adapter handles the response
 

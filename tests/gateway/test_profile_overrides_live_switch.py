@@ -231,6 +231,12 @@ class TestProfileCommand:
         runner = self._runner(multiplex=True)
         mixin = GatewaySlashCommandsMixin()
         mixin.config = runner.config
+        # No picker support -> falls back to the text status card, which
+        # must report the pinned profile.
+        mixin._session_key_for_source = lambda src: "k:chatA"
+        mixin._try_send_choice_picker = (
+            lambda *a, **k: __import__("asyncio").sleep(0, result=False)
+        )
         out = await mixin._handle_profile_command(self._make_event(""))
         assert "product" in out
 

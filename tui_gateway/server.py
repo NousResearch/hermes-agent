@@ -13342,6 +13342,13 @@ def _(rid, params: dict) -> dict:
             cat_map[cat].append([c, desc])
 
         for name, desc, cat in _TUI_EXTRA:
+            # Dedup guard: skip TUI extras that collide with a registry
+            # command or one of its aliases (e.g. the historical /compact
+            # collision, #57133, or /sessions which the registry also
+            # advertises). The registry entry is canonical.
+            if name.lower() in canon:
+                continue
+            canon[name.lower()] = name
             all_pairs.append([name, desc])
             if cat not in cat_map:
                 cat_map[cat] = []

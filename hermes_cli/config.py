@@ -458,7 +458,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    
+
     # detect git repo installs (normal installer, development env)
     git_path = root / ".git"
     if git_path.is_dir():
@@ -2197,6 +2197,9 @@ DEFAULT_CONFIG = {
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
             "model_id": "eleven_multilingual_v2",
+            # Optional ElevenLabs pronunciation dictionary locators. Values may
+            # be bare IDs or {pronunciation_dictionary_id, version_id} objects.
+            "pronunciation_dictionary_locators": [],
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
@@ -2271,7 +2274,7 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "elevenlabs_scribe" | "elevenlabs_scribe_realtime" | "deepinfra"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -2301,6 +2304,15 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "stt_provider": "",          # Optional alias: local_whisper | elevenlabs_scribe | elevenlabs_scribe_realtime
+        "tts_profile": "fast_interactive",  # fast_interactive | technical_clear | narrative_summary
+        "expressive_tags_enabled": False,
+        "expressive_tag_model_allowlist": [],
+        "tts_profiles": {
+            "fast_interactive": {"streaming": True, "normalize": True, "expressive_tags": False},
+            "technical_clear": {"streaming": False, "normalize": True, "expressive_tags": False},
+            "narrative_summary": {"streaming": True, "normalize": True, "expressive_tags": True},
+        },
     },
     
     "human_delay": {
@@ -2621,6 +2633,13 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
+        # keep the bot in VC until an explicit `/voice leave` / disconnect.
+        "voice_channel_inactivity_timeout_seconds": 300,
+        # Minimum seconds to wait for a VC playback before force-stopping it.
+        # The adapter also probes clip duration and extends this floor by a
+        # padding window, so long TTS readbacks are not cut at exactly 120s.
+        "voice_playback_timeout_seconds": 120,
         # When True, Discord approval prompts mention numeric allowed users so
         # owners notice approval requests in shared channels/threads. Env
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise

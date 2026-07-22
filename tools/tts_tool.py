@@ -54,6 +54,11 @@ from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
+from hermes_cli.voice_interaction import (
+    elevenlabs_pronunciation_locators,
+    prepare_spoken_text,
+    resolve_voice_tts_profile,
+)
 
 logger = logging.getLogger(__name__)
 def get_env_value(name, default=None):
@@ -349,6 +354,17 @@ def _load_tts_config() -> Dict[str, Any]:
         return {}
     except Exception as e:
         logger.warning("Failed to load TTS config: %s", e, exc_info=True)
+        return {}
+
+
+def _load_voice_config() -> Dict[str, Any]:
+    """Load the voice config block used for TTS-only speech shaping options."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        voice = config.get("voice", {})
+        return voice if isinstance(voice, dict) else {}
+    except Exception:
         return {}
 
 
@@ -993,6 +1009,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     el_config = tts_config.get("elevenlabs") or {}
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
+    pronunciation_locators = elevenlabs_pronunciation_locators(tts_config)
 
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
@@ -1002,12 +1019,15 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 
     ElevenLabs = _import_elevenlabs()
     client = ElevenLabs(api_key=api_key)
-    audio_generator = client.text_to_speech.convert(
-        text=text,
-        voice_id=voice_id,
-        model_id=model_id,
-        output_format=output_format,
-    )
+    convert_kwargs = {
+        "text": text,
+        "voice_id": voice_id,
+        "model_id": model_id,
+        "output_format": output_format,
+    }
+    if pronunciation_locators:
+        convert_kwargs["pronunciation_dictionary_locators"] = pronunciation_locators
+    audio_generator = client.text_to_speech.convert(**convert_kwargs)
 
     # audio_generator yields chunks -- write them all
     with open(output_path, "wb") as f:
@@ -2306,7 +2326,18 @@ def text_to_speech_tool(
         return tool_error("Text is required", success=False)
 
     tts_config = _load_tts_config()
+    voice_config = _load_voice_config()
     provider = _get_provider(tts_config)
+    elevenlabs_model = DEFAULT_ELEVENLABS_MODEL_ID
+    if isinstance(tts_config.get("elevenlabs"), dict):
+        elevenlabs_model = tts_config["elevenlabs"].get("model_id", elevenlabs_model)
+    text = prepare_spoken_text(
+        text,
+        config={"tts": tts_config, "voice": resolve_voice_tts_profile(voice_config)},
+        model_id=elevenlabs_model if provider == "elevenlabs" else "",
+    )
+    if not text:
+        return tool_error("Text contains no speakable content after TTS normalization", success=False)
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -2776,7 +2807,9 @@ def stream_tts_to_speaker(
         model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
 
         tts_config = _load_tts_config()
+        voice_config = resolve_voice_tts_profile(_load_voice_config())
         el_config = tts_config.get("elevenlabs") or {}
+        pronunciation_locators = elevenlabs_pronunciation_locators(tts_config)
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
@@ -2828,7 +2861,11 @@ def stream_tts_to_speaker(
             """Display sentence and optionally generate + play audio."""
             if stop_event.is_set():
                 return
-            cleaned = _strip_markdown_for_tts(sentence).strip()
+            cleaned = prepare_spoken_text(
+                sentence,
+                config={"tts": tts_config, "voice": voice_config},
+                model_id=model_id,
+            )
             if not cleaned:
                 return
             # Skip duplicate/near-duplicate sentences (LLM repetition)
@@ -2847,12 +2884,15 @@ def stream_tts_to_speaker(
             if len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
+                convert_kwargs = {
+                    "text": cleaned,
+                    "voice_id": voice_id,
+                    "model_id": model_id,
+                    "output_format": "pcm_24000",
+                }
+                if pronunciation_locators:
+                    convert_kwargs["pronunciation_dictionary_locators"] = pronunciation_locators
+                audio_iter = client.text_to_speech.convert(**convert_kwargs)
                 if output_stream is not None:
                     for chunk in audio_iter:
                         if stop_event.is_set():

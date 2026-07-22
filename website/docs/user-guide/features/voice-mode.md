@@ -163,7 +163,38 @@ When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it g
 
 1. Buffers text deltas into complete sentences (min 20 chars)
 2. Strips markdown formatting and `<think>` blocks
-3. Generates and plays audio per sentence in real-time
+3. Normalizes technical speech such as IPs, CIDR ranges, ports, VLANs, hostnames, service accounts, and common infrastructure acronyms
+4. Generates and plays audio per sentence in real-time
+
+Voice mode also uses a two-phase spoken interaction for likely-slow requests:
+
+- **Acknowledgement:** a short phrase such as “Got it” or “Checking that now” is spoken before slow tool work or approvals begin.
+- **Final answer:** after tools/reasoning complete, Hermes speaks a cleaned conversational version of the reply instead of raw markdown, JSON, tables, or code blocks.
+
+ElevenLabs users can opt into controlled expressive tags and pronunciation dictionaries:
+
+```yaml
+voice:
+  expressive_tags_enabled: true
+  expressive_tag_model_allowlist: ["eleven_v3"]
+
+tts:
+  elevenlabs:
+    pronunciation_dictionary_locators:
+      - pronunciation_dictionary_id: "dict_..."
+        version_id: "ver_..."
+```
+
+Expressive tags are disabled by default, limited to a small safe allowlist, and stripped unless the configured ElevenLabs model is explicitly allowlisted.
+
+STT can also be selected from the voice config using aliases:
+
+```yaml
+voice:
+  stt_provider: local_whisper              # or elevenlabs_scribe / elevenlabs_scribe_realtime
+```
+
+For `elevenlabs_scribe_realtime`, Hermes treats partial transcripts as non-executable anticipation/display data and commits only final transcripts to the agent turn.
 
 ### Hallucination Filter
 

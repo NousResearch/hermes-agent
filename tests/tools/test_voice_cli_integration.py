@@ -1061,6 +1061,51 @@ class TestVoiceSpeakResponseReal:
         assert starts == [False]
         assert not cli._voice_tts_done.is_set()
 
+    def test_phase_a_acknowledgement_uses_nonblocking_scheduler(self):
+        import inspect
+        from cli import HermesCLI
+
+        source = inspect.getsource(HermesCLI.chat)
+        ack_idx = source.index("choose_voice_acknowledgement")
+        async_idx = source.index("_voice_speak_response_async(ack)")
+        run_agent_idx = source.index("def run_agent")
+
+        assert ack_idx < async_idx < run_agent_idx
+        assert "_voice_speak_response(ack)" not in source
+
+    def test_approval_voice_prompt_is_scheduled_after_modal_state(self):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._approval_lock = threading.Lock()
+        cli._approval_state = None
+        cli._approval_deadline = 0
+        cli._paint_now = lambda: None
+        cli._persist_prompt_summary = lambda *args, **kwargs: None
+        events = []
+
+        def fake_async(text):
+            events.append((text, cli._approval_state is not None))
+
+        cli._voice_speak_response_async = fake_async
+        done = queue.Queue()
+
+        def run_callback():
+            done.put(cli._approval_callback("rm -rf /tmp/nope", "dangerous test"))
+
+        worker = threading.Thread(target=run_callback, daemon=True)
+        worker.start()
+
+        # Wait until the approval callback has installed the modal state and
+        # scheduled the nonblocking voice prompt, then answer it.
+        for _ in range(100):
+            if events and cli._approval_state:
+                break
+            threading.Event().wait(0.01)
+
+        assert events == [("I need approval to run that command.", True)]
+        cli._approval_state["response_queue"].put("deny")
+        assert done.get(timeout=1) == "deny"
+        worker.join(timeout=1)
+
     @patch("cli._cprint")
     def test_early_return_when_tts_off(self, _cp):
         cli = _make_voice_cli(_voice_tts=False)

@@ -120,10 +120,28 @@ _local_model_name: Optional[str] = None
 
 
 def _load_stt_config() -> dict:
-    """Load the ``stt`` section from user config, falling back to defaults."""
+    """Load the ``stt`` section from user config, falling back to defaults.
+
+    ``voice.stt_provider`` is accepted as a voice-mode-friendly alias for
+    ``stt.provider`` so users can choose local Whisper, ElevenLabs Scribe, or
+    Scribe Realtime from the voice configuration surface without duplicating
+    secrets. Realtime is normalized to the same committed-transcript Scribe path
+    for file transcription; partial transcripts are intentionally not executed.
+    """
     try:
         from hermes_cli.config import load_config
-        return load_config().get("stt") or {}
+        cfg = load_config()
+        stt = dict(cfg.get("stt") or {})
+        voice = cfg.get("voice", {}) if isinstance(cfg.get("voice"), dict) else {}
+        alias = str(voice.get("stt_provider") or "").strip()
+        alias_map = {
+            "local_whisper": "local",
+            "elevenlabs_scribe": "elevenlabs",
+            "elevenlabs_scribe_realtime": "elevenlabs_scribe_realtime",
+        }
+        if alias:
+            stt["provider"] = alias_map.get(alias, alias)
+        return stt
     except Exception:
         return {}
 
@@ -244,6 +262,8 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "mistral",
     "xai",
     "elevenlabs",
+    "elevenlabs_scribe",
+    "elevenlabs_scribe_realtime",
     "deepinfra",
 })
 
@@ -822,11 +842,12 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
-        if provider == "elevenlabs":
+        if provider in {"elevenlabs", "elevenlabs_scribe", "elevenlabs_scribe_realtime"}:
             if get_env_value("ELEVENLABS_API_KEY"):
-                return "elevenlabs"
+                return provider
             logger.warning(
-                "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
+                "STT provider '%s' configured but ELEVENLABS_API_KEY not set",
+                provider,
             )
             return "none"
 
@@ -1777,10 +1798,15 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
-    if provider == "elevenlabs":
+    if provider in {"elevenlabs", "elevenlabs_scribe", "elevenlabs_scribe_realtime"}:
         elevenlabs_cfg = stt_config.get("elevenlabs") or {}
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
-        return _transcribe_elevenlabs(file_path, model_name)
+        result = _transcribe_elevenlabs(file_path, model_name)
+        if provider == "elevenlabs_scribe_realtime" and result.get("success"):
+            result["provider"] = provider
+            result["partial_transcripts_executed"] = False
+            result["committed_transcript_only"] = True
+        return result
 
     if provider == "deepinfra":
         di_config = stt_config.get("deepinfra")  # may be None (YAML null)

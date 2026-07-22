@@ -39,11 +39,11 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
 # ── _reactions_enabled ───────────────────────────────────────────────
 
 
-def test_reactions_disabled_by_default(monkeypatch):
-    """Telegram reactions should be disabled by default."""
+def test_reactions_enabled_by_default(monkeypatch):
+    """JAIMES keeps the single-eyes acknowledgement enabled by default."""
     monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
     adapter = _make_adapter()
-    assert adapter._reactions_enabled() is False
+    assert adapter._reactions_enabled() is True
 
 
 def test_reactions_enabled_when_set_true(monkeypatch):
@@ -144,7 +144,7 @@ async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
 @pytest.mark.asyncio
 async def test_on_processing_start_skipped_when_disabled(monkeypatch):
     """Processing start should not react when reactions are disabled."""
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
     adapter = _make_adapter()
     event = _make_event()
 
@@ -206,9 +206,21 @@ async def test_on_processing_complete_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_control_center_keeps_single_eyes_reaction_on_success(monkeypatch):
+    """JAIMES Control Center should not add a second completion reaction."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event(chat_id="-1003589561528")
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
     """Processing complete should not react when reactions are disabled."""
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
     adapter = _make_adapter()
     event = _make_event()
 
@@ -244,7 +256,7 @@ async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
 @pytest.mark.asyncio
 async def test_on_processing_complete_cancelled_skipped_when_disabled(monkeypatch):
     """Cancelled processing should not call the API when reactions are off."""
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
     adapter = _make_adapter()
     event = _make_event()
 

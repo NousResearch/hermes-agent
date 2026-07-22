@@ -33,6 +33,8 @@ def _make_adapter(
         extra["free_response_chats"] = free_response_chats
     if free_response_topics is not None:
         extra["free_response_topics"] = free_response_topics
+    else:
+        extra["free_response_topics"] = []
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
@@ -583,6 +585,27 @@ def test_free_response_topic_messages_are_dispatched_not_observed():
     assert adapter._should_observe_unmentioned_group_message(other_topic) is True
 
 
+def test_free_response_topics_bypass_mention_requirement_only_in_owned_topics():
+    adapter = _make_adapter(require_mention=True, free_response_topics=["17", 19, "20", 56])
+
+    for topic_id in (17, 19, 20, 56):
+        assert adapter._should_process_message(
+            _group_message("untagged owner message", thread_id=topic_id)
+        ) is True
+    for topic_id in (1, 18, 21, 22):
+        assert adapter._should_process_message(
+            _group_message("untagged non-owner message", thread_id=topic_id)
+        ) is False
+
+
+def test_non_owned_topic_explicit_mention_overrides_ownership_gate():
+    adapter = _make_adapter(require_mention=True, free_response_topics=["17", "19", "20", "56"])
+    text = "@hermes_bot take this delegated task"
+    message = _group_message(text, thread_id=18, entities=[_mention_entity(text)])
+
+    assert adapter._should_process_message(message) is True
+
+
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():
     adapter = _make_adapter(
         require_mention=True,
@@ -805,6 +828,9 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
         "    - \"-123\"\n"
+        "  free_response_topics:\n"
+        "    - 17\n"
+        "    - 19\n"
         "  allowed_chats:\n"
         "    - \"-100\"\n"
         "  group_allowed_chats:\n"
@@ -827,6 +853,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "TELEGRAM_GUEST_MODE",
         "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
         "TELEGRAM_FREE_RESPONSE_CHATS",
+        "TELEGRAM_FREE_RESPONSE_TOPICS",
         "TELEGRAM_ALLOWED_CHATS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
         "TELEGRAM_ALLOWED_TOPICS",
@@ -857,6 +884,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
     # files, so asserting it via os.environ stays deterministic.
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_TOPICS"] == "17,19"
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):

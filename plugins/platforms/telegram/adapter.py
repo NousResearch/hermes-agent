@@ -12,10 +12,12 @@ import dataclasses
 import faulthandler
 import inspect
 import json
+import hashlib
 import logging
 import os
 import html as _html
 import re
+import subprocess
 import threading
 import time
 from contextvars import ContextVar
@@ -4022,6 +4024,306 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _jaimes_topic17_reply_markup(
+        self,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Any:
+        """Do not infer approval buttons from final-response prose.
+
+        Buttons must come from an explicit approval/clarify action. Parsing
+        free-form final text caused false numeric buttons for values such as
+        ``n/a</pre>`` and made harmless summaries look actionable.
+        """
+        return None
+
+        # Legacy parser retained temporarily below for a small carried-commit
+        # diff; it is intentionally unreachable and can be dropped on rebase.
+        if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
+            return None
+        match = re.search(
+            r"(?im)^\s*(?:🔐\s*)?(?:\*\*)?(?:Approval needed|Next steps for approval):?(?:\*\*)?\s*$",
+            content or "",
+        )
+        if not match:
+            return None
+        steps: list[str] = []
+        for raw in (content or "")[match.end():].splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            line = re.sub(r"^(?:[-*•]|\d+[.)])\s*", "", line).strip("* ")
+            if not line:
+                continue
+            normalized = " ".join(line.lower().split())
+            if normalized in {"none", "n/a", "na", "not applicable", "no action needed"}:
+                continue
+            if re.match(r"^(?:no action needed|no approval needed|nothing to approve)\b", normalized):
+                continue
+            if re.match(r"^(objective complete|tldr|challenges|complete|what was done|issues|appropriate next steps)\b", normalized):
+                break
+            steps.append(line)
+            if len(steps) >= 4:
+                break
+        if not steps:
+            return None
+
+        actions_path = _Path.home() / ".openclaw" / "telegram" / "jaimes_approval_actions.json"
+        try:
+            existing = json.loads(actions_path.read_text(encoding="utf-8")) if actions_path.exists() else {}
+            if not isinstance(existing, dict):
+                existing = {}
+        except Exception:
+            existing = {}
+        flat: list[InlineKeyboardButton] = []
+        for index, step in enumerate(steps, 1):
+            digest = hashlib.sha1(f"jaimes|{content}|{step}|{index}".encode("utf-8")).hexdigest()[:10]
+            callback = f"approve:jaimes:{digest}:{index}"
+            existing[callback] = {
+                "agent": "jaimes",
+                "objective": "Telegram final-card selection",
+                "step": step,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            flat.append(InlineKeyboardButton(str(index), callback_data=callback))
+        rows = [flat[i:i + 2] for i in range(0, len(flat), 2)]
+        try:
+            actions_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = actions_path.with_name(f"{actions_path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(tmp, actions_path)
+        except Exception as exc:
+            logger.warning("[%s] Failed to persist JAIMES final actions: %s", self.name, exc)
+            return None
+        return InlineKeyboardMarkup(rows)
+
+    def _jaimes_topic17_active_card(
+        self,
+        chat_id: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve the newest visible Topic 17 card for this exact chat."""
+        if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
+            return None
+        state_path = _Path.home() / ".openclaw" / "telegram" / "jaimes_fast_ack_state.json"
+        if not state_path.exists():
+            return None
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            candidates = []
+            def _state_chat_id(value: object) -> str:
+                raw = str(value or "").strip()
+                if raw.startswith("telegram:"):
+                    raw = raw.split(":", 1)[1]
+                return str(normalize_telegram_chat_id(raw))
+
+            expected_chat = _state_chat_id(chat_id)
+            for card in ((state.get("active_cards") or {}).values() if isinstance(state, dict) else []):
+                if not isinstance(card, dict) or card.get("status") != "active":
+                    continue
+                try:
+                    card_chat = _state_chat_id(card.get("telegram_chat_id"))
+                except Exception:
+                    continue
+                if card_chat != expected_chat:
+                    continue
+                if str(card.get("telegram_thread_id") or "") != str(thread_id):
+                    continue
+                if (
+                    card.get("key")
+                    and str(card.get("ack_message_id") or "").isdigit()
+                    and str(card.get("objective") or "").strip()
+                ):
+                    candidates.append(card)
+            if not candidates:
+                return None
+            return max(candidates, key=lambda row: str(row.get("started_at") or row.get("updated_at") or ""))
+        except Exception as exc:
+            logger.warning("[%s] Could not resolve JAIMES Topic 17 card: %s", self.name, exc)
+            return None
+
+    async def _jaimes_canonical_final_before_send(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> str:
+        """Canonicalize Topic 17 before Telegram receives the only final."""
+        if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
+            return content
+        script = _Path.home() / ".openclaw" / "workspace" / "mission-control" / "scripts" / "jaimes_telegram_fast_ack.py"
+        if not script.exists():
+            logger.warning("[%s] JAIMES final formatter is unavailable", self.name)
+            raise RuntimeError("JAIMES final validation unavailable")
+        card = self._jaimes_topic17_active_card(chat_id, thread_id, metadata) or {}
+        header = re.search(
+            r"(?im)^\s*(?:🤖\s*)?Model:\s*([^|\n]+)\s*\|\s*"
+            r"Route:\s*([^|\n]+)(?:\s*\|\s*Why:\s*([^\n]+))?",
+            content or "",
+        )
+        objective_match = re.search(
+            r"(?im)^\s*(?:🎯\s*)?Objective:\s*([^\n]+)",
+            content or "",
+        )
+        parsed_why = header.group(3).strip() if header and header.group(3) else ""
+        payload = {
+            "text": content,
+            "objective": str(
+                card.get("objective")
+                or (objective_match.group(1).strip() if objective_match else "")
+                or "Complete the current Telegram task"
+            ),
+            "model": str(card.get("model") or (header.group(1).strip() if header else "unverified")),
+            "route": str(card.get("route") or (header.group(2).strip() if header else "unverified")),
+            "why": str(card.get("why") or parsed_why or "unverified"),
+            "work_id": str(card.get("work_id") or ""),
+            "run_id": str(card.get("ledger_run_id") or ""),
+            "task_started_at": str(card.get("task_started_at") or card.get("started_at") or ""),
+        }
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(script),
+                "--format-final-json-stdin",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(json.dumps(payload).encode("utf-8")),
+                timeout=8,
+            )
+            formatted = stdout.decode("utf-8", errors="replace").strip()
+            if proc.returncode == 0 and re.fullmatch(r"<pre>[\s\S]*</pre>", formatted, flags=re.I):
+                # Keep the final proportional and scannable.  The canonical
+                # formatter uses <pre> as a transport envelope, but a Telegram
+                # code block makes JAIMES look materially different from the
+                # Inbox/Codex contract and is harder to read on mobile.
+                body = _html.unescape(formatted[5:-6]).strip("\n")
+                return re.sub(
+                    r"(?m)^([A-Za-z][A-Za-z0-9 /&()_-]{1,48}:)(?=\s|$)",
+                    r"**\1**",
+                    body,
+                )
+            raise RuntimeError("JAIMES final formatter returned an invalid result")
+        except Exception as exc:
+            logger.warning("[%s] JAIMES final formatter failed: %s", self.name, exc)
+            raise RuntimeError("JAIMES final validation failed") from exc
+
+    def _jaimes_pre_final_card_command(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[list[str]]:
+        """Build the completion-card edit that must precede final delivery."""
+        if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
+            return None
+        script = _Path.home() / ".openclaw" / "workspace" / "mission-control" / "scripts" / "jaimes_work_card.py"
+        if not script.exists():
+            return None
+        card = self._jaimes_topic17_active_card(chat_id, thread_id, metadata)
+        if not card:
+            return None
+        model_match = re.search(r"(?im)^Model:\s*([^|\n]+)", content or "")
+        model = model_match.group(1).strip() if model_match else "JAIMES"
+        objective = str(card.get("objective") or "Complete the current Telegram task")
+        command = [
+            sys.executable, str(script), "done",
+            "--key", str(card["key"]),
+            "--title", objective,
+            "--model", model,
+            "--now", "Final summary validated; delivery starting",
+            "--done", "Final summary validated",
+            "--no-final-summary",
+            "--chat-id", str(chat_id),
+            "--thread-id", str(thread_id),
+        ]
+        if card.get("work_id"):
+            command.extend(["--work-id", str(card["work_id"])])
+        if card.get("ledger_run_id"):
+            command.extend(["--run-id", str(card["ledger_run_id"])])
+        task_started_at = card.get("task_started_at") or card.get("started_at")
+        if task_started_at:
+            command.extend(["--task-started-at", str(task_started_at)])
+        return command
+
+    def _jaimes_post_final_card_command(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        final_message_id: Optional[str],
+    ) -> Optional[list[str]]:
+        """Bind the adapter-confirmed final receipt before closing the card."""
+        if not str(final_message_id or "").isdigit():
+            return None
+        command = self._jaimes_pre_final_card_command(chat_id, content, thread_id, metadata)
+        if not command:
+            return None
+        now_index = command.index("--now") + 1
+        command[now_index] = "Final summary delivered"
+        command.extend([
+            "--final-message-id", str(final_message_id),
+            "--final-delivery-verified-by", "hermes-adapter-success",
+        ])
+        return command
+
+    async def _jaimes_finalize_card_before_final(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Show final-ready state before delivery without claiming success."""
+        command = self._jaimes_pre_final_card_command(chat_id, content, thread_id, metadata)
+        if not command:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=12)
+            if proc.returncode:
+                logger.warning("[%s] JAIMES pre-final card edit exited %s", self.name, proc.returncode)
+        except Exception as exc:
+            logger.warning("[%s] JAIMES pre-final card edit failed: %s", self.name, exc)
+
+    async def _jaimes_complete_card_after_final(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        final_message_id: Optional[str],
+    ) -> None:
+        """Close the live card only after Telegram confirms final delivery."""
+        command = self._jaimes_post_final_card_command(
+            chat_id, content, thread_id, metadata, final_message_id,
+        )
+        if not command:
+            logger.warning("[%s] JAIMES final delivery lacked a persistable message id", self.name)
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=12)
+            if proc.returncode:
+                logger.warning("[%s] JAIMES post-delivery card edit exited %s", self.name, proc.returncode)
+        except Exception as exc:
+            logger.warning("[%s] JAIMES post-delivery card edit failed: %s", self.name, exc)
+
     async def send(
         self,
         chat_id: str,
@@ -4042,12 +4344,35 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            thread_id = self._metadata_thread_id(metadata)
+            jaimes_final = str(thread_id or "") == "17" and bool((metadata or {}).get("notify"))
+            if jaimes_final:
+                content = await self._jaimes_canonical_final_before_send(
+                    chat_id, content, thread_id, metadata,
+                )
+                await self._jaimes_finalize_card_before_final(
+                    chat_id, content, thread_id, metadata,
+                )
+
+            # Final Telegram sends must not re-arm the one-shot typing action.
+            # The gateway owns typing lifecycle and stops it before delivery.
+            # Approval buttons are created only by explicit approval/clarify
+            # flows, never inferred from final-response prose.
+            jaimes_reply_markup = None
+
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            # Topic 17 finals stay on PTB's send_message path, whose concrete
+            # message_id is required to persist the terminal delivery receipt.
+            # A rich send may succeed without returning a persistable id.
+            if (
+                not jaimes_final
+                and jaimes_reply_markup is None
+                and self._should_attempt_rich(content, metadata=metadata)
+            ):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -4062,6 +4387,11 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await self.send_typing(chat_id, metadata=metadata)
                             except Exception:
                                 pass  # Typing failures are non-fatal
+                        if jaimes_final:
+                            await self._jaimes_complete_card_after_final(
+                                chat_id, content, thread_id, metadata,
+                                rich_result.message_id,
+                            )
                     return rich_result
 
             # Format and split message if needed
@@ -4081,7 +4411,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 ]
             
             message_ids = []
-            thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
             
@@ -4153,6 +4482,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=(jaimes_reply_markup if i == len(chunks) - 1 else None),
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -4167,6 +4497,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=(jaimes_reply_markup if i == len(chunks) - 1 else None),
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -4309,6 +4640,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.send_typing(chat_id, metadata=metadata)
                 except Exception:
                     pass  # Typing failures are non-fatal
+
+            if jaimes_final:
+                await self._jaimes_complete_card_after_final(
+                    chat_id, content, thread_id, metadata,
+                    message_ids[0] if message_ids else None,
+                )
 
             return SendResult(
                 success=True,
@@ -5916,6 +6253,58 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # --- JAIMES final-card numeric actions ---
+        if data.startswith("approve:jaimes:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to select this action.")
+                return
+            actions_path = _Path.home() / ".openclaw" / "telegram" / "jaimes_approval_actions.json"
+            try:
+                actions = json.loads(actions_path.read_text(encoding="utf-8"))
+                action = actions.get(data) if isinstance(actions, dict) else None
+            except Exception:
+                action = None
+            if not isinstance(action, dict) or not action.get("step"):
+                await query.answer(text="This option expired. Please reply with the number.")
+                return
+            step = str(action["step"])
+            await query.answer(text=f"Selected: {step[:120]}")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            chat_type_value = str(getattr(query_chat_type, "value", query_chat_type) or "").lower()
+            source_chat_type = "dm" if chat_type_value == "private" else ("channel" if chat_type_value == "channel" else "group")
+            chat_name = getattr(query_chat, "title", None) or getattr(query_chat, "full_name", None)
+            source = self.build_source(
+                chat_id=str(query_chat_id),
+                chat_name=chat_name,
+                chat_type=source_chat_type,
+                user_id=caller_id,
+                user_name=getattr(query.from_user, "full_name", None) or query_user_name,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                message_id=f"callback-{getattr(query, 'id', '')}",
+                is_bot=False,
+            )
+            event = MessageEvent(
+                text=f"Selected option: {step}",
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"callback-{getattr(query, 'id', '')}",
+                timestamp=datetime.now(timezone.utc),
+                metadata={"telegram_inline_action": True, "callback_data": data},
+            )
+            asyncio.create_task(self.handle_message(event))
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -7358,7 +7747,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Unlike ``free_response_chats`` (whole-chat), each entry opens a single
         forum topic for free-response. A missing/omitted thread id on incoming
-        messages is normalized to the General topic (``1``).
+        messages is normalized to the General topic (``1``). Legacy topic-only
+        entries remain accepted for the JAIMES owned-topic contract.
         """
         raw = self.config.extra.get("free_response_topics")
         if raw is None:
@@ -7377,7 +7767,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         thread_id = self._effective_message_thread_id(message)
         topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
-        return f"{chat_id}:{topic_id}" in topics
+        return f"{chat_id}:{topic_id}" in topics or topic_id in topics
 
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
@@ -7701,7 +8091,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return False
 
-        thread_id = getattr(message, "message_thread_id", None)
+        thread_id = self._effective_message_thread_id(message)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
             topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
@@ -8153,6 +8543,25 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _react_to_josh_control_center_message(self, message: Message) -> None:
+        """Native 👀 reaction for Josh's JAIMES Control Center messages."""
+        if not self._bot:
+            return
+        try:
+            chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+            user_id = str(getattr(getattr(message, "from_user", None), "id", ""))
+            # JAIMES: Josh expects a visible native Telegram reaction before
+            # the work-card flow starts in any Control Center topic.
+            if chat_id != "-1003589561528" or user_id != "6218150306":
+                return
+            await self._bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=int(message.message_id),
+                reaction="👀",
+            )
+        except Exception as exc:
+            logger.warning("[Telegram] Failed to set JAIMES ack reaction: %s", exc)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -8178,6 +8587,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
+        await self._react_to_josh_control_center_message(msg)
         await self._ensure_forum_commands(update.message)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
@@ -8200,6 +8610,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        await self._react_to_josh_control_center_message(msg)
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
@@ -9147,8 +9558,14 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Message reactions (processing lifecycle) ──────────────────────────
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+        """Check reactions from explicit env override, then live platform config."""
+        raw = os.getenv("TELEGRAM_REACTIONS")
+        if raw is not None:
+            return raw.lower() not in {"false", "0", "no", "off"}
+        configured = (getattr(self.config, "extra", {}) or {}).get("reactions")
+        if configured is None:
+            configured = True  # Telegram default: acknowledge every real inbound turn.
+        return str(configured).lower() not in {"false", "0", "no", "off"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -9213,6 +9630,11 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
+            return
+        # JAIMES: Control Center uses one acknowledgement-only reaction. Keep
+        # the initial eyes reaction instead of replacing it with a second
+        # thumbs-up/down reaction when processing completes.
+        if str(chat_id) == "-1003589561528" and outcome != ProcessingOutcome.CANCELLED:
             return
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)

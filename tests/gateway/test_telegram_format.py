@@ -214,11 +214,12 @@ async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adap
 
 
 @pytest.mark.asyncio
-async def test_final_send_does_not_retrigger_typing(adapter):
-    """The final reply (metadata['notify']) must NOT re-arm Telegram's typing
-    timer. The gateway has already torn down the refresh loop by then, so a
-    re-trigger here would leave the '...typing' bubble lingering after the
-    answer (Telegram has no stop-typing API). See #48678."""
+async def test_final_send_does_not_prime_typing_before_delivery(adapter):
+    """Final/direct replies must not re-arm Telegram's one-shot timer.
+
+    Telegram has no stop-typing endpoint, so a pre-send action can remain
+    visible after rich-message delivery and make a completed turn look active.
+    """
     adapter._bot = MagicMock()
     adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
     adapter._bot.send_chat_action = AsyncMock()
@@ -227,7 +228,7 @@ async def test_final_send_does_not_retrigger_typing(adapter):
     result = await adapter.send("12345", "All done.", metadata={"notify": True})
 
     assert result.success is True
-    adapter._bot.send_chat_action.assert_not_called()
+    adapter._bot.send_chat_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio

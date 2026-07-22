@@ -77,6 +77,16 @@ def _session_key(chat_id="12345"):
     return build_session_key(source)
 
 
+async def _drain_session_task(adapter, session_key, attempts=20):
+    """Drain a spawned adapter task without assuming a fixed event-loop count."""
+    for _ in range(attempts):
+        task = adapter._session_tasks.get(session_key)
+        if task is None or task.done():
+            await asyncio.sleep(0)
+            return
+        await asyncio.sleep(0)
+
+
 # ---------------------------------------------------------------------------
 # Runner helpers
 # ---------------------------------------------------------------------------
@@ -155,8 +165,7 @@ class TestAdapterSessionCancellation:
         await adapter.handle_message(
             _make_event("/model xiaomi/mimo-v2-pro --provider nous")
         )
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain_session_task(adapter, sk)
 
         assert any("handled:model" in r for r in adapter.sent_responses), (
             f"follow-up /model stayed blocked after {command_text}"
@@ -260,9 +269,7 @@ class TestStaleSessionLockSelfHeal:
         # An ordinary message should heal the stale lock, then fall through
         # to normal dispatch.  User gets a reply instead of a busy ack.
         await adapter.handle_message(_make_event("hello"))
-        # Drain any spawned background tasks.
-        for _ in range(5):
-            await asyncio.sleep(0)
+        await _drain_session_task(adapter, sk)
 
         assert any("handled:text" in r for r in adapter.sent_responses), (
             "stale lock trapped a normal message — split-brain not healed"

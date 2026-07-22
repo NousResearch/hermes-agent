@@ -2930,13 +2930,15 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        # A done gate with an explicit failure verdict is not a
+                        # satisfied dependency (#D-012).
+                        if any(
+                            not _parent_dependency_satisfied(
+                                conn, parent_id,
+                                child_title=title, child_assignee=assignee,
+                            )
+                            for parent_id in parents
+                        ):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -3160,11 +3162,8 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # Failed semantic gates demote just like unfinished parents.
+        if not _parent_dependency_satisfied(conn, parent_id, child_id=child_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -3724,6 +3723,128 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+_GATE_ASSIGNEES = {"review", "qa", "release"}
+_FAILED_GATE_VERDICTS = {
+    "REQUEST_CHANGES", "CHANGES_REQUESTED",
+    "QA_FAIL", "QA_FAILED", "FAIL", "FAILED",
+    "NOT_READY", "RELEASE_NOT_READY", "BLOCKED",
+}
+_GATE_VERDICT_RE = re.compile(
+    r"^\s*(REQUEST_CHANGES|CHANGES_REQUESTED|QA_FAIL(?:ED)?|FAIL(?:ED)?|"
+    r"NOT_READY|RELEASE_NOT_READY|BLOCKED|APPROVE(?:D)?|QA_PASS|PASS|"
+    r"RELEASE_READY|DEPLOYED|READY_FOR_CONFIRMATION)\b",
+    re.IGNORECASE,
+)
+_GATE_TITLE_RE = re.compile(
+    r"^\s*\[(?:re-?review|review(?:\+qa)?|qa|release)(?:[^\]]*)\]",
+    re.IGNORECASE,
+)
+_REMEDIATION_TITLE_RE = re.compile(
+    r"^\s*(?:\[fix(?:[^\]]*)\]|fix:)",
+    re.IGNORECASE,
+)
+
+
+def _is_gate_task(assignee: object, title: object) -> bool:
+    """Return whether a task is a semantic Review/QA/Release gate.
+
+    Assignee is authoritative.  The anchored title fallback preserves older
+    boards without letting incidental text such as ``[Release notes]`` in the
+    middle of an implementation title turn that task into a gate.
+    """
+    normalized_assignee = str(assignee or "").strip().lower()
+    if normalized_assignee:
+        return normalized_assignee in _GATE_ASSIGNEES
+    return bool(_GATE_TITLE_RE.match(str(title or "")))
+
+
+def _latest_completed_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
+    """Return the newest completed attempt for semantic-verdict readback."""
+    row = conn.execute(
+        "SELECT * FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
+        "ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return Run.from_row(row) if row else None
+
+
+def _explicit_failed_gate_verdict(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Return an explicit failed gate verdict for ``task_id``, if any.
+
+    Backward compatibility is deliberate: old terminal cards with no typed or
+    anchored verdict retain the historical status-only behaviour.  New gate
+    workers are required to emit structured metadata and repeat the verdict as
+    the summary's first token.  The fallback intentionally matches that first
+    token only; scanning arbitrary prose would create false-positive gates.
+    """
+    task = conn.execute(
+        "SELECT assignee, title, result FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if task is None:
+        return None
+    if not _is_gate_task(task["assignee"], task["title"]):
+        return None
+
+    # A later crash/reclaim row must not erase the semantic result of the
+    # completed gate attempt.  This matches worker-context handoff readback.
+    run = _latest_completed_run(conn, task_id)
+    metadata = run.metadata if run and isinstance(run.metadata, dict) else {}
+    verdict = str(
+        metadata.get("verdict") or metadata.get("gate_verdict") or ""
+    ).upper().strip()
+    if not verdict:
+        summary = str((run.summary if run else None) or task["result"] or "")
+        match = _GATE_VERDICT_RE.match(summary)
+        verdict = match.group(1).upper() if match else ""
+    return verdict if verdict in _FAILED_GATE_VERDICTS else None
+
+
+def _parent_dependency_satisfied(
+    conn: sqlite3.Connection, parent_id: str, *,
+    child_id: Optional[str] = None,
+    child_title: Optional[str] = None,
+    child_assignee: Optional[str] = None,
+    parent_status: Optional[str] = None,
+    failed_gate_cache: Optional[dict[str, Optional[str]]] = None,
+) -> bool:
+    """A terminal parent is satisfied unless it explicitly failed a gate.
+
+    A narrow remediation child is the only exception: the fix must be allowed
+    to start *because* the parent gate failed.  Normal downstream QA/Release
+    children remain held.
+    """
+    if parent_status is None:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+        ).fetchone()
+        parent_status = str(row["status"]) if row is not None else None
+    if parent_status not in ("done", "archived"):
+        return False
+    if parent_status == "archived":
+        return True
+    if failed_gate_cache is None:
+        failed_verdict = _explicit_failed_gate_verdict(conn, parent_id)
+    else:
+        if parent_id not in failed_gate_cache:
+            failed_gate_cache[parent_id] = _explicit_failed_gate_verdict(conn, parent_id)
+        failed_verdict = failed_gate_cache[parent_id]
+    if failed_verdict is None:
+        return True
+    if child_id and (child_title is None or child_assignee is None):
+        child = conn.execute(
+            "SELECT title, assignee FROM tasks WHERE id = ?", (child_id,)
+        ).fetchone()
+        if child is not None:
+            child_title = str(child["title"] or "")
+            child_assignee = str(child["assignee"] or "")
+    assignee = str(child_assignee or "").lower()
+    return assignee == "vibe" and bool(
+        _REMEDIATION_TITLE_RE.match(str(child_title or ""))
+    )
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
@@ -3759,8 +3880,9 @@ def recompute_ready(
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
+        failed_gate_cache: dict[str, Optional[str]] = {}
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, title, assignee, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -3773,12 +3895,23 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id, t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(
+                _parent_dependency_satisfied(
+                    conn,
+                    p["id"],
+                    child_id=task_id,
+                    child_title=row["title"],
+                    child_assignee=row["assignee"],
+                    parent_status=p["status"],
+                    failed_gate_cache=failed_gate_cache,
+                )
+                for p in parents
+            ):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3839,13 +3972,18 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
+        parent_rows = conn.execute(
+            "SELECT p.id FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ?",
             (task_id,),
-        ).fetchone()
-        if undone:
+        ).fetchall()
+        unsatisfied_parent = next(
+            (p["id"] for p in parent_rows
+             if not _parent_dependency_satisfied(conn, p["id"], child_id=task_id)),
+            None,
+        )
+        if unsatisfied_parent:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
@@ -3853,7 +3991,7 @@ def claim_task(
             )
             _append_event(
                 conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
+                {"reason": "parent_dependency_unsatisfied", "parent": unsatisfied_parent},
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -5464,7 +5602,7 @@ def promote_task(
         ).fetchall()
         unsatisfied = [
             p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
+            if not _parent_dependency_satisfied(conn, p["id"], child_id=task_id)
         ]
         if unsatisfied:
             return False, (
@@ -5527,13 +5665,17 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
+        parent_rows = conn.execute(
+            "SELECT p.id FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ?",
             (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        ).fetchall()
+        has_unsatisfied_parent = any(
+            not _parent_dependency_satisfied(conn, p["id"], child_id=task_id)
+            for p in parent_rows
+        )
+        new_status = "todo" if has_unsatisfied_parent else "ready"
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run

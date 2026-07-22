@@ -252,3 +252,217 @@ def test_cli_promote_dedupes_duplicate_ids(kanban_home, capsys):
             (child,),
         ).fetchone()["n"]
     assert n == 1
+
+
+# ---------------------------------------------------------------------------
+# Semantic gate dependencies (D-012): terminal != passed
+# ---------------------------------------------------------------------------
+
+
+def _completed_gate(conn, verdict: str | None, *, assignee: str = "review"):
+    parent = kb.create_task(conn, title=f"[{assignee}] gate", assignee=assignee)
+    metadata = {"verdict": verdict} if verdict is not None else None
+    summary = f"{verdict} @ {'a' * 40}" if verdict is not None else "review completed"
+    assert kb.complete_task(conn, parent, summary=summary, metadata=metadata)
+    return parent
+
+
+def test_failed_review_does_not_promote_existing_child(conn):
+    parent = kb.create_task(conn, title="[Review] gate", assignee="review")
+    child = kb.create_task(conn, title="QA", assignee="qa", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+    assert kb.complete_task(
+        conn, parent,
+        summary=f"REQUEST_CHANGES @ {'a' * 40}",
+        metadata={"verdict": "REQUEST_CHANGES"},
+    )
+    assert kb.get_task(conn, child).status == "todo"
+    assert kb.recompute_ready(conn) == 0
+
+
+def test_child_created_after_failed_gate_stays_todo(conn):
+    parent = _completed_gate(conn, "REQUEST_CHANGES")
+    child = kb.create_task(conn, title="QA", assignee="qa", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+
+
+def test_explicit_fix_child_of_failed_gate_is_ready_and_claimable(conn):
+    parent = _completed_gate(conn, "REQUEST_CHANGES")
+    fix = kb.create_task(
+        conn,
+        title="[Fix][widgets] PR #17 review blocker remediation",
+        assignee="vibe",
+        parents=[parent],
+    )
+    assert kb.get_task(conn, fix).status == "ready"
+    assert kb.claim_task(conn, fix, claimer="test") is not None
+
+
+def test_non_fix_vibe_child_of_failed_gate_stays_todo(conn):
+    parent = _completed_gate(conn, "REQUEST_CHANGES")
+    child = kb.create_task(
+        conn, title="[Implement] unrelated continuation", assignee="vibe", parents=[parent]
+    )
+    assert kb.get_task(conn, child).status == "todo"
+
+
+def test_linking_failed_gate_demotes_ready_child(conn):
+    parent = _completed_gate(conn, "QA_FAIL", assignee="qa")
+    child = kb.create_task(conn, title="Release", assignee="release")
+    assert kb.get_task(conn, child).status == "ready"
+    kb.link_tasks(conn, parent, child)
+    assert kb.get_task(conn, child).status == "todo"
+
+
+def test_claim_rejects_racy_ready_child_of_failed_gate(conn):
+    parent = _completed_gate(conn, "REQUEST_CHANGES")
+    child = kb.create_task(conn, title="QA", assignee="qa", parents=[parent])
+    conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+    assert kb.claim_task(conn, child, claimer="test") is None
+    assert kb.get_task(conn, child).status == "todo"
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind='claim_rejected' ORDER BY id DESC LIMIT 1",
+        (child,),
+    ).fetchone()
+    assert json.loads(event["payload"])["reason"] == "parent_dependency_unsatisfied"
+
+
+def test_manual_promote_refuses_failed_gate_without_force(conn):
+    parent = _completed_gate(conn, "NOT_READY", assignee="release")
+    child = kb.create_task(conn, title="Apply", parents=[parent])
+    ok, err = kb.promote_task(conn, child, actor="tester")
+    assert ok is False
+    assert parent in err
+
+
+def test_unblock_keeps_child_todo_when_gate_failed(conn):
+    parent = _completed_gate(conn, "REQUEST_CHANGES")
+    child = kb.create_task(conn, title="QA", assignee="qa", parents=[parent])
+    conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (child,))
+    assert kb.unblock_task(conn, child)
+    assert kb.get_task(conn, child).status == "todo"
+
+
+@pytest.mark.parametrize(
+    ("assignee", "verdict"),
+    [("review", "APPROVE"), ("qa", "QA_PASS"), ("release", "RELEASE_READY")],
+)
+def test_passing_gate_promotes_child(conn, assignee, verdict):
+    parent = kb.create_task(conn, title=f"[{assignee}] gate", assignee=assignee)
+    child = kb.create_task(conn, title="child", parents=[parent])
+    assert kb.complete_task(conn, parent, summary=verdict, metadata={"verdict": verdict})
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_legacy_gate_without_explicit_verdict_remains_backward_compatible(conn):
+    parent = _completed_gate(conn, None)
+    child = kb.create_task(conn, title="legacy child", parents=[parent])
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_failed_gate_summary_only_fallback_holds_child(conn):
+    parent = kb.create_task(conn, title="[Review] gate", assignee="review")
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary=f"REQUEST_CHANGES @ {'b' * 40}",
+        metadata=None,
+    )
+    child = kb.create_task(conn, title="QA", assignee="qa", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+
+
+def test_summary_fallback_requires_verdict_as_first_token(conn):
+    parent = kb.create_task(conn, title="[Review] gate", assignee="review")
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary="Review finished.\nREQUEST_CHANGES quoted later in the handoff.",
+        metadata=None,
+    )
+    child = kb.create_task(conn, title="legacy-compatible child", parents=[parent])
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_known_non_gate_assignee_overrides_gate_like_title(conn):
+    parent = kb.create_task(conn, title="[Review] implementation notes", assignee="vibe")
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary="REQUEST_CHANGES is business prose, not a gate verdict",
+        metadata={"verdict": "REQUEST_CHANGES"},
+    )
+    child = kb.create_task(conn, title="normal downstream", parents=[parent])
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_gate_title_fallback_is_only_for_unassigned_legacy_task(conn):
+    parent = kb.create_task(conn, title="[Review] legacy gate", assignee="review")
+    conn.execute("UPDATE tasks SET assignee = NULL WHERE id = ?", (parent,))
+    assert kb.complete_task(
+        conn,
+        parent,
+        summary="REQUEST_CHANGES legacy fallback",
+        metadata=None,
+    )
+    child = kb.create_task(conn, title="held child", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+
+
+def test_later_crashed_run_does_not_erase_completed_gate_verdict(conn):
+    parent = _completed_gate(conn, "REQUEST_CHANGES")
+    conn.execute(
+        "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at, summary) "
+        "VALUES (?, 'crashed', 'crashed', 9999999998, 9999999999, 'provider failure')",
+        (parent,),
+    )
+    child = kb.create_task(conn, title="QA", assignee="qa", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"
+
+
+def test_non_gate_fail_summary_does_not_block_children(conn):
+    parent = kb.create_task(conn, title="Import report", assignee="vibe")
+    assert kb.complete_task(conn, parent, summary="FAIL: optional source unavailable")
+    child = kb.create_task(conn, title="Document outcome", parents=[parent])
+    assert kb.get_task(conn, child).status == "ready"
+
+
+def test_fix_child_cannot_bypass_other_unfinished_parent(conn):
+    failed_gate = _completed_gate(conn, "REQUEST_CHANGES")
+    unfinished = kb.create_task(conn, title="Prepare fixture", assignee="vibe")
+    fix = kb.create_task(
+        conn,
+        title="[Fix][widgets] narrow remediation",
+        assignee="vibe",
+        parents=[failed_gate, unfinished],
+    )
+    assert kb.get_task(conn, fix).status == "todo"
+    assert kb.complete_task(conn, unfinished, summary="fixture ready")
+    assert kb.get_task(conn, fix).status == "ready"
+
+
+def test_archived_parent_is_satisfied_across_create_link_and_unblock(conn):
+    parent = kb.create_task(conn, title="superseded gate", assignee="review")
+    assert kb.archive_task(conn, parent)
+
+    created_child = kb.create_task(conn, title="created child", parents=[parent])
+    assert kb.get_task(conn, created_child).status == "ready"
+
+    linked_child = kb.create_task(conn, title="linked child")
+    kb.link_tasks(conn, parent, linked_child)
+    assert kb.get_task(conn, linked_child).status == "ready"
+
+    blocked_child = kb.create_task(conn, title="blocked child", parents=[parent])
+    conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (blocked_child,))
+    assert kb.unblock_task(conn, blocked_child)
+    assert kb.get_task(conn, blocked_child).status == "ready"
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    ["CHANGES_REQUESTED", "QA_FAILED", "FAILED", "RELEASE_NOT_READY", "BLOCKED"],
+)
+def test_failed_gate_verdict_aliases_hold_children(conn, verdict):
+    parent = _completed_gate(conn, verdict)
+    child = kb.create_task(conn, title="downstream", parents=[parent])
+    assert kb.get_task(conn, child).status == "todo"

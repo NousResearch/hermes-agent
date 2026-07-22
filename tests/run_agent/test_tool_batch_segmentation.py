@@ -153,6 +153,98 @@ class TestPlanToolBatchSegments:
         # Order and completeness preserved.
         assert _flatten_ids(segments) == ["w1", "r1", "w2", "r2"]
 
+    def test_v4a_decoy_path_does_not_parallelize_with_real_target(self, tmp_path):
+        """mode=patch scopes via V4A headers, not a decoy path= argument.
+
+        A patch that claims path=dummy.txt but updates real.py must not share
+        a parallel segment with write_file/read_file on real.py.
+        """
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: real.py\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        patch_args = json.dumps({
+            "mode": "patch",
+            "path": "dummy.txt",
+            "patch": patch_body,
+        })
+        calls = [
+            _tc("patch", patch_args, call_id="p1"),
+            _tc("write_file", '{"path":"real.py","content":"x"}', call_id="w1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _flatten_ids(segments) == ["p1", "w1"]
+        # Overlap on real.py must prevent a single parallel segment.
+        assert not (
+            len(segments) == 1
+            and segments[0][0] == "parallel"
+            and [tc.id for tc in segments[0][1]] == ["p1", "w1"]
+        )
+        # Solo runs demote to sequential and may merge; either shape is safe.
+        if len(segments) == 1:
+            assert segments[0][0] == "sequential"
+        else:
+            assert [tc.id for tc in segments[0][1]] == ["p1"]
+            assert [tc.id for tc in segments[1][1]] == ["w1"]
+
+    def test_v4a_multi_file_reserves_all_header_targets(self, tmp_path):
+        """Multi-file V4A must reserve every Update/Add/Delete/Move target."""
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: a.py\n"
+            "@@\n-a\n+b\n"
+            "*** Add File: b.py\n"
+            "+fresh\n"
+            "*** End Patch\n"
+        )
+        # Honest path= only names a.py — b.py still must be reserved.
+        patch_args = json.dumps({
+            "mode": "patch",
+            "path": "a.py",
+            "patch": patch_body,
+        })
+        calls = [
+            _tc("patch", patch_args, call_id="p1"),
+            _tc("read_file", '{"path":"b.py"}', call_id="r1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _flatten_ids(segments) == ["p1", "r1"]
+        assert not (
+            len(segments) == 1
+            and segments[0][0] == "parallel"
+            and [tc.id for tc in segments[0][1]] == ["p1", "r1"]
+        )
+        if len(segments) == 1:
+            assert segments[0][0] == "sequential"
+        else:
+            assert [tc.id for tc in segments[0][1]] == ["p1"]
+            assert [tc.id for tc in segments[1][1]] == ["r1"]
+
+    def test_v4a_without_path_arg_still_scopes_from_headers(self, tmp_path):
+        """mode=patch with no path= must still parallel-scope from V4A headers."""
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: real.py\n"
+            "@@\n-old\n+new\n"
+            "*** End Patch\n"
+        )
+        patch_args = json.dumps({"mode": "patch", "patch": patch_body})
+        calls = [
+            _tc("patch", patch_args, call_id="p1"),
+            _tc("write_file", '{"path":"other.py","content":"x"}', call_id="w1"),
+            _tc("read_file", '{"path":"real.py"}', call_id="r1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        # p1+w1 are disjoint → can share a parallel run; r1 overlaps real.py → new run.
+        assert _flatten_ids(segments) == ["p1", "w1", "r1"]
+        assert [tc.id for tc in segments[0][1]] == ["p1", "w1"]
+        assert segments[0][0] == "parallel"
+        assert [tc.id for tc in segments[1][1]] == ["r1"]
+
     def test_path_scoped_tool_without_path_is_a_barrier(self):
         calls = [
             _tc("read_file", "{}", call_id="nopath"),

@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
 
 
@@ -689,7 +691,6 @@ class TestDeregisterAuthorization:
         reg = self._reg()
         reg.register_plugin_override_policy("hermes_plugins.evil", False)
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.evil"):
-            import pytest
             with pytest.raises(PermissionError, match="allow_tool_override"):
                 reg.deregister("protected")
         assert reg._tools.get("protected") is not None, "tool must survive the rejected deregister"
@@ -785,7 +786,6 @@ class TestDeregisterAuthorization:
         reg = self._reg()
         reg.register_plugin_override_policy("hermes_plugins.evil", False)
         with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.evil"):
-            import pytest
             with pytest.raises(PermissionError):
                 reg.deregister("protected")
         # Tool is still present, so a follow-up plain register() hits the

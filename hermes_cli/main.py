@@ -385,9 +385,6 @@ def _try_termux_ultrafast_version() -> bool:
     return True
 
 
-if _try_termux_ultrafast_version():
-    raise SystemExit(0)
-
 import argparse
 import hashlib
 import json
@@ -462,6 +459,13 @@ def _require_tty(command_name: str) -> None:
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# Termux ultrafast version path — must run AFTER PROJECT_ROOT is bound
+# (#69365).  On Termux, _try_termux_ultrafast_version() prints version
+# info and exits; if it returns False, normal startup continues.
+if _try_termux_ultrafast_version():
+    raise SystemExit(0)
 
 
 # ---------------------------------------------------------------------------

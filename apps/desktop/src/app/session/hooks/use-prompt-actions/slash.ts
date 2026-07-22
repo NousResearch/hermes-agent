@@ -15,19 +15,23 @@ import {
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
+import { enqueueQueuedPrompt } from '@/store/composer-queue'
 import { notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $connection,
+  $selectedStoredSessionId,
   $sessions,
   $yoloActive,
+  resolveComposerSessionKey,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
 
@@ -89,8 +93,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
-      const ensureSessionId = async (sessionHint?: string) =>
-        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+      const ensureSessionId = async (sessionHint?: string, preview?: null | string) =>
+        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend(preview))
 
       // Resolve the target session plus a writer for inline slash output, or
       // notify + return null when none can be created. Folds the ensure / bail /
@@ -98,7 +102,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const withSlashOutput = async (
         ctx: SlashActionCtx
       ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
-        const sessionId = await ensureSessionId(ctx.sessionHint)
+        // A slash on a fresh draft creates the backend session; seed the
+        // sidebar preview with the typed command so the row doesn't sit as
+        // "Untitled session" (auto-title only fires after a full exchange,
+        // which a bare exec command never produces).
+        const sessionId = await ensureSessionId(ctx.sessionHint, ctx.command)
 
         if (!sessionId) {
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
@@ -106,8 +114,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return null
         }
 
+        // Header carries the command token only. The full invocation would
+        // duplicate long args — `/goal <prose>` echoed the whole goal in the
+        // mono header, then again in the backend notice right under it.
         const render = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(`/${ctx.name}`, text) : text)
 
         return { render, sessionId }
       }
@@ -179,7 +190,20 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            // The backend already executed the command — for `/goal <text>`
+            // the goal is set and `message` is its kickoff prompt. Dropping
+            // it here loses the kickoff silently (the goal exists but the
+            // agent never hears about it, #63352). Queue it on the composer
+            // queue instead: it fires when the running turn settles, and the
+            // queue panel above the composer shows it in the meantime.
+            const storedId = $sessionStates.get()[sessionId]?.storedSessionId || $selectedStoredSessionId.get()
+            const queueKey = resolveComposerSessionKey(storedId, $sessions.get()) || storedId || sessionId
+
+            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message })) {
+              renderSlashOutput('session busy — message queued to send when the current turn finishes')
+            } else {
+              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            }
 
             return
           }

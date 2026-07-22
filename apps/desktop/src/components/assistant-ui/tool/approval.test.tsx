@@ -33,7 +33,7 @@ function part(toolName: string): ToolPart {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; smartDenied?: boolean } = {}
+  extra: { choices?: string[]; description?: string; smartDenied?: boolean } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -73,6 +73,18 @@ describe('PendingToolApproval', () => {
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('shows multi-line approval descriptions on the inline tool card', () => {
+    const description = 'Runs:\npwd'
+    setRequest('<terminal> (plugin approval rule)', undefined, { description })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    const descriptionElement = screen.getByText((_, element) => element?.textContent === description)
+    const classes = [...descriptionElement.classList]
+
+    expect(classes).toEqual(expect.arrayContaining(['whitespace-pre-wrap', 'break-words', 'overflow-auto']))
+    expect(classes.some(className => className.startsWith('max-h-'))).toBe(true)
   })
 
   it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
@@ -163,6 +175,19 @@ describe('PendingToolApproval', () => {
     expect(fallback).not.toBeNull()
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('keeps multi-line fallback descriptions readable', () => {
+    const description = 'Before:\nold value\nAfter:\nnew value'
+    setRequest('apply changes', undefined, { description })
+    render(<PendingApprovalFallback />)
+
+    const descriptionElement = screen.getByText((_, element) => element?.textContent === description)
+    const classes = [...descriptionElement.classList]
+
+    expect(classes).toEqual(expect.arrayContaining(['whitespace-pre-wrap', 'break-words', 'overflow-auto']))
+    expect(classes.some(className => className.startsWith('max-h-'))).toBe(true)
+    expect(classes).not.toContain('truncate')
   })
 
   it('hides the floating fallback once the inline approval bar is mounted', async () => {

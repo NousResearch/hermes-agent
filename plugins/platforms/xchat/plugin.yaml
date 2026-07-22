@@ -1,0 +1,80 @@
+name: xchat-platform
+label: X Chat (encrypted DMs)
+kind: platform
+version: 0.1.0
+description: >
+  X Chat gateway adapter for Hermes Agent.
+  Connects the agent to X's end-to-end encrypted direct messages via the
+  official X Chat API. Message bodies are encrypted/decrypted locally with
+  the Chat XDK (chatxdk) — X only ever routes ciphertext. Inbound messages
+  arrive through a polling loop over the conversation-events endpoint;
+  outbound replies are encrypted, signed, and POSTed back.
+
+  One-time onboarding runs through `hermes xchat setup`: it stores the
+  OAuth2 user token, derives the bot's user id, generates + registers the
+  E2EE keypairs, and persists the private-key blob under
+  ``~/.hermes/xchat/`` (mode 600).
+author: NousResearch
+requires_env:
+  - name: XCHAT_ACCESS_TOKEN
+    description: "OAuth2 user access token with dm.read, dm.write, users.read, tweet.read scopes (set by `hermes xchat setup`)"
+    prompt: "X OAuth2 user access token"
+    url: "https://developer.x.com/en/portal/dashboard"
+    password: true
+optional_env:
+  - name: XCHAT_REFRESH_TOKEN
+    description: "OAuth2 refresh token — lets the adapter renew the ~2h access token automatically (requires XCHAT_CLIENT_ID)"
+    prompt: "X OAuth2 refresh token (or empty)"
+    password: true
+  - name: XCHAT_CLIENT_ID
+    description: "OAuth2 app client id — required for automatic token refresh"
+    prompt: "X app OAuth2 client id (or empty)"
+    password: false
+  - name: XCHAT_CLIENT_SECRET
+    description: "OAuth2 app client secret — only for confidential clients"
+    prompt: "X app OAuth2 client secret (or empty)"
+    password: true
+  - name: XCHAT_USER_ID
+    description: "The bot account's numeric X user id (derived automatically by `hermes xchat setup`)"
+    prompt: "Bot X user id (or empty to derive)"
+    password: false
+  - name: XCHAT_SIGNING_KEY_VERSION
+    description: "Registered public-key version for signing (written by `hermes xchat setup`)"
+    prompt: "Signing key version (default 1)"
+    password: false
+  - name: XCHAT_PRIVATE_KEYS_B64
+    description: "Base64 private-key blob from the Chat XDK export — overrides the blob file under ~/.hermes/xchat/"
+    prompt: "Private-key blob (or empty to use the blob file)"
+    password: true
+  - name: XCHAT_ALLOWED_USERS
+    description: "Comma-separated numeric X user ids allowed to talk to the bot"
+    prompt: "Allowed user ids (comma-separated)"
+    password: false
+  - name: XCHAT_ALLOW_ALL_USERS
+    description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: XCHAT_CONVERSATION_IDS
+    description: "Comma-separated conversation ids to poll (omit to auto-discover all conversations)"
+    prompt: "Pinned conversation ids (or empty)"
+    password: false
+  - name: XCHAT_POLL_INTERVAL
+    description: "Seconds between event polls per cycle (default 10)"
+    prompt: "Poll interval seconds (default 10)"
+    password: false
+  - name: XCHAT_REQUIRE_MENTION
+    description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
+    prompt: "Require a mention in group chats?"
+    password: false
+  - name: XCHAT_MENTION_PATTERNS
+    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+    prompt: "Group mention patterns"
+    password: false
+  - name: XCHAT_HOME_CHANNEL
+    description: "Default X Chat target for cron / notification delivery: conversation id or bare numeric user id"
+    prompt: "Home conversation/user id (or empty)"
+    password: false
+  - name: XCHAT_HOME_CHANNEL_NAME
+    description: "Human label for the home channel (defaults to the id)"
+    prompt: "Home channel display name (or empty)"
+    password: false

@@ -674,6 +674,18 @@ wheels = [
 ]
 
 [[package]]
+name = "chatxdk"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/2d/38e13cfdf9d0dcee7e13f41015aa4b2648a0f42e0142be12790aa48bdf3e/chatxdk-0.4.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a89d6735417d4c44fbf4d7d7799e58b4cde658536e71eaf37371c9648ef10792", size = 3288306, upload-time = "2026-07-20T23:22:27.254Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/80/81b3bad83a4c986f322d6d591993658c4734a5986453e3186ba85280cf21/chatxdk-0.4.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:704c753d474a7c3d3b4dffae0d1a4be3ba78ca911a0b0cc65e85afb3dade37b0", size = 3123290, upload-time = "2026-07-20T23:22:29.043Z" },
+    { url = "https://files.pythonhosted.org/packages/87/68/c0fa19bd67593feb4ffbd965a461bebf685381eeab0ab18551499e740280/chatxdk-0.4.1-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0ed165dffe8c6336d1bbbf6423034e3303c6645c9be72154afae624fb3148e03", size = 3440648, upload-time = "2026-07-20T23:22:30.87Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/3a/975e25b900aa5c1a5d27387f72ac43a5930bc6bbea96f01efc343dcd31f2/chatxdk-0.4.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dba2c5248adaaeafada52980ec739f8068488564a1861d1ca2be0d7a96006a1c", size = 3476274, upload-time = "2026-07-20T23:22:32.728Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/bb/41a3bf9ddd8875a0d3f7445c90324a6039d65bfdd8ddb6de5c29b2139a87/chatxdk-0.4.1-cp310-abi3-win_amd64.whl", hash = "sha256:2b351012cba965e1c2d253381a3ad0e7a6b4858404fc30e811fae70d78b18af3", size = 2959643, upload-time = "2026-07-20T23:22:34.473Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1727,6 +1739,9 @@ web = [
 wecom = [
     { name = "defusedxml" },
 ]
+xchat = [
+    { name = "chatxdk" },
+]
 youtube = [
     { name = "youtube-transcript-api" },
 ]
@@ -1749,6 +1764,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.1" },
     { name = "certifi", specifier = "==2026.5.20" },
+    { name = "chatxdk", marker = "extra == 'xchat'", specifier = "==0.4.1" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", specifier = "==6.0.0" },
     { name = "cryptography", specifier = "==46.0.7" },
@@ -1855,7 +1871,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "xchat", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

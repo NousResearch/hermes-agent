@@ -14332,6 +14332,24 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
+
+            # Bundled platform plugins register LAZILY (perf, #54448): their
+            # modules — and therefore their register_cli_command() calls —
+            # only run when the platform_registry is asked for them. When the
+            # user invokes `hermes <platform> ...` (e.g. `hermes photon`,
+            # `hermes xchat`), resolve that one deferred loader now so the
+            # plugin's CLI subcommand exists in the parser. Cheap: imports a
+            # single platform module, and only on an unknown-subcommand path.
+            _first_pos = _first_positional_argv()
+            if _first_pos and _first_pos not in seen_plugin_commands:
+                try:
+                    from gateway.platform_registry import platform_registry
+
+                    if platform_registry.is_registered(_first_pos):
+                        platform_registry.get(_first_pos)  # fires the loader
+                except Exception:
+                    pass
+
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

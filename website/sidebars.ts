@@ -641,6 +641,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/signal',
             'user-guide/messaging/email',
             'user-guide/messaging/sms',
+            'user-guide/messaging/xchat',
           ],
         },
         {

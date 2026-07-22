@@ -621,6 +621,28 @@ Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `s
 | `SIMPLEX_HOME_CHANNEL` | Default contact/group ID for cron / notification delivery. |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the ID). |
 
+### X Chat
+
+Connect Hermes to [X Chat](https://docs.x.com/xchat/introduction) — X's end-to-end encrypted direct messages. See [the X Chat messaging guide](/user-guide/messaging/xchat).
+
+| Variable | Description |
+|----------|-------------|
+| `XCHAT_ACCESS_TOKEN` | OAuth2 user access token with `dm.read`, `dm.write`, `users.read`, `tweet.read` scopes (set by `hermes xchat setup`). |
+| `XCHAT_REFRESH_TOKEN` | OAuth2 refresh token — enables automatic renewal of the ~2h access token (rotated on every refresh and re-persisted). |
+| `XCHAT_CLIENT_ID` | X app OAuth2 client id — required for automatic token refresh. |
+| `XCHAT_CLIENT_SECRET` | X app OAuth2 client secret (confidential clients only). |
+| `XCHAT_USER_ID` | The bot account's numeric X user id (derived automatically by `hermes xchat setup`). |
+| `XCHAT_SIGNING_KEY_VERSION` | Registered public-key version for message signing (written by `hermes xchat setup`). |
+| `XCHAT_PRIVATE_KEYS_B64` | Base64 private-key blob override — takes precedence over `~/.hermes/xchat/private_keys.b64`. |
+| `XCHAT_ALLOWED_USERS` | Comma-separated numeric X user ids allowed to talk to the bot. |
+| `XCHAT_ALLOW_ALL_USERS` | Allow any sender to trigger the bot (dev only — disables allowlist). |
+| `XCHAT_CONVERSATION_IDS` | Comma-separated conversation ids to poll (omit to auto-discover all conversations). |
+| `XCHAT_POLL_INTERVAL` | Seconds between event polls (default `10`, floor `2`). |
+| `XCHAT_REQUIRE_MENTION` | Ignore group-conversation messages unless they match a mention wake word (`true`/`false`, default `false`). |
+| `XCHAT_MENTION_PATTERNS` | Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to the Hermes wake words). |
+| `XCHAT_HOME_CHANNEL` | Default conversation/user id for cron / notification delivery. |
+| `XCHAT_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the id). |
+
 ### Photon
 
 Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other Spectrum platforms) via the Node sidecar. See [the Photon messaging guide](/user-guide/messaging/photon).

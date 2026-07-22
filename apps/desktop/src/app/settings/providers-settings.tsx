@@ -28,7 +28,7 @@ import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
-import { LoadingState, SettingsContent } from './primitives'
+import { SettingsContent, SettingsSkeleton } from './primitives'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
 // exists in the Electron desktop shell, not the web dashboard.
@@ -431,7 +431,7 @@ export function ProvidersSettings({
   }
 
   if (!vars) {
-    return <LoadingState label={t.settings.providers.loading} />
+    return <SettingsSkeleton search sections={[{ rows: 6 }]} />
   }
 
   const hasOauth = oauthProviders.length > 0

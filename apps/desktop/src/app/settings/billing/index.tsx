@@ -6,11 +6,19 @@ import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
-import { ListRow, SectionHeading, SettingsContent, SettingsSection } from '../primitives'
+import {
+  ListRow,
+  ListRowSkeleton,
+  SectionHeading,
+  SectionHeadingSkeleton,
+  SettingsContent,
+  SettingsSection
+} from '../primitives'
 
 import { RowValue } from './account-row-value'
 import { BillingApiProvider } from './api'
@@ -412,6 +420,34 @@ function BillingHeader({
   )
 }
 
+// Loading shape for the billing overview: three summary cards over the Plan /
+// Payment & credits / Usage sections. Rendered under the real header.
+function BillingSkeleton() {
+  return (
+    <>
+      <div className="@container mb-6">
+        <div className="grid gap-3 @2xl:grid-cols-3">
+          {[0, 1, 2].map(i => (
+            <div className="min-w-0 space-y-2" key={i}>
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-6 w-20" />
+            </div>
+          ))}
+        </div>
+      </div>
+      {[0, 1, 2].map(section => (
+        <section className="mb-6" key={section}>
+          <SectionHeadingSkeleton />
+          <div className="grid gap-1">
+            <ListRowSkeleton />
+            <ListRowSkeleton />
+          </div>
+        </section>
+      ))}
+    </>
+  )
+}
+
 function BillingSettingsContent({
   fixtureName,
   onFixtureChange
@@ -426,6 +462,18 @@ function BillingSettingsContent({
   // fixture short-circuit here.
   const billingState = useBillingState()
   const subscriptionState = useSubscriptionState()
+
+  // First load keeps the page's shape via a skeleton instead of flashing "—"
+  // summary cards (background refetches leave `isPending` false, so no flicker).
+  if (billingState.isPending) {
+    return (
+      <SettingsContent>
+        <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
+        <BillingSkeleton />
+      </SettingsContent>
+    )
+  }
+
   const billingResult = billingState.data
   const subscriptionResult = subscriptionState.data
   const view = deriveBillingView(billingResult, subscriptionResult)

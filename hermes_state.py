@@ -1267,6 +1267,40 @@ class SessionDB:
                 pass
 
     @staticmethod
+    def _drop_orphan_fts_triggers(cursor: sqlite3.Cursor) -> bool:
+        """Drop triggers on ``messages`` that look FTS-related but are NOT in
+        ``_FTS_TRIGGERS``.
+
+        Legacy code paths (or manual DDL) may have created duplicate triggers
+        under alternate names (e.g. ``messages_ai``) that conflict with the
+        canonical ``messages_fts_*`` set.  Two triggers writing to the same
+        FTS5 virtual table on every INSERT causes every message persist to fail
+        with ``"constraint failed"`` (see 2026-07-22 incident).
+
+        Returns ``True`` if any orphan triggers were found and dropped (caller
+        should rebuild FTS indexes since data may have been silently lost).
+        """
+        known = set(_FTS_TRIGGERS)
+        rows = cursor.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'trigger' AND tbl_name = 'messages'"
+        ).fetchall()
+        orphan_names = [
+            (r["name"] if isinstance(r, sqlite3.Row) else r[0])
+            for r in rows
+            if (r["name"] if isinstance(r, sqlite3.Row) else r[0]) not in known
+        ]
+        for name in orphan_names:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+                logger.warning(
+                    "Dropped orphan FTS trigger on messages table: %s", name
+                )
+            except sqlite3.OperationalError:
+                pass
+        return bool(orphan_names)
+
+    @staticmethod
     def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
         placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
         row = cursor.execute(
@@ -1994,7 +2028,15 @@ class SessionDB:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
             # an earlier no-FTS5 runtime.
-            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            #
+            # First, clean up any orphan FTS triggers left by legacy code
+            # paths or manual DDL (e.g. messages_ai/messages_ad/messages_au)
+            # that would conflict with the canonical messages_fts_* set.
+            had_orphans = self._drop_orphan_fts_triggers(cursor)
+            triggers_need_repair = (
+                had_orphans
+                or self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            )
             self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
             # Trigram FTS5 for CJK/substring search. This is optional relative

@@ -401,3 +401,73 @@ class TestResolveOpenaiAudioApiKey:
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "  voice-key  ")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         assert resolve_openai_audio_api_key() == "voice-key"
+
+
+# ---------------------------------------------------------------------------
+# resolve_openai_audio_api_key — profile secret scope
+# ---------------------------------------------------------------------------
+class TestResolveOpenaiAudioApiKeyIsProfileScoped:
+    """The key this returns authenticates the TTS/STT client.
+
+    In a multiplex gateway ``os.environ`` holds whichever profile's ``.env``
+    loaded at boot, not the profile the current turn belongs to — so a raw
+    read here would let one profile's voice reply or voice-note transcription
+    run on (and be billed to) another profile's OpenAI account. Same contract
+    ``agent/vertex_adapter`` and the WeChat send path already follow.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_multiplex(self):
+        from agent import secret_scope as ss
+
+        ss.set_multiplex_active(False)
+        yield
+        ss.set_multiplex_active(False)
+
+    def test_scope_wins_over_another_profiles_environ(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"OPENAI_API_KEY": "sk-this-profile"})
+        try:
+            assert resolve_openai_audio_api_key() == "sk-this-profile", (
+                "voice/STT authenticated with another profile's OpenAI key"
+            )
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_scope_miss_does_not_borrow_another_profiles_key(self, monkeypatch):
+        """Under multiplexing an absent key must stay absent, not fall through."""
+        from agent import secret_scope as ss
+
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"UNRELATED": "x"})
+        try:
+            assert resolve_openai_audio_api_key() == ""
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_voice_key_precedence_holds_inside_a_scope(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({
+            "VOICE_TOOLS_OPENAI_KEY": "sk-voice",
+            "OPENAI_API_KEY": "sk-general",
+        })
+        try:
+            assert resolve_openai_audio_api_key() == "sk-voice"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_single_profile_still_reads_environ(self, monkeypatch):
+        """Control: no multiplexing, no scope — unchanged behaviour."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-plain")
+        assert resolve_openai_audio_api_key() == "sk-plain"

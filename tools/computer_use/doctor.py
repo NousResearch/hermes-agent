@@ -1,11 +1,11 @@
 """
-`hermes computer-use doctor` — thin client for cua-driver's `health_report` MCP tool.
+`hermes computer-use doctor` — diagnostics adapter for cua-driver.
 
 cua-driver owns the health model (#1908 / be761fac on `main`). This module
-just drives the stdio JSON-RPC handshake, calls `health_report`, and
-renders the structured response. When the driver gets new checks, they
-flow through here without code changes on the Hermes side — the only
-contract is the stable `schema_version="1"` payload shape.
+prefers the stable `health_report` MCP tool and renders its structured
+response. Newer cua-driver permission policies can deny that tool before
+dispatch; in that case this module falls back to the driver's supported
+`doctor --json` CLI without bypassing the policy.
 
 Exit code conventions:
 - 0: overall == "ok"
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,31 @@ _OVERALL_GLYPH = {
     "degraded": "⚠️",
     "failed":   "❌",
 }
+
+
+class _HealthReportPolicyDenied(RuntimeError):
+    """The MCP exchange worked, but policy denied health_report dispatch."""
+
+
+def _is_health_report(value: Any) -> bool:
+    """Return whether *value* satisfies the stable health-report envelope."""
+    return (
+        isinstance(value, dict)
+        and value.get("schema_version") == "1"
+        and isinstance(value.get("platform"), str)
+        and isinstance(value.get("driver_version"), str)
+        and value.get("overall") in _OVERALL_GLYPH
+        and isinstance(value.get("checks"), list)
+    )
+
+
+def _is_cli_doctor_report(value: Any) -> bool:
+    """Return whether *value* is the current `cua-driver doctor --json` shape."""
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("ok"), bool)
+        and isinstance(value.get("probes"), list)
+    )
 
 
 def _cua_child_env() -> Dict[str, str]:
@@ -152,11 +178,26 @@ def _drive_health_report(
 
     result = resp.get("result") or {}
 
+    # A denied MCP tool call is still a successful JSON-RPC exchange. Current
+    # cua-driver versions encode that denial as result.isError plus a small
+    # structuredContent object (for example {"exit_code": 1}). Never mistake
+    # that error envelope for the documented health-report schema.
+    if result.get("isError"):
+        messages = [
+            str(item.get("text", "")).strip()
+            for item in result.get("content", [])
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        detail = next((message for message in messages if message), "MCP tool call failed")
+        if detail.lower().startswith("permission denied"):
+            raise _HealthReportPolicyDenied(detail)
+        raise RuntimeError(f"health_report MCP tool failed: {detail}")
+
     # Preferred: structuredContent (cua-driver-rs always emits it on the
     # health_report response). Fall back to parsing the first text item
     # as JSON for older cua-driver builds that didn't carry structuredContent.
     sc = result.get("structuredContent")
-    if isinstance(sc, dict):
+    if _is_health_report(sc):
         return sc
 
     for item in result.get("content", []):
@@ -165,7 +206,7 @@ def _drive_health_report(
             try:
                 # Many health_report payloads ship JSON in the text item too.
                 parsed = json.loads(text)
-                if isinstance(parsed, dict) and "schema_version" in parsed:
+                if _is_health_report(parsed):
                     return parsed
             except (ValueError, TypeError):
                 pass
@@ -176,9 +217,93 @@ def _drive_health_report(
     )
 
 
+def _drive_cli_doctor(binary: str, *, timeout: float = 12.0) -> Dict[str, Any]:
+    """Run the driver's supported machine-readable self-diagnostic command."""
+    try:
+        completed = subprocess.run(
+            [binary, "doctor", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=_sanitized_cua_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"cua-driver doctor could not run: {e}") from e
+
+    try:
+        report = json.loads(completed.stdout)
+    except (ValueError, TypeError) as e:
+        stderr = (completed.stderr or "").strip()
+        raise RuntimeError(
+            f"cua-driver doctor returned invalid JSON: {e}; stderr: {stderr or '(empty)'}"
+        ) from e
+
+    if not _is_cli_doctor_report(report):
+        raise RuntimeError(
+            "cua-driver doctor returned an unrecognised payload; "
+            f"keys: {list(report.keys()) if isinstance(report, dict) else type(report).__name__}"
+        )
+    return report
+
+
+def _cli_doctor_identity(report: Dict[str, Any]) -> tuple[str, str]:
+    """Extract version and platform from the driver's stable binary probe."""
+    for probe in report.get("probes", []):
+        if isinstance(probe, dict) and probe.get("label") == "binary":
+            message = str(probe.get("message") or "")
+            match = re.search(r"\bcua-driver\s+(\S+)\s+\([^)]*-(windows|linux|macos)\)", message)
+            if match:
+                platform = {"windows": "win32", "macos": "darwin"}.get(
+                    match.group(2), match.group(2)
+                )
+                return match.group(1), platform
+    return "?", sys.platform
+
+
+def _print_cli_doctor_report(report: Dict[str, Any], color: bool) -> None:
+    """Render the current `cua-driver doctor --json` probe report."""
+    probes = [probe for probe in report.get("probes", []) if isinstance(probe, dict)]
+    has_warning = any(probe.get("status") == "warn" for probe in probes)
+    ok = bool(report.get("ok"))
+    overall = "ok" if ok else "failed"
+    summary = "ok (warnings present)" if ok and has_warning else overall
+    version, platform = _cli_doctor_identity(report)
+    glyph = "✅" if ok else "❌"
+
+    if color:
+        col_red = "\033[31m"
+        col_yellow = "\033[33m"
+        col_green = "\033[32m"
+        col_reset = "\033[0m"
+        col_dim = "\033[2m"
+        header_col = col_yellow if has_warning and ok else (col_green if ok else col_red)
+    else:
+        col_red = col_yellow = col_green = col_reset = col_dim = header_col = ""
+
+    print(f"{glyph} cua-driver {version} on {platform} — {header_col}{summary}{col_reset}")
+    glyphs = {"ok": "✅", "warn": "⚠️", "err": "❌"}
+    colours = {"ok": col_green, "warn": col_yellow, "err": col_red}
+    for probe in probes:
+        status = str(probe.get("status") or "?")
+        label = str(probe.get("label") or "?")
+        message = str(probe.get("message") or "")
+        status_col = colours.get(status, "") if color else ""
+        print(f"  {glyphs.get(status, '•')} {status_col}{label}{col_reset}: {message}")
+        detail = probe.get("detail")
+        if detail:
+            for line in str(detail).splitlines():
+                print(f"      {col_dim}{line}{col_reset}")
+
+
 def _print_text_report(report: Dict[str, Any], color: bool) -> None:
     """Render the report in the same style as `cua-driver call health_report`
     would (one line per check + a summary footer)."""
+    if _is_cli_doctor_report(report):
+        _print_cli_doctor_report(report, color=color)
+        return
+
     schema = report.get("schema_version", "?")
     platform = report.get("platform", "?")
     driver_v = report.get("driver_version", "?")
@@ -270,8 +395,28 @@ def run_doctor(
 
     try:
         report = _drive_health_report(binary, include=include, skip=skip)
-    except RuntimeError as e:
-        print(f"cua-driver health_report failed: {e}", file=sys.stderr)
+    except _HealthReportPolicyDenied as health_error:
+        # Current cua-driver policy can deny health_report before dispatch even
+        # though it is read-only. Its own `doctor --json` command is the
+        # supported local diagnostic path and does not weaken that policy.
+        if include or skip:
+            print(
+                "cua-driver health_report failed and the CLI fallback does not "
+                f"support include/skip filters: {health_error}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            report = _drive_cli_doctor(binary)
+        except RuntimeError as doctor_error:
+            print(
+                f"cua-driver diagnostics failed: health_report: {health_error}; "
+                f"doctor --json: {doctor_error}",
+                file=sys.stderr,
+            )
+            return 2
+    except RuntimeError as health_error:
+        print(f"cua-driver health_report failed: {health_error}", file=sys.stderr)
         return 2
 
     if json_output:
@@ -281,6 +426,9 @@ def run_doctor(
         if color is None:
             color = sys.stdout.isatty()
         _print_text_report(report, color=bool(color))
+
+    if _is_cli_doctor_report(report):
+        return 0 if report.get("ok") else 1
 
     overall = report.get("overall")
     if overall in ("degraded", "failed"):

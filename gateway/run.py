@@ -7412,7 +7412,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            # A new PID must not inherit multiplex coverage from the previous
+            # process while its adapters are still starting. The final served
+            # set is written only after secondary startup succeeds.
+            write_runtime_status(
+                gateway_state="starting", exit_reason=None, served_profiles=[]
+            )
         except Exception:
             pass
 
@@ -9386,11 +9391,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         only point that sees every profile's resolved credentials together.
         """
         if not getattr(self.config, "multiplex_profiles", False):
+            # ``write_runtime_status`` merges with the previous record. Clear
+            # coverage explicitly so a multiplex -> single-profile restart
+            # cannot leave the old secondary profiles looking served by the
+            # new live PID.
+            try:
+                from gateway.status import write_runtime_status
+
+                write_runtime_status(served_profiles=[])
+            except Exception:
+                logger.debug("could not clear served_profiles", exc_info=True)
             return 0
 
         try:
             from hermes_cli.profiles import profiles_to_serve, get_active_profile_name
         except Exception:
+            try:
+                from gateway.status import write_runtime_status
+
+                write_runtime_status(served_profiles=[])
+            except Exception:
+                logger.debug("could not clear served_profiles", exc_info=True)
             return 0
 
         active = get_active_profile_name() or "default"

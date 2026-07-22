@@ -94,6 +94,50 @@ class ProfileGatewayProcess:
     pid: int
 
 
+@dataclass(frozen=True)
+class DefaultMultiplexGateway:
+    """A live default-profile gateway and the profiles it currently serves."""
+
+    pid: int
+    served_profiles: tuple[str, ...]
+
+
+def get_default_multiplex_gateway() -> DefaultMultiplexGateway | None:
+    """Return live default-gateway multiplex coverage, if it can be proven.
+
+    ``served_profiles`` is persisted by the running gateway. Treat it as
+    authoritative only when the same runtime record still identifies a live
+    default-profile gateway process; a stale state file must never make a dead
+    gateway look available to secondary profiles.
+    """
+    try:
+        from gateway.status import get_runtime_status_running_pid, read_runtime_status
+        from hermes_constants import get_default_hermes_root
+
+        default_root = get_default_hermes_root()
+        runtime = read_runtime_status(default_root / "gateway_state.json")
+        pid = get_runtime_status_running_pid(runtime, expected_home=default_root)
+        if not pid or not isinstance(runtime, dict):
+            return None
+
+        raw_profiles = runtime.get("served_profiles")
+        if not isinstance(raw_profiles, (list, tuple)):
+            return None
+        served_profiles = tuple(
+            dict.fromkeys(
+                name
+                for value in raw_profiles
+                if isinstance(value, str) and (name := value.strip())
+            )
+        )
+        if len(served_profiles) < 2:
+            return None
+        return DefaultMultiplexGateway(pid=pid, served_profiles=served_profiles)
+    except Exception:
+        logger.debug("Default multiplexer status probe failed", exc_info=True)
+        return None
+
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -1452,15 +1496,22 @@ def _gateway_list() -> None:
         return
 
     current = get_active_profile_name()
+    multiplex = get_default_multiplex_gateway()
 
     print("Gateways:")
     for prof in profiles:
-        marker = "✓" if prof.gateway_running else "✗"
+        profile_multiplexer = (
+            multiplex
+            if multiplex is not None and prof.name in multiplex.served_profiles
+            else None
+        )
+        marker = "✓" if prof.gateway_running or profile_multiplexer else "✗"
         label = prof.name
         if prof.name == current:
             label += " (current)"
         parts = [f"  {marker} {label:<24s}"]
         if prof.gateway_running:
+            pid = None
             try:
                 from gateway.status import get_running_pid
 
@@ -1469,6 +1520,12 @@ def _gateway_list() -> None:
                     parts.append(f"PID {pid}")
             except Exception:
                 pass
+            if multiplex and prof.name == "default" and pid == multiplex.pid:
+                parts.append(f"serves {len(multiplex.served_profiles)} profiles")
+        elif profile_multiplexer:
+            parts.append(
+                f"served by default multiplexer (PID {profile_multiplexer.pid})"
+            )
         else:
             parts.append("not running")
         print(" — ".join(parts))
@@ -7185,6 +7242,20 @@ def _gateway_command_inner(args):
         full = getattr(args, "full", False)
         system = getattr(args, "system", False)
         snapshot = get_gateway_runtime_snapshot(system=system)
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            active_profile = get_active_profile_name()
+        except Exception:
+            active_profile = "default"
+        multiplex = get_default_multiplex_gateway()
+        profile_multiplexer = (
+            multiplex
+            if not snapshot.running
+            and multiplex is not None
+            and active_profile in multiplex.served_profiles
+            else None
+        )
 
         # Check for service first
         _windows_service_installed = False
@@ -7192,7 +7263,16 @@ def _gateway_command_inner(args):
             from hermes_cli import gateway_windows
 
             _windows_service_installed = gateway_windows.is_installed()
-        if supports_systemd_services() and (
+        if profile_multiplexer:
+            print(
+                "✓ Gateway is running via the default-profile multiplexer "
+                f"(PID: {profile_multiplexer.pid})"
+            )
+            print(
+                f"  Profiles served: {', '.join(profile_multiplexer.served_profiles)}"
+            )
+            print("  Manage it from the default profile: hermes gateway status")
+        elif supports_systemd_services() and (
             get_systemd_unit_path(system=False).exists()
             or get_systemd_unit_path(system=True).exists()
         ):
@@ -7212,6 +7292,8 @@ def _gateway_command_inner(args):
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")
+                if multiplex and active_profile == "default" and multiplex.pid in pids:
+                    print(f"  Profiles served: {', '.join(multiplex.served_profiles)}")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()

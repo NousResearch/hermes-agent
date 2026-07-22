@@ -2,13 +2,19 @@
 
 When enabled, MCP and non-core plugin tools are replaced in the model-visible
 tools array by three bridge tools — ``tool_search``, ``tool_describe``,
-``tool_call`` — and surfaced on demand. Core Hermes tools never defer.
+``tool_call`` — and surfaced on demand. Core Hermes tools never defer unless
+their toolset is explicitly opted in via ``tools.tool_search.defer_toolsets``.
 
 Design constraints this module is built around (see ``openclaw-tool-search-report``
 for the full rationale):
 
-* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
-  Always-load means always-load. No exceptions.
+* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred
+  by default. The single exception is an explicit per-toolset opt-in:
+  ``defer_toolsets: [session_search, ...]`` pushes every tool of the named
+  built-in toolsets behind the bridge. This exists because on schema-heavy
+  installs the built-in toolsets themselves are the entry tax (10k+ tokens
+  of every session's first prefill), and only the user knows which of them
+  their sessions actually lean on. Opt-in, never inferred.
 * The threshold gate runs every assembly: when deferrable tools would consume
   less than ``threshold_pct`` of the model's context window (default 10%),
   tool search is a no-op and the tools array passes through unchanged.
@@ -68,6 +74,11 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
     search_default_limit: int
     max_search_limit: int
+    # Built-in toolsets explicitly opted in for deferral. Tools of these
+    # toolsets defer even when listed in ``_HERMES_CORE_TOOLS`` — the user
+    # is trading first-prefill size for an extra bridge round-trip on the
+    # turns that actually use them. Empty by default (no behavior change).
+    defer_toolsets: frozenset = frozenset()
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -106,11 +117,20 @@ class ToolSearchConfig:
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
 
+        defer_raw = raw.get("defer_toolsets")
+        defer_toolsets: frozenset = frozenset()
+        if isinstance(defer_raw, (list, tuple, set)):
+            defer_toolsets = frozenset(
+                str(item).strip() for item in defer_raw
+                if isinstance(item, (str, int)) and str(item).strip()
+            )
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            defer_toolsets=defer_toolsets,
         )
 
 
@@ -160,39 +180,56 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+def is_deferrable_tool_name(name: str,
+                            defer_toolsets: Optional[frozenset] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    OR it is not in ``_HERMES_CORE_TOOLS`` OR its toolset is explicitly
+    opted in via ``defer_toolsets``. Outside the opt-in, core tools are
+    never deferred even when their toolset is technically plugin-provided
+    (this protects against accidental shadowing).
+
+    ``defer_toolsets=None`` resolves the opt-in set from user config —
+    the dispatch paths (``tool_describe`` / ``tool_call`` / session
+    scoping) must accept whatever the assembly deferred, so both sides
+    read the same source. Pass the set explicitly in per-tool loops to
+    avoid a config read per tool.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    if name in _core_tool_names():
-        return False
-    # Check registry toolset for MCP prefix.
+    if defer_toolsets is None:
+        defer_toolsets = load_config().defer_toolsets
+    entry = None
     try:
         from tools.registry import registry
         entry = registry.get_entry(name)
-        if entry is None:
-            return False
-        if entry.toolset.startswith("mcp-"):
-            return True
-        # Non-MCP, non-core → plugin tool, eligible.
-        return True
     except Exception:
+        entry = None
+    if defer_toolsets and entry is not None and entry.toolset in defer_toolsets:
+        # Explicit per-toolset opt-in overrides core protection.
+        return True
+    if name in _core_tool_names():
         return False
+    if entry is None:
+        return False
+    if entry.toolset.startswith("mcp-"):
+        return True
+    # Non-MCP, non-core → plugin tool, eligible.
+    return True
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(tool_defs: List[Dict[str, Any]],
+                   defer_toolsets: Optional[frozenset] = None,
+                   ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    every core tool (minus ``defer_toolsets`` opt-ins), plus any tool we
+    can't classify. ``deferrable`` is the candidate set for catalog entry.
     """
+    if defer_toolsets is None:
+        defer_toolsets = load_config().defer_toolsets
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td in tool_defs:
@@ -202,7 +239,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, defer_toolsets):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -535,9 +572,10 @@ def assemble_tool_defs(
     """Return the tool-defs list the model should actually see.
 
     When tool search is inactive (off, no deferrable tools, or below
-    threshold), this is a passthrough. When active, MCP and plugin tools
-    are stripped from the visible list and replaced with the three bridge
-    tools. Core tools are *never* deferred regardless of config.
+    threshold), this is a passthrough. When active, MCP and plugin tools —
+    plus any built-in toolsets opted in via ``defer_toolsets`` — are
+    stripped from the visible list and replaced with the three bridge
+    tools. Outside that explicit opt-in, core tools are never deferred.
 
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
@@ -551,7 +589,7 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config.defer_toolsets)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
@@ -619,7 +657,7 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(current_tool_defs, config.defer_toolsets)
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
     return json.dumps({
@@ -670,9 +708,10 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     an out-of-scope tool via the bridge.
     """
     names: set[str] = set()
+    defer_toolsets = load_config().defer_toolsets  # resolve once, not per tool
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and is_deferrable_tool_name(name, defer_toolsets):
             names.add(name)
     return frozenset(names)
 

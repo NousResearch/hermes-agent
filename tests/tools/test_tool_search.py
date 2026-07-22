@@ -129,6 +129,114 @@ class TestClassification:
 
 
 # ---------------------------------------------------------------------------
+# defer_toolsets opt-in (built-in toolsets behind the bridge)
+# ---------------------------------------------------------------------------
+
+
+def _register_session_search():
+    """Import a real built-in tool module so the registry holds its entry."""
+    import tools.session_search_tool  # noqa: F401 — registers at import
+    from tools.registry import registry
+    entry = registry.get_entry("session_search")
+    assert entry is not None, "session_search must be registered for these tests"
+    return entry.toolset
+
+
+class TestDeferToolsetsOptIn:
+    """``defer_toolsets`` lets named BUILT-IN toolsets ride the bridge.
+
+    Core protection stays the default: everything here requires the explicit
+    per-toolset opt-in, and the bridge/dispatch paths must agree with the
+    assembly about what was deferred (an opted-in tool that assembly strips
+    but dispatch rejects would be unreachable).
+    """
+
+    def test_config_parses_defer_toolsets(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_toolsets": ["session_search", "  delegation  ", "", None, 7],
+        })
+        assert cfg.defer_toolsets == frozenset({"session_search", "delegation", "7"})
+
+    def test_config_defer_toolsets_defaults_empty(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw(None).defer_toolsets == frozenset()
+        assert ToolSearchConfig.from_raw(True).defer_toolsets == frozenset()
+        assert ToolSearchConfig.from_raw({"defer_toolsets": "not-a-list"}).defer_toolsets == frozenset()
+
+    def test_core_tool_defers_only_with_opt_in(self):
+        from tools.tool_search import is_deferrable_tool_name
+        toolset = _register_session_search()
+        assert not is_deferrable_tool_name("session_search", frozenset())
+        assert is_deferrable_tool_name("session_search", frozenset({toolset}))
+
+    def test_bridge_tools_never_defer_even_with_opt_in(self):
+        from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
+        for name in BRIDGE_TOOL_NAMES:
+            assert not is_deferrable_tool_name(name, frozenset({"tool_search", "core"}))
+
+    def test_unknown_toolset_opt_in_is_harmless(self):
+        from tools.tool_search import is_deferrable_tool_name
+        _register_session_search()
+        assert not is_deferrable_tool_name(
+            "session_search", frozenset({"xx_no_such_toolset"})
+        )
+
+    def test_assemble_strips_opted_in_core_toolset(self):
+        from tools.tool_search import (
+            assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES,
+        )
+        toolset = _register_session_search()
+        defs = [_td("terminal", "Run a command"),
+                _td("session_search", "Search past sessions")]
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_toolsets": [toolset]}
+        )
+        result = assemble_tool_defs(defs, context_length=131072, config=cfg)
+        assert result.activated
+        names = {(td.get("function") or {}).get("name") for td in result.tool_defs}
+        assert "session_search" not in names       # deferred
+        assert "terminal" in names                 # untouched core stays
+        assert BRIDGE_TOOL_NAMES <= names          # bridge present
+
+    def test_dispatch_paths_accept_opted_in_tool(self, monkeypatch):
+        """describe/tool_call must agree with assembly about the opt-in."""
+        import tools.tool_search as ts
+        toolset = _register_session_search()
+        cfg = ts.ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_toolsets": [toolset]}
+        )
+        monkeypatch.setattr(ts, "load_config", lambda: cfg)
+
+        td = _td("session_search", "Search past sessions")
+        described = json.loads(ts.dispatch_tool_describe(
+            {"name": "session_search"}, current_tool_defs=[td]))
+        assert described.get("name") == "session_search"
+        assert "error" not in described
+
+        name, args, err = ts.resolve_underlying_call(
+            {"name": "session_search", "arguments": {"query": "x"}})
+        assert err is None
+        assert name == "session_search"
+        assert args == {"query": "x"}
+
+    def test_dispatch_paths_reject_without_opt_in(self, monkeypatch):
+        import tools.tool_search as ts
+        _register_session_search()
+        cfg = ts.ToolSearchConfig.from_raw({"enabled": "on"})
+        monkeypatch.setattr(ts, "load_config", lambda: cfg)
+
+        described = json.loads(ts.dispatch_tool_describe(
+            {"name": "session_search"},
+            current_tool_defs=[_td("session_search", "Search past sessions")]))
+        assert "error" in described
+
+        _, _, err = ts.resolve_underlying_call({"name": "session_search", "arguments": {}})
+        assert err is not None
+
+
+# ---------------------------------------------------------------------------
 # Token estimation + threshold gate
 # ---------------------------------------------------------------------------
 

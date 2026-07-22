@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -836,6 +836,20 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 # Data classes
 # ---------------------------------------------------------------------------
 
+def _parse_task_metadata(raw: str) -> Optional[dict]:
+    """Parse the ``tasks.metadata`` JSON column into a dict.
+
+    Returns ``None`` on invalid JSON or non-object payloads so a corrupt
+    value never breaks ``Task.from_row`` callers. Per-attempt run metadata
+    (``Run.metadata``) is unrelated; this is the task-level column.
+    """
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 @dataclass
 class Task:
     """In-memory view of a row from the ``tasks`` table."""
@@ -915,6 +929,11 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Free-form JSON metadata for task-level configuration (e.g. lane
+    # routing hints, launcher selection). Parsed from the ``metadata``
+    # column; ``None`` means the column is NULL (no metadata set).
+    # Distinct from ``Run.metadata``, which is per-attempt data.
+    metadata: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1017,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            metadata=(
+                _parse_task_metadata(row["metadata"])
+                if "metadata" in keys and row["metadata"]
+                else None
             ),
         )
 
@@ -2417,6 +2441,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2440,6 +2465,12 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``metadata`` is an optional JSON-serializable dict of task-level
+    configuration (e.g. lane routing hints). Stored as JSON in the
+    ``metadata`` column; ``None`` (the default) leaves it NULL. Read it
+    via ``Task.metadata`` after ``get_task``. This is task-level config,
+    not per-attempt run data (see ``Run.metadata`` for that).
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2645,8 +2676,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2669,6 +2701,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        json.dumps(metadata) if metadata else None,
                     ),
                 )
                 for pid in parents:

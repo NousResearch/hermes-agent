@@ -340,6 +340,32 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(age)).toBeTruthy()
   })
 
+  it('archives immediately on exact Ctrl+Shift-click without resuming or pinning', () => {
+    const onArchive = vi.fn()
+    const onPin = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={onArchive}
+        onDelete={noop}
+        onPin={onPin}
+        onResume={onResume}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Archive me' })}
+        unread={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive me' }), { ctrlKey: true, shiftKey: true })
+
+    expect(onArchive).toHaveBeenCalledOnce()
+    expect(onPin).not.toHaveBeenCalled()
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(
       <SidebarSessionRow

@@ -23,7 +23,10 @@ describe('resolveSessionRowClick', () => {
 
   it('opens a new window on ⌘/⌃+⇧-click when supported', () => {
     expect(resolveSessionRowClick({ ...NO_MODS, metaKey: true, shiftKey: true }, WINDOW_OK)).toBe('newWindow')
-    expect(resolveSessionRowClick({ ...NO_MODS, ctrlKey: true, shiftKey: true }, WINDOW_OK)).toBe('newWindow')
+  })
+
+  it('archives on exact ⌃+⇧-click', () => {
+    expect(resolveSessionRowClick({ ...NO_MODS, ctrlKey: true, shiftKey: true }, WINDOW_OK)).toBe('archive')
   })
 
   it('falls back to a new tab for ⌘/⌃+⇧-click when windows are unavailable (web embed)', () => {

@@ -15,8 +15,8 @@ export interface SessionRowClickModifiers {
 /**
  * Resolve the click action from its modifiers.
  *
- * Precedence matters: the multi-modifier gestures (⌥+⇧ archive, ⌘/⌃+⇧ new
- * window) MUST be checked before the single-modifier pin (⇧) and new-tab
+ * Precedence matters: the multi-modifier gestures (⌃+⇧ / ⌥+⇧ archive,
+ * ⌘/⌃+⇧ new window) MUST be checked before the single-modifier pin (⇧) and new-tab
  * (⌘/⌃) gestures, because they set those flags too — testing `shiftKey`
  * first would swallow both into "pin".
  *
@@ -30,12 +30,18 @@ export function resolveSessionRowClick(
 ): SessionRowClickAction {
   const primaryModifier = metaKey || ctrlKey
 
-  if (altKey && shiftKey) {
+  // Exact physical Ctrl+Shift is the cross-platform archive gesture. Keep it
+  // exact so Cmd+Shift and modifier supersets retain the window route.
+  if (ctrlKey && shiftKey && !metaKey && !altKey) {
     return 'archive'
   }
 
   if (primaryModifier && shiftKey && opts.canOpenWindow) {
     return 'newWindow'
+  }
+
+  if (altKey && shiftKey && !primaryModifier) {
+    return 'archive'
   }
 
   if (primaryModifier) {

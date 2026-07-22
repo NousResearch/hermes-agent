@@ -127,6 +127,49 @@ def test_adapter_for_source_resolves_secondary_profile_adapter(monkeypatch):
     ) is default_adapter
 
 
+def test_adapter_for_relay_delivered_source_resolves_relay_adapter(monkeypatch):
+    """A trusted relay stamp selects the Relay adapter without changing the
+    underlying platform that owns session identity and egress routing."""
+    runner, default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
+    relay_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.RELAY] = relay_adapter
+
+    relayed = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="dm-chat",
+        chat_type="dm",
+        delivered_via_upstream_relay=True,
+    )
+    direct = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="dm-chat",
+        chat_type="dm",
+    )
+
+    assert runner._adapter_for_source(relayed) is relay_adapter
+    assert runner._adapter_for_source(direct) is default_adapter
+
+
+def test_adapter_for_relay_delivered_secondary_profile_uses_shared_relay(monkeypatch):
+    """Relay is process-level ingress, not duplicated in secondary registries."""
+    runner, _default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
+    relay_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.RELAY] = relay_adapter
+
+    relayed = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="dm-chat",
+        chat_type="dm",
+        profile="coder",
+        delivered_via_upstream_relay=True,
+    )
+
+    assert runner._adapter_for_source(relayed) is relay_adapter
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

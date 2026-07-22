@@ -15,6 +15,9 @@ import json
 import pytest
 import pytest_asyncio
 
+from gateway.config import PlatformConfig
+from gateway.relay.adapter import RelayAdapter
+from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
@@ -104,6 +107,24 @@ async def test_go_idle_awaits_ack(server):
         assert acked is True
         assert server.going_idle_count == 1
         assert any(f["type"] == "going_idle" for f in server.received)
+    finally:
+        await t.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_descriptor_handler_failure_does_not_block_handshake(server):
+    """Drive the callback through the production socket reader."""
+    t = WebSocketRelayTransport(server.url, "discord", "appShared")
+
+    def broken_handler(_descriptor):
+        raise RuntimeError("boom")
+
+    t.set_descriptor_handler(broken_handler)
+    await t.connect()
+    try:
+        descriptor = await asyncio.wait_for(t.handshake(), timeout=1)
+        assert descriptor.supports_edit is True
+        assert t._reader is not None and not t._reader.done()
     finally:
         await t.disconnect()
 
@@ -201,6 +222,59 @@ async def test_reconnect_redials_after_unexpected_close():
         assert srv.connections >= 2
     finally:
         await t.disconnect()
+        srv._server.close()
+        await srv._server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_descriptor_refreshes_adapter_capabilities():
+    """A reconnect negotiation must update the live adapter capability surface."""
+    drops = {"n": 0}
+    srv = _IdleAwareServer()
+
+    async def handle(ws):
+        srv.connections += 1
+        async for raw in ws:
+            for line in str(raw).split("\n"):
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                if frame.get("type") != "hello":
+                    continue
+                descriptor = dict(DESCRIPTOR)
+                descriptor["supports_edit"] = drops["n"] == 0
+                await ws.send(json.dumps({"type": "descriptor", "descriptor": descriptor}) + "\n")
+                if drops["n"] == 0:
+                    drops["n"] += 1
+                    await ws.close()
+                    return
+
+    srv._server = await websockets.serve(handle, "127.0.0.1", 0)
+    sock = next(iter(srv._server.sockets))
+    srv.url = f"ws://127.0.0.1:{sock.getsockname()[1]}"
+    placeholder = CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION,
+        platform="discord",
+        label="Relay",
+        max_message_length=4096,
+        supports_draft_streaming=False,
+        supports_edit=True,
+        supports_threads=False,
+        markdown_dialect="plain",
+        len_unit="chars",
+    )
+    transport = WebSocketRelayTransport(
+        srv.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=0.05
+    )
+    adapter = RelayAdapter(PlatformConfig(), placeholder, transport=transport)
+    try:
+        await adapter.connect()
+        await asyncio.sleep(0.5)
+        assert srv.connections >= 2
+        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+        assert adapter.REQUIRES_EDIT_FINALIZE is False
+    finally:
+        await adapter.disconnect()
         srv._server.close()
         await srv._server.wait_closed()
 

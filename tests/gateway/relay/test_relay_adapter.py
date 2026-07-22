@@ -44,6 +44,11 @@ def test_supports_draft_streaming_follows_descriptor():
     assert _adapter(supports_draft_streaming=True).supports_draft_streaming() is True
 
 
+def test_message_editing_capability_follows_descriptor():
+    assert _adapter(supports_edit=False).SUPPORTS_MESSAGE_EDITING is False
+    assert _adapter(supports_edit=True).SUPPORTS_MESSAGE_EDITING is True
+
+
 def test_len_fn_utf16_counts_code_units():
     a = _adapter(len_unit="utf16")
     # An astral-plane emoji is two UTF-16 code units.
@@ -214,6 +219,82 @@ async def test_send_preserves_explicit_scope_id():
     a._capture_scope(_make_event(chat_id="chan-1", scope_id="scope-9"))
     await a.send("chan-1", "hi", metadata={"scope_id": "explicit-1"})
     assert t.sent["metadata"]["scope_id"] == "explicit-1"
+
+
+@pytest.mark.asyncio
+async def test_edit_forwards_scope_platform_and_finalize():
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    event = _make_event(chat_id="chan-1", scope_id="scope-9")
+    event.source.platform = Platform.DISCORD
+    a._capture_scope(event)
+
+    result = await a.edit_message(
+        "chan-1",
+        "message-7",
+        "complete reply",
+        finalize=True,
+        metadata={"thread_id": "thread-2"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "m1"
+    assert t.sent == {
+        "op": "edit",
+        "chat_id": "chan-1",
+        "message_id": "message-7",
+        "content": "complete reply",
+        "finalize": True,
+        "metadata": {"thread_id": "thread-2", "scope_id": "scope-9"},
+    }
+    assert t.sent_platform == "discord"
+
+
+@pytest.mark.asyncio
+async def test_edit_is_rejected_when_descriptor_disables_it():
+    t = _CaptureTransport()
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord", supports_edit=False),
+        transport=t,
+    )
+
+    result = await a.edit_message("chan-1", "message-7", "reply")
+
+    assert result.success is False
+    assert result.error == "Not supported"
+    assert t.sent is None
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_sends_then_forces_terminal_relay_edit():
+    """Exercise the official stream path, including unchanged final content."""
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    class _HistoryTransport(_CaptureTransport):
+        def __init__(self):
+            super().__init__()
+            self.actions = []
+
+        async def send_outbound(self, action, *, platform=None):
+            self.actions.append(action)
+            return await super().send_outbound(action, platform=platform)
+
+    t = _HistoryTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    consumer = GatewayStreamConsumer(
+        a,
+        "chan-1",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""),
+    )
+    consumer.on_delta("Hello")
+    consumer.finish()
+
+    await consumer.run()
+
+    assert [action["op"] for action in t.actions] == ["send", "edit"]
+    assert t.actions[-1]["content"] == "Hello"
+    assert t.actions[-1]["finalize"] is True
 
 
 @pytest.mark.asyncio

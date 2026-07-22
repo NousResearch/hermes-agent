@@ -7,7 +7,7 @@ import time
 import types
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -885,6 +885,78 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_system_battery_returns_reading(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.battery",
+        types.SimpleNamespace(
+            read_battery=lambda: types.SimpleNamespace(
+                available=True, percent=77, plugged=False
+            ),
+            battery_category=lambda _s: "good",
+        ),
+    )
+
+    resp = server.dispatch({"id": "b1", "method": "system.battery", "params": {}})
+
+    assert resp["result"] == {
+        "available": True,
+        "percent": 77,
+        "plugged": False,
+        "category": "good",
+    }
+
+
+def test_system_battery_fails_open(monkeypatch):
+    def boom():
+        raise RuntimeError("no battery subsystem")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.battery",
+        types.SimpleNamespace(read_battery=boom, battery_category=lambda _s: "dim"),
+    )
+
+    resp = server.dispatch({"id": "b2", "method": "system.battery", "params": {}})
+
+    assert resp["result"]["available"] is False
+    assert resp["result"]["percent"] is None
+
+
+def test_config_set_battery_toggles_and_persists(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": False}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {"id": "c1", "method": "config.set", "params": {"key": "battery", "value": ""}}
+    )
+
+    assert resp["result"] == {"key": "battery", "value": "on"}
+    assert writes == {"display.battery": True}
+
+
+def test_config_set_battery_explicit_off(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": True}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "c2",
+            "method": "config.set",
+            "params": {"key": "battery", "value": "off"},
+        }
+    )
+
+    assert resp["result"] == {"key": "battery", "value": "off"}
+    assert writes == {"display.battery": False}
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -1462,6 +1534,238 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "assistant", "text": "root answer"},
     ]
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
+
+
+def test_live_visible_history_prefers_db_display_with_candidate():
+    """A warm/live session must serve the persisted DISPLAY lineage, not the
+    collapsed in-memory model history.
+
+    Regression for #65919's cross-session fallout: verification candidates
+    (finish_reason=verification_required) are persisted but collapsed out of the
+    model working history by repair_message_sequence. Building the live-reuse
+    payload from ``display_history_prefix + history`` therefore dropped the
+    substantive answer, while the eager session.resume path still showed it —
+    the two payloads for the same session disagreed. This asserts the live path
+    now matches the eager/REST display projection by construction.
+    """
+    # In-memory model history: the candidate has been collapsed away.
+    in_memory = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+    # Persisted display lineage: the candidate (substantive answer) survives.
+    display_with_candidate = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+
+    class DB:
+        def get_messages_as_conversation(
+            self, key, include_ancestors=False, repair_alternation=False
+        ):
+            assert key == "s1"
+            assert include_ancestors is True
+            return list(display_with_candidate)
+
+    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
+    assert result == display_with_candidate
+
+
+def test_live_visible_history_falls_back_without_db_or_key():
+    in_memory = [{"role": "user", "content": "hi"}]
+    # No DB handle available.
+    assert server._live_visible_history({"session_key": "s"}, None, in_memory) == in_memory
+
+    # DB available but the session has no persist key yet.
+    class DB:
+        def get_messages_as_conversation(self, *a, **k):  # pragma: no cover - not reached
+            raise AssertionError("must not query without a session_key")
+
+    assert server._live_visible_history({}, DB(), in_memory) == in_memory
+
+
+def test_live_visible_history_falls_back_when_db_empty():
+    """A brand-new live session whose first turn hasn't been flushed keeps its
+    in-memory history rather than rendering empty."""
+    in_memory = [{"role": "user", "content": "fresh turn not flushed yet"}]
+
+    class EmptyDB:
+        def get_messages_as_conversation(self, *a, **k):
+            return []
+
+    assert server._live_visible_history({"session_key": "s"}, EmptyDB(), in_memory) == in_memory
+
+
+def test_live_visible_history_falls_back_when_db_raises():
+    in_memory = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+
+    class BrokenDB:
+        def get_messages_as_conversation(self, *a, **k):
+            raise RuntimeError("db exploded")
+
+    assert server._live_visible_history({"session_key": "s"}, BrokenDB(), in_memory) == in_memory
+
+
+def test_live_visible_history_keeps_candidate_and_fresh_tail():
+    """The hard case: the persisted candidate (missing from in-memory) AND a
+    not-yet-flushed live turn (missing from the DB) must BOTH survive."""
+    # Persisted display: has the verification candidate, lags the newest turn.
+    db_display = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+    ]
+    # In-memory model history: candidate collapsed out, but has a fresh turn 2.
+    in_memory = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "terse verified reply"},
+        {"role": "user", "content": "turn 2 not flushed"},
+        {"role": "assistant", "content": "turn 2 reply not flushed"},
+    ]
+
+    class DB:
+        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False):
+            return list(db_display)
+
+    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
+    assert result == [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "long substantive answer",
+         "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply"},
+        {"role": "user", "content": "turn 2 not flushed"},
+        {"role": "assistant", "content": "turn 2 reply not flushed"},
+    ]
+
+
+def test_reconcile_display_with_live_trusts_db_when_tail_absent():
+    """If the DB tail isn't in memory (DB ahead / diverged), don't duplicate —
+    serve the persisted display."""
+    db_display = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    in_memory = [{"role": "user", "content": "unrelated"}]
+    assert server._reconcile_display_with_live(db_display, in_memory) == db_display
+    assert server._reconcile_display_with_live([], in_memory) == in_memory
+    assert server._reconcile_display_with_live(db_display, []) == db_display
+
+
+def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
+    """E2E cross-builder consistency against a real SessionDB.
+
+    A persisted verification candidate (finish_reason=verification_required)
+    is collapsed out of the model history by repair_message_sequence but kept
+    in the display lineage (#65919). The warm/live projection
+    (_live_visible_history) must equal the eager session.resume display
+    projection — both keeping the candidate — so switching to a live session
+    shows the same substantive answer a cold resume would.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="do the thing")
+    db.append_message(
+        "s1", role="assistant", content="long substantive answer",
+        finish_reason="verification_required",
+    )
+    db.append_message(
+        "s1", role="assistant", content="terse verified reply", finish_reason="stop",
+    )
+
+    model_history, display_history = db.get_resume_conversations("s1")
+
+    # The divergence #65919 introduced: candidate absent from the model
+    # projection, present in the display projection.
+    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert any("long substantive" in (m.get("content") or "") for m in display_history)
+
+    # Eager session.resume serves the display projection.
+    eager_messages = server._history_to_messages(display_history)
+    # Warm/live reuse: in-memory history is the collapsed model projection.
+    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    # They must agree — the candidate survives the warm switch.
+    assert server._history_to_messages(live_history) == eager_messages
+    assert any(m.get("text") == "long substantive answer" for m in eager_messages)
+
+
+def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_path):
+    """Real-DB variant of the combined case: a candidate from turn 1 AND a
+    fully-flushed turn 2 both appear once."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="turn 1")
+    db.append_message(
+        "s1", role="assistant", content="candidate answer",
+        finish_reason="verification_required",
+    )
+    db.append_message("s1", role="assistant", content="verified reply", finish_reason="stop")
+    db.append_message("s1", role="user", content="turn 2")
+    db.append_message("s1", role="assistant", content="turn 2 reply", finish_reason="stop")
+
+    model_history, display_history = db.get_resume_conversations("s1")
+    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
+    texts = [m.get("text") for m in server._history_to_messages(live_history)]
+
+    assert texts == [
+        "turn 1",
+        "candidate answer",
+        "verified reply",
+        "turn 2",
+        "turn 2 reply",
+    ]
+
+
+def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch, tmp_path):
+    """The delegated-child watch-window cold resume (lazy=True) must serve the
+    verbatim display projection so a persisted verification candidate is not
+    collapsed out of the watch window (#65919 sibling of the warm-payload fix).
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("child1", source="tui")
+    db.append_message("child1", role="user", content="child prompt")
+    db.append_message(
+        "child1", role="assistant", content="child substantive answer",
+        finish_reason="verification_required",
+    )
+    db.append_message(
+        "child1", role="assistant", content="child terse reply", finish_reason="stop",
+    )
+
+    lease = types.SimpleNamespace(session_id="child1", release=lambda: None)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *a, **k: (lease, None)
+    )
+    monkeypatch.setattr(
+        server, "_deferred_session_record", lambda *a, **k: {"created_at": 123.0}
+    )
+    monkeypatch.setattr(server, "_claim_or_reuse_live", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_child_run_active", lambda *a, **k: False)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "child1", "lazy": True},
+        }
+    )
+
+    assert "error" not in resp, resp
+    texts = [m.get("text") for m in resp["result"]["messages"]]
+    assert "child substantive answer" in texts
+    assert texts == ["child prompt", "child substantive answer", "child terse reply"]
 
 
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
@@ -5622,26 +5926,37 @@ def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
 
 
 def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
-    """When AIAgent._compress_context rotates session_id (compression split),
-    the gateway session_key must follow so subsequent approval routing,
-    DB title/history lookups, and slash worker resume target the new
-    continuation session — mirrors HermesCLI._manual_compress's
-    session_id sync (cli.py).
-    """
-    agent = types.SimpleNamespace(session_id="rotated-id")
+    """LCM notification follows the TUI's final session-key transition."""
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+    )
+
+    events = []
+    agent = types.SimpleNamespace(
+        session_id="rotated-id",
+        context_compressor=types.SimpleNamespace(
+            on_session_start=lambda *_args, **_kwargs: events.append("notify")
+        ),
+    )
     server._sessions["sid"] = _session(agent=agent)
     server._sessions["sid"]["session_key"] = "old-key"
     server._sessions["sid"]["pending_title"] = "stale title"
 
-    monkeypatch.setattr(
-        server,
-        "_compress_session_history",
-        lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
-    )
+    def _compress(session, focus_topic=None, **_kw):
+        _queue_context_engine_compression_notification(
+            session["agent"],
+            new_session_id="rotated-id",
+            old_session_id="old-key",
+        )
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
     monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
     restart_calls = []
     monkeypatch.setattr(
-        server, "_restart_slash_worker", lambda sid, s: restart_calls.append(s)
+        server,
+        "_restart_slash_worker",
+        lambda sid, s: (restart_calls.append(s), events.append("sync")),
     )
 
     try:
@@ -5657,6 +5972,52 @@ def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
         assert server._sessions["sid"]["session_key"] == "rotated-id"
         assert server._sessions["sid"]["pending_title"] is None
         assert len(restart_calls) == 1
+        assert events == ["sync", "notify"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_compress_sync_failure_discards_lcm_notification(monkeypatch):
+    from agent.conversation_compression import (
+        _queue_context_engine_compression_notification,
+    )
+
+    events = []
+    agent = types.SimpleNamespace(
+        session_id="rotated-id",
+        context_compressor=types.SimpleNamespace(
+            on_session_start=lambda *_args, **_kwargs: events.append("notify")
+        ),
+    )
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["session_key"] = "old-key"
+
+    def _compress(session, focus_topic=None, **_kw):
+        _queue_context_engine_compression_notification(
+            session["agent"],
+            new_session_id="rotated-id",
+            old_session_id="old-key",
+        )
+        return 2, {"total": 42}
+
+    monkeypatch.setattr(server, "_compress_session_history", _compress)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("finalization failed")),
+    )
+
+    try:
+        with patch("tui_gateway.server._emit"):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "session.compress",
+                    "params": {"session_id": "sid"},
+                }
+            )
+        assert resp["error"]["code"] == 5005
+        assert events == []
     finally:
         server._sessions.pop("sid", None)
 
@@ -6112,6 +6473,30 @@ def test_commands_catalog_includes_tui_mouse_command():
 
     assert "/mouse" in pairs
     assert "/mouse" in tui_pairs
+
+
+def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
+    """No command may be advertised twice, and no advertised command may
+    shadow an alias of a different command (e.g. the historical /compact
+    collision where the registry aliased compact -> compress while the TUI
+    also registered its own /compact display toggle; see #57133)."""
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    names = [name for name, _ in resp["result"]["pairs"]]
+    dupes = {n for n in names if names.count(n) > 1}
+    assert not dupes, f"duplicate commands advertised in catalog: {sorted(dupes)}"
+
+    canon = resp["result"]["canon"]
+    colliding = {
+        name
+        for name in names
+        if canon.get(name.lower(), name) != name
+    }
+    assert not colliding, (
+        f"catalog commands shadow aliases of other commands: {sorted(colliding)}"
+    )
 
 
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
@@ -7850,6 +8235,132 @@ def test_model_options_hides_unconfigured_providers_by_default(monkeypatch):
     )
     assert "result" in resp, resp
     assert calls[-1]["include_unconfigured"] is True
+
+
+def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypatch):
+    from hermes_cli.inventory import ConfigContext
+
+    class _Agent:
+        provider = "custom"
+        model = "qwen3.6:35b-65k"
+        base_url = "http://127.0.0.1:11434/v1"
+
+    server._sessions["custom-session"] = _session(agent=_Agent())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "")
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        lambda: ConfigContext(
+            current_provider="custom:local-ollama",
+            current_model="qwen3.6:35b-65k",
+            current_base_url="http://127.0.0.1:11434/v1",
+            user_providers={},
+            custom_providers=[],
+        ),
+    )
+    canonical = Mock(return_value="custom:local-ollama")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.canonical_custom_identity",
+        canonical,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        lambda **_kwargs: [
+            {
+                "slug": "custom:local-ollama",
+                "name": "Local Ollama",
+                "is_current": True,
+                "is_user_defined": True,
+                "models": ["qwen3.6:35b-65k"],
+                "total_models": 1,
+            },
+            {
+                "slug": "anthropic",
+                "name": "Anthropic",
+                "is_current": False,
+                "is_user_defined": False,
+                "models": ["claude-sonnet-4.6"],
+                "total_models": 1,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda _slug: False,
+    )
+    monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
+
+    resp = server._methods["model.options"](
+        102,
+        {"session_id": "custom-session", "explicit_only": True},
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"]["provider"] == "custom:local-ollama"
+    assert [row["slug"] for row in resp["result"]["providers"]] == [
+        "custom:local-ollama"
+    ]
+    canonical.assert_called_once_with(
+        base_url="http://127.0.0.1:11434/v1",
+        config_provider="custom:local-ollama",
+    )
+
+
+def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch):
+    env_var = "TEST_PROVIDER_API_KEY"
+    agent = object()
+    picker_ctx = object()
+    provider = {
+        "slug": "test-provider",
+        "name": "Test Provider",
+        "models": ["test-model"],
+        "total_models": 1,
+    }
+    server._sessions["save-key-session"] = _session(agent=agent)
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "test-provider": types.SimpleNamespace(
+                name="Test Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    save_credential = Mock()
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        save_credential,
+    )
+    picker_context = Mock(return_value=picker_ctx)
+    monkeypatch.setattr(server, "_model_picker_context", picker_context)
+    build_payload = Mock(return_value={"providers": [provider]})
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        build_payload,
+    )
+    monkeypatch.setenv(env_var, "previous-value")
+    fake_key = "replacement-" + "value"
+
+    resp = server._methods["model.save_key"](
+        103,
+        {
+            "slug": "test-provider",
+            "api_key": fake_key,
+            "session_id": "save-key-session",
+        },
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"]["provider"] == {**provider, "authenticated": True}
+    save_credential.assert_called_once_with(env_var, fake_key)
+    picker_context.assert_called_once_with(agent)
+    build_payload.assert_called_once_with(
+        picker_ctx,
+        picker_hints=True,
+        max_models=50,
+    )
 
 
 # ---------------------------------------------------------------------------

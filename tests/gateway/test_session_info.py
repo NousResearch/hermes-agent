@@ -87,6 +87,60 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "1.0M" in info
 
+    def test_custom_context_is_scoped_to_active_runtime_route(self, runner, tmp_path):
+        config = """
+model:
+  default: shared-model
+  provider: custom
+custom_providers:
+  - name: large-route
+    base_url: https://example.com/v1//
+    models:
+      shared-model:
+        context_length: 1048576
+"""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config,
+            "shared-model",
+            {
+                "provider": "custom",
+                "base_url": "https://example.com/v1",
+                "api_key": "k",
+            },
+        )
+
+        with p1, p2, p3:
+            info = runner._format_session_info()
+
+        assert "1.0M" not in info
+        assert "(config)" not in info
+
+    def test_global_context_is_scoped_to_active_runtime_route(self, runner, tmp_path):
+        config = """
+model:
+  default: shared-model
+  provider: custom
+  base_url: https://large.example/v1
+  context_length: 1048576
+"""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config,
+            "shared-model",
+            {
+                "provider": "custom",
+                "base_url": "https://small.example/v1",
+                "api_key": "k",
+            },
+        )
+
+        with p1, p2, p3:
+            info = runner._format_session_info()
+
+        assert "1.0M" not in info
+        assert "(config)" not in info
+
     def test_missing_config(self, runner, tmp_path):
         """No config.yaml should not crash."""
         p1, p2, p3 = _patch_info(tmp_path, None,  # don't create config

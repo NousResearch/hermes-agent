@@ -17,6 +17,7 @@ import base64
 import binascii
 import concurrent.futures
 import functools
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -88,6 +89,7 @@ from gateway.status import (
     get_running_pid_cached,
     get_running_pid,
     get_runtime_status_running_pid,
+    normalize_updated_at,
     parse_active_agents,
     read_runtime_status,
 )
@@ -214,10 +216,15 @@ async def _lifespan(app: "FastAPI"):
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
 
+    # Periodic authenticated self-test (feeds the ``dashboard`` component on
+    # /api/status).  The loop exits immediately when httpx is unavailable.
+    selftest_task = asyncio.create_task(_dashboard_selftest_loop())
+
     try:
         yield
     finally:
         pty_reaper_task.cancel()
+        selftest_task.cancel()
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
@@ -280,6 +287,18 @@ app.include_router(_memory_oauth_router)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_SSH_OWNER_NONCE: Optional[str] = None
+
+
+def _apply_ssh_session_token(token: str) -> None:
+    global _SESSION_TOKEN
+    if token:
+        _SESSION_TOKEN = token
+
+
+def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
+    global _SSH_OWNER_NONCE
+    _SSH_OWNER_NONCE = nonce
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -611,6 +630,137 @@ async def _token_auth_seam(request: Request, call_next):
     """
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
+
+
+# ---------------------------------------------------------------------------
+# Dashboard component health — in-process error/self-test counters that feed
+# the ``components`` dict on ``/api/status``.  That endpoint is in
+# ``PUBLIC_API_PATHS``, so everything exported from here must be counts and
+# enums only: no exception messages, no request paths, no tokens.
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_HEALTH_WINDOW_SECONDS = 300.0
+
+
+class DashboardHealth:
+    """Module-level holder for dashboard-process health signals.
+
+    Tracks unhandled exceptions / 5xx responses seen by the outermost HTTP
+    middleware (rolling window) and the result of the periodic authenticated
+    self-test.  ``last_error_path`` and ``last_error_type`` are internal
+    diagnostics for logs/debuggers — :meth:`snapshot` deliberately exports
+    neither (public-payload no-secrets contract).
+    """
+
+    def __init__(self, window_seconds: float = _DASHBOARD_HEALTH_WINDOW_SECONDS) -> None:
+        self.window_seconds = window_seconds
+        self._error_times: "deque[float]" = deque(maxlen=256)
+        self.last_error_type: Optional[str] = None
+        self.last_error_path: Optional[str] = None  # internal-only, never serialized
+        self.last_error_at: Optional[float] = None
+        self.selftest_status: str = "unknown"  # unknown | ok | failing
+        self.selftest_http_status: Optional[int] = None
+        self.selftest_at: Optional[float] = None
+
+    def record_error(self, exc_type: str, path: str) -> None:
+        now = time.time()
+        self._error_times.append(now)
+        self.last_error_type = exc_type
+        self.last_error_path = path
+        self.last_error_at = now
+
+    def record_selftest(self, passed: bool, http_status: Optional[int]) -> None:
+        self.selftest_status = "ok" if passed else "failing"
+        self.selftest_http_status = http_status
+        self.selftest_at = time.time()
+
+    def recent_error_count(self) -> int:
+        cutoff = time.time() - self.window_seconds
+        while self._error_times and self._error_times[0] < cutoff:
+            self._error_times.popleft()
+        return len(self._error_times)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Public component payload: status enum + counts + timestamps only."""
+        errors = self.recent_error_count()
+        status = "degraded" if (errors or self.selftest_status == "failing") else "ok"
+        return {
+            "status": status,
+            "recent_unhandled_errors": errors,
+            "last_error_at": self.last_error_at,
+            "selftest": self.selftest_status,
+        }
+
+
+DASHBOARD_HEALTH = DashboardHealth()
+
+
+@app.middleware("http")
+async def _dashboard_health_middleware(request: Request, call_next):
+    """Outermost middleware: count unhandled exceptions and 5xx responses.
+
+    Registered after ``_token_auth_seam`` so it is the outermost layer
+    (Starlette middleware is outermost-last) — nothing below can raise past
+    it unseen.  Records into :data:`DASHBOARD_HEALTH` and re-raises; never
+    swallows or alters the response.
+    """
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        DASHBOARD_HEALTH.record_error(type(exc).__name__, request.url.path)
+        raise
+    if response.status_code >= 500:
+        DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Authenticated-route self-test: every minute, make one in-process request
+# against a cheap DB-touching authenticated route with the real session
+# token.  Catches the class of failure where liveness looks fine but every
+# authenticated request 500s (e.g. wedged state DB).
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_SELFTEST_INTERVAL_SECONDS = 60.0
+_DASHBOARD_SELFTEST_ROUTE = "/api/sessions?limit=1"
+
+
+async def _dashboard_selftest_once() -> None:
+    """Run one authenticated in-process self-test request and record it."""
+    try:
+        import httpx
+    except ImportError:
+        return  # optional dependency — skip cleanly, leave status "unknown"
+    try:
+        transport = httpx.ASGITransport(app=app)
+        # base_url uses a loopback name so the Host-header middleware accepts
+        # the request on loopback binds.
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1"
+        ) as client:
+            resp = await client.get(
+                _DASHBOARD_SELFTEST_ROUTE,
+                headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
+            )
+        DASHBOARD_HEALTH.record_selftest(resp.status_code == 200, resp.status_code)
+    except Exception:
+        DASHBOARD_HEALTH.record_selftest(False, None)
+
+
+async def _dashboard_selftest_loop() -> None:
+    """Periodic self-test driver started from the lifespan."""
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        _log.debug("httpx unavailable — dashboard self-test disabled")
+        return
+    while True:
+        await asyncio.sleep(_DASHBOARD_SELFTEST_INTERVAL_SECONDS)
+        # On OAuth-gated binds the legacy session token is not honoured, so
+        # the probe would false-alarm 401 — skip until the gate is off.
+        if getattr(app.state, "auth_required", False):
+            continue
+        await _dashboard_selftest_once()
 
 
 # ---------------------------------------------------------------------------
@@ -986,33 +1136,68 @@ def _custom_provider_options(
     return names
 
 
-def _schema_with_voice_provider_options() -> Dict[str, Dict[str, Any]]:
-    """Return CONFIG_SCHEMA with per-request voice provider options merged.
+def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
+    """Discovered memory providers for a per-request schema merge.
 
-    Computed at request time (not import time) so options reflect the
-    CURRENT config.yaml — including providers added after the server
-    started, and the profile-scoped config when the request carries a
-    ``profile`` param. The module-level ``CONFIG_SCHEMA`` is never mutated;
-    entries that change are shallow-copied onto a copied mapping.
+    Reuses the cheap directory scan of :func:`_memory_provider_options` and
+    additionally preserves the currently-configured provider, so a value
+    selected in config but not (yet) discoverable — e.g. a plugin removed from
+    disk — never silently vanishes from the dropdown.
+    """
+    options = _memory_provider_options()
+
+    memory = cfg.get("memory")
+    configured = memory.get("provider") if isinstance(memory, dict) else None
+    current = _normalize_memory_provider_name(configured)
+
+    if current and current not in options:
+        options = [*options, current]
+
+    return options
+
+
+def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
+    """Return CONFIG_SCHEMA with per-request discovery-driven options merged.
+
+    Some ``*.provider`` selects have options that are discovered at runtime
+    (voice backends via the tts/stt registries + config.yaml command
+    providers; memory providers via a plugin-dir scan). The module-level
+    ``_SCHEMA_OVERRIDES`` freezes those lists at import time, so a provider
+    installed after the server started never appears. This recomputes them at
+    request time — reflecting the CURRENT config.yaml, the profile-scoped
+    config when the request carries a ``profile`` param, and mid-session
+    plugin installs — for every surface that reads the schema (desktop, CLI,
+    dashboard), with no extra frontend round-trips.
+
+    The module-level ``CONFIG_SCHEMA`` is never mutated; entries that change
+    are shallow-copied onto a copied mapping.
     """
     try:
         cfg = load_config()
     except Exception:  # pragma: no cover - schema must survive config errors
         return CONFIG_SCHEMA
+
     overlay: Dict[str, Dict[str, Any]] = {}
-    for kind in ("tts", "stt"):
-        key = f"{kind}.provider"
+
+    def merge(key: str, options: List[str]) -> None:
         entry = CONFIG_SCHEMA.get(key)
-        if not isinstance(entry, dict) or not isinstance(entry.get("options"), list):
-            continue
-        merged = _custom_provider_options(kind, list(entry["options"]), cfg)
-        if merged != entry["options"]:
-            overlay[key] = {**entry, "options": merged}
+
+        if isinstance(entry, dict) and isinstance(entry.get("options"), list) and options != entry["options"]:
+            overlay[key] = {**entry, "options": options}
+
+    for kind in ("tts", "stt"):
+        entry = CONFIG_SCHEMA.get(f"{kind}.provider")
+        existing = entry.get("options") if isinstance(entry, dict) else None
+
+        if isinstance(existing, list):
+            merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
+
+    merge("memory.provider", _memory_provider_schema_options(cfg))
+
     if not overlay:
         return CONFIG_SCHEMA
-    fields = dict(CONFIG_SCHEMA)
-    fields.update(overlay)
-    return fields
+
+    return {**CONFIG_SCHEMA, **overlay}
 
 
 class ConfigUpdate(BaseModel):
@@ -1360,14 +1545,29 @@ def _apply_main_model_assignment(
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_TIMEOUT_MAX = 1.0
+_GATEWAY_HEALTH_ROUTE_TIMEOUT = 1.0
 try:
-    _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+    _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "1"))
 except (ValueError, TypeError):
     _log.warning(
-        "Invalid GATEWAY_HEALTH_TIMEOUT value %r — using default 3.0s",
+        "Invalid GATEWAY_HEALTH_TIMEOUT value %r — using default 1.0s",
         os.getenv("GATEWAY_HEALTH_TIMEOUT"),
     )
-    _GATEWAY_HEALTH_TIMEOUT = 3.0
+    _GATEWAY_HEALTH_TIMEOUT = 1.0
+if _GATEWAY_HEALTH_TIMEOUT <= 0:
+    _log.warning(
+        "Invalid non-positive GATEWAY_HEALTH_TIMEOUT value %.3fs — using default 1.0s",
+        _GATEWAY_HEALTH_TIMEOUT,
+    )
+    _GATEWAY_HEALTH_TIMEOUT = 1.0
+elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
+    _log.warning(
+        "Capping GATEWAY_HEALTH_TIMEOUT %.3fs to %.3fs for dashboard liveness probes",
+        _GATEWAY_HEALTH_TIMEOUT,
+        _GATEWAY_HEALTH_TIMEOUT_MAX,
+    )
+    _GATEWAY_HEALTH_TIMEOUT = _GATEWAY_HEALTH_TIMEOUT_MAX
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
 
@@ -1528,6 +1728,7 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_oauth.json",
     "webhook_subscriptions.json",
     "bws_cache.json",
+    "bws_cache.enc.json",
     # git's credential-store helper cache (agent.file_safety blocks this too).
     ".git-credentials",
 })
@@ -2774,6 +2975,14 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
 
 
+@app.get("/api/ssh/ownership")
+async def get_ssh_ownership(request: Request):
+    _require_token(request)
+    if not _SSH_OWNER_NONCE:
+        raise HTTPException(status_code=404, detail="SSH ownership is not active")
+    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -2803,9 +3012,17 @@ async def get_status(profile: Optional[str] = None):
 
         if not gateway_running and _GATEWAY_HEALTH_URL:
             loop = asyncio.get_running_loop()
-            alive, remote_health_body = await loop.run_in_executor(
-                None, _probe_gateway_health
-            )
+            try:
+                alive, remote_health_body = await asyncio.wait_for(
+                    loop.run_in_executor(None, _probe_gateway_health),
+                    timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT,
+                )
+            except TimeoutError:
+                _log.warning(
+                    "/api/status gateway health probe exceeded %.2fs; using local status",
+                    _GATEWAY_HEALTH_ROUTE_TIMEOUT,
+                )
+                alive, remote_health_body = False, None
             if alive:
                 gateway_running = True
                 # PID from the remote container (display only — not locally valid)
@@ -2854,7 +3071,11 @@ async def get_status(profile: Optional[str] = None):
                     if key in configured_gateway_platforms
                 }
             gateway_exit_reason = runtime.get("exit_reason")
-            gateway_updated_at = runtime.get("updated_at")
+            # Contract: gateway_updated_at is RFC3339 string | null, never a
+            # number. ``runtime`` here may be the local gateway_state.json
+            # (legacy gateways wrote epoch floats; hand edits can inject
+            # anything) or a remote /health/detailed body — normalize both.
+            gateway_updated_at = normalize_updated_at(runtime.get("updated_at"))
             if not gateway_running:
                 gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
                 gateway_platforms = {}
@@ -2905,9 +3126,29 @@ async def get_status(profile: Optional[str] = None):
         # "loopback only — no auth gate" with no extra round trips.
         auth_required = bool(getattr(app.state, "auth_required", False))
         auth_providers: list[str] = []
+        # RFC 8252 native-app capability advertisement. The desktop reads this
+        # to decide whether it can use the system-browser + loopback + PKCE
+        # flow (no embedded webview, no session cookies) or must fall back to
+        # the legacy embedded-webview cookie flow. "cookie" is always available
+        # in gated mode; "native_pkce" is present only when at least one
+        # registered session provider is a brokerable OAuth provider (not a
+        # password or token-only credential). Absent field / missing
+        # "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically.
+        auth_flows: list[str] = []
         try:
-            from hermes_cli.dashboard_auth import list_providers as _list_providers
+            from hermes_cli.dashboard_auth import (
+                list_providers as _list_providers,
+                list_session_providers as _list_session_providers,
+            )
             auth_providers = [p.name for p in _list_providers()]
+            if auth_required:
+                auth_flows.append("cookie")
+                brokerable = [
+                    p for p in _list_session_providers()
+                    if not getattr(p, "supports_password", False)
+                ]
+                if brokerable:
+                    auth_flows.append("native_pkce")
         except Exception:
             # Module not importable yet (early startup) — leave as [].
             pass
@@ -2949,8 +3190,73 @@ async def get_status(profile: Optional[str] = None):
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
+            "auth_flows": auth_flows,
             "nous_session_valid": nous_session_valid,
         }
+
+        # Component-level health rollup. Counts and status enums only — this
+        # payload is public (PUBLIC_API_PATHS), so no messages, paths, or
+        # other detail that could carry secrets. The storage probe reuses the
+        # gateway readiness state_db check (read-only, 1s-bounded) in an
+        # executor so a wedged DB can't stall the event loop.
+        components: Dict[str, Any] = {
+            "gateway": {
+                "status": "ok" if gateway_running and gateway_state in {"running", "draining"} else "degraded",
+                "state": gateway_state or ("running" if gateway_running else "stopped"),
+            },
+            "dashboard": DASHBOARD_HEALTH.snapshot(),
+        }
+        try:
+            from gateway.readiness import _probe_state_db
+
+            storage_check = await asyncio.get_running_loop().run_in_executor(
+                None, functools.partial(_probe_state_db, get_hermes_home())
+            )
+            components["storage"] = {"status": storage_check.get("status", "degraded")}
+        except Exception:
+            components["storage"] = {"status": "degraded"}
+        platform_states = [
+            str(value.get("state") or value.get("status") or "").lower()
+            for value in gateway_platforms.values()
+            if isinstance(value, dict)
+        ]
+        platforms_ok = all(
+            state in {"connected", "running", "ok"} for state in platform_states
+        )
+        components["platforms"] = {
+            "status": "ok" if platforms_ok else "degraded",
+            "configured": len(gateway_platforms),
+            "connected": sum(
+                1 for state in platform_states if state in {"connected", "running", "ok"}
+            ),
+        }
+        status["components"] = components
+        status["overall"] = (
+            "ok"
+            if all(item.get("status") == "ok" for item in components.values())
+            else "degraded"
+        )
+
+        # Deferred FTS rebuild progress (schema v23): lets the desktop /
+        # dashboard render a "search index rebuilding: N%" indicator instead
+        # of users wondering why old-message search is slower after an
+        # update. None/absent when no rebuild is pending (the common case).
+        # Read-only probe, never blocks startup, never raises.
+        try:
+            from hermes_state import SessionDB as _SDB
+            from hermes_constants import get_hermes_home as _ghh
+
+            _db_path = _ghh() / "state.db"
+            if _db_path.exists():
+                _sdb = _SDB(db_path=_db_path, read_only=True)
+                try:
+                    _rebuild = _sdb.fts_rebuild_status()
+                finally:
+                    _sdb.close()
+                if _rebuild is not None:
+                    status["fts_rebuild"] = _rebuild
+        except Exception:
+            pass
 
         # Profile + gateway topology: which profiles exist, whether one
         # multiplexed gateway or several per-profile gateways serve them, and
@@ -5959,11 +6265,11 @@ async def get_defaults():
 
 @app.get("/api/config/schema")
 async def get_schema(profile: Optional[str] = None):
-    # Voice provider options are merged per-request so user-declared
-    # command providers (tts.providers.* / stt.providers.*) added after
-    # server start still show up, scoped to the requested profile's config.
+    # Discovery-driven provider options (voice command providers + memory
+    # provider plugins) are merged per-request so providers added after server
+    # start still show up, scoped to the requested profile's config.
     with _config_profile_scope(profile):
-        fields = _schema_with_voice_provider_options()
+        fields = _schema_with_dynamic_provider_options()
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
@@ -17907,7 +18213,18 @@ def mount_spa(application: FastAPI):
         ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
         auth scheme for /api/pty and /api/ws (ticket vs token).
         """
-        html = _index_path.read_text(encoding="utf-8")
+        try:
+            html = _index_path.read_text(encoding="utf-8")
+        except OSError:
+            # The dist dir existed at mount time but index.html is missing or
+            # unreadable now (partial build, wiped dist, permissions). Without
+            # this guard every request raises FileNotFoundError (500). Return
+            # the same JSON 404 payload mount_spa uses for a fully-missing
+            # dist so clients get a clear, consistent signal.
+            return JSONResponse(
+                {"error": "Frontend not built. Run: cd web && npm run build"},
+                status_code=404,
+            )
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
@@ -19145,6 +19462,8 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    ssh_session_token: Optional[str] = None,
+    ssh_owner_nonce: Optional[str] = None,
 ):
     """Start the web UI server.
 
@@ -19156,7 +19475,13 @@ def start_server(
     ``headless`` is the ``serve`` path: the JSON-RPC/WS backend with no UI
     build and no SPA mount (mount_spa() honours ``HERMES_SERVE_HEADLESS``), so
     the banner announces the bind rather than a browser URL.
+
+    ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
+    bootstrap state. Neither is persisted or exported to child processes.
     """
+    _apply_ssh_session_token(ssh_session_token or "")
+    _apply_ssh_owner_nonce(ssh_owner_nonce)
+
     import uvicorn
 
     try:

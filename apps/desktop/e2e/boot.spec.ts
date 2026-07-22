@@ -11,7 +11,7 @@
  * Run from the nix devshell:
  *   npm exec playwright test e2e/boot.spec.ts --reporter=list
  */
-import { expect, test } from '@playwright/test'
+import { expect, test } from './test'
 
 import {
   type MockBackendFixture,

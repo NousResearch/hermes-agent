@@ -3774,6 +3774,34 @@ def resolve_codex_runtime_credentials(
             }
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
+            # Before surfacing the persisted cooldown, ask the Codex usage
+            # endpoint whether the quota actually reset early (banked reset
+            # redeemed, plan upgraded, window reset upstream).  The persisted
+            # ``last_error_reset_at`` can be days in the future while the
+            # account is already usable again — see issue #43747.
+            stale_token = str(pool_rate_limit.get("access_token") or "").strip()
+            if stale_token and _probe_codex_quota_restored(
+                stale_token,
+                base_url=pool_rate_limit.get("base_url"),
+            ):
+                logger.info(
+                    "Codex quota restored upstream — clearing stale pool cooldown(s)."
+                )
+                clear_codex_pool_quota_cooldowns()
+                pool_token = _pool_codex_access_token()
+                if pool_token:
+                    base_url = (
+                        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                        or DEFAULT_CODEX_BASE_URL
+                    )
+                    return {
+                        "provider": "openai-codex",
+                        "base_url": base_url,
+                        "api_key": pool_token,
+                        "source": "credential_pool",
+                        "last_refresh": None,
+                        "auth_mode": "chatgpt",
+                    }
             reset_at = pool_rate_limit.get("reset_at")
             if isinstance(reset_at, (int, float)) and reset_at > time.time():
                 remaining = int(reset_at - time.time())
@@ -3836,6 +3864,190 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _is_codex_rate_limit_shaped(
+    code: Any,
+    reason: Any,
+    message: Any,
+) -> bool:
+    """True when persisted pool-entry error metadata describes a 429/quota stop."""
+    reason_l = str(reason or "").lower()
+    message_l = str(message or "").lower()
+    return (
+        code == 429
+        or "rate_limit" in reason_l
+        or "usage_limit" in reason_l
+        or "quota" in reason_l
+        or "rate limit" in message_l
+        or "usage limit" in message_l
+        or "quota" in message_l
+    )
+
+
+# Throttle for the live Codex quota probe below.  The probe runs on the hot
+# credential-selection path while the pool is exhausted, so without a floor a
+# busy gateway would hammer the usage endpoint on every model/auxiliary call.
+CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
+_codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
+_codex_quota_probe_lock = threading.Lock()
+
+
+def _codex_usage_probe_url(base_url: Optional[str]) -> str:
+    """Resolve the Codex usage endpoint for a probe.
+
+    Mirrors the Codex CLI's PathStyle split (codex-rs backend-client, same
+    logic as ``agent.account_usage._codex_backend_urls``): base URLs
+    containing ``/backend-api`` use the ChatGPT ``/wham/usage`` path;
+    everything else uses ``/api/codex/usage``.  Kept local so this low-level
+    auth module doesn't import the auxiliary account-usage module.
+    """
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = (
+            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            or DEFAULT_CODEX_BASE_URL
+        )
+    if normalized.endswith("/codex"):
+        normalized = normalized[: -len("/codex")]
+    prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
+    return prefix + "/usage"
+
+
+def _probe_codex_quota_restored(
+    access_token: Any,
+    *,
+    base_url: Optional[str] = None,
+    min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS,
+) -> Optional[bool]:
+    """Ask the Codex usage endpoint whether this account's quota is usable again.
+
+    Hermes persists a Codex 429's ``reset_at`` locally and freezes the
+    credential until it elapses — but the upstream window can reopen EARLY
+    (the user redeems a banked rate-limit reset via the Codex CLI/ChatGPT UI,
+    upgrades their plan, or OpenAI resets the window).  This probe detects
+    that: it GETs the same ``/usage`` endpoint the Codex CLI uses and checks
+    the reported windows.
+
+    Returns:
+      * ``True``  — every reported rate-limit window is below 100% used;
+        the account can serve requests again and stale local cooldowns
+        should be lifted.
+      * ``False`` — a window is still fully used (or the probe itself 429'd);
+        keep the cooldown.
+      * ``None``  — indeterminate (no token, network error, unexpected
+        payload/status); keep the cooldown.
+
+    Probes are throttled per access token (module-local cache) so the hot
+    selection path can fire this freely.
+    """
+    token = str(access_token or "").strip()
+    if not token:
+        return None
+    # Real Codex access tokens are JWTs. Refusing to probe non-JWT tokens
+    # avoids pointless network calls for corrupt/placeholder entries (and
+    # keeps hermetic test fixtures with dummy tokens offline).
+    if not _decode_jwt_claims(token):
+        return None
+    cache_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    now = time.monotonic()
+    with _codex_quota_probe_lock:
+        cached = _codex_quota_probe_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < min_interval_seconds:
+            return cached[1]
+        # Reserve the slot immediately so concurrent selectors don't stampede
+        # the endpoint while this probe is in flight.
+        _codex_quota_probe_cache[cache_key] = (now, None)
+
+    result: Optional[bool] = None
+    try:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "codex-cli",
+        }
+        # Best-effort ChatGPT-Account-Id from the JWT (the backend requires it
+        # for some account shapes; harmless to omit for others).
+        claims = _decode_jwt_claims(token)
+        account_id = (
+            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+            if isinstance(claims.get("https://api.openai.com/auth"), dict)
+            else None
+        )
+        if isinstance(account_id, str) and account_id.strip():
+            headers["ChatGPT-Account-Id"] = account_id.strip()
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(_codex_usage_probe_url(base_url), headers=headers)
+        if response.status_code == 200:
+            payload = response.json() or {}
+            rate_limit = payload.get("rate_limit") or {}
+            worst_used: Optional[float] = None
+            for key in ("primary_window", "secondary_window"):
+                used = (rate_limit.get(key) or {}).get("used_percent")
+                if isinstance(used, (int, float)):
+                    worst_used = max(worst_used or 0.0, float(used))
+            if worst_used is not None:
+                result = worst_used < 100.0
+        elif response.status_code == 429:
+            result = False
+    except Exception:
+        logger.debug("Codex quota probe failed", exc_info=True)
+        result = None
+
+    with _codex_quota_probe_lock:
+        _codex_quota_probe_cache[cache_key] = (now, result)
+    return result
+
+
+def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
+    """Clear rate-limit cooldowns on persisted openai-codex pool entries.
+
+    Called after the upstream quota is KNOWN to be restored (a successful
+    ``/usage reset`` redemption, or a positive live probe) so auth.json stops
+    freezing credentials behind a stale ``last_error_reset_at``.  Only lifts
+    ``exhausted`` entries whose error metadata is 429/quota-shaped — DEAD
+    (terminal auth) entries and non-rate-limit failures are untouched.
+
+    When *access_token* is given, only the matching entry is cleared;
+    otherwise every rate-limited entry clears (a redeemed banked reset
+    restores the whole account, and any entry that is genuinely still
+    exhausted just re-freezes with fresh metadata on its next 429).
+
+    Returns the number of entries cleared.
+    """
+    cleared = 0
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            pool = auth_store.get("credential_pool")
+            entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+            if not isinstance(entries, list):
+                return 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("last_status") != "exhausted":
+                    continue
+                if access_token and str(entry.get("access_token") or "") != access_token:
+                    continue
+                if not _is_codex_rate_limit_shaped(
+                    entry.get("last_error_code"),
+                    entry.get("last_error_reason"),
+                    entry.get("last_error_message"),
+                ):
+                    continue
+                entry["last_status"] = None
+                entry["last_status_at"] = None
+                entry["last_error_code"] = None
+                entry["last_error_reason"] = None
+                entry["last_error_message"] = None
+                entry["last_error_reset_at"] = None
+                cleared += 1
+            if cleared:
+                _save_auth_store(auth_store)
+    except Exception:
+        logger.debug("Failed to clear Codex pool quota cooldowns", exc_info=True)
+    return cleared
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
@@ -3905,6 +4117,8 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 "reset_at": reset_at,
                 "reason": entry.get("last_error_reason"),
                 "message": entry.get("last_error_message"),
+                "access_token": token.strip(),
+                "base_url": entry.get("base_url"),
             }
     except Exception:
         logger.debug("Codex pool rate-limit lookup failed", exc_info=True)

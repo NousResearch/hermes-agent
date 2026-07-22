@@ -90,6 +90,7 @@ def _sanitize_single_tool(tool: dict) -> dict:
     # argument coercion (``model_tools._schema_allows_null``) can still
     # map a model-emitted ``"null"`` string to Python ``None``.
     fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
+    fn["parameters"] = _rewrite_collapsed_refs(fn["parameters"])
     # Strip top-level combinators that strict backends (OpenAI's Codex
     # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
     # combinators inside properties are preserved.
@@ -226,6 +227,69 @@ def strip_nullable_unions(
                     replacement[meta_key] = stripped[meta_key]
             return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint)
     return stripped
+
+
+def _rewrite_collapsed_refs(schema: Any) -> Any:
+    """Fix ``$ref`` pointers broken by :func:`strip_nullable_unions`.
+
+    When ``strip_nullable_unions`` collapses a nullable ``anyOf`` to its
+    non-null branch, internal property-path ``$ref`` strings that traversed
+    the collapsed ``anyOf/0`` (or ``oneOf/0``) become unresolvable.
+
+    This function walks the rewritten schema, finds every ``$ref``, attempts
+    to resolve it, and — if resolution fails — heuristically strips
+    ``/anyOf/0`` and ``/oneOf/0`` segments from the pointer until it
+    resolves or all combinations are exhausted.
+    """
+    import re as _re
+
+    def _resolve_pointer(root: Any, pointer: str) -> bool:
+        """Return True if *pointer* (JSON Pointer) resolves in *root*."""
+        if not pointer.startswith("#/"):
+            return False
+        parts = pointer[2:].split("/") if len(pointer) > 2 else []
+        node = root
+        for part in parts:
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(node, dict) and part in node:
+                node = node[part]
+            else:
+                return False
+        return True
+
+    _COLLAPSED_RE = _re.compile(r"(/(?:anyOf|oneOf)/0)")
+
+    def _fix_ref(ref: str, root: Any) -> str:
+        """Try to repair a broken *ref* by stripping collapsed-union segments."""
+        if _resolve_pointer(root, ref):
+            return ref  # Already resolves — no fix needed.
+        # Try stripping anyOf/0 and oneOf/0 segments one at a time.
+        changed = True
+        result = ref
+        while changed:
+            changed = False
+            for match in _COLLAPSED_RE.finditer(result):
+                candidate = result[:match.start()] + result[match.end():]
+                if _resolve_pointer(root, candidate):
+                    result = candidate
+                    changed = True
+                    break
+        return result
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node and isinstance(node["$ref"], str):
+                fixed = _fix_ref(node["$ref"], schema)
+                if fixed != node["$ref"]:
+                    node["$ref"] = fixed
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+        return node
+
+    return _walk(schema)
 
 
 def _sanitize_node(node: Any, path: str) -> Any:

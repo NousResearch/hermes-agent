@@ -177,7 +177,14 @@ def test_compression_activity_heartbeat_ignores_touch_errors(tmp_path: Path) -> 
 
 
 def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(tmp_path: Path) -> None:
-    """Strict compressor signatures still fall back while heartbeat cleanup runs."""
+    """Strict compressor signatures still compress while heartbeat cleanup runs.
+
+    Main inspects the engine signature up front (_supported_compression_kwargs)
+    instead of catching TypeError, so a strict-signature engine is invoked
+    exactly once with only the kwargs it accepts. The heartbeat (with a
+    non-numeric configured interval falling back to the default) must still
+    wrap the call and stop cleanly.
+    """
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HEARTBEAT_TYPEERROR_TEST"
     db.create_session(session_id, source="test")
@@ -188,15 +195,16 @@ def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(
     agent._touch_activity = lambda desc: touch_calls.append(desc)
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
-    def _strict_compress(*_args, **kwargs):
-        if "focus_topic" in kwargs or "force" in kwargs:
-            raise TypeError("unexpected keyword")
+    strict_calls: list[int | None] = []
+
+    def _strict_compress(messages, current_tokens=None):
+        strict_calls.append(current_tokens)
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] strict summary"},
             {"role": "user", "content": "tail"},
         ]
 
-    agent.context_compressor.compress.side_effect = _strict_compress
+    agent.context_compressor.compress = _strict_compress
 
     compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
 
@@ -204,7 +212,7 @@ def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(
     assert touch_calls[0] == "context compression started"
     assert touch_calls[-1] == "context compression completed"
     assert db.get_compression_lock_holder(session_id) is None
-    assert agent.context_compressor.compress.call_count == 2
+    assert strict_calls == [120_000]
 
 
 def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: Path) -> None:

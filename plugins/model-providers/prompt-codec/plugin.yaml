@@ -1,0 +1,5 @@
+name: prompt-codec-provider
+kind: model-provider
+version: 1.0.0
+description: Local densify proxy — compress outbound prompts before paid APIs (complementary to Hermes context compression)
+author: Wayne Lowry

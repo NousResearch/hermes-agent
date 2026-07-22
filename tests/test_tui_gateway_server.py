@@ -11639,3 +11639,188 @@ def test_spawn_tree_load_rejects_snapshot_replaced_during_open(
         assert outside.read_text() == '{"private": true}'
     finally:
         reset_hermes_home_override(token)
+
+
+def test_spawn_tree_root_rejects_windows_reparse_directory(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    root = home / "spawn-trees"
+    root.mkdir(parents=True)
+    token = set_hermes_home_override(home)
+    original_lstat = Path.lstat
+
+    def lstat_with_reparse(path):
+        result = original_lstat(path)
+        if path == root:
+            return types.SimpleNamespace(
+                st_mode=result.st_mode,
+                st_file_attributes=0x400,
+            )
+        return result
+
+    try:
+        monkeypatch.setattr(Path, "lstat", lstat_with_reparse)
+        with pytest.raises(OSError, match="not a regular directory"):
+            server._spawn_trees_root()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_index_rejects_hardlinked_mutable_file(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        first = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        session_dir = Path(first["result"]["path"]).parent
+        index = session_dir / server._SPAWN_TREE_INDEX
+        outside = tmp_path / "shared-index.jsonl"
+        try:
+            os.link(index, outside)
+        except OSError as exc:
+            pytest.skip(f"hardlinks unavailable on this host: {exc}")
+        original = outside.read_text(encoding="utf-8")
+
+        second = server._methods["spawn_tree.save"](
+            "r2", {"session_id": "session-1", "subagents": [{"id": "b"}]}
+        )
+        listed = server._methods["spawn_tree.list"](
+            "r3", {"session_id": "session-1"}
+        )
+
+        assert "result" in second
+        assert outside.read_text(encoding="utf-8") == original
+        assert {entry["path"] for entry in listed["result"]["entries"]} == {
+            first["result"]["path"],
+            second["result"]["path"],
+        }
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_rejects_hardlinked_snapshot(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        snapshot = Path(saved["result"]["path"])
+        outside = tmp_path / "shared-snapshot.json"
+        try:
+            os.link(snapshot, outside)
+        except OSError as exc:
+            pytest.skip(f"hardlinks unavailable on this host: {exc}")
+
+        loaded = server._methods["spawn_tree.load"](
+            "r2", {"path": str(snapshot)}
+        )
+        listed = server._methods["spawn_tree.list"](
+            "r3", {"session_id": "session-1"}
+        )
+
+        assert "error" in loaded
+        assert listed["result"]["entries"] == []
+        assert json.loads(outside.read_text(encoding="utf-8"))["session_id"] == (
+            "session-1"
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_decoded_values_must_be_objects(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+        snapshot = Path(saved["result"]["path"])
+        session_dir = snapshot.parent
+        index = session_dir / server._SPAWN_TREE_INDEX
+        index.write_text("[]\n", encoding="utf-8")
+
+        assert server._read_spawn_tree_index(session_dir) == []
+
+        index.unlink()
+        snapshot.write_text("[]", encoding="utf-8")
+        listed = server._methods["spawn_tree.list"](
+            "r2", {"session_id": "session-1"}
+        )
+        loaded = server._methods["spawn_tree.load"](
+            "r3", {"path": str(snapshot)}
+        )
+
+        assert listed["result"]["entries"] == []
+        assert "error" in loaded
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_reads_legacy_owned_history_without_claiming_retention(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    try:
+        legacy_dir = home / "spawn-trees" / "legacy_session"
+        legacy_dir.mkdir(parents=True)
+        marker = legacy_dir / ".hermes-managed"
+        marker.write_text("spawn-trees\n", encoding="utf-8")
+        snapshot = legacy_dir / "20260102T030405.json"
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "session_id": "legacy:session",
+                    "started_at": 10,
+                    "finished_at": 20,
+                    "label": "legacy",
+                    "subagents": [{"id": "old"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        listed = server._methods["spawn_tree.list"](
+            "r1", {"session_id": "legacy:session"}
+        )
+        cross_session = server._methods["spawn_tree.list"](
+            "r2", {"cross_session": True}
+        )
+        loaded = server._methods["spawn_tree.load"](
+            "r3", {"path": str(snapshot)}
+        )
+
+        assert listed["result"]["entries"][0]["path"] == str(snapshot)
+        assert cross_session["result"]["entries"][0]["session_id"] == (
+            "legacy:session"
+        )
+        assert loaded["result"]["subagents"] == [{"id": "old"}]
+        # Compatibility is deliberately read-only: the cleanup plugin only
+        # recognizes digest-bound markers, so this directory is never adopted.
+        assert marker.read_text(encoding="utf-8") == "spawn-trees\n"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_spawn_tree_save_does_not_unlink_recreated_temp_name(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    original_replace = server.os.replace
+    recreated = None
+
+    def replace_then_recreate(source, destination):
+        nonlocal recreated
+        original_replace(source, destination)
+        recreated = Path(source)
+        recreated.write_text("human replacement", encoding="utf-8")
+
+    try:
+        monkeypatch.setattr(server.os, "replace", replace_then_recreate)
+        saved = server._methods["spawn_tree.save"](
+            "r1", {"session_id": "session-1", "subagents": [{"id": "a"}]}
+        )
+
+        assert "result" in saved
+        assert recreated is not None
+        assert recreated.read_text(encoding="utf-8") == "human replacement"
+    finally:
+        reset_hermes_home_override(token)

@@ -376,3 +376,42 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_analyze_messages_counts_only_memory_writes(plugin_api):
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "memory",
+                        "arguments": '{"action":"search","target":"memory","query":"alpha"}',
+                    }
+                },
+                {
+                    "function": {
+                        "name": "memory",
+                        "arguments": '{"action":"add","target":"memory","content":"beta"}',
+                    }
+                },
+                {
+                    "function": {
+                        "name": "memory",
+                        "arguments": '{"action":"replace","target":"memory","old_text":"beta","content":"gamma"}',
+                    }
+                },
+                {
+                    "function": {
+                        "name": "mnemosyne_remember",
+                        "arguments": '{"content":"delta"}',
+                    }
+                },
+            ],
+        }
+    ]
+
+    stats = plugin_api.analyze_messages("sess-1", "Memory writes", messages)
+
+    assert stats["memory_events"] == 4
+    assert stats["memory_write_events"] == 3

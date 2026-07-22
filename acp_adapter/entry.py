@@ -143,6 +143,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Accept all prompts (currently used by --setup-browser to skip the "
              "~400 MB Chromium download confirmation).",
     )
+    parser.add_argument(
+        "--skills",
+        "-s",
+        action="append",
+        default=None,
+        help="Preload one or more skills for the session (repeat flag or comma-separate)",
+    )
     return parser.parse_args(argv)
 
 
@@ -238,6 +245,39 @@ def main(argv: list[str] | None = None) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
 
+    # Preload skills if --skills flags were provided
+    skills_prompt = ""
+    if args.skills:
+        try:
+            from agent.skill_commands import build_preloaded_skills_prompt
+
+            parsed_skills: list[str] = []
+            seen: set[str] = set()
+            for raw in args.skills:
+                for part in raw.split(","):
+                    normalized = part.strip()
+                    if normalized and normalized not in seen:
+                        seen.add(normalized)
+                        parsed_skills.append(normalized)
+
+            if parsed_skills:
+                prompt_text, loaded_names, missing_names = build_preloaded_skills_prompt(
+                    parsed_skills,
+                )
+                if missing_names:
+                    logger.warning(
+                        "ACP --skills: unknown skill(s): %s",
+                        ", ".join(missing_names),
+                    )
+                if loaded_names:
+                    logger.info(
+                        "ACP --skills preloaded: %s",
+                        ", ".join(loaded_names),
+                    )
+                skills_prompt = prompt_text or ""
+        except Exception:
+            logger.debug("Failed to preload ACP --skills", exc_info=True)
+
     # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
@@ -257,7 +297,7 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(skills_prompt=skills_prompt)
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

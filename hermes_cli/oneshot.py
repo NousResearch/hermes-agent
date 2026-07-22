@@ -50,6 +50,106 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _read_mcp_server_names() -> tuple[set[str], set[str]]:
+    """Return (enabled, disabled) MCP server names from config.yaml.
+
+    Shared by the ``--toolsets`` resolver and the one-shot MCP discovery wait so
+    both classify configured servers identically. Fail-safe: any config error
+    yields empty sets rather than raising.
+    """
+    enabled: set[str] = set()
+    disabled: set[str] = set()
+    try:
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.tools_config import _parse_enabled_flag
+
+        cfg = read_raw_config()
+        mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+        for name, server_cfg in mcp_servers.items():
+            if not isinstance(server_cfg, dict):
+                continue
+            if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+                enabled.add(str(name))
+            else:
+                disabled.add(str(name))
+    except Exception:
+        return set(), set()
+    return enabled, disabled
+
+
+def _effective_oneshot_mcp_servers(
+    toolsets: object = None,
+    *,
+    use_config_toolsets: bool = True,
+) -> set[str]:
+    """Return configured MCP servers that can contribute to this invocation."""
+    enabled, _disabled = _read_mcp_server_names()
+    if not enabled:
+        return set()
+
+    normalized = _normalize_toolsets(toolsets)
+    if not use_config_toolsets:
+        # ``None`` on this path is the validated representation of explicit
+        # ``--toolsets all`` / ``*``. Every enabled MCP server can contribute.
+        return enabled if normalized is None else enabled.intersection(normalized)
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        effective_toolsets = _get_platform_tools(load_config(), "cli")
+    except Exception:
+        # Match the startup path's fail-safe posture: if effective toolset
+        # resolution breaks, do not reintroduce the original discovery race.
+        return enabled
+    return enabled.intersection(effective_toolsets)
+
+
+def _wait_for_mcp_discovery_before_snapshot(
+    toolsets: object = None,
+    *,
+    use_config_toolsets: bool = True,
+) -> None:
+    """Join background MCP discovery before the one-shot tool snapshot is built.
+
+    ``hermes -z`` starts MCP discovery on a background thread (via
+    ``_prepare_agent_startup``) but, unlike the interactive CLI/TUI, never joined
+    it — so a configured server that had not finished connecting was silently
+    absent from the turn's tools. Wait here, bounded like the TUI's late-refresh
+    join, whenever an enabled MCP server is in this invocation's effective
+    toolset. Zero cost when MCP is excluded, and ~0s when discovery already
+    finished (``join`` returns the instant the thread is done). Servers still
+    pending after the configured bound are named on stderr and left to the
+    automatic late-binding refresh.
+
+    Must run BEFORE ``run_oneshot`` redirects stderr, so the warning reaches the
+    terminal (mirrors the ``--toolsets`` warnings above).
+    """
+    selected_mcp_servers = _effective_oneshot_mcp_servers(
+        toolsets,
+        use_config_toolsets=use_config_toolsets,
+    )
+    if not selected_mcp_servers:
+        return
+    try:
+        from hermes_cli.mcp_startup import (
+            _resolve_discovery_timeout,
+            mcp_discovery_in_flight,
+            wait_for_mcp_discovery,
+        )
+    except Exception:
+        return
+
+    timeout = _resolve_discovery_timeout(None)
+    wait_for_mcp_discovery(timeout=timeout)
+    if mcp_discovery_in_flight():
+        sys.stderr.write(
+            f"hermes -z: MCP discovery still pending after {timeout:g}s; "
+            "tools from these servers may be missing this turn: "
+            f"{', '.join(sorted(selected_mcp_servers))}\n"
+        )
+
+
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -88,22 +188,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     mcp_names: set[str] = set()
     mcp_disabled: set[str] = set()
     if unresolved:
-        try:
-            from hermes_cli.config import read_raw_config
-            from hermes_cli.tools_config import _parse_enabled_flag
-
-            cfg = read_raw_config()
-            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-            for name, server_cfg in mcp_servers.items():
-                if not isinstance(server_cfg, dict):
-                    continue
-                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
-                    mcp_names.add(str(name))
-                else:
-                    mcp_disabled.add(str(name))
-        except Exception:
-            mcp_names = set()
-            mcp_disabled = set()
+        mcp_names, mcp_disabled = _read_mcp_server_names()
 
     mcp_valid = [name for name in unresolved if name in mcp_names]
     disabled = [name for name in unresolved if name in mcp_disabled]
@@ -215,6 +300,15 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
+
+    # Join background MCP discovery before the agent's tool snapshot is built.
+    # Done here (before the stderr redirect below) so any pending-server warning
+    # reaches the terminal, and so a slow MCP server's tools are actually present
+    # for this single turn — one-shot has no interactive late-binding refresh.
+    _wait_for_mcp_discovery_before_snapshot(
+        explicit_toolsets,
+        use_config_toolsets=use_config_toolsets,
+    )
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.

@@ -120,6 +120,16 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Delivery-platform hint for stateless adapters (api_server) that cannot
+# deliver cron results themselves. Set by the adapter (e.g. from an
+# ``X-Hermes-Delivery-Platform`` request header) so that ``_origin_from_env``
+# in ``cronjob_tools.py`` stamps the cron origin with the bridge's real
+# sending platform instead of the live platform (which can never send).
+# The live session retains ``platform="api_server"`` and ``async_delivery=False``
+# — this var only affects the cron-origin stamp, not live-turn delivery.
+# See #69304.
+_SESSION_CRON_DELIVERY_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_CRON_DELIVERY_PLATFORM", default=_UNSET)
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
@@ -136,6 +146,7 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
+    "HERMES_SESSION_CRON_DELIVERY_PLATFORM": _SESSION_CRON_DELIVERY_PLATFORM,
 }
 
 
@@ -169,6 +180,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    cron_delivery_platform: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -204,6 +216,7 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        _SESSION_CRON_DELIVERY_PLATFORM.set(cron_delivery_platform),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -238,6 +251,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
+        _SESSION_CRON_DELIVERY_PLATFORM,
     ):
         var.set("")
     # Reset async-delivery capability to the "never set" sentinel rather than a

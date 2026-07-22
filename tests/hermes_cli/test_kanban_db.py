@@ -53,6 +53,164 @@ def test_init_db_is_idempotent(kanban_home):
     assert tasks[0].title == "persisted"
 
 
+def test_malformed_notification_subscription_does_not_block_valid_subscriptions(kanban_home):
+    with kb.connect() as conn:
+        valid_task = kb.create_task(conn, title="valid notification")
+        bad_task = kb.create_task(conn, title="corrupt notification")
+        kb.add_notify_sub(
+            conn, task_id=valid_task, platform="telegram", chat_id="valid-chat",
+        )
+        assert kb.claim_task(conn, valid_task)
+        assert kb.complete_task(conn, valid_task, result="ready")
+        conn.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, thread_id, created_at, last_event_id) "
+            "VALUES (?, 'telegram', 'bad-chat', '', 1, 'reviewer')",
+            (bad_task,),
+        )
+        conn.commit()
+
+        subs = kb.list_notify_subs(conn)
+        assert [(sub["task_id"], sub["chat_id"]) for sub in subs] == [
+            (valid_task, "valid-chat"),
+        ]
+        cursor, events = kb.unseen_events_for_sub(
+            conn, task_id=bad_task, platform="telegram", chat_id="bad-chat",
+        )
+        assert (cursor, events) == (0, [])
+        assert kb.claim_unseen_events_for_sub(
+            conn, task_id=bad_task, platform="telegram", chat_id="bad-chat",
+        ) == (0, 0, [])
+
+        cursor, events = kb.unseen_events_for_sub(
+            conn, task_id=valid_task, platform="telegram", chat_id="valid-chat", kinds=["completed"],
+        )
+        assert cursor > 0
+        assert [event.kind for event in events] == ["completed"]
+
+
+def test_active_index_flood_control_honors_telegram_retry_after(tmp_path, monkeypatch):
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    now = int(time.time())
+    with kb.connect() as conn:
+        claimed = kb.claim_active_task_index(
+            conn,
+            platform="telegram",
+            chat_id="114874376",
+            thread_id="",
+            notifier_profile="reviewer",
+            owner="gateway-a:1",
+        )
+        assert claimed is not None
+        state = kb.record_active_task_index_failure(
+            conn,
+            platform="telegram",
+            chat_id="114874376",
+            thread_id="",
+            notifier_profile="reviewer",
+            owner="gateway-a:1",
+            generation=claimed["lease_generation"],
+            error="flood_control:3600",
+        )
+    assert state is not None
+    assert state["next_retry_at"] >= now + 3600
+
+
+def test_claim_status_surface_recover_parked_blocks_repeat_of_same_stuck_message(tmp_path, monkeypatch):
+    """A one-shot recovery claim must not repeat for the same stuck message id.
+
+    Otherwise a card whose recreate attempt also fails would be reclaimed
+    with ``recover_parked=True`` on every notifier tick forever instead of
+    staying parked for an operator, per the "recreated once" contract.
+    """
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="parked card", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO kanban_status_surfaces "
+            "(task_id, platform, chat_id, thread_id, message_id, attempts, last_error, "
+            "dead_lettered_at, created_at, updated_at) "
+            "VALUES (?, 'telegram', 'chat-1', '', 'stuck-1', 3, 'Message to edit not found', ?, ?, ?)",
+            (tid, now, now, now),
+        )
+        conn.commit()
+
+        recoverable = kb.list_recoverable_edit_missing_status_surfaces(conn)
+        assert [row["task_id"] for row in recoverable] == [tid]
+
+        first = kb.claim_status_surface(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="",
+            owner="worker-a", event_id=0, recover_parked=True,
+        )
+        assert first is not None
+        assert first["dead_lettered_at"] is None
+        assert first["recovered_message_id"] == "stuck-1"
+
+        # The recreate attempt itself failed too — message_id/last_error
+        # still point at the same stuck message once it re-parks.
+        conn.execute(
+            "UPDATE kanban_status_surfaces SET lease_owner=NULL, lease_expires=NULL, "
+            "attempts=4, dead_lettered_at=? WHERE task_id=?",
+            (now, tid),
+        )
+        conn.commit()
+
+        assert kb.list_recoverable_edit_missing_status_surfaces(conn) == []
+        second = kb.claim_status_surface(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="",
+            owner="worker-a", event_id=0, recover_parked=True,
+        )
+        assert second is None
+    finally:
+        conn.close()
+
+
+def test_init_migrates_legacy_terminal_notification_before_schema_index(tmp_path):
+    """A legacy terminal table must not block its own additive migration."""
+    db_path = tmp_path / "kanban.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE kanban_terminal_notifications (
+                task_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL DEFAULT '',
+                notifier_profile TEXT,
+                event_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                message_id TEXT,
+                lease_owner TEXT,
+                lease_generation INTEGER NOT NULL DEFAULT 0,
+                lease_expires INTEGER,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_retry_at INTEGER,
+                dead_lettered_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (task_id, platform, chat_id, thread_id, event_id)
+            )
+            """
+        )
+
+    kb.init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(kanban_terminal_notifications)")
+        }
+    assert {"outcome_key", "outcome_summary"} <= columns
+
+
 def test_init_creates_expected_tables(kanban_home):
     with kb.connect() as conn:
         rows = conn.execute(
@@ -135,8 +293,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     migration adds those columns, or boards predating the column fail to
     open before migration can run.
 
-    Covers all four indexes that sit on additive columns:
+    Covers the legacy migration ordering plus all four indexes that sit on
+    additive columns:
     - ``tasks.session_id``       -> ``idx_tasks_session_id``    (#28447)
+    - ``tasks.origin_intent_id`` -> nullable lineage, no inference
     - ``tasks.tenant``           -> ``idx_tasks_tenant``        (#16081)
     - ``tasks.idempotency_key``  -> ``idx_tasks_idempotency``   (#17805)
     - ``task_events.run_id``     -> ``idx_events_run``          (#17805)
@@ -198,6 +358,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 
     # Additive columns added by migration:
     assert "session_id" in task_columns
+    assert "origin_intent_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
     assert "run_id" in event_columns
@@ -206,6 +367,45 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
     assert "idx_events_run" in indexes
+
+
+def test_connect_migrates_legacy_tasks_with_null_origin_intent_id(tmp_path):
+    """A legacy board gains the nullable lineage column without inference."""
+    db_path = tmp_path / "legacy-origin-intent.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy', 'old board task', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        columns = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        legacy = migrated.execute(
+            "SELECT origin_intent_id FROM tasks WHERE id = 'legacy'"
+        ).fetchone()
+
+    assert "origin_intent_id" in columns
+    assert legacy["origin_intent_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +420,224 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.status == "ready"
     assert t.assignee == "alice"
     assert t.workspace_kind == "scratch"
+
+
+def test_create_task_preserves_optional_origin_intent_id(kanban_home):
+    with kb.connect() as conn:
+        linked = kb.create_task(
+            conn, title="intent linked", origin_intent_id="intent-db-123"
+        )
+        unattributed = kb.create_task(conn, title="unattributed")
+        linked_task = kb.get_task(conn, linked)
+        unattributed_task = kb.get_task(conn, unattributed)
+
+    assert linked_task is not None
+    assert linked_task.origin_intent_id == "intent-db-123"
+    assert unattributed_task is not None
+    assert unattributed_task.origin_intent_id is None
+
+
+def test_create_task_inherits_unambiguous_parent_origin_intent_id(kanban_home):
+    """A child stays in its parent's durable user-intent membership."""
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="intent parent",
+            session_id="telegram/114874376/1515141",
+            origin_intent_id="intent-a",
+        )
+        child = kb.create_task(conn, title="intent child", parents=[parent])
+        child_task = kb.get_task(conn, child)
+
+    assert child_task is not None
+    assert child_task.origin_intent_id == "intent-a"
+
+
+def test_create_task_keeps_independent_intents_in_same_origin_distinct(kanban_home):
+    """Same Telegram topic is not a substitute for an intent identity."""
+    with kb.connect() as conn:
+        origin = "telegram/114874376/1515141"
+        first = kb.create_task(
+            conn, title="first intent", session_id=origin, origin_intent_id="intent-a"
+        )
+        second = kb.create_task(
+            conn, title="second intent", session_id=origin, origin_intent_id="intent-b"
+        )
+        first_child = kb.create_task(conn, title="first child", parents=[first])
+        second_child = kb.create_task(conn, title="second child", parents=[second])
+        first_child_task = kb.get_task(conn, first_child)
+        second_child_task = kb.get_task(conn, second_child)
+
+    assert first_child_task is not None
+    assert first_child_task.origin_intent_id == "intent-a"
+    assert second_child_task is not None
+    assert second_child_task.origin_intent_id == "intent-b"
+
+
+def test_create_task_leaves_ambiguous_parent_origin_intent_id_null(kanban_home):
+    """Conflicting or legacy parent lineage must fail closed without a guess."""
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first", origin_intent_id="intent-a")
+        second = kb.create_task(conn, title="second", origin_intent_id="intent-b")
+        legacy = kb.create_task(conn, title="legacy")
+        conflicting_child = kb.create_task(
+            conn, title="conflicting child", parents=[first, second]
+        )
+        legacy_child = kb.create_task(conn, title="legacy child", parents=[first, legacy])
+        conflicting_child_task = kb.get_task(conn, conflicting_child)
+        legacy_child_task = kb.get_task(conn, legacy_child)
+
+    assert conflicting_child_task is not None
+    assert conflicting_child_task.origin_intent_id is None
+    assert legacy_child_task is not None
+    assert legacy_child_task.origin_intent_id is None
+
+
+def test_create_task_explicit_origin_intent_id_overrides_parent_inheritance(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", origin_intent_id="intent-a")
+        child = kb.create_task(
+            conn,
+            title="independent child",
+            parents=[parent],
+            origin_intent_id="intent-b",
+        )
+        child_task = kb.get_task(conn, child)
+
+    assert child_task is not None
+    assert child_task.origin_intent_id == "intent-b"
+
+
+def test_terminal_notification_waits_for_final_audited_origin_intent_member(kanban_home):
+    """Intent membership, not the shared topic or parent shape, owns final ping dedupe."""
+    summary = (
+        "What changed: проверили общий итог.\n"
+        "What works: все части приняты аудитором.\n"
+        "How to verify: открыть итог в исходном чате."
+    )
+
+    def accept_and_enqueue(conn, task_id, key):
+        assert kb.request_review(
+            conn, task_id, summary="ready for review: grouped result",
+            metadata={"notification_key": key, "notification_summary": summary},
+        )
+        assert kb.accept_review(conn, task_id, summary="accepted")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='review_accepted' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO kanban_status_surfaces "
+            "(task_id, platform, chat_id, thread_id, message_id, delivered_event_id, created_at, updated_at) "
+            "VALUES (?, 'telegram', '114874376', '1515141', 'card', ?, 1, 1)",
+            (task_id, event_id),
+        )
+        return kb.enqueue_terminal_notification(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="114874376",
+            thread_id="1515141",
+            notifier_profile="reviewer",
+            event_id=event_id,
+            title="grouped result",
+            outcome_key=key,
+            outcome_summary=summary,
+        )
+
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root", origin_intent_id="intent-a")
+        helper = kb.create_task(
+            conn, title="helper", parents=[root], initial_status="blocked"
+        )
+        other_intent = kb.create_task(conn, title="other", origin_intent_id="intent-b")
+
+        assert accept_and_enqueue(conn, root, "root-first") is False
+        assert accept_and_enqueue(conn, helper, "helper-final") is True
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='review_accepted' "
+            "ORDER BY id DESC LIMIT 1",
+            (helper,),
+        ).fetchone()[0]
+        assert not kb.enqueue_terminal_notification(
+            conn,
+            task_id=helper,
+            platform="telegram",
+            chat_id="114874376",
+            thread_id="1515141",
+            notifier_profile="reviewer",
+            event_id=event_id,
+            title="grouped result",
+            outcome_key="helper-replay",
+            outcome_summary=summary,
+        )
+        assert accept_and_enqueue(conn, other_intent, "other-final") is True
+        rows = conn.execute(
+            "SELECT task_id, outcome_key FROM kanban_terminal_notifications ORDER BY task_id"
+        ).fetchall()
+
+    assert {(row["task_id"], row["outcome_key"]) for row in rows} == {
+        (helper, "origin-intent:intent-a"),
+        (other_intent, "origin-intent:intent-b"),
+    }
+
+
+def test_terminal_notification_backlog_uses_latest_audited_intent_member(kanban_home):
+    """A replayed older acceptance cannot claim a completed intent's final ping."""
+    summary = (
+        "What changed: проверили общий итог.\n"
+        "What works: все части приняты аудитором.\n"
+        "How to verify: открыть итог в исходном чате."
+    )
+
+    def accept(conn, task_id):
+        assert kb.request_review(conn, task_id, summary="ready for review: grouped result")
+        assert kb.accept_review(conn, task_id, summary="accepted")
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='review_accepted' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO kanban_status_surfaces "
+            "(task_id, platform, chat_id, thread_id, message_id, delivered_event_id, created_at, updated_at) "
+            "VALUES (?, 'telegram', '114874376', '1515141', 'card', ?, 1, 1)",
+            (task_id, event_id),
+        )
+        return event_id
+
+    def enqueue(conn, task_id, event_id):
+        return kb.enqueue_terminal_notification(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="114874376",
+            thread_id="1515141",
+            notifier_profile="reviewer",
+            event_id=event_id,
+            title="grouped result",
+            outcome_key="backlog-replay",
+            outcome_summary=summary,
+        )
+
+    with kb.connect() as conn:
+        older = kb.create_task(conn, title="older", origin_intent_id="intent-backlog")
+        final = kb.create_task(conn, title="final", origin_intent_id="intent-backlog")
+        older_event = accept(conn, older)
+        final_event = accept(conn, final)
+
+        assert enqueue(conn, older, older_event) is False
+        assert enqueue(conn, final, final_event) is True
+        row = conn.execute(
+            "SELECT task_id, event_id, outcome_key FROM kanban_terminal_notifications"
+        ).fetchone()
+
+    assert dict(row) == {
+        "task_id": final,
+        "event_id": final_event,
+        "outcome_key": "origin-intent:intent-backlog",
+    }
 
 
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
@@ -981,6 +1399,148 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
         )
 
 
+def _claim_dead_worker(conn, task_id, pid):
+    """Open a worker run and make its PID eligible for reaping."""
+    import hermes_cli.kanban_db as _kb
+
+    host = _kb._claimer_id().split(":", 1)[0]
+    claimed = kb.claim_task(conn, task_id, claimer=f"{host}:worker-{pid}")
+    assert claimed is not None
+    kb._set_worker_pid(conn, task_id, pid)
+    conn.commit()
+
+
+def _write_worker_log(task_id, content):
+    path = kb.worker_log_path(task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def test_clean_rc0_initialization_failure_is_preserved_not_protocol_violation(
+    kanban_home, monkeypatch,
+):
+    """A pre-agent startup error exits rc=0 but is not a tool-use failure."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    diagnostic = (
+        "Model qwen3:14b has a context window of 8,192 tokens, which is "
+        "below the minimum 64,000 required by Hermes Agent."
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="startup", assignee="light")
+        _claim_dead_worker(conn, tid, 61001)
+        _write_worker_log(
+            tid,
+            f"Query: work kanban task {tid}\nInitializing agent...\n"
+            f"Failed to initialize agent: {diagnostic}\nGoodbye!\n",
+        )
+        _kb._record_worker_exit(61001, _exited_status(0))
+
+        assert kb.detect_crashed_workers(conn) == []
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=?", (tid,),
+        ).fetchall()
+
+    assert task is not None and task.status == "blocked"
+    assert run is not None
+    assert run.outcome == "initialization_failed"
+    assert run.error == diagnostic
+    assert [event["kind"] for event in events].count("initialization_failed") == 1
+    assert "protocol_violation" not in [event["kind"] for event in events]
+
+
+def test_clean_rc0_prose_gets_one_nudge_then_bounded_protocol_retry_without_duplicates(
+    kanban_home, monkeypatch,
+):
+    """A prose-only response gets one nudge, then the bounded retry path."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="prose", assignee="light")
+        _claim_dead_worker(conn, tid, 61002)
+        _write_worker_log(
+            tid,
+            f"Query: work kanban task {tid}\nInitializing agent...\n"
+            "I inspected the task and changed the requested code.\n",
+        )
+        _kb._record_worker_exit(61002, _exited_status(0))
+
+        assert kb.detect_crashed_workers(conn) == []
+        nudged = kb.get_task(conn, tid)
+        first_run = kb.latest_run(conn, tid)
+        assert nudged is not None and nudged.status == "ready"
+        assert first_run is not None and first_run.outcome == "protocol_nudge"
+        assert kb._worker_prompt_for(nudged).startswith("Continue kanban task")
+
+        _claim_dead_worker(conn, tid, 61003)
+        _write_worker_log(
+            tid,
+            f"Query: work kanban task {tid}\nInitializing agent...\n"
+            "I still did the work but forgot to use the lifecycle tool.\n",
+        )
+        _kb._record_worker_exit(61003, _exited_status(0))
+
+        assert kb.detect_crashed_workers(conn) == [tid]
+        task = kb.get_task(conn, tid)
+        final_run = kb.latest_run(conn, tid)
+        first_count = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='protocol_violation'",
+            (tid,),
+        ).fetchone()[0]
+        assert kb.detect_crashed_workers(conn) == []
+        second_count = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='protocol_violation'",
+            (tid,),
+        ).fetchone()[0]
+
+    assert task is not None and task.status == "ready"
+    assert task.consecutive_failures == 0
+    assert final_run is not None and final_run.outcome == "crashed"
+    assert first_count == second_count == 1
+
+
+def test_clean_rc0_empty_and_nonzero_or_unknown_exits_do_not_get_protocol_nudge(
+    kanban_home, monkeypatch,
+):
+    """Only captured prose may be nudged; other exits keep their real class."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        empty = kb.create_task(conn, title="empty", assignee="light")
+        _claim_dead_worker(conn, empty, 61004)
+        _write_worker_log(empty, f"Query: work kanban task {empty}\nInitializing agent...\n")
+        _kb._record_worker_exit(61004, _exited_status(0))
+        assert kb.detect_crashed_workers(conn) == [empty]
+
+        nonzero = kb.create_task(conn, title="nonzero", assignee="light")
+        _claim_dead_worker(conn, nonzero, 61005)
+        _kb._record_worker_exit(61005, _exited_status(2))
+        assert kb.detect_crashed_workers(conn) == [nonzero]
+
+        unknown = kb.create_task(conn, title="unknown", assignee="light")
+        _claim_dead_worker(conn, unknown, 61006)
+        assert kb.detect_crashed_workers(conn) == [unknown]
+
+        empty_run = kb.latest_run(conn, empty)
+        nonzero_run = kb.latest_run(conn, nonzero)
+        unknown_run = kb.latest_run(conn, unknown)
+
+    assert empty_run is not None and empty_run.outcome == "crashed"
+    assert nonzero_run is not None and nonzero_run.outcome == "crashed"
+    assert unknown_run is not None and unknown_run.outcome == "crashed"
+
+
 def test_respawn_guard_defers_rate_limited_within_cooldown(
     kanban_home, monkeypatch,
 ):
@@ -1521,6 +2081,22 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id = ?", (tid,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM kanban_review_jobs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+
+
+def test_archive_cancels_pending_review_job(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="review cleanup", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        assert kb.request_review(conn, tid, summary="ready for review")
+        assert conn.execute(
+            "SELECT status FROM kanban_review_jobs WHERE task_id=?", (tid,)
+        ).fetchone()[0] == "queued"
+
+        assert kb.archive_task(conn, tid)
+        assert conn.execute(
+            "SELECT status FROM kanban_review_jobs WHERE task_id=?", (tid,)
+        ).fetchone()[0] == "cancelled"
 
 
 def test_delete_archived_task_rejects_non_archived_rows(kanban_home):
@@ -2393,6 +2969,47 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     assert run is not None
     assert run.metadata["artifacts"] == [str(persisted)]
     with kb.connect() as conn:
+        attachments = kb.list_attachments(conn, t)
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("chart.png", str(persisted.resolve()))
+    ]
+
+
+def test_request_review_persists_scratch_artifacts_before_handoff(kanban_home):
+    """Review lifecycle keeps the upstream durable-artifact contract."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review chart")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "chart.png"
+        artifact.write_bytes(b"png-bytes")
+
+        assert kb.request_review(
+            conn,
+            t,
+            summary="handoff ready",
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+        handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
+        assert handoff.payload is not None
+        persisted = Path(handoff.payload["artifacts"][0])
+        run = kb.latest_run(conn, t)
+
+    assert ws.exists(), "review handoff must not clean the active workspace"
+    assert persisted.exists(), "artifact copy should survive future workspace cleanup"
+    assert persisted.parent == kb.task_attachments_dir(t)
+    assert persisted.read_bytes() == b"png-bytes"
+    assert str(persisted) != str(artifact)
+    assert run is not None
+    assert run.metadata is not None
+    assert run.metadata["artifacts"] == [str(persisted)]
+    with kb.connect() as conn:
+        reviewed_task = kb.get_task(conn, t)
+        assert reviewed_task is not None
+        assert reviewed_task.status == "review"
         attachments = kb.list_attachments(conn, t)
     assert [(a.filename, a.stored_path) for a in attachments] == [
         ("chart.png", str(persisted.resolve()))
@@ -3864,15 +4481,17 @@ def _set_task_status(conn: sqlite3.Connection, task_id: str, status: str) -> Non
     conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
 
 
-def test_claim_review_task_transitions_to_running(kanban_home):
-    """claim_review_task atomically transitions review -> running."""
+def test_claim_review_task_never_claims_audit_handoff(kanban_home):
+    """Review is an reviewer-owned terminal lane, not worker eligibility."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         claimed = kb.claim_review_task(conn, t)
-    assert claimed is not None
-    assert claimed.status == "running"
-    assert claimed.claim_lock is not None
+    assert claimed is None
+    with kb.connect() as conn:
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "review"
 
 
 def test_claim_review_task_fails_on_non_review(kanban_home):
@@ -3884,34 +4503,33 @@ def test_claim_review_task_fails_on_non_review(kanban_home):
     assert claimed is None
 
 
-def test_claim_review_task_fails_when_already_claimed(kanban_home):
-    """claim_review_task returns None if the task was already claimed."""
+def test_claim_review_task_remains_nonclaimable_after_repeated_attempts(kanban_home):
+    """No caller can turn a review handoff into a running worker."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         first = kb.claim_review_task(conn, t)
-        assert first is not None
         second = kb.claim_review_task(conn, t)
+    assert first is None
     assert second is None
 
 
-def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
-    """dispatch_once dry-run sees review tasks and reports them as spawned."""
+def test_dispatch_review_dry_run_never_reports_a_spawn(kanban_home, all_assignees_spawnable):
+    """A review handoff survives a dispatcher tick without a claim or spawn."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, dry_run=True)
-    assert len(res.spawned) == 1
-    assert res.spawned[0][0] == t
+    assert res.spawned == []
     # Dry run must NOT mutate status.
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "review"
 
 
-def test_dispatch_review_spawns_with_correct_skills(
+def test_dispatch_review_never_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """The dispatcher leaves review tasks for the reviewer."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -3922,19 +4540,22 @@ def test_dispatch_review_spawns_with_correct_skills(
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
-    assert len(res.spawned) == 1
-    assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert res.spawned == []
+    assert spawned_tasks == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "review"
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):
-    """Unassigned review tasks go to skipped_unassigned, not spawned."""
+    """Review tasks do not participate in dispatcher eligibility."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review floater")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_unassigned
     assert not res.spawned
+    assert t not in res.skipped_unassigned
 
 
 def test_dispatch_review_counts_toward_max_spawn(
@@ -3959,10 +4580,10 @@ def test_dispatch_review_counts_toward_max_spawn(
     assert len(spawns) == 2
 
 
-def test_dispatch_review_spawns_when_ready_empty(
+def test_dispatch_review_is_not_spawned_when_ready_empty(
     kanban_home, all_assignees_spawnable,
 ):
-    """When only review tasks exist, they still get dispatched."""
+    """When only review tasks exist, no worker is launched."""
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -3973,17 +4594,16 @@ def test_dispatch_review_spawns_when_ready_empty(
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
-    assert len(res.spawned) == 1
-    assert spawns[0] == t
+    assert res.spawned == []
+    assert spawns == []
 
 
-def test_has_spawnable_review_true(kanban_home):
-    """has_spawnable_review returns True when review tasks exist with real profiles."""
+def test_has_spawnable_review_is_false_for_reviewer_handoffs(kanban_home):
+    """Review cards are intentionally not eligible for dispatcher health."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="default")
         _set_task_status(conn, t, "review")
-        # default profile should exist in the test env
-        assert kb.has_spawnable_review(conn) is True
+        assert kb.has_spawnable_review(conn) is False
 
 
 def test_has_spawnable_review_false_on_empty(kanban_home):
@@ -4005,15 +4625,15 @@ def test_has_spawnable_review_false_when_only_terminal_lanes(
 
 
 def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
-    """Review tasks with non-existent profiles go to skipped_nonspawnable."""
+    """Review tasks bypass dispatcher profile checks entirely."""
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review", assignee="orion-cc")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_nonspawnable
     assert not res.spawned
+    assert t not in res.skipped_nonspawnable
 
 
 def test_review_status_in_valid_statuses():
@@ -4030,6 +4650,346 @@ def test_dispatch_review_does_not_claim_ready_tasks(
         # claim_review_task should NOT claim a ready task
         claimed = kb.claim_review_task(conn, t)
     assert claimed is None
+
+def _request_review_with_workspace(conn, tmp_path):
+    workspace = tmp_path / "audit-source"
+    workspace.mkdir()
+    tid = kb.create_task(
+        conn, title="audit me", assignee="heavy", workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    claimed = kb.claim_task(conn, tid)
+    assert claimed is not None
+    assert kb.request_review(
+        conn, tid, summary="ready for review: regression evidence",
+        metadata={"tests_run": 1}, expected_run_id=claimed.current_run_id,
+    )
+    return tid, workspace
+
+
+def test_request_review_links_handoff_event_id_to_review_requested_event(kanban_home, tmp_path):
+    import json
+
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        job_row = conn.execute(
+            "SELECT handoff_event_id FROM kanban_review_jobs WHERE task_id=?",
+            (tid,),
+        ).fetchone()
+        event_row = conn.execute(
+            "SELECT id, payload FROM task_events WHERE task_id=? AND kind='review_requested' "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+    assert job_row is not None
+    assert event_row is not None
+    payload = json.loads(event_row["payload"] or "{}")
+
+    assert payload["handoff_event_id"] == event_row["id"]
+    assert job_row["handoff_event_id"] == event_row["id"]
+
+
+def test_request_review_uses_configured_reviewer_profile(kanban_home, tmp_path, monkeypatch):
+    from hermes_cli import config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"kanban": {"review_profile": "independent-review"}},
+    )
+
+    with kb.connect() as conn:
+        task_id, _ = _request_review_with_workspace(conn, tmp_path)
+        profile = conn.execute(
+            "SELECT profile FROM kanban_review_jobs WHERE task_id=?", (task_id,),
+        ).fetchone()[0]
+
+    assert profile == "independent-review"
+
+
+def test_review_requested_spawns_one_reviewer_receipt_without_reclaiming_heavy(
+    kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
+):
+    spawned = []
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append((task.id, workspace))
+        return 4321
+
+    with kb.connect() as conn:
+        tid, workspace = _request_review_with_workspace(conn, tmp_path)
+        first = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        second = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        task = kb.get_task(conn, tid)
+        job = conn.execute("SELECT profile, status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()
+
+    assert first.reviewer_spawned == [tid]
+    assert second.reviewer_spawned == []
+    assert spawned == [(tid, str(workspace))]
+    assert task is not None
+    assert task.status == "review"
+    assert task.assignee == "heavy"
+    assert dict(job) == {"profile": "default", "status": "running", "attempts": 1}
+    with kb.connect() as conn:
+        assert kb.accept_review(conn, tid, summary="reviewer accepted")
+        accepted_task = kb.get_task(conn, tid)
+        assert accepted_task is not None
+        assert accepted_task.status == "done"
+        assert conn.execute("SELECT status FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()[0] == "accepted"
+
+
+def test_reviewer_reject_and_bounded_crash_retry_keep_review_separate(
+    kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
+):
+    spawned = []
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 9876
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        retry = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        conn.execute("UPDATE kanban_review_jobs SET next_retry_at=0 WHERE task_id=?", (tid,))
+        kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        exhausted = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        job = conn.execute("SELECT status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()
+        assert kb.reject_review(conn, tid, reason="missing contract proof")
+        assert kb.get_task(conn, tid) is not None
+        assert kb.get_task(conn, tid).status == "ready"
+        normal = []
+        kb.dispatch_once(conn, spawn_fn=lambda task, workspace, board=None: normal.append(task.id) or 123)
+        assert kb.get_task(conn, tid) is not None
+        assert kb.get_task(conn, tid).status == "running"
+
+    assert retry.reviewer_retrying == [tid]
+    assert exhausted.needs_reviewer == [tid]
+    assert dict(job) == {"status": "needs_reviewer", "attempts": 2}
+    assert spawned == [tid, tid]
+    assert normal == [tid]
+
+
+def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
+    kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
+):
+    """A pre-receipt review handoff gets one reviewer run on its own board."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    spawned = []
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append((task.id, board))
+        return 2468
+
+    task_ids = {}
+    for board in ("alpha", "beta"):
+        workspace_root = tmp_path / board
+        workspace_root.mkdir()
+        with kb.connect(board=board) as conn:
+            tid, _ = _request_review_with_workspace(conn, workspace_root)
+            # Simulate a board that was already in review when receipt-based
+            # reviewer dispatch was deployed.
+            conn.execute("DELETE FROM kanban_review_jobs WHERE task_id=?", (tid,))
+            task_ids[board] = tid
+
+    with kb.connect(board="alpha") as conn:
+        first = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn, board="alpha")
+        second = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn, board="alpha")
+        alpha_job = conn.execute(
+            "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
+            (task_ids["alpha"],),
+        ).fetchone()
+
+    with kb.connect(board="beta") as conn:
+        beta_before = conn.execute(
+            "SELECT COUNT(*) FROM kanban_review_jobs WHERE task_id=?", (task_ids["beta"],)
+        ).fetchone()[0]
+        beta = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn, board="beta")
+        beta_job = conn.execute(
+            "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
+            (task_ids["beta"],),
+        ).fetchone()
+
+    assert first.reviewer_spawned == [task_ids["alpha"]]
+    assert second.reviewer_spawned == []
+    assert beta_before == 0
+    assert beta.reviewer_spawned == [task_ids["beta"]]
+    assert spawned == [(task_ids["alpha"], "alpha"), (task_ids["beta"], "beta")]
+    assert alpha_job["handoff_event_id"] > 0
+    assert alpha_job["status"] == "running"
+    assert alpha_job["attempts"] == 1
+    assert beta_job["handoff_event_id"] > 0
+    assert beta_job["status"] == "running"
+    assert beta_job["attempts"] == 1
+
+
+def test_review_request_after_reject_resets_review_receipt_for_retry(
+    kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    spawned = []
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 7654
+
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        assert kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn).reviewer_spawned == [tid]
+
+        assert kb.reject_review(conn, tid, reason="failing edge-case")
+        first_reject_handoff = conn.execute(
+            "SELECT handoff_event_id FROM kanban_review_jobs WHERE task_id=?",
+            (tid,),
+        ).fetchone()[0]
+        assert first_reject_handoff is not None
+
+        assert kb.request_review(
+            conn, tid, summary="ready for second review",
+            metadata={"tests_run": 2, "rework_evidence": "tests: pytest review: 2 passed"},
+        )
+        assert kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn).reviewer_spawned == [tid]
+
+        assert kb.accept_review(
+            conn, tid, summary="reviewer found no blockers on second pass"
+        )
+
+        rows = conn.execute(
+            "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
+            (tid,),
+        ).fetchone()
+        task = kb.get_task(conn, tid)
+
+    assert spawned == [tid, tid]
+    assert rows["status"] == "accepted"
+    assert rows["attempts"] == 1
+    assert rows["handoff_event_id"] != first_reject_handoff
+    assert task is not None and task.status == "done"
+
+
+def test_repeated_review_reject_requires_a_fresh_handoff(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """A stale second reject is a no-op; rework creates one new review receipt."""
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        assert kb.reject_review(conn, tid, reason="first review finding")
+        assert not kb.reject_review(conn, tid, reason="stale duplicate reject")
+
+        first_handoff = conn.execute(
+            "SELECT handoff_event_id FROM kanban_review_jobs WHERE task_id=?", (tid,)
+        ).fetchone()[0]
+        assert kb.request_review(
+            conn, tid, summary="rework is ready for another audit",
+            metadata={"rework_evidence": "commit: abc1234"},
+        )
+        second_handoff = conn.execute(
+            "SELECT handoff_event_id FROM kanban_review_jobs WHERE task_id=?", (tid,)
+        ).fetchone()[0]
+        assert second_handoff != first_handoff
+        assert kb.reject_review(conn, tid, reason="second review finding")
+
+        task = kb.get_task(conn, tid)
+        kinds = [event.kind for event in kb.list_events(conn, tid)]
+
+    assert task is not None and task.status == "blocked"
+    assert kinds.count("review_requested") == 2
+    assert kinds.count("review_rejected") == 2
+
+
+def test_review_rework_is_bounded_sticky_and_requires_concrete_evidence(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        # Operational failures and review rejections use independent budgets.
+        conn.execute("UPDATE tasks SET consecutive_failures=1 WHERE id=?", (tid,))
+        assert kb.reject_review(conn, tid, reason="add deterministic coverage")
+        first = kb.get_task(conn, tid)
+        assert first is not None and first.status == "ready"
+        assert first.consecutive_failures == 1
+        assert first.review_rejections == 1
+        assert "add deterministic coverage" in kb._worker_prompt_for(first)
+
+        with pytest.raises(ValueError, match="rework_evidence"):
+            kb.request_review(conn, tid, summary="unchanged handoff", metadata={"rework_evidence": "n/a"})
+        assert kb.request_review(
+            conn, tid, summary="coverage added",
+            metadata={"rework_evidence": "tests: pytest test_rework.py: 1 passed"},
+        )
+        assert kb.reject_review(conn, tid, reason="missing cancellation assertion")
+        blocked = kb.get_task(conn, tid)
+        assert blocked is not None and blocked.status == "blocked"
+        assert blocked.block_kind == "review"
+        # A future larger operational failure limit cannot re-promote this.
+        assert kb.recompute_ready(conn, failure_limit=99) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+    assert blocked.review_rejections == 2
+
+
+def test_reconcile_replaces_stale_terminal_review_receipt(
+    kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    spawned = []
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 5555
+
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        handoff = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='review_requested' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='rejected', handoff_event_id=?, "
+            "attempts=2, last_error='stale terminal' WHERE task_id=?",
+            (handoff, tid),
+        )
+
+        kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+
+        repaired = conn.execute(
+            "SELECT handoff_event_id, status FROM kanban_review_jobs WHERE task_id=?",
+            (tid,),
+        ).fetchone()
+
+    assert repaired["status"] in {"running", "queued", "retry"}
+    assert repaired["handoff_event_id"] == handoff
+    assert spawned == [tid]
+
+
+def test_reconcile_does_not_respawn_an_escalated_reviewer_review(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """An exhausted review remains visible until a new handoff is requested."""
+    spawned = []
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 5555
+
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='needs_reviewer', attempts=2 WHERE task_id=?",
+            (tid,),
+        )
+        result = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        job = conn.execute(
+            "SELECT status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,),
+        ).fetchone()
+
+    assert result.reviewer_spawned == []
+    assert spawned == []
+    assert dict(job) == {"status": "needs_reviewer", "attempts": 2}
+
+
 
 # Stale detection — detect_stale_running
 # ---------------------------------------------------------------------------
@@ -4099,8 +5059,8 @@ def test_detect_stale_returns_task_with_stale_heartbeat(kanban_home, monkeypatch
         assert kb.get_task(conn, t).status == "ready"
 
 
-def test_detect_stale_skips_task_with_recent_heartbeat(kanban_home, monkeypatch):
-    """A task running > timeout but with a recent heartbeat is NOT reclaimed."""
+def test_detect_stale_reclaims_heartbeat_only_task(kanban_home, monkeypatch):
+    """Keep-alives alone do not reset the substantive-progress watchdog."""
     import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
@@ -4122,11 +5082,35 @@ def test_detect_stale_skips_task_with_recent_heartbeat(kanban_home, monkeypatch)
                 (five_hours_ago, t),
             )
 
-        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
         stale = kb.detect_stale_running(
             conn, stale_timeout_seconds=14400, signal_fn=lambda p, s: None,
         )
-        assert stale == [], "Task with recent heartbeat should not be reclaimed"
+        assert stale == [t]
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_detect_stale_skips_recent_substantive_progress(kanban_home, monkeypatch):
+    """The same current-run progress clock protects cards and the watchdog."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="recent-progress", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, os.getpid())
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET started_at=? WHERE id=?", (five_hours_ago, t))
+            conn.execute(
+                "UPDATE task_runs SET started_at=? WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+                (five_hours_ago, t),
+            )
+        assert kb.heartbeat_worker(conn, t, note="completed a verified test")
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        assert kb.detect_stale_running(
+            conn, stale_timeout_seconds=14400, signal_fn=lambda p, s: None,
+        ) == []
         assert kb.get_task(conn, t).status == "running"
 
 

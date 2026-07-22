@@ -306,7 +306,7 @@ def test_complete_happy_path(worker_env):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.outcome == "completed"
+        assert run.outcome == "review_requested"
         assert run.summary == "got the thing done"
         assert run.metadata == {"files": 2}
     finally:
@@ -334,7 +334,7 @@ def test_complete_metadata_round_trips_through_show(worker_env):
 
     show_out = kt._handle_show({"task_id": worker_env})
     shown = json.loads(show_out)
-    assert shown["task"]["status"] == "done"
+    assert shown["task"]["status"] == "review"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
     assert shown["runs"][-1]["metadata"] == handoff
 
@@ -400,7 +400,7 @@ def test_complete_with_result_only(worker_env):
 
 
 def test_complete_with_artifacts_lands_in_event_payload(worker_env):
-    """``artifacts=[...]`` rides into the completed event payload so the
+    """``artifacts=[...]`` rides into the review handoff payload so the
     gateway notifier can upload them as native attachments. See the
     kanban notifier in gateway/run.py for the consumer side."""
     from hermes_cli import kanban_db as kb
@@ -415,10 +415,9 @@ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
     conn = kb.connect()
     try:
         events = kb.list_events(conn, worker_env)
-        # Find the completion event
-        completed = [e for e in events if e.kind == "completed"]
-        assert len(completed) == 1
-        payload = completed[0].payload or {}
+        handoffs = [e for e in events if e.kind == "review_requested"]
+        assert len(handoffs) == 1
+        payload = handoffs[0].payload or {}
         assert payload.get("artifacts") == [
             "/tmp/q3-revenue.png",
             "/tmp/q3-report.pdf",
@@ -581,7 +580,7 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
 
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "done"
+        assert kb.get_task(conn, worker_env).status == "review"
     finally:
         conn.close()
 
@@ -704,7 +703,7 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
 
     # No judge reachable. judge_goal must not even be consulted; if it were,
-    # this stub would reject — so reaching "done" proves the probe short-circuit.
+    # this stub would reject — so reaching review proves the probe short-circuit.
     def fail_if_called(goal, last_response, *, timeout=30.0, subgoals=None):
         raise AssertionError("judge_goal must not run when no judge is available")
 
@@ -717,7 +716,7 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
 
     conn2 = kb.connect()
     try:
-        assert kb.get_task(conn2, goal_task_id).status == "done"
+        assert kb.get_task(conn2, goal_task_id).status == "review"
     finally:
         conn2.close()
 
@@ -1410,16 +1409,15 @@ def test_worker_lifecycle_through_tools(worker_env):
     conn = kb.connect()
     try:
         parent = kb.get_task(conn, worker_env)
-        assert parent.status == "done"
+        assert parent.status == "review"
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
-        assert run.outcome == "completed"
+        assert run.outcome == "review_requested"
         assert run.metadata == {"child_task": child_out["task_id"]}
-        # Child is todo (parent just finished, but recompute_ready may
-        # have promoted it — complete_task runs recompute internally).
+        # A child stays blocked until the reviewer accepts the parent.
         child = kb.get_task(conn, child_out["task_id"])
-        assert child.status == "ready", (
-            f"child should be ready after parent done, got {child.status}"
+        assert child.status == "todo", (
+            f"child should wait for review acceptance, got {child.status}"
         )
         # Comment is visible
         assert len(kb.list_comments(conn, worker_env)) == 1
@@ -1493,6 +1491,10 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    # Human-facing status cards must receive factual phase checkpoints,
+    # not only the automatic liveness heartbeat.
+    assert "Report meaningful progress" in prompt
+    assert "failed verification" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
@@ -1516,7 +1518,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from agent.prompt_builder import KANBAN_GUIDANCE
-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
+    assert 1_500 < len(KANBAN_GUIDANCE) < 6_000, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
     )
 
@@ -1917,7 +1919,7 @@ def test_board_param_routes_comment_to_alt_board(multi_board_env):
 
 
 def test_board_param_routes_complete_to_alt_board(multi_board_env):
-    """kanban_complete on the alt board closes the alt task, leaving
+    """kanban_complete routes the alt task to review, leaving
     the default seed untouched."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
@@ -1936,7 +1938,7 @@ def test_board_param_routes_complete_to_alt_board(multi_board_env):
     assert d["ok"] is True
 
     with kb.connect(board="alt") as conn:
-        assert kb.get_task(conn, alt_seed).status == "done"
+        assert kb.get_task(conn, alt_seed).status == "review"
     # Default seed is unchanged.
     with kb.connect() as conn:
         default_seed = multi_board_env["default_seed"]

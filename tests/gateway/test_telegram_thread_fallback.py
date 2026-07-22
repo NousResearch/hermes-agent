@@ -1528,3 +1528,25 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_long_flood_control_suppresses_following_outbound_send():
+    """A RetryAfter in one lane must protect the whole bot, not just that lane."""
+    adapter = _make_adapter()
+    attempts = [0]
+
+    async def mock_send_message(**kwargs):
+        attempts[0] += 1
+        raise FakeRetryAfter(60)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    first = await adapter.send(chat_id="123", content="first")
+    second = await adapter.send(chat_id="456", content="second")
+
+    assert first.success is False
+    assert first.retry_after == 60
+    assert second.success is False
+    assert second.retry_after is not None
+    assert attempts[0] == 1

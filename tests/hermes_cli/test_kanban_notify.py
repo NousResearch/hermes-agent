@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from hermes_cli import kanban_db as kb
 from unittest.mock import AsyncMock, MagicMock, patch
+from gateway.platforms.base import SendResult
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +23,12 @@ def kanban_home(tmp_path, monkeypatch):
     # test silently drops files because ``tmp_path`` isn't inside the
     # default ``MEDIA_DELIVERY_SAFE_ROOTS`` cache dirs.
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    # These legacy notifier tests exercise one task's exact-origin card.
+    # The chat-wide index has dedicated coverage in test_kanban_notifier.py.
+    (home / "config.yaml").write_text(
+        "kanban:\n  active_task_index_enabled: false\n",
+        encoding="utf-8",
+    )
     kb.init_db()
     return home
 
@@ -51,9 +58,11 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="status-1")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: fake_adapter}}
 
     _orig_sleep = asyncio.sleep
 
@@ -66,16 +75,18 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
             timeout=10.0,
         )
 
-    fake_adapter.send.assert_called_once()
+    assert fake_adapter.send.call_count == 1
     call_msg = fake_adapter.send.call_args[0][1]
-    assert "completed" in call_msg
+    assert "test task" in call_msg
+    assert "Accepted by reviewer" in call_msg
 
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == [], "Subscription should be unsub after completed event"
+    assert len(subs) == 1, "Exact-origin status subscription must remain durable"
+    assert int(subs[0]["last_event_id"]) >= 1
 
 
 @pytest.mark.asyncio
@@ -111,9 +122,11 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="status-1")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: fake_adapter}}
 
     _orig_sleep = asyncio.sleep
 
@@ -128,7 +141,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    assert "Now:" in fake_adapter.send.call_args[0][1]
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -166,9 +179,11 @@ async def test_notifier_second_blocked_delivers(kanban_home):
 
     async def _capture_send(chat_id, msg, metadata=None):
         delivered_msgs.append(msg)
+        return SendResult(success=True, message_id="status-1")
 
     fake_adapter = MagicMock()
     fake_adapter.send = AsyncMock(side_effect=_capture_send)
+    fake_adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="status-1"))
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
 
     _orig_sleep = asyncio.sleep
@@ -218,13 +233,9 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    blocked_deliveries = [m for m in delivered_msgs if "blocked" in m]
-    assert "second block" not in blocked_deliveries[0]
-    assert "second block" in blocked_deliveries[1]
-    assert len(blocked_deliveries) == 2, (
-        f"Should receive 2 blocked notification, but only get {len(blocked_deliveries)} count\n"
-        f"Message {delivered_msgs}"
-    )
+    assert "Your reply is needed" in delivered_msgs[0]
+    fake_adapter.edit_message.assert_awaited()
+    assert "Manual help required" in fake_adapter.edit_message.call_args.args[2]
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +356,7 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
             task_id=tid,
             platform="telegram",
             chat_id="chat1",
-            notifier_profile="default",
+            notifier_profile="reviewer",
         )
         kb.complete_task(conn, tid, result="done")
     finally:
@@ -401,7 +412,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
             task_id=tid,
             platform="telegram",
             chat_id="chat1",
-            notifier_profile="default",
+            notifier_profile="reviewer",
         )
         kb.complete_task(conn, tid, result="done")
     finally:
@@ -416,9 +427,11 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
     async def _send_and_stop(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="status-1")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: fake_adapter}}
 
     _orig_sleep = asyncio.sleep
 
@@ -431,13 +444,15 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
             timeout=10.0,
         )
 
-    fake_adapter.send.assert_called_once()
+    assert fake_adapter.send.call_count == 1
+    assert "owned task" in fake_adapter.send.call_args[0][1]
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == []
+    assert len(subs) == 1
+    assert int(subs[0]["last_event_id"]) >= 1
 
 
 @pytest.mark.asyncio
@@ -490,7 +505,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
 
 @pytest.mark.asyncio
-async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
+async def test_notifier_uploads_explicitly_requested_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
     """When a completed event carries ``artifacts`` in its payload, the
     notifier uploads each file to the subscribed chat as a native
     attachment. Images batch through send_multiple_images; documents
@@ -514,6 +529,8 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     chart_path.write_bytes(b"PNG-fake-bytes")
     report_path = tmp_path / "report.pdf"
     report_path.write_bytes(b"%PDF-fake")
+    notes_path = tmp_path / "requested-notes.md"
+    notes_path.write_text("# Requested notes\n")
 
     conn = kb.connect()
     try:
@@ -529,12 +546,15 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     try:
         out = kt._handle_complete({
             "summary": "rendered the chart",
-            "artifacts": [str(chart_path), str(report_path)],
+            "artifacts": [str(chart_path), str(report_path), str(notes_path)],
+            "metadata": {"deliver_artifacts": True},
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
     import json as _json
     assert _json.loads(out)["ok"] is True
+    with kb.connect() as conn:
+        assert kb.accept_review(conn, tid, summary="reviewer accepted artifacts")
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -550,6 +570,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     async def _send(chat_id, msg, metadata=None):
         sends.append((chat_id, msg))
         runner._running = False
+        return SendResult(success=True, message_id="status-1")
 
     async def _send_images(chat_id, images, metadata=None, **_kw):
         images_uploaded.extend(p for p, _ in images)
@@ -578,12 +599,14 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
             timeout=10.0,
         )
 
-    # The text completion notification fired.
     assert len(sends) == 1
+    assert "render q3 chart" in sends[0][1]
     # The PNG rode the image-batch path.
     assert any("q3-revenue.png" in p for p in images_uploaded), images_uploaded
     # The PDF rode the document path.
     assert any("report.pdf" in p for p in documents_uploaded), documents_uploaded
+    # A Markdown file is delivered only because this event had explicit opt-in.
+    assert any("requested-notes.md" in p for p in documents_uploaded), documents_uploaded
 
 
 @pytest.mark.asyncio
@@ -616,9 +639,12 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         kt._handle_complete({
             "summary": "one real, one ghost",
             "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "metadata": {"deliver_artifacts": True},
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+    with kb.connect() as conn:
+        assert kb.accept_review(conn, tid, summary="reviewer accepted real artifact")
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -631,6 +657,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     async def _send(chat_id, msg, metadata=None):
         runner._running = False
+        return SendResult(success=True, message_id="status-1")
 
     async def _send_document(chat_id, file_path, metadata=None, **_kw):
         documents_uploaded.append(file_path)

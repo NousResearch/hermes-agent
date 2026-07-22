@@ -79,6 +79,21 @@ def _check_kanban_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _is_kanban_review_worker() -> bool:
+    """Whether this is the narrowly-scoped worker for a review handoff."""
+    return bool(os.environ.get("HERMES_KANBAN_TASK") and os.environ.get("HERMES_KANBAN_REVIEW_ONLY") == "1")
+
+
+def _check_kanban_review_mode() -> bool:
+    """Expose review decisions only to the dispatcher-spawned reviewer."""
+    return _is_kanban_review_worker()
+
+
+def _check_kanban_execution_mode() -> bool:
+    """Expose implementation lifecycle tools, never to a review worker."""
+    return _check_kanban_mode() and not _is_kanban_review_worker()
+
+
 def _check_kanban_orchestrator_mode() -> bool:
     """Board-routing tools (kanban_list, kanban_unblock) are intentionally
     hidden from task workers.
@@ -330,6 +345,13 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
             "kanban_comment for their assigned task."
         )
+    return None
+
+
+def _require_review_tool(tool_name: str) -> Optional[str]:
+    """Keep review decisions scoped to the review worker's own handoff."""
+    if not _is_kanban_review_worker():
+        return tool_error(f"{tool_name} is available only to a dispatcher-spawned review worker.")
     return None
 
 
@@ -628,10 +650,14 @@ def _handle_complete(args: dict, **kw) -> str:
                         f"and keep this task alive."
                     )
 
+            # ``result`` predates the review lifecycle and remains a valid
+            # compact handoff.  The review record needs a summary, so use it
+            # when a legacy worker did not supply the newer field.
+            review_summary = summary or result
             try:
-                ok = kb.complete_task(
+                ok = kb.request_review(
                     conn, tid,
-                    result=result, summary=summary, metadata=metadata,
+                    result=result, summary=review_summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
                 )
@@ -675,6 +701,87 @@ def _handle_complete(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_complete failed")
         return tool_error(f"kanban_complete: {e}")
+
+
+def _handle_accept_review(args: dict, **kw) -> str:
+    """Accept this review handoff and close its task."""
+    guard = _require_review_tool("kanban_accept_review")
+    if guard:
+        return guard
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error("task_id is required (or set HERMES_KANBAN_TASK in the env)")
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    if summary is not None:
+        summary = redact_sensitive_text(str(summary), force=True)
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            if not kb.accept_review(conn, tid, summary=summary):
+                return tool_error(f"could not accept review for {tid} (it is no longer awaiting review)")
+            return _ok(task_id=tid, review="accepted")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_accept_review failed")
+        return tool_error(f"kanban_accept_review: {e}")
+
+
+def _handle_reject_review(args: dict, **kw) -> str:
+    """Return this review handoff to its implementer with actionable feedback."""
+    guard = _require_review_tool("kanban_reject_review")
+    if guard:
+        return guard
+    tid = _default_task_id(args.get("task_id"))
+    reason = args.get("reason")
+    if not tid:
+        return tool_error("task_id is required (or set HERMES_KANBAN_TASK in the env)")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required")
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            if not kb.reject_review(conn, tid, reason=redact_sensitive_text(str(reason), force=True)):
+                return tool_error(f"could not reject review for {tid} (it is no longer awaiting review)")
+            return _ok(task_id=tid, review="rejected")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_reject_review failed")
+        return tool_error(f"kanban_reject_review: {e}")
+
+
+def _handle_recover_review(args: dict, **kw) -> str:
+    """Restore this review handoff after a transient review-path failure."""
+    guard = _require_review_tool("kanban_recover_review")
+    if guard:
+        return guard
+    tid = _default_task_id(args.get("task_id"))
+    reason = args.get("reason")
+    if not tid:
+        return tool_error("task_id is required (or set HERMES_KANBAN_TASK in the env)")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required")
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            if not kb.recover_review(conn, tid, reason=redact_sensitive_text(str(reason), force=True)):
+                return tool_error(f"could not recover review for {tid} (it is not a recoverable review handoff)")
+            return _ok(task_id=tid, review="recovered")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_recover_review failed")
+        return tool_error(f"kanban_recover_review: {e}")
 
 
 def _handle_block(args: dict, **kw) -> str:
@@ -1917,6 +2024,30 @@ KANBAN_LINK_SCHEMA = {
 }
 
 
+KANBAN_ACCEPT_REVIEW_SCHEMA = {
+    "name": "kanban_accept_review",
+    "description": "Accept the current task's review handoff and mark it done.",
+    "parameters": {"type": "object", "properties": {
+        "task_id": {"type": "string"}, "summary": {"type": "string"}, "board": _board_schema_prop(),
+    }},
+}
+
+KANBAN_REJECT_REVIEW_SCHEMA = {
+    "name": "kanban_reject_review",
+    "description": "Reject the current task's review handoff and return it to the implementer with actionable feedback.",
+    "parameters": {"type": "object", "properties": {
+        "task_id": {"type": "string"}, "reason": {"type": "string"}, "board": _board_schema_prop(),
+    }, "required": ["reason"]},
+}
+
+KANBAN_RECOVER_REVIEW_SCHEMA = {
+    "name": "kanban_recover_review",
+    "description": "Restore the current review handoff after a transient review-path failure.",
+    "parameters": {"type": "object", "properties": {
+        "task_id": {"type": "string"}, "reason": {"type": "string"}, "board": _board_schema_prop(),
+    }, "required": ["reason"]},
+}
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -1944,7 +2075,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_COMPLETE_SCHEMA,
     handler=_handle_complete,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_execution_mode,
     emoji="✔",
 )
 
@@ -1953,7 +2084,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_BLOCK_SCHEMA,
     handler=_handle_block,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_execution_mode,
     emoji="⏸",
 )
 
@@ -1962,7 +2093,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_HEARTBEAT_SCHEMA,
     handler=_handle_heartbeat,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_execution_mode,
     emoji="💓",
 )
 
@@ -1971,7 +2102,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_COMMENT_SCHEMA,
     handler=_handle_comment,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_execution_mode,
     emoji="💬",
 )
 
@@ -2007,7 +2138,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_CREATE_SCHEMA,
     handler=_handle_create,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_execution_mode,
     emoji="➕",
 )
 
@@ -2025,6 +2156,10 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_LINK_SCHEMA,
     handler=_handle_link,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_execution_mode,
     emoji="🔗",
 )
+
+registry.register(name="kanban_accept_review", toolset="kanban", schema=KANBAN_ACCEPT_REVIEW_SCHEMA, handler=_handle_accept_review, check_fn=_check_kanban_review_mode, emoji="✅")
+registry.register(name="kanban_reject_review", toolset="kanban", schema=KANBAN_REJECT_REVIEW_SCHEMA, handler=_handle_reject_review, check_fn=_check_kanban_review_mode, emoji="↩")
+registry.register(name="kanban_recover_review", toolset="kanban", schema=KANBAN_RECOVER_REVIEW_SCHEMA, handler=_handle_recover_review, check_fn=_check_kanban_review_mode, emoji="🔄")

@@ -344,6 +344,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
+    # Everything assembled so far is cross-session stable for a given
+    # profile/surface. Record this exact prefix before cwd-derived coding
+    # context enters the prompt; do not reorder the historical prompt merely
+    # to enlarge the cacheable region.
+    cache_prefix_parts = list(stable_parts)
+
     # Coding posture (base Hermes, any interactive coding surface in a code
     # workspace — see agent/coding_context.py). The operating brief + the live
     # git/workspace snapshot are built once here and cached for the session;
@@ -521,6 +527,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+        "_cache_prefix": "\n\n".join(
+            p.strip() for p in cache_prefix_parts if p and p.strip()
+        ),
     }
 
 
@@ -541,6 +550,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    agent._cached_system_prompt_static = parts["_cache_prefix"]
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
@@ -557,6 +567,7 @@ def invalidate_system_prompt(agent: Any) -> None:
     so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
+    agent._cached_system_prompt_static = None
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

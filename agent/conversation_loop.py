@@ -1090,6 +1090,9 @@ def run_conversation(
                 api_messages,
                 cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
+                static_system_prefix=getattr(
+                    agent, "_cached_system_prompt_static", None
+                ),
             )
 
         # Safety net: strip orphaned tool results / add stubs for missing

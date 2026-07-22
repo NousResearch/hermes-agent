@@ -88,6 +88,24 @@ class TestCodingContextBlock:
         assert "coding agent" in stable
         assert "Workspace" in stable
 
+    def test_cache_prefix_stops_before_workspace_without_reordering(self, monkeypatch, tmp_path):
+        _init_code_repo(tmp_path)
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value="ENVIRONMENT"),
+            patch("run_agent.build_context_files_prompt", return_value="CONTEXT FILES"),
+        ):
+            parts = build_system_prompt_parts(agent)
+
+        assert parts["stable"].startswith(parts["_cache_prefix"] + "\n\n")
+        assert parts["_cache_prefix"].endswith("ENVIRONMENT")
+        assert "Workspace" not in parts["_cache_prefix"]
+        full = "\n\n".join((parts["stable"], parts["context"], parts["volatile"]))
+        assert full.index("Workspace") < full.index("CONTEXT FILES")
+
     def test_absent_when_off(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))

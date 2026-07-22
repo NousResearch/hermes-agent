@@ -8255,6 +8255,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cprint(f"  ✓ Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
 
+        # Show session token usage at model switch
+        if self.agent is not None:
+            _in = getattr(self.agent, "session_input_tokens", 0) or 0
+            _out = getattr(self.agent, "session_output_tokens", 0) or 0
+            _total = getattr(self.agent, "session_total_tokens", 0) or 0
+            if _total > 0:
+                _cprint(
+                    f"    Session tokens so far: {_in:,} in / {_out:,} out"
+                    f" / {_total:,} total"
+                )
+
         # Context: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
@@ -8598,6 +8609,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
+
+        # Show session token usage at model switch
+        if self.agent is not None:
+            _in = getattr(self.agent, "session_input_tokens", 0) or 0
+            _out = getattr(self.agent, "session_output_tokens", 0) or 0
+            _total = getattr(self.agent, "session_total_tokens", 0) or 0
+            if _total > 0:
+                _cprint(
+                    f"    Session tokens so far: {_in:,} in / {_out:,} out"
+                    f" / {_total:,} total"
+                )
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry

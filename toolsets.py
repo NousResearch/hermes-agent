@@ -230,7 +230,13 @@ TOOLSETS = {
         "tools": ["project_list", "project_create", "project_switch"],
         "includes": []
     },
-    
+
+    "cost": {
+        "description": "Cost optimization: model recommendations, cost comparison, and savings analysis",
+        "tools": ["model_recommend", "cost_optimizer"],
+        "includes": []
+    },
+
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],

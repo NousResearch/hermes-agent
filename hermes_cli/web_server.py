@@ -1866,9 +1866,15 @@ def _fs_path(raw_path: str) -> Path:
             if parsed.netloc and parsed.netloc not in {"", "localhost"}:
                 raise ValueError
             raw = urllib.request.url2pathname(parsed.path)
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            candidate = Path.cwd() / candidate
+        from hermes_constants import resolve_desktop_attachment_ref
+
+        mapped = resolve_desktop_attachment_ref(raw)
+        if mapped is not None:
+            candidate = mapped
+        else:
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path.cwd() / candidate
         return candidate.resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")

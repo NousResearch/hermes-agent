@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_constants import (
+    format_desktop_attachment_ref,
+    get_desktop_attachments_dir,
     get_hermes_home,
     get_hermes_home_override,
     reset_hermes_home_override,
@@ -11076,16 +11078,21 @@ def _format_ref_value(value: str) -> str:
 
 def _attachment_ref_path(session: dict, target: Path) -> str:
     """Workspace-relative path for an attachment, or the absolute path if outside."""
+    resolved = target.resolve()
+    staged_ref = format_desktop_attachment_ref(resolved)
+    if staged_ref is not None:
+        return staged_ref
     workspace = Path(_session_cwd(session)).resolve()
     try:
-        rel = target.resolve().relative_to(workspace)
+        rel = resolved.relative_to(workspace)
         return str(rel).replace(os.sep, "/")
     except ValueError:
-        return str(target.resolve())
+        return str(resolved)
 
 
 def _desktop_attachment_dir(session: dict) -> Path:
-    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
+    del session  # attachments are profile-scoped, not workspace-scoped
+    root = get_desktop_attachments_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

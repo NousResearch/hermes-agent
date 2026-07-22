@@ -329,7 +329,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if self._payload_req_id(payload) == req_id:
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
-            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed during authentication")
 
     async def _listen_loop(self) -> None:

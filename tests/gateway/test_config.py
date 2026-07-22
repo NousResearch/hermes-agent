@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.secret_scope import reset_secret_scope, set_secret_scope
+from agent.secret_scope import (
+    reset_secret_scope,
+    set_multiplex_active,
+    set_secret_scope,
+)
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
     ChannelOverride,
@@ -1831,6 +1835,12 @@ class TestLoadGatewayConfig:
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "default-token")
 
+        # Model the real multiplexed gateway: run.py flips the runtime flag at
+        # startup (set_multiplex_active) BEFORE any secondary-profile config
+        # loads.  Without the flag, a scope miss legitimately falls through to
+        # os.environ (single-profile overlay semantics, #67827) and this test
+        # would no longer exercise the cross-profile isolation it's about.
+        set_multiplex_active(True)
         home_token = set_hermes_home_override(str(secondary_home))
         secret_token = set_secret_scope({"DISCORD_BOT_TOKEN": "worker-token"})
         try:
@@ -1838,6 +1848,7 @@ class TestLoadGatewayConfig:
         finally:
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)
+            set_multiplex_active(False)
 
         assert config.multiplex_profiles is True
         assert config.platforms[Platform.DISCORD].token == "worker-token"

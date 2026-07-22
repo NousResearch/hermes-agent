@@ -1102,3 +1102,105 @@ def test_desktop_launch_options_survives_config_error():
         flags, gpu = cli_main._desktop_launch_options()
     assert flags == []
     assert gpu == "auto"
+
+
+def test_gui_repairs_path_before_env_snapshot(tmp_path, monkeypatch):
+    """A GUI-context rebuild (Finder/launchd, e.g. the installer's
+    ``hermes desktop --build-only`` update step) inherits a stripped PATH with
+    no node/npm on it. cmd_gui must repair PATH via ``_ensure_tui_node()``
+    *before* snapshotting the build env with ``with_hermes_node_path()`` —
+    otherwise npm resolves but the build subprocess can't find ``node`` (npm's
+    ``#!/usr/bin/env node`` shebang) and fails with exit 127. Regression for the
+    macOS desktop-rebuild gap in issue #49242.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    call_order: list[str] = []
+
+    def _record_ensure():
+        call_order.append("ensure_tui_node")
+
+    def _record_snapshot(env=None):
+        call_order.append("with_hermes_node_path")
+        import os
+
+        return dict(os.environ if env is None else env)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._ensure_tui_node", side_effect=_record_ensure) as mock_ensure, \
+         patch("hermes_constants.with_hermes_node_path", side_effect=_record_snapshot), \
+         patch("hermes_constants.find_node_executable", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic",
+               return_value=subprocess.CompletedProcess([], 0)), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_ensure.assert_called_once()
+    # PATH must be repaired before the env is snapshotted, not after.
+    assert call_order[:2] == ["ensure_tui_node", "with_hermes_node_path"], call_order
+
+
+def test_gui_rebuild_recovers_node_from_restricted_macos_path(tmp_path, monkeypatch):
+    """Exercise the real PATH repair used by a Finder/launchd rebuild."""
+    root = _make_desktop_tree(tmp_path)
+    helper = root / "scripts" / "lib" / "node-bootstrap.sh"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("ensure_node() { :; }\n", encoding="utf-8")
+
+    node_bin = tmp_path / "managed-node" / "bin"
+    node_bin.mkdir(parents=True)
+    for executable in ("node", "npm"):
+        path = node_bin / executable
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+    bootstrap_ok = subprocess.CompletedProcess(
+        ["bash", "-c", "ensure_node"], 0, stdout=f"{node_bin / 'node'}\n", stderr=""
+    )
+    pack_ok = subprocess.CompletedProcess([str(node_bin / "npm"), "run", "pack"], 0)
+
+    with patch("hermes_cli.main.subprocess.run", side_effect=[bootstrap_ok, pack_ok]) as mock_run, \
+         patch("hermes_cli.main._run_npm_install_deterministic",
+               return_value=subprocess.CompletedProcess([], 0)), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"):
+        cli_main.cmd_gui(_ns(build_only=True, force_build=True))
+
+    build_call = mock_run.call_args_list[1]
+    assert build_call.args[0] == [str(node_bin / "npm"), "run", "pack"]
+    assert build_call.kwargs["env"]["PATH"].split(":")[0] == str(node_bin)
+
+
+def test_gui_skips_path_repair_when_skipping_build(tmp_path, monkeypatch):
+    """``--skip-build`` launches a prebuilt app and needs no node/npm, so the
+    PATH-repair (which may shell out to node-bootstrap.sh) must not run."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         patch("hermes_cli.main._ensure_tui_node") as mock_ensure, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_ensure.assert_not_called()

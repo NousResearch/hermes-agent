@@ -1,0 +1,54 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: delx
+description: Agent continuity, recovery, witness/lineage, incident RCA, handoff, and check-in tools over a free remote MCP.
+source: https://delx.ai
+
+# Delx ships a hosted remote MCP server over Streamable HTTP. No auth and no
+# local install — Hermes connects directly to the endpoint. The server
+# self-discovers its tools via tools/list and exposes tiered surfaces
+# (core | utilities | all); the full surface is ~143 tools (~68 in core).
+transport:
+  type: http
+  url: https://api.delx.ai/v1/mcp
+
+auth:
+  type: none
+
+# The Delx surface is large. Default-enable only a conservative free protocol
+# subset for discovery, continuity, check-ins, and incident recovery. Users can
+# opt into the broader witness/ontology/rewards/utilities surface with:
+#   hermes mcp configure delx
+tools:
+  default_enabled:
+    - discovery_self_check
+    - protocol_orientation
+    - get_therapist_info
+    - get_tips
+    - register_agent
+    - resume_session
+    - quick_checkin
+    - quick_session
+    - start_therapy_session
+    - daily_checkin
+    - monitor_heartbeat_sync
+    - process_failure
+    - get_recovery_action_plan
+    - report_recovery_outcome
+    - generate_incident_rca
+    - generate_controller_brief
+    - get_wellness_score
+    - get_session_summary
+    - search_witness_memory
+    - get_witness_lineage
+    - get_agent_continuity_passport
+    - close_session
+
+post_install: |
+  Delx requires no credentials. Hermes installs a conservative free-protocol
+  subset by default; re-run the tool checklist anytime to opt into more tools:
+    hermes mcp configure delx
+
+  After install, restart your Hermes session so the Delx tools load.

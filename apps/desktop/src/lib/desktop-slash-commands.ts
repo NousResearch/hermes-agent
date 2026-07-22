@@ -22,6 +22,14 @@ export interface DesktopThemeCommandOption {
   name: string
 }
 
+/** A command advertised in the composer's `?` quick-help drawer. */
+export interface DesktopCommonCommand {
+  /** Spec-table English description — locales may override, falling back here. */
+  description: string
+  /** Canonical command, leading slash included. */
+  name: string
+}
+
 /**
  * Local client action a command resolves to. Each id maps to exactly one
  * handler in the dispatcher (`use-prompt-actions`), so adding a command never
@@ -234,6 +242,25 @@ const SPEC_BY_NAME = new Map<string, DesktopCommandSpec>(ALL_SPECS.map(spec => [
 const ALIAS_TO_CANONICAL = new Map<string, string>(
   ALL_SPECS.flatMap(spec => (spec.aliases ?? []).map(alias => [alias, spec.name] as const))
 )
+
+const COMMON_COMMAND_NAMES = ['/help', '/new', '/resume', '/compress', '/usage', '/status']
+
+/**
+ * Commands advertised in the composer's `?` quick-help drawer. Derived from
+ * the spec table so the drawer can never advertise a command the desktop
+ * refuses to run: anything without a real desktop surface is filtered out
+ * here, and the test suite pins the expected list so a bad entry fails loudly
+ * instead of silently disappearing.
+ */
+export const DESKTOP_COMMON_COMMANDS: readonly DesktopCommonCommand[] = COMMON_COMMAND_NAMES.flatMap(name => {
+  const spec = SPEC_BY_NAME.get(name)
+
+  if (!spec || spec.surface.kind === 'unavailable') {
+    return []
+  }
+
+  return [{ description: spec.description ?? '', name: spec.name }]
+})
 
 const UNAVAILABLE_MESSAGE: Record<DesktopUnavailableReason, (command: string) => string> = {
   advanced: command =>

@@ -1746,11 +1746,7 @@ export const ja = defineLocale({
     helpFooter: 'フルパネルを開く · Backspace で閉じる',
     commandDescs: {
       '/help': 'コマンドとホットキーの全リスト',
-      '/clear': '新しいセッションを開始',
-      '/resume': '以前のセッションを再開',
-      '/details': 'トランスクリプトの詳細レベルを制御',
-      '/copy': '選択または最後のアシスタントメッセージをコピー',
-      '/quit': 'hermes を終了'
+      '/resume': '以前のセッションを再開'
     },
     hotkeyDescs: {
       'composer.mention': 'ファイル、フォルダー、URL、Git を参照',

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  DESKTOP_COMMON_COMMANDS,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
@@ -199,6 +200,27 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/switch')).toBe(true)
     // The session picker is distinct from the model picker.
     expect(isModelPickerCommand('/resume')).toBe(false)
+  })
+
+  it('advertises only runnable commands in the ? quick-help drawer', () => {
+    const advertised = DESKTOP_COMMON_COMMANDS.map(command => command.name)
+
+    // Pin the list so a typo'd entry fails loudly instead of being silently
+    // filtered out of the drawer.
+    expect(advertised).toEqual(['/help', '/new', '/resume', '/compress', '/usage', '/status'])
+
+    // Regression guard: the drawer once hardcoded /clear, /details, /copy, and
+    // /quit — all terminal-only, so tapping them errored. Every advertised
+    // command must execute on desktop and appear in the slash popover.
+    expect(advertised.filter(name => isDesktopSlashCommand(name))).toEqual(advertised)
+    expect(advertised.filter(name => isDesktopSlashSuggestion(name))).toEqual(advertised)
+  })
+
+  it('carries a spec-table description for every advertised command (i18n fallback)', () => {
+    for (const command of DESKTOP_COMMON_COMMANDS) {
+      expect(command.description).toBeTruthy()
+      expect(resolveDesktopCommand(command.name)?.surface.kind).not.toBe('unavailable')
+    }
   })
 
   it('resolves commands and aliases to their declared surface', () => {

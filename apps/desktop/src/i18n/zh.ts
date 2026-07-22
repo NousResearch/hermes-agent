@@ -2002,11 +2002,7 @@ export const zh: Translations = {
     helpFooter: '打开完整面板 · 退格键关闭',
     commandDescs: {
       '/help': '命令与快捷键的完整列表',
-      '/clear': '开始新会话',
-      '/resume': '恢复之前的会话',
-      '/details': '控制对话记录的详细程度',
-      '/copy': '复制所选内容或最后一条助手消息',
-      '/quit': '退出 hermes'
+      '/resume': '恢复之前的会话'
     },
     hotkeyDescs: {
       'composer.mention': '引用文件、文件夹、URL、git',

@@ -1692,11 +1692,7 @@ export const zhHant = defineLocale({
     helpFooter: '開啟完整面板 · 退格鍵關閉',
     commandDescs: {
       '/help': '指令與快捷鍵的完整清單',
-      '/clear': '開始新工作階段',
-      '/resume': '繼續之前的工作階段',
-      '/details': '控制對話記錄的詳細程度',
-      '/copy': '複製所選內容或最後一條助手訊息',
-      '/quit': '結束 hermes'
+      '/resume': '繼續之前的工作階段'
     },
     hotkeyDescs: {
       'composer.mention': '參照檔案、資料夾、URL、git',

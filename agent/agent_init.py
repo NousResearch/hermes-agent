@@ -1467,7 +1467,14 @@ def init_agent(
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
+                if _mp and not _mp.is_available():
+                    _ra().logger.warning(
+                        "Memory provider '%s' was found but is not available "
+                        "(missing dependencies or broken configuration). "
+                        "Falling back to built-in memory.",
+                        _mem_provider_name,
+                    )
+                elif _mp:
                     agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers:
                     _init_kwargs = {
@@ -1517,10 +1524,19 @@ def init_agent(
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    if not _mp:
+                        _ra().logger.warning(
+                            "Memory provider '%s' not found in bundled or user plugins. "
+                            "Falling back to built-in memory.",
+                            _mem_provider_name,
+                        )
                     agent._memory_manager = None
         except Exception as _mpe:
-            _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+            _ra().logger.warning(
+                "Memory provider plugin init failed: %s. "
+                "Falling back to built-in memory.",
+                _mpe,
+            )
             agent._memory_manager = None
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools

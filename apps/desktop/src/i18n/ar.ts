@@ -202,8 +202,8 @@ export const ar: Translations = {
   },
 
   titlebar: {
-    hideSidebar: 'إخفاء الشريط الجانبي',
-    showSidebar: 'إظهار الشريط الجانبي',
+    hideSidebar: 'إخفاء الشريط الجانبي الأيسر',
+    showSidebar: 'إظهار الشريط الجانبي الأيسر',
     search: 'بحث',
     searchTitle: 'البحث في الجلسات وطرق العرض والإجراءات',
     swapSidebarSides: 'تبديل جانبي الشريطين',

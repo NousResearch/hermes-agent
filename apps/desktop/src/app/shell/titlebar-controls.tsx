@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { localeDirection } from '@/i18n/languages'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
@@ -46,6 +47,10 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
   onOpenSettings: () => void
+}
+
+export function resolveTitlebarEdgeTargets(rtl: boolean): { left: 'files' | 'sessions'; right: 'files' | 'sessions' } {
+  return rtl ? { left: 'files', right: 'sessions' } : { left: 'sessions', right: 'files' }
 }
 
 /**
@@ -95,7 +100,7 @@ function useModifierHeld(): boolean {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
@@ -115,17 +120,29 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   }
 
-  // POSITIONAL toggles: each button shows/hides everything on its physical
-  // side of the main zone (the layout tree collapses the whole side), so they
-  // stay correct through flips and rearranges. $sidebarOpen ≙ left side,
-  // $fileBrowserOpen ≙ right side. Never an active highlight — plain
-  // show/hide affordances.
-  const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
-  const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+  // The pane tree follows the document direction: its row is physically
+  // mirrored in Arabic. Keep each titlebar button bound to the pane that is
+  // actually drawn beneath its physical edge. The titlebar clusters themselves
+  // stay LTR below so icon order and edge placement do not reverse.
+  const edgeTargets = resolveTitlebarEdgeTargets(localeDirection(locale) === 'rtl')
+  const edgeBindings = {
+    files: {
+      actionId: 'view.toggleRightSidebar',
+      open: fileBrowserOpen,
+      toggle: toggleFileBrowserOpen
+    },
+    sessions: {
+      actionId: 'view.toggleSidebar',
+      open: sidebarOpen,
+      toggle: toggleSidebarOpen
+    }
+  } as const
+  const leftEdge = edgeBindings[edgeTargets.left]
+  const rightEdge = edgeBindings[edgeTargets.right]
 
   const leftToolbarTools: TitlebarTool[] = [
     {
-      actionId: 'view.toggleSidebar',
+      actionId: leftEdge.actionId,
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
       label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
@@ -149,7 +166,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   ]
 
   const rightSidebarTool: TitlebarTool = {
-    actionId: 'view.toggleRightSidebar',
+    actionId: rightEdge.actionId,
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
     label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
@@ -226,6 +243,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       <div
         aria-label={t.shell.windowControls}
         className="fixed left-(--titlebar-controls-left) top-(--titlebar-controls-top) z-70 flex translate-y-0.5 flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+        dir="ltr"
       >
         {leftToolbarTools
           .filter(tool => !tool.hidden)
@@ -246,6 +264,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         <div
           aria-label={t.shell.paneControls}
           className="fixed top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+          dir="ltr"
         >
           {visiblePaneTools.map(tool => (
             <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
@@ -256,6 +275,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       <div
         aria-label={t.shell.appControls}
         className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+        dir="ltr"
       >
         {visibleSystemTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />

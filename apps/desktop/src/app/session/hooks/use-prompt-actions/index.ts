@@ -41,7 +41,7 @@ import type {
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
-  SessionSteerResponse
+  SessionRedirectResponse
 } from '../../../types'
 
 import {
@@ -599,11 +599,11 @@ export function usePromptActions({
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
-  // Steer = nudge the live turn without interrupting: the gateway appends the
-  // text to the next tool result so the model reads it on its next iteration
-  // (desktop parity with `/steer`). Returns false on reject (no live tool
-  // window) so the caller can fall back to queueing the words for the next turn.
-  const steerPrompt = useCallback(
+  // The desktop steering action is an immediate correction: the core cancels
+  // model generation and rebuilds the live turn with displayed reasoning and
+  // completed work intact. During a tool it waits for the safe result boundary.
+  // Returns false when the turn raced to completion so the composer can queue.
+  const redirectPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
       const sessionId = activeSessionId || activeSessionIdRef.current
@@ -612,25 +612,54 @@ export function usePromptActions({
         return false
       }
 
-      try {
-        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+      // Accepted whether the live turn was redirected in place or queued for
+      // the next turn (the build window, before the agent is wired) — either
+      // way the correction reaches the model, so record it once as a real user
+      // message after the interrupted checkpoint, matching the durable core
+      // transcript rather than a system note that changes role after reload.
+      const send = async (id: string): Promise<boolean> => {
+        const result = await requestGateway<SessionRedirectResponse>('session.redirect', { session_id: id, text })
 
-        if (result?.status === 'queued') {
+        if (result?.status === 'redirected' || result?.status === 'queued') {
           triggerHaptic('submit')
-          // Inline note (not a toast) so the nudge lives in the transcript next
-          // to the turn it steered. The `steer:` prefix is rendered as a codicon
-          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
-          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+          appendSessionTextMessage(id, 'user', text)
 
           return true
         }
-      } catch {
+
+        return false
+      }
+
+      try {
+        return await send(sessionId)
+      } catch (err) {
+        // A stale runtime id after reconnect 404s ("session not found"): resume
+        // the stored session and retry once, mirroring stopPrompt so a
+        // correction right after a reconnect isn't lost to the race.
+        if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+          try {
+            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+              session_id: selectedStoredSessionIdRef.current,
+              source: 'desktop'
+            })
+
+            const recoveredId = resumed?.session_id
+
+            if (recoveredId) {
+              activeSessionIdRef.current = recoveredId
+
+              return await send(recoveredId)
+            }
+          } catch {
+            // fall through — caller queues so nothing is lost
+          }
+        }
         // Swallow — caller queues the text so nothing is lost.
       }
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef]
   )
 
   const reloadFromMessage = useCallback(
@@ -806,7 +835,9 @@ export function usePromptActions({
     handoffSession,
     reloadFromMessage,
     restoreToMessage,
-    steerPrompt,
+    redirectPrompt,
+    /** @deprecated Use `redirectPrompt` — this is an active-turn redirect, not tool steer. */
+    steerPrompt: redirectPrompt,
     submitText,
     transcribeVoiceAudio
   }

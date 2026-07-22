@@ -60,6 +60,11 @@ export interface SessionSteerResponse {
   text?: string
 }
 
+export interface SessionRedirectResponse {
+  status?: 'redirected' | 'queued' | 'rejected'
+  text?: string
+}
+
 export interface SessionTitleResponse {
   title?: string
   // True when the session row isn't persisted yet and the title was queued

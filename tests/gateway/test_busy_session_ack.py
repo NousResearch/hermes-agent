@@ -302,6 +302,44 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
+        """A busy voice follow-up is transcribed and steered, never queued."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        runner._should_echo_stt_transcripts = MagicMock(return_value=False)
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=('"yönü teknik mimariye çevir"', ["yönü teknik mimariye çevir"])
+        )
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/follow-up.ogg"]
+        event.media_types = ["audio/ogg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        runner._enrich_message_with_transcription.assert_awaited_once_with(
+            "", ["/tmp/follow-up.ogg"]
+        )
+        agent.steer.assert_called_once_with('"yönü teknik mimariye çevir"')
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Steered" in content
+        assert "Queued" not in content
+
+    @pytest.mark.asyncio
     async def test_steer_mode_can_suppress_visible_ack_without_disabling_steer(self, monkeypatch):
         """busy_steer_ack_enabled=false keeps steering but drops the echo bubble."""
         import gateway.run as _gr

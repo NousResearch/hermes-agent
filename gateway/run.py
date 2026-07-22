@@ -5763,6 +5763,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
+        """Return steerable text for a busy follow-up, transcribing voice first.
+
+        Fresh and queued voice messages reach the normal inbound STT pipeline,
+        but successful steer messages intentionally bypass that queue. Without
+        preprocessing here, a media-only voice follow-up has an empty text
+        payload and steer mode silently degrades to queue mode.
+
+        Audio file attachments remain files; only voice-message media follows
+        the automatic STT contract used by ``_prepare_inbound_message_text``.
+        If transcription fails, preserve any caption and let the existing
+        steer fallback handle an otherwise empty event without losing it.
+        """
+        text = (event.text or "").strip()
+        media_urls = getattr(event, "media_urls", None) or []
+        media_types = getattr(event, "media_types", None) or []
+        voice_paths: List[str] = []
+
+        for index, path in enumerate(media_urls):
+            media_type = media_types[index] if index < len(media_types) else ""
+            is_voice = event.message_type == MessageType.VOICE or (
+                media_type.startswith("audio/")
+                and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
+            )
+            if is_voice:
+                voice_paths.append(path)
+
+        if not voice_paths:
+            return text
+
+        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+            text,
+            voice_paths,
+        )
+        if not successful_transcripts:
+            return text
+
+        if self._should_echo_stt_transcripts():
+            adapter = self._adapter_for_source(event.source)
+            if adapter:
+                echo_meta = self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                )
+                for transcript in successful_transcripts:
+                    try:
+                        await adapter.send(
+                            event.source.chat_id,
+                            f'🎙️ "{transcript}"',
+                            metadata=echo_meta,
+                        )
+                    except Exception as exc:
+                        logger.debug("Busy-steer transcript echo failed (non-fatal): %s", exc)
+
+        return (enriched_text or text).strip()
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -5949,7 +6005,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             effective_mode = "queue"
         steered = False
         if effective_mode == "steer":
-            steer_text = (event.text or "").strip()
+            steer_text = await self._prepare_busy_steer_text(event)
             can_steer = (
                 steer_text
                 and running_agent is not None

@@ -268,6 +268,14 @@ def _extract_url_query_params(url: str):
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
+# Vertex AI provider spellings accepted across config surfaces (mirrors the
+# alias tuple in hermes_cli.runtime_provider). Used by the auxiliary 401
+# refresh path — Vertex is OAuth2-token-based, so its stale clients must be
+# re-minted rather than re-read from env keys.
+_VERTEX_PROVIDER_NAMES = frozenset(
+    {"vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"}
+)
+
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
@@ -3473,6 +3481,43 @@ def _evict_cached_clients(provider: str) -> None:
             _client_cache.pop(key, None)
 
 
+def _is_vertex_host(base_url: str) -> bool:
+    """True when *base_url* points at a Vertex AI endpoint.
+
+    Vertex hosts: bare ``aiplatform.googleapis.com`` for the global location,
+    ``{region}-aiplatform.googleapis.com`` for regional ones. The regional
+    form is a hyphenated prefix (NOT a subdomain), so ``base_url_host_matches``
+    alone would miss it. ``base_url_hostname`` returns ``""`` (never None) and
+    lowercases, so the endswith check is safe.
+    """
+    host = base_url_hostname(base_url)
+    return bool(host) and (
+        host == "aiplatform.googleapis.com"
+        or host.endswith("-aiplatform.googleapis.com")
+    )
+
+
+def _evict_cached_vertex_clients() -> None:
+    """Drop every cached client whose base_url is a Vertex endpoint.
+
+    Vertex 401 recovery must evict by HOST, not provider label: an
+    auto-routed or task-aliased vertex client is cached under a key whose
+    provider element isn't "vertex", so name-based eviction leaves it holding
+    the dead frozen token and the retry keeps failing until process restart.
+    """
+    with _client_cache_lock:
+        stale_keys = [
+            key for key, entry in _client_cache.items()
+            if entry and entry[0] is not None
+            and _is_vertex_host(str(getattr(entry[0], "base_url", "") or ""))
+        ]
+        for key in stale_keys:
+            client = _client_cache.get(key, (None, None, None))[0]
+            if client is not None:
+                _close_cached_client(client)
+            _client_cache.pop(key, None)
+
+
 def _evict_cached_client_instance(target: Any) -> bool:
     """Drop the cache entry whose stored client is *target*.
 
@@ -3797,6 +3842,25 @@ def _refresh_provider_credentials(provider: str) -> bool:
                 return False
             _evict_cached_clients(normalized)
             return True
+        if normalized in _VERTEX_PROVIDER_NAMES:
+            # Vertex Gemini/openapi clients carry a frozen OAuth2 bearer token
+            # baked in at build time (unlike the Claude-on-Vertex path, where
+            # the AnthropicVertex SDK self-refreshes). After the ~1h token
+            # lifetime every call 401s (ACCESS_TOKEN_TYPE_UNSUPPORTED) — seen
+            # live as compression/title_generation dying for hours in
+            # long-lived desktop sessions (Jul 2026). Force a re-mint and
+            # evict the stale clients so the retry builds against a fresh
+            # token.
+            from agent.vertex_adapter import refresh_vertex_credentials
+
+            if not refresh_vertex_credentials():
+                return False
+            _evict_cached_clients(normalized)
+            # Provider-name eviction misses vertex clients cached under a
+            # different label ("auto", a task alias, ...). Sweep by base_url
+            # host so every client holding the dead token is dropped.
+            _evict_cached_vertex_clients()
+            return True
         if normalized == "xai-oauth":
             # Preference: pool-level refresh (uses refresh_token from pool entry),
             # then fall back to singleton auth-store resolver.
@@ -3843,6 +3907,8 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
+    if _is_vertex_host(client_base_url):
+        return "vertex"
     return normalized
 
 

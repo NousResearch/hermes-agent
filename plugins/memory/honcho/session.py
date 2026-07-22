@@ -83,6 +83,7 @@ class HonchoSessionManager:
         config: Any | None = None,
         runtime_user_peer_name: str | None = None,
         runtime_user_peer_name_alt: str | None = None,
+        runtime_thread_id: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -94,12 +95,14 @@ class HonchoSessionManager:
                     write_frequency, observation, etc.).
             runtime_user_peer_name: Gateway user identity for per-user memory scoping.
             runtime_user_peer_name_alt: Optional stable alternate gateway identity.
+            runtime_thread_id: Gateway thread/topic ID for per-thread peer scoping.
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
         self._runtime_user_peer_name = runtime_user_peer_name
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
+        self._runtime_thread_id = runtime_thread_id
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
@@ -337,6 +340,16 @@ class HonchoSessionManager:
         )
         if pin_peer_name:
             return self._sanitize_id(self._config.peer_name)
+
+        # Thread peer mode: when enabled and a thread_id is available,
+        # resolve per-thread instead of per-user so all participants in
+        # the same thread share one Honcho peer and its accumulated memory.
+        thread_peer_mode = (
+            self._config is not None
+            and getattr(self._config, "thread_peer_mode", False) is True
+        )
+        if thread_peer_mode and self._runtime_thread_id:
+            return self._sanitize_id(f"thread-{self._runtime_thread_id}")
 
         runtime_ids = self._runtime_user_ids()
         if runtime_ids:

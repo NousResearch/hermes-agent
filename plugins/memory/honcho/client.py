@@ -384,6 +384,13 @@ class HonchoClientConfig:
     user_peer_aliases: dict[str, str] = field(default_factory=dict)
     # Optional prefix for unknown gateway runtime user IDs, e.g. "telegram_".
     runtime_peer_prefix: str = ""
+    # When True and a gateway thread_id is available (Feishu topics, Telegram
+    # forum topics, Discord threads, …), the user peer is resolved per-thread
+    # instead of per-user.  All participants in the same thread share one
+    # Honcho peer (``thread-{thread_id}``), so memory accumulates per-topic
+    # rather than per-person.  ``pin_peer_name`` still wins when both are set.
+    # Default False preserves per-user peer isolation.
+    thread_peer_mode: bool = False
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -726,6 +733,11 @@ class HonchoClientConfig:
                     or ("unified" if _explicitly_configured else "directional")
                 ),
                 host_block.get("observation") or raw.get("observation"),
+            ),
+            thread_peer_mode=_resolve_bool(
+                host_block.get("threadPeerMode"),
+                raw.get("threadPeerMode"),
+                default=False,
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,

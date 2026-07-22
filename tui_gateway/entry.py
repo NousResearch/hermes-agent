@@ -1,14 +1,40 @@
-import os
-import sys
-
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
 # from shadowing Hermes's own top-level modules.  ``hermes_bootstrap`` lives at
 # the repo root next to this package, so importing it is safe before the guard
 # runs (its name won't collide with a user package), and it owns the canonical
 # path-hardening logic shared with the other entry points.
-import hermes_bootstrap
+#
+# Guarded like the other entry points so a missing (partial ``hermes update``)
+# or corrupted (present-but-unimportable, e.g. a SyntaxError from a file mangled
+# mid-update — issue #60384) bootstrap can't brick this backend.  The supported
+# Ink TUI launches this process, and crashing here would block the very
+# ``hermes update`` needed to recover.  ``harden_import_path()`` runs only on a
+# successful import.
+try:
+    import hermes_bootstrap
+except ModuleNotFoundError:
+    # Expected/benign: not registered in the venv yet during a partial update;
+    # self-heals on the next update.  Import-path hardening and UTF-8 stdio
+    # setup are skipped this run — degraded, not broken.
+    pass
+except Exception as _bootstrap_err:  # noqa: BLE001 — recovery must never be blocked
+    # Abnormal: present but unimportable (e.g. corrupted mid-update).  Warn so
+    # it's visible, but keep starting; hardening is skipped this run.
+    try:
+        import sys as _sys
+        print(
+            "hermes: warning: could not import hermes_bootstrap "
+            f"({type(_bootstrap_err).__name__}); import-path hardening and UTF-8 "
+            "stdio setup skipped. Run 'hermes update' to repair.",
+            file=_sys.stderr,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+else:
+    hermes_bootstrap.harden_import_path()
 
-hermes_bootstrap.harden_import_path()
+import os
+import sys
 
 import json
 import logging

@@ -26,7 +26,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout,
+    get_provider_stale_timeout,
+    get_provider_stream_enabled,
+)
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
@@ -2225,6 +2229,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # branch below — routing through the _interruptible_api_call method keeps the
     # outer loop's per-request retry/refresh seam intact.
     if should_use_direct_api_call(agent):
+        return agent._interruptible_api_call(api_kwargs)
+
+    # Provider-level streaming opt-out (#69442).  Some providers (e.g.
+    # Doubao seed-2-1) truncate tool_call JSON mid-stream.  Set
+    # ``stream: false`` on the provider in config.yaml to force
+    # non-streaming mode as a workaround.
+    if not get_provider_stream_enabled(agent.provider):
         return agent._interruptible_api_call(api_kwargs)
 
     if agent.api_mode == "codex_responses":

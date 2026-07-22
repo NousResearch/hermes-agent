@@ -1062,7 +1062,7 @@ async def _vision_analyze_native(
 
 async def vision_analyze_tool(
     image_url: str,
-    user_prompt: str,
+    user_prompt: str = "Describe this image in detail.",
     model: str = None,
     task_id: Optional[str] = None,
 ) -> str:
@@ -1100,6 +1100,12 @@ async def vision_analyze_tool(
     """
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
+    if not user_prompt.strip():
+        raise ValueError(
+            "user_prompt cannot be empty. Provide a question or instruction "
+            "for the vision model, or omit the parameter to use the default "
+            "(\"Describe this image in detail.\")."
+        )
     debug_call_data = {
         "parameters": {
             "image_url": image_url,
@@ -1462,17 +1468,23 @@ VISION_ANALYZE_SCHEMA = {
             },
             "question": {
                 "type": "string",
-                "description": "Your specific question or request about the image. Optional context the model uses on the next turn after seeing the image."
+                "description": "Your specific question or request about the image. If omitted, a default description prompt is used. Optional context the model uses on the next turn after seeing the image."
             }
         },
-        "required": ["image_url", "question"]
+        "required": ["image_url"]
     }
 }
 
 
 async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url = args.get("image_url", "")
+    # Normalize question type-safely: a model can emit "question": null,
+    # and registry.dispatch() does not validate against the schema before
+    # calling the handler, so we must guard against non-string values.
     question = args.get("question", "")
+    if not isinstance(question, str):
+        question = str(question) if question is not None else ""
+    question = question.strip()
     task_id = kw.get("task_id")
 
     # The fan-out cap lives inside the encode/resize step (offloaded to the
@@ -1491,10 +1503,15 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         return await _vision_analyze_native(image_url, question, task_id=task_id)
 
     # Legacy path: aux LLM describes the image and we return its text.
-    full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}"
-    )
+    # When no question is provided, use a sensible default description prompt
+    # instead of sending an empty question to the upstream API.
+    if question:
+        full_prompt = (
+            "Fully describe and explain everything about this image, then answer the "
+            f"following question:\n\n{question}"
+        )
+    else:
+        full_prompt = "Describe this image in detail."
     # Prefer config.yaml auxiliary.vision.model; env var is a legacy override.
     model = None
     try:

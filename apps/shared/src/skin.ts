@@ -37,6 +37,13 @@ export const SKIN_COLOR_TOKENS = [
   'ui_warn',
   'ui_error',
   'ui_label',
+  // Element-specific (fall back to accent/muted when unset).
+  'ui_tool',
+  'ui_thinking',
+  'diff_added',
+  'diff_removed',
+  'diff_added_word',
+  'diff_removed_word',
   // CLI / TUI chrome.
   'prompt',
   'input_rule',

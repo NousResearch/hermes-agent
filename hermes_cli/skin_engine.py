@@ -36,6 +36,12 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       ui_ok: "#4caf50"                   # Success indicators
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
+      ui_tool: "#FFBF00"                 # Tool-call markers (● / spinner); falls back to ui_accent
+      ui_thinking: "#CC9B1F"             # Reasoning/thinking text; falls back to banner_dim
+      diff_added: "#dcffdc"              # Diff added-line background (TUI)
+      diff_removed: "#ffdcdc"            # Diff removed-line background
+      diff_added_word: "#248a3d"         # Diff added word-level foreground
+      diff_removed_word: "#cf222e"       # Diff removed word-level foreground
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)

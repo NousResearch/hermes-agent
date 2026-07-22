@@ -533,6 +533,35 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(defaultThemeForCurrentBackground({ HERMES_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
   })
 
+  it('gives tool + thinking their own keys, defaulting to accent + muted', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    // Independent override: recolor tool markers without touching accent.
+    const themed = fromSkin({ ui_accent: '#111111', ui_tool: '#ff0000', ui_thinking: '#00ff00' }, {})
+    expect(themed.color.tool).toBe('#ff0000')
+    expect(themed.color.thinking).toBe('#00ff00')
+    expect(themed.color.accent).toBe('#111111')
+
+    // Default: tool follows accent, thinking follows muted.
+    const fallback = fromSkin({ ui_accent: '#abcdef', banner_dim: '#123456' }, {})
+    expect(fallback.color.tool).toBe('#abcdef')
+    expect(fallback.color.thinking).toBe('#123456')
+  })
+
+  it('lets skins override diff colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      { diff_added: '#0a0', diff_removed: '#a00', diff_added_word: '#0f0', diff_removed_word: '#f00' },
+      {}
+    )
+
+    expect(color.diffAdded).toBe('#0a0')
+    expect(color.diffRemoved).toBe('#a00')
+    expect(color.diffAddedWord).toBe('#0f0')
+    expect(color.diffRemovedWord).toBe('#f00')
+  })
+
   it('maps the status bar from skin status_bar_* keys', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 

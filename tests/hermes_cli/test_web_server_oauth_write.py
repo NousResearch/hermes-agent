@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -32,8 +33,15 @@ def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
         os.umask(old_umask)
 
     assert oauth_file.exists()
-    mode = oauth_file.stat().st_mode & 0o777
-    assert mode == 0o600
+    if os.name == 'posix':
+        mode = oauth_file.stat().st_mode & 0o777
+        assert mode == 0o600
+    else:
+        # Windows os.chmod only toggles the read-only bit, so owner-only
+        # POSIX modes are not representable; verify the write itself landed.
+        payload = json.loads(oauth_file.read_text(encoding='utf-8'))
+        assert payload['accessToken'] == 'access-token'
+        assert payload['refreshToken'] == 'refresh-token'
 
 
 def test_dashboard_oauth_write_is_atomic_and_cleans_temp_on_failure(oauth_file, monkeypatch):

@@ -1231,15 +1231,264 @@ class TestLocalOllamaModelDiscovery:
         assert should_use_ollama_native_catalog("custom", "https://example.test/v1") is False
         assert should_use_ollama_native_catalog("openrouter", "http://localhost:11434/v1") is False
 
+    def test_picker_user_provider_row_discovers_ollama_api_tags(self):
+        """providers.ollama with only base_url should still show local Ollama models."""
+        from hermes_cli.model_switch import list_authenticated_providers
 
+        server, port = _start_fake_ollama_server()
+        try:
+            rows = list_authenticated_providers(
+                user_providers={"ollama": {"base_url": f"http://127.0.0.1:{port}"}},
+                custom_providers=[],
+                max_models=10,
+            )
+        finally:
+            server.shutdown()
 
+        ollama_row = next(row for row in rows if row["slug"] == "ollama")
+        assert ollama_row["models"] == ["qwen3:1.7b", "llama3.2:1b"]
+        assert ollama_row["total_models"] == 2
 
+    def test_picker_non_ollama_user_provider_uses_configured_ollama_root(self):
+        """A custom-named providers: entry at the configured Ollama root should use /api/tags."""
+        from hermes_cli.model_switch import list_authenticated_providers
 
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                rows = list_authenticated_providers(
+                    user_providers={"local-llm": {"base_url": base_url}},
+                    custom_providers=[],
+                    max_models=10,
+                )
+        finally:
+            server.shutdown()
 
+        row = next(row for row in rows if row["slug"] == "local-llm")
+        assert row["models"] == ["qwen3:1.7b", "llama3.2:1b"]
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
 
+    def test_picker_user_provider_verifies_ambiguous_ollama_port(self):
+        """A custom-named providers: entry on :11434 should use /api/tags after verification."""
+        from hermes_cli.model_switch import list_authenticated_providers
 
+        with patch("hermes_cli.config.load_config", return_value={"providers": {}}), patch(
+            "hermes_cli.models.probe_ollama_local_models",
+            return_value=["qwen3:1.7b"],
+        ), patch("hermes_cli.models.fetch_api_models", return_value=[]) as fetch_api:
+            rows = list_authenticated_providers(
+                user_providers={"local-llm": {"base_url": "http://127.0.0.1:11434/v1"}},
+                custom_providers=[],
+                max_models=10,
+            )
 
+        row = next(row for row in rows if row["slug"] == "local-llm")
+        assert row["models"] == ["qwen3:1.7b"]
+        fetch_api.assert_not_called()
 
+    def test_picker_bare_custom_model_config_discovers_ollama_api_tags(self):
+        """The documented model.provider=custom shape should use native tags."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                rows = list_authenticated_providers(
+                    current_provider="custom",
+                    current_base_url=base_url,
+                    current_model="qwen3:1.7b",
+                    user_providers={},
+                    custom_providers=[],
+                    probe_custom_providers=False,
+                    probe_current_custom_provider=True,
+                    max_models=10,
+                )
+        finally:
+            server.shutdown()
+
+        row = next(row for row in rows if row["slug"] == "custom")
+        assert row["models"] == ["qwen3:1.7b", "llama3.2:1b"]
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_named_custom_model_flow_discovers_ollama_api_tags(self):
+        """Interactive named-custom setup should use tags for a local Ollama root."""
+        from hermes_cli.main import _model_flow_named_custom
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        config = {"providers": {"ollama": {"base_url": base_url}}}
+        menu_items: list[str] = []
+
+        def cancel_after_capturing_models(_title, items, **_kwargs):
+            menu_items.extend(items)
+            return -1
+
+        try:
+            with patch("hermes_cli.config.load_config", return_value=config), patch(
+                "hermes_cli.config.save_config"
+            ), patch("hermes_cli.auth._save_model_choice"), patch(
+                "hermes_cli.auth.deactivate_provider"
+            ), patch("hermes_cli.main._save_custom_provider"), patch(
+                "hermes_cli.curses_ui.curses_radiolist",
+                side_effect=cancel_after_capturing_models,
+            ), patch("builtins.input", return_value="manual-fallback"), patch(
+                "builtins.print"
+            ):
+                _model_flow_named_custom(
+                    config,
+                    {"name": "Local Ollama", "base_url": base_url},
+                )
+        finally:
+            server.shutdown()
+
+        assert menu_items == ["qwen3:1.7b", "llama3.2:1b", "Cancel"]
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_named_custom_model_flow_preserves_explicit_ollama_models(self):
+        """An explicit named-custom models list should skip live native tags."""
+        from hermes_cli.main import _model_flow_named_custom
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        config = {"providers": {"ollama": {"base_url": base_url}}}
+        menu_items: list[str] = []
+
+        def cancel_after_capturing_models(_title, items, **_kwargs):
+            menu_items.extend(items)
+            return -1
+
+        try:
+            with patch("hermes_cli.config.load_config", return_value=config), patch(
+                "hermes_cli.curses_ui.curses_radiolist",
+                side_effect=cancel_after_capturing_models,
+            ), patch("builtins.print"):
+                _model_flow_named_custom(
+                    config,
+                    {
+                        "name": "Local Ollama",
+                        "base_url": base_url,
+                        "models": ["curated-only"],
+                    },
+                )
+        finally:
+            server.shutdown()
+
+        assert menu_items == ["curated-only", "Cancel"]
+        assert "/api/tags" not in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_picker_user_provider_preserves_explicit_models_for_ollama_root(self):
+        """providers: entries should not replace an explicit model list with /api/tags."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                rows = list_authenticated_providers(
+                    user_providers={
+                        "local-llm": {
+                            "base_url": base_url,
+                            "api_key": "no-key-required",
+                            "models": ["curated-only"],
+                        }
+                    },
+                    custom_providers=[],
+                    max_models=10,
+                )
+        finally:
+            server.shutdown()
+
+        row = next(row for row in rows if row["slug"] == "local-llm")
+        assert row["models"] == ["curated-only"]
+        assert "/api/tags" not in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_picker_custom_provider_group_discovers_configured_ollama_root(self):
+        """custom_providers entries with no explicit model list should use /api/tags for Ollama roots."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                rows = list_authenticated_providers(
+                    user_providers={},
+                    custom_providers=[{"name": "Local Ollama", "base_url": base_url}],
+                    max_models=10,
+                )
+        finally:
+            server.shutdown()
+
+        row = next(row for row in rows if row["name"] == "Local Ollama")
+        assert row["models"] == ["qwen3:1.7b", "llama3.2:1b"]
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_picker_custom_provider_saved_model_still_discovers_ollama_tags(self):
+        """Singular model: is an active choice, not a native-catalog restriction."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        server, port = _start_fake_ollama_server()
+        base_url = f"http://127.0.0.1:{port}/v1"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"providers": {"ollama": {"base_url": base_url}}},
+            ):
+                rows = list_authenticated_providers(
+                    user_providers={},
+                    custom_providers=[
+                        {
+                            "name": "Local Ollama",
+                            "base_url": base_url,
+                            "model": "qwen3:1.7b",
+                        }
+                    ],
+                    max_models=10,
+                )
+        finally:
+            server.shutdown()
+
+        row = next(row for row in rows if row["name"] == "Local Ollama")
+        assert row["models"] == ["qwen3:1.7b", "llama3.2:1b"]
+        assert "/api/tags" in _FakeOllamaTagsHandler.paths_seen
+        assert "/v1/models" not in _FakeOllamaTagsHandler.paths_seen
+
+    def test_picker_custom_provider_group_verifies_ambiguous_ollama_port(self):
+        """Generated custom provider slugs should not block verified :11434 /api/tags discovery."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        with patch("hermes_cli.config.load_config", return_value={"providers": {}}), patch(
+            "hermes_cli.models.probe_ollama_local_models",
+            return_value=["qwen3:1.7b"],
+        ), patch("hermes_cli.models.fetch_api_models", return_value=[]) as fetch_api:
+            rows = list_authenticated_providers(
+                user_providers={},
+                custom_providers=[{"name": "Local Ollama", "base_url": "http://127.0.0.1:11434/v1"}],
+                max_models=10,
+            )
+
+        row = next(row for row in rows if row["name"] == "Local Ollama")
+        assert row["models"] == ["qwen3:1.7b"]
+        fetch_api.assert_not_called()
 
     def test_model_validation_uses_ollama_api_tags_for_ollama_provider(self):
         """`/model` validation for provider=ollama should not probe `/models`."""

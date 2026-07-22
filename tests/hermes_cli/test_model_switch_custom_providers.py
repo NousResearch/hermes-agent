@@ -23,6 +23,9 @@ _MOCK_VALIDATION = {
 def _disable_live_custom_provider_model_probe(monkeypatch):
     """Keep custom-provider picker fixtures independent of local model servers."""
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_ollama_local_models", lambda *_a, **_kw: None
+    )
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
@@ -51,6 +54,31 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
         and p["api_url"] == "http://127.0.0.1:4141/v1"
         for p in providers
     )
+
+
+def test_providers_singular_model_does_not_suppress_ollama_native_discovery(monkeypatch):
+    """A saved selection in ``providers:`` is not an explicit catalog."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_ollama_local_models",
+        lambda *a, **k: ["qwen3:latest", "llama3.2:latest"],
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={
+            "ollama": {
+                "base_url": "http://localhost:11434/v1",
+                "model": "qwen3:latest",
+            }
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+
+    ollama = next(p for p in providers if p["slug"] == "ollama")
+    assert ollama["models"] == ["qwen3:latest", "llama3.2:latest"]
 
 
 def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkeypatch):
@@ -288,8 +316,7 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     with all models collected, not N duplicate rows."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected probe"))
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -327,9 +354,9 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
         current_provider="openrouter",
         user_providers={},
         custom_providers=[
-            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "llama3"},
-            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "llama3"},
-            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "mistral"},
+            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "llama3", "discover_models": False},
+            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "llama3", "discover_models": False},
+            {"name": "MyProvider", "base_url": "http://localhost:11434/v1", "model": "mistral", "discover_models": False},
         ],
         max_models=50,
     )
@@ -343,8 +370,9 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
 def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypatch):
     """A singular ``model:`` is the active selection, not an explicit catalog.
 
-    No-key local endpoints such as Ollama and llama.cpp should still be probed
-    so /model matches the terminal ``hermes model`` flow.
+    No-key local OpenAI-compatible endpoints such as llama.cpp should still be
+    probed so /model matches the terminal ``hermes model`` flow. Ollama-native
+    discovery is covered separately with a fake ``/api/tags`` server.
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
@@ -362,16 +390,16 @@ def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypa
         user_providers={},
         custom_providers=[
             {
-                "name": "Local Ollama",
-                "base_url": "http://localhost:11434/v1",
+                "name": "Local llama.cpp",
+                "base_url": "http://localhost:8080/v1",
                 "model": "llama3",
             }
         ],
         max_models=50,
     )
 
-    assert calls == [("", "http://localhost:11434/v1", {"headers": None})]
-    row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert calls == [("", "http://localhost:8080/v1", {"headers": None})]
+    row = next(p for p in providers if p["name"] == "Local llama.cpp")
     assert row["models"] == ["llama3", "mistral", "qwen3-coder"]
     assert row["total_models"] == 3
 
@@ -664,11 +692,11 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
         user_providers={},
         custom_providers=[
             {"name": "Ollama — MiniMax M2.7", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "minimax-m2.7"},
+             "api_key": "ollama", "model": "minimax-m2.7", "discover_models": False},
             {"name": "Ollama — GLM 5.1",      "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "glm-5.1"},
+             "api_key": "ollama", "model": "glm-5.1", "discover_models": False},
             {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "qwen3-coder"},
+             "api_key": "ollama", "model": "qwen3-coder", "discover_models": False},
         ],
         max_models=50,
         probe_custom_providers=False,
@@ -749,11 +777,11 @@ def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypat
         user_providers={},
         custom_providers=[
             {"name": "Ollama — GLM 5.1", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "glm-5.1"},
+             "api_key": "ollama", "model": "glm-5.1", "discover_models": False},
             {"name": "Moonshot", "base_url": "https://api.moonshot.cn/v1",
-             "api_key": "sk-m", "model": "moonshot-v1"},
+             "api_key": "sk-m", "model": "moonshot-v1", "discover_models": False},
             {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "qwen3-coder"},
+             "api_key": "ollama", "model": "qwen3-coder", "discover_models": False},
         ],
         max_models=50,
         probe_custom_providers=False,
@@ -843,7 +871,7 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
 
     entries = [
         {"name": f"Ollama \u2014 Model {i}", "base_url": "http://localhost:11434/v1",
-         "api_key": "ollama", "model": f"model-{i}"}
+         "api_key": "ollama", "model": f"model-{i}", "discover_models": False}
         for i in range(6)
     ]
     providers = list_authenticated_providers(

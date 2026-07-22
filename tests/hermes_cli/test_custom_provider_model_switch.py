@@ -677,6 +677,28 @@ class TestCustomProviderDiscoverModels:
         # The live /models endpoint must NOT be probed when discovery is off.
         mock_fetch.assert_not_called()
 
+    def test_discover_false_with_only_singular_model_skips_probe(self, config_home):
+        """An active singular model is not an implicit discovery catalog."""
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Headered Ollama",
+            "base_url": "http://127.0.0.1:11434",
+            "api_key": "no-key-required",
+            "discover_models": False,
+            "model": "qwen3:8b",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
+             patch("hermes_cli.models.fetch_ollama_local_models") as mock_ollama, \
+             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_not_called()
+        mock_ollama.assert_not_called()
+
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
         """User picks the 2nd configured model; it persists, list-driven."""
         import yaml

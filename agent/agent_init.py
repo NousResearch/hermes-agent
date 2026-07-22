@@ -2234,6 +2234,16 @@ def init_agent(
             provider=agent.provider,
             custom_providers=_custom_providers,
         )
+        # Per-model threshold overrides are part of the explicit
+        # context-engine contract: assign them BEFORE the initial
+        # update_model() call so the first resolution (which derives
+        # threshold_percent/threshold_tokens for the initial model) already
+        # sees the overrides. Assigning after update_model() left the initial
+        # model on the engine's global threshold until the first /model
+        # switch. Engines that override update_model() own their own policy
+        # and may ignore the attribute.
+        if compression_model_thresholds:
+            agent.context_compressor.model_thresholds = compression_model_thresholds
         agent.context_compressor.update_model(
             model=agent.model,
             context_length=_plugin_ctx_len,
@@ -2242,9 +2252,6 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
-        # Propagate per-model threshold overrides to plugin engines.
-        if compression_model_thresholds:
-            agent.context_compressor.model_thresholds = compression_model_thresholds
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:

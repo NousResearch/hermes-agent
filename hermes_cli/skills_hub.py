@@ -516,7 +516,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
     )
-    from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
+    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
     c = console or _console
     ensure_hub_dirs()
@@ -648,24 +648,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(meta, "identifier", "")
             or identifier
         )
-    from tools.skills_hub import HUB_DIR, source_url_for_bundle
-    result, scan_provenance = scan_skill_cached(
-        q_path,
-        source=scan_source,
-        source_url=source_url_for_bundle(bundle),
-        cache_dir=HUB_DIR / "scan-cache",
-    )
+    result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
-    freshness = "fresh" if scan_provenance["fresh"] else "cached"
-    c.print(
-        f"[dim]Scan provenance: {freshness}; scanner "
-        f"{scan_provenance['scanner_version']}; hash {scan_provenance['bundle_hash']}[/]"
-    )
-    rules = ", ".join(scan_provenance["rules"]) or "none"
-    c.print(
-        f"[dim]Source: {scan_provenance['source_url']}; scanned "
-        f"{scan_provenance['scanned_at']}; rules: {rules}[/]"
-    )
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
@@ -946,8 +930,30 @@ def do_list(source_filter: str = "all",
     hub_installed = {e["name"]: e for e in lock.list_installed()}
     builtin_names = set(_read_manifest())
 
+    # Resolve available tools and toolsets to apply conditional-activation
+    # filtering (requires_toolsets, fallback_for_tools, etc.) — the same
+    # logic the prompt builder uses.  When enabled_only is True, exclude
+    # skills whose tool/toolset conditions aren't met so the list truly
+    # reflects what a session would offer.
+    _available_tools: set[str] | None = None
+    _available_toolsets: set[str] | None = None
+    if enabled_only:
+        try:
+            from tools.registry import registry
+            avail, _ = registry.check_tool_availability(quiet=True)
+            _available_toolsets = set(avail)
+            # Collect all registered tool names from the registry snapshot
+            entries, _ = registry._snapshot_state()
+            _available_tools = {entry.name for entry in entries} if entries else set()
+        except Exception:
+            pass
+
     # Pull ALL skills (including disabled ones) so we can annotate status.
-    all_skills = _find_all_skills(skip_disabled=True)
+    all_skills = _find_all_skills(
+        skip_disabled=True,
+        available_tools=_available_tools,
+        available_toolsets=_available_toolsets,
+    )
     disabled_names = get_disabled_skill_names()
 
     title = "Installed Skills"

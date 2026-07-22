@@ -666,13 +666,24 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *,
+    skip_disabled: bool = False,
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        available_tools: Set of tool names available in the current session.
+            When provided, skills whose ``requires_tools`` / ``fallback_for_tools``
+            conditions are not met are excluded.
+        available_toolsets: Set of toolset names available in the current session.
+            When provided, skills whose ``requires_toolsets`` / ``fallback_for_toolsets``
+            conditions are not met are excluded.
 
     Returns:
         List of skill metadata dicts (name, description, category).
@@ -714,6 +725,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     skills = []
     seen_names: set = set()
+    # Track first-wins collisions for diagnostic output
+    collision_registry: dict[str, list[str]] = {}
 
     # Scan local dir first, then external dirs (local takes precedence) —
     # dirs_to_scan already resolved above for the signature.
@@ -734,8 +747,23 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_environment(frontmatter):
                     continue
 
+                # Apply tool/toolset conditions when session context is available.
+                # This is the same logic used by prompt_builder._skill_should_show().
+                if (available_tools is not None or available_toolsets is not None):
+                    from agent.skill_utils import skill_meets_conditions
+                    if not skill_meets_conditions(
+                        frontmatter,
+                        available_tools=available_tools,
+                        available_toolsets=available_toolsets,
+                    ):
+                        continue
+
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
                 if name in seen_names:
+                    # Log the collision for later diagnostic output
+                    if name not in collision_registry:
+                        collision_registry[name] = []
+                    collision_registry[name].append(str(skill_md))
                     continue
                 if name in disabled:
                     continue
@@ -754,11 +782,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                skill_entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                }
+                skills.append(skill_entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -836,6 +865,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             {s.get("category") for s in all_skills if s.get("category")}
         )
 
+        # Detect name collisions for diagnostic output
+        from agent.skill_utils import find_name_collisions
+        _collisions = find_name_collisions()
+        _collision_info = {}
+        for collided_name, candidates in _collisions.items():
+            _collision_info[collided_name] = [
+                {"path": str(p), "category": c}
+                for p, c in candidates
+            ]
+
         return json.dumps(
             {
                 "success": True,
@@ -843,6 +882,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "categories": categories,
                 "count": len(all_skills),
                 "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "collisions": _collision_info or None,
             },
             ensure_ascii=False,
         )
@@ -1185,19 +1225,34 @@ def skill_view(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
             )
+            # Derive loadable qualified names from candidate paths so the
+            # caller can immediately use them with skill_view()
+            qualified_names = []
+            for search_dir in all_dirs:
+                for smd in [smd for _, smd in candidates]:
+                    try:
+                        rel = smd.relative_to(search_dir)
+                        parent_dir = rel.parent
+                        qualified = str(parent_dir)
+                        if qualified and qualified != ".":
+                            qualified_names.append(qualified)
+                    except (ValueError, AttributeError):
+                        pass
+            qualified_names = sorted(set(qualified_names))
             return json.dumps(
                 {
                     "success": False,
                     "error": (
                         f"Ambiguous skill name '{name}': {len(candidates)} skills "
                         "match across your local skills dir and external_dirs. "
-                        "Refusing to guess — load one explicitly by its categorized path."
+                        "Refusing to guess — load one explicitly by its qualified path."
                     ),
                     "matches": paths,
+                    "qualified_names": qualified_names or None,
                     "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
+                        "Pass the qualified path instead of the bare name "
+                        f"(e.g., '{qualified_names[0] if qualified_names else 'category/skill-name'}'), "
+                        "or rename one of the colliding skills so each name is unique."
                     ),
                 },
                 ensure_ascii=False,

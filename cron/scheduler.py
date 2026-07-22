@@ -1143,11 +1143,21 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if deliver_value == "origin":
         if origin:
-            return {
-                "platform": origin["platform"],
-                "chat_id": str(origin["chat_id"]),
-                "thread_id": origin.get("thread_id"),
-            }
+            # api_server is request/response only — it has no send()
+            # adapter.  Falling through to it silently drops the delivery.
+            # Detect this and try home channels instead.  See #69304.
+            if origin.get("platform") == "api_server":
+                logger.info(
+                    "Job '%s' has deliver=origin from api_server session; "
+                    "api_server cannot deliver — falling back to home channels",
+                    job.get("name", job.get("id", "?")),
+                )
+            else:
+                return {
+                    "platform": origin["platform"],
+                    "chat_id": str(origin["chat_id"]),
+                    "thread_id": origin.get("thread_id"),
+                }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
         for platform_name in _iter_home_target_platforms():

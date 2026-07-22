@@ -1508,6 +1508,39 @@ class TestCustomProviderCompatibility:
         models = [e.get("model") for e in compatible]
         assert models == ["qwen3-coder", "glm-5.1", "kimi-k2.5"]
 
+    def test_string_custom_providers_does_not_suppress_providers_dict(
+        self, tmp_path
+    ):
+        """String-form custom_providers (e.g. from `hermes config set` JSON
+        serialisation) must not suppress valid ``providers:`` dict entries."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": '[{"name":"broken","base_url":"https://x.com"}]',
+                    "providers": {
+                        "my-provider": {
+                            "api": "https://api.example.com/v1",
+                            "api_key": "test-key",
+                            "name": "My Provider",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        # The malformed custom_providers string is skipped (logged warning),
+        # but the providers dict entry is still resolved.
+        assert len(compatible) == 1
+        assert compatible[0]["name"] == "My Provider"
+        assert compatible[0]["base_url"] == "https://api.example.com/v1"
+        assert compatible[0]["provider_key"] == "my-provider"
+
 
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""

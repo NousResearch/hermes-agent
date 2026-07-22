@@ -100,6 +100,19 @@ class TestCustomProvidersValidation:
         })
         assert len(issues) == 0
 
+    def test_string_instead_of_list(self):
+        """String-typed custom_providers (JSON-serialised by `hermes config set`)
+        should produce a clear error directing users to YAML list syntax."""
+        issues = validate_config_structure({
+            "custom_providers": '[{"name":"my-provider","base_url":"https://example.com/v1"}]',
+            "model": {"provider": "custom"},
+        })
+        errors = [i for i in issues if i.severity == "error"]
+        assert any(
+            "string" in i.message and "YAML list" in i.message
+            for i in errors
+        ), "Should detect custom_providers as string and suggest YAML list format"
+
 
 class TestFallbackModelValidation:
     """fallback_model should be a top-level dict with provider + model."""

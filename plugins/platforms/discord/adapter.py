@@ -25,7 +25,10 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, TYPE_CHECKING, Tuple
+
+if TYPE_CHECKING:
+    from discord import RawReactionActionEvent
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
@@ -1119,6 +1122,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 or bool(self._allowed_role_ids)  # Need members intent for role lookup
             )
             intents.voice_states = True
+            # guild_reactions and dm_reactions are included in Intents.default()
+            # above; no explicit assignment is needed for inbound reaction routing.
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
@@ -1207,6 +1212,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+
+            @self._client.event
+            async def on_raw_reaction_add(payload):
+                await adapter_self._handle_inbound_reaction(payload, "added")
+
+            @self._client.event
+            async def on_raw_reaction_remove(payload):
+                await adapter_self._handle_inbound_reaction(payload, "removed")
 
             # Register slash commands
             if self._slash_commands:
@@ -2814,6 +2827,145 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+
+    async def _handle_inbound_reaction(self, payload: RawReactionActionEvent, action: Literal["added", "removed"]) -> None:
+        """Route user reactions on bot messages as synthetic text events.
+
+        Mirrors the Feishu adapter's _handle_reaction_event pattern:
+        reactions on bot messages are converted to 'reaction:{action}:{emoji}'
+        synthetic text events and routed through the normal message pipeline.
+        """
+        try:
+            if not self._reactions_enabled():
+                return
+            if not self._client or not self._client.user:
+                return
+            if payload.user_id == self._client.user.id:
+                return
+            channel = self._client.get_channel(payload.channel_id)
+            if channel is None:
+                channel = await self._client.fetch_channel(payload.channel_id)
+
+            guild = getattr(channel, "guild", None)
+            is_dm = isinstance(channel, discord.DMChannel) or guild is None
+            channel_ids = {str(channel.id)}
+            parent_channel_id = None
+            if isinstance(channel, discord.Thread):
+                parent_channel_id = self._get_parent_channel_id(channel)
+                if parent_channel_id:
+                    channel_ids.add(parent_channel_id)
+            if not is_dm:
+                allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+                if allowed_channels_raw:
+                    allowed_channels = {
+                        channel_id.strip()
+                        for channel_id in allowed_channels_raw.split(",")
+                        if channel_id.strip()
+                    }
+                    if "*" not in allowed_channels and not (channel_ids & allowed_channels):
+                        logger.debug(
+                            "[%s] Ignoring reaction in non-allowed channel: %s",
+                            self.name,
+                            channel_ids,
+                        )
+                        return
+                ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+                ignored_channels = {
+                    channel_id.strip()
+                    for channel_id in ignored_channels_raw.split(",")
+                    if channel_id.strip()
+                }
+                if "*" in ignored_channels or channel_ids & ignored_channels:
+                    logger.debug(
+                        "[%s] Ignoring reaction in ignored channel: %s",
+                        self.name,
+                        channel_ids,
+                    )
+                    return
+            reactor = payload.member
+            if reactor is None and guild is not None:
+                get_member = getattr(guild, "get_member", None)
+                if callable(get_member):
+                    reactor = get_member(payload.user_id)
+            allowed_users = getattr(self, "_allowed_user_ids", set())
+            allowed_roles = getattr(self, "_allowed_role_ids", set())
+            if getattr(reactor, "bot", False):
+                # Preserve the reaction surface's existing ID-only behavior for
+                # bot reactors. A configured role allowlist never admits a bot.
+                if allowed_users:
+                    if str(payload.user_id) not in allowed_users:
+                        return
+                elif allowed_roles:
+                    return
+                role_authorized = False
+            else:
+                if not self._is_allowed_user(
+                    str(payload.user_id),
+                    reactor,
+                    guild=guild,
+                    is_dm=is_dm,
+                ):
+                    return
+                role_authorized = bool(allowed_roles)
+
+            # Dedup: Discord RESUME replays events after reconnects
+            emoji = str(payload.emoji)
+            dedup_key = f"reaction:{payload.message_id}:{action}:{payload.user_id}:{emoji}"
+            if self._dedup.is_duplicate(dedup_key):
+                return
+
+            message = await channel.fetch_message(payload.message_id)
+            if message.author != self._client.user:
+                return
+
+            synthetic_text = f"reaction:{action}:{emoji}"
+
+            # Resolve reactor display name. For removals payload.member is absent,
+            # so preserve the resolved guild member's identity when available.
+            user_name = getattr(reactor, "display_name", None) or str(payload.user_id)
+
+            is_thread = isinstance(channel, discord.Thread)
+            chat_type = "dm"
+            chat_name = str(payload.channel_id)
+            if guild:
+                chat_type = "thread" if is_thread else "group"
+                chat_name = (
+                    self._format_thread_chat_name(channel)
+                    if is_thread
+                    else f"{guild.name} / #{getattr(channel, 'name', channel.id)}"
+                )
+
+            source = self.build_source(
+                chat_id=str(payload.channel_id),
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=str(payload.user_id),
+                user_name=user_name,
+                is_bot=getattr(reactor, "bot", False),
+                guild_id=str(guild.id) if guild else None,
+                parent_chat_id=parent_channel_id,
+                thread_id=str(channel.id) if is_thread else None,
+                message_id=str(payload.message_id),
+                role_authorized=role_authorized,
+            )
+
+            event = MessageEvent(
+                text=synthetic_text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=payload,
+                message_id=str(payload.message_id),
+            )
+            logger.info(
+                "[%s] Routing reaction %s:%s on bot message %s",
+                self.name, action, emoji, payload.message_id,
+            )
+            await self.handle_message(event)
+        except Exception:
+            logger.warning(
+                "[%s] Failed to handle inbound reaction: %s %s",
+                self.name, action, payload, exc_info=True,
+            )
 
     async def send(
         self,

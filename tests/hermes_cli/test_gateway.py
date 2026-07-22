@@ -645,6 +645,35 @@ def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
     assert calls == ["restart", "stop", "wait", "run"]
 
 
+def test_unmanaged_gateway_restart_writes_initiator_before_stop(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+    monkeypatch.setattr(
+        "gateway.status.write_external_restart_request",
+        lambda pid: calls.append(("marker", pid)) or True,
+    )
+    monkeypatch.setattr(
+        gateway,
+        "stop_profile_gateway",
+        lambda: calls.append(("stop", 321)) or True,
+    )
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda **kwargs: None)
+    monkeypatch.setattr(gateway, "run_gateway", lambda **kwargs: calls.append(("run", 321)))
+
+    args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == [
+        ("marker", 321),
+        ("stop", 321),
+        ("run", 321),
+    ]
+
+
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")
@@ -1149,16 +1178,16 @@ class TestWaitForGatewayExit:
         """Process exits after a couple of polls — no SIGKILL needed."""
         poll_count = 0
 
-        def mock_get_running_pid():
+        def mock_pid_exists(pid):
             nonlocal poll_count
             poll_count += 1
-            return 12345 if poll_count <= 2 else None
+            return poll_count <= 2
 
-        monkeypatch.setattr("gateway.status.get_running_pid", mock_get_running_pid)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+        monkeypatch.setattr("gateway.status._pid_exists", mock_pid_exists)
         monkeypatch.setattr("time.sleep", lambda _: None)
 
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=999.0)
-        # Should have polled until None was returned.
         assert poll_count == 3
 
     def test_force_kills_after_grace_period(self, monkeypatch):
@@ -1177,13 +1206,10 @@ class TestWaitForGatewayExit:
         def mock_terminate(pid, force=False):
             kills.append((pid, force))
 
-        # get_running_pid returns the PID until kill is sent, then None
-        def mock_get_running_pid():
-            return None if kills else 42
-
         monkeypatch.setattr("time.monotonic", fake_monotonic)
         monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("gateway.status.get_running_pid", mock_get_running_pid)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: not kills)
         monkeypatch.setattr(gateway, "terminate_pid", mock_terminate)
 
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
@@ -1204,6 +1230,7 @@ class TestWaitForGatewayExit:
         monkeypatch.setattr("time.monotonic", fake_monotonic)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 99)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
         monkeypatch.setattr(gateway, "terminate_pid", mock_terminate)
 
         # Should not raise — ProcessLookupError means it's already gone.

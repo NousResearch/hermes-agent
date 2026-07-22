@@ -1659,6 +1659,11 @@ def restart() -> None:
     doesn't produce a running gateway.
     """
     _assert_windows()
+    from gateway.status import get_running_pid, write_external_restart_request
+
+    pid = get_running_pid()
+    if pid is not None:
+        write_external_restart_request(pid)
 
     stop()
 

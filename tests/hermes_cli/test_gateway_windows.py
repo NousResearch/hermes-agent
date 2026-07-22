@@ -702,6 +702,41 @@ def test_uninstall_access_denied_declined_keeps_task_and_cleans_files(monkeypatc
 # ---------------------------------------------------------------------------
 
 
+def test_restart_writes_initiator_before_stopping_running_gateway(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        "gateway.status.get_running_pid",
+        lambda: 99999,
+    )
+    monkeypatch.setattr(
+        "gateway.status.write_external_restart_request",
+        lambda pid: events.append(("marker", pid)) or True,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "stop",
+        lambda: events.append(("stop", 99999)),
+    )
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_absent", lambda **kwargs: True)
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "start",
+        lambda: events.append(("start", 99999)),
+    )
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **kwargs: True)
+
+    gateway_windows.restart()
+
+    assert events == [
+        ("marker", 99999),
+        ("stop", 99999),
+        ("start", 99999),
+    ]
+
+
 def test_stop_writes_planned_stop_marker_before_killing(monkeypatch):
     """stop() must write the planned-stop marker BEFORE any kill signal.
 

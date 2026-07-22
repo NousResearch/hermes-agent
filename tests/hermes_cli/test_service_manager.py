@@ -1072,6 +1072,32 @@ def test_s6_stop_writes_planned_stop_marker(monkeypatch, s6_scandir):
     ), f"s6-svc -d not invoked; saw: {svc_calls}"
 
 
+def test_s6_restart_writes_initiator_before_restart_signal(monkeypatch, s6_scandir):
+    import subprocess as _sp
+
+    (s6_scandir / "gateway-coder").mkdir()
+    events = []
+
+    def _fake(cmd, **kw):
+        command = list(cmd)
+        executable = command[0].removeprefix("/command/")
+        if executable == "s6-svstat":
+            return _sp.CompletedProcess(cmd, 0, "up (pid 9090) 5 seconds\n", "")
+        if executable == "s6-svc":
+            events.append(("signal", command[1]))
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("subprocess.run", _fake)
+    monkeypatch.setattr(
+        "gateway.status.write_external_restart_request",
+        lambda pid: events.append(("marker", pid)) or True,
+    )
+
+    S6ServiceManager(scandir=s6_scandir).restart("gateway-coder")
+
+    assert events == [("marker", 9090), ("signal", "-t")]
+
+
 def test_s6_stop_tolerates_marker_write_failure(monkeypatch, s6_scandir):
     """A marker-write failure must not block the stop (best-effort)."""
     import subprocess as _sp

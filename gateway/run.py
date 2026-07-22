@@ -1960,6 +1960,27 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _log_external_restart_initiator() -> None:
+    try:
+        from gateway.status import consume_external_restart_request_for_self
+
+        initiator = consume_external_restart_request_for_self()
+    except (OSError, ValueError) as exc:
+        logger.debug("External restart initiator marker check failed: %s", exc)
+        return
+    if initiator is None:
+        return
+    logger.info(
+        "External restart initiator: request_id=%s caller_pid=%s caller_ppid=%s "
+        "argv_classification=%s requested_at=%s",
+        initiator.request_id,
+        initiator.caller_pid,
+        initiator.caller_ppid,
+        initiator.argv_classification,
+        initiator.requested_at,
+    )
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -22706,6 +22727,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set up signal handlers
     def shutdown_signal_handler(received_signal=None):
         nonlocal _signal_initiated_shutdown
+        _log_external_restart_initiator()
         # Planned --replace takeover check: when a sibling gateway is
         # taking over via --replace, it wrote a marker naming this PID
         # before sending SIGTERM. If present, treat the signal as a
@@ -22800,6 +22822,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
+        _log_external_restart_initiator()
         runner.request_restart(detached=False, via_service=True)
     
     loop = asyncio.get_running_loop()

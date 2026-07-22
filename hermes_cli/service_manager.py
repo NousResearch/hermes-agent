@@ -918,6 +918,11 @@ class S6ServiceManager:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason.
         """
+        pid = self._supervised_pid(name)
+        if pid is not None:
+            from gateway.status import write_external_restart_request
+
+            write_external_restart_request(pid)
         self._run_svc("-t", "restart", name)
         _write_gateway_desired_state(name, "running")
 

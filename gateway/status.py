@@ -21,10 +21,12 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, Sequence
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -1427,6 +1429,20 @@ _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
+_EXTERNAL_RESTART_MARKER_FILENAME = ".gateway-restart-request.json"
+_EXTERNAL_RESTART_MARKER_TTL_S = 300
+_RESTART_ARGV_CLASSIFICATIONS = frozenset(
+    {"gateway_restart", "update", "setup", "service_manager", "other"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalRestartInitiator:
+    request_id: str
+    caller_pid: int
+    caller_ppid: int
+    argv_classification: str
+    requested_at: str
 
 
 def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
@@ -1445,6 +1461,23 @@ def _get_planned_stop_marker_path() -> Path:
     return home / _PLANNED_STOP_MARKER_FILENAME
 
 
+def _get_external_restart_marker_path() -> Path:
+    return _get_process_hermes_home() / _EXTERNAL_RESTART_MARKER_FILENAME
+
+
+def _classify_restart_argv(argv: Sequence[str]) -> str:
+    tokens = {token.lower() for token in argv[1:]}
+    if "update" in tokens:
+        return "update"
+    if "setup" in tokens:
+        return "setup"
+    if "gateway" in tokens and "restart" in tokens:
+        return "gateway_restart"
+    if "service" in tokens and "restart" in tokens:
+        return "service_manager"
+    return "other"
+
+
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
     try:
         written_dt = datetime.fromisoformat(written_at)
@@ -1454,16 +1487,16 @@ def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
         return True
 
 
-def _consume_pid_marker_for_self(
+def _consume_pid_marker_record_for_self(
     path: Path,
     *,
     pid_field: str,
     start_time_field: str,
     ttl_s: int,
-) -> bool:
+) -> dict[str, Any] | None:
     record = _read_json_file(path)
     if not record:
-        return False
+        return None
 
     try:
         target_pid = int(record[pid_field])
@@ -1474,14 +1507,14 @@ def _consume_pid_marker_for_self(
             path.unlink(missing_ok=True)
         except OSError:
             pass
-        return False
+        return None
 
     if _marker_is_stale(written_at, ttl_s):
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
-        return False
+        return None
 
     # Cross-profile guard (#29092): new markers explicitly name the verified
     # TARGET home.  That permits a deliberate cross-HERMES_HOME --replace while
@@ -1494,13 +1527,13 @@ def _consume_pid_marker_for_self(
         if not isinstance(target_home, str) or not _same_hermes_home(
             target_home, our_home
         ):
-            return False
+            return None
     else:
         replacer_home = record.get("replacer_hermes_home")
         if replacer_home is not None and not _same_hermes_home(
             replacer_home, our_home
         ):
-            return False
+            return None
 
     our_pid = os.getpid()
     our_start_time = _get_process_start_time(our_pid)
@@ -1528,7 +1561,25 @@ def _consume_pid_marker_for_self(
     except OSError:
         pass
 
-    return matches
+    return record if matches else None
+
+
+def _consume_pid_marker_for_self(
+    path: Path,
+    *,
+    pid_field: str,
+    start_time_field: str,
+    ttl_s: int,
+) -> bool:
+    return (
+        _consume_pid_marker_record_for_self(
+            path,
+            pid_field=pid_field,
+            start_time_field=start_time_field,
+            ttl_s=ttl_s,
+        )
+        is not None
+    )
 
 
 def write_takeover_marker(
@@ -2001,6 +2052,81 @@ def clear_planned_stop_marker() -> None:
         _get_planned_stop_marker_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def write_external_restart_request(
+    target_pid: int, *, argv: Sequence[str] | None = None
+) -> bool:
+    """Persist safe caller evidence before requesting an external restart."""
+    try:
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": _get_process_start_time(target_pid),
+            "request_id": uuid.uuid4().hex,
+            "caller_pid": os.getpid(),
+            "caller_ppid": os.getppid(),
+            "argv_classification": _classify_restart_argv(
+                sys.argv if argv is None else argv
+            ),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_external_restart_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_external_restart_request_for_self() -> ExternalRestartInitiator | None:
+    """Consume a fresh restart marker that targets the current process."""
+    path = _get_external_restart_marker_path()
+    claimed_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.claim")
+    try:
+        os.replace(path, claimed_path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    try:
+        record = _consume_pid_marker_record_for_self(
+            claimed_path,
+            pid_field="target_pid",
+            start_time_field="target_start_time",
+            ttl_s=_EXTERNAL_RESTART_MARKER_TTL_S,
+        )
+        if record is None:
+            return None
+        try:
+            request_id = str(record["request_id"])
+            caller_pid = int(record["caller_pid"])
+            caller_ppid = int(record["caller_ppid"])
+            argv_classification = str(record["argv_classification"])
+            requested_at = str(record["written_at"])
+            request_id_is_valid = uuid.UUID(request_id).hex == request_id
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
+        valid = (
+            request_id_is_valid
+            and caller_pid > 0
+            and caller_ppid >= 0
+            and argv_classification in _RESTART_ARGV_CLASSIFICATIONS
+        )
+        if not valid:
+            return None
+        return ExternalRestartInitiator(
+            request_id=request_id,
+            caller_pid=caller_pid,
+            caller_ppid=caller_ppid,
+            argv_classification=argv_classification,
+            requested_at=requested_at,
+        )
+    except OSError:
+        return None
+    finally:
+        try:
+            claimed_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def get_running_pid(

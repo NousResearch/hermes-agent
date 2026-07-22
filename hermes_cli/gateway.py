@@ -277,6 +277,9 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
         return False
     if pid <= 0:
         return False
+    from gateway.status import write_external_restart_request
+
+    write_external_restart_request(pid)
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded by hasattr(signal, 'SIGUSR1') above
     except ProcessLookupError:
@@ -4347,30 +4350,40 @@ def launchd_stop():
 
 
 def _wait_for_gateway_exit(
-    timeout: float = 10.0, force_after: float | None = 5.0
+    timeout: float = 10.0,
+    force_after: float | None = 5.0,
+    *,
+    target_pid: int | None = None,
+    target_start_time: int | None = None,
 ) -> bool:
-    """Wait for the gateway process (by saved PID) to exit.
+    """Wait for one captured gateway PID to exit.
 
-    Uses the PID from the gateway.pid file — not launchd labels — so this
-    works correctly when multiple gateway instances run under separate
-    HERMES_HOME directories.
+    Capturing once prevents a service-manager replacement from retargeting
+    the wait or force-kill through a rewritten gateway.pid file.
 
     Args:
         timeout: Total seconds to wait before giving up.
         force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
-    from gateway.status import get_running_pid
+    from gateway.status import get_process_start_time, get_running_pid
+
+    pid = target_pid if target_pid is not None else get_running_pid()
+    if pid is None:
+        return True
+    if target_pid is None:
+        target_start_time = get_process_start_time(pid)
 
     deadline = time.monotonic() + timeout
     force_deadline = (
-        (time.monotonic() + force_after) if force_after is not None else None
+        time.monotonic() + force_after
+        if force_after is not None
+        else float("inf")
     )
     force_sent = False
 
     while time.monotonic() < deadline:
-        pid = get_running_pid()
-        if pid is None:
+        if not _gateway_process_matches(pid, target_start_time):
             return True  # Process exited cleanly.
 
         if (
@@ -4379,6 +4392,8 @@ def _wait_for_gateway_exit(
             and time.monotonic() >= force_deadline
         ):
             # Grace period expired — force-kill the specific PID.
+            if not _gateway_process_matches(pid, target_start_time):
+                return True
             try:
                 terminate_pid(pid, force=True)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
@@ -4389,23 +4404,40 @@ def _wait_for_gateway_exit(
         time.sleep(0.3)
 
     # Timed out even after force-kill.
-    remaining_pid = get_running_pid()
-    if remaining_pid is not None:
+    if _gateway_process_matches(pid, target_start_time):
         print(
-            f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail"
+            f"⚠ Gateway PID {pid} still running after {timeout}s — restart may fail"
         )
         return False
     return True
+
+
+def _gateway_process_matches(pid: int, start_time: int | None) -> bool:
+    from gateway.status import _pid_exists, get_process_start_time
+
+    if not _pid_exists(pid):
+        return False
+    if start_time is None:
+        return True
+    current_start_time = get_process_start_time(pid)
+    return current_start_time is None or current_start_time == start_time
 
 
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
-    from gateway.status import get_running_pid
+    from gateway.status import (
+        get_process_start_time,
+        get_running_pid,
+        write_external_restart_request,
+    )
 
     try:
         pid = get_running_pid()
+        start_time = get_process_start_time(pid) if pid is not None else None
+        if pid is not None:
+            write_external_restart_request(pid)
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
@@ -4426,12 +4458,22 @@ def launchd_restart():
             except (ProcessLookupError, PermissionError, OSError):
                 pid = None
             if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+                exited = _wait_for_gateway_exit(
+                    timeout=drain_timeout,
+                    force_after=None,
+                    target_pid=pid,
+                    target_start_time=start_time,
+                )
                 if not exited:
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+                    if _gateway_process_matches(pid, start_time):
+                        try:
+                            terminate_pid(pid, force=True)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:
@@ -7171,6 +7213,14 @@ def _gateway_command_inner(args):
                 sys.exit(1)
 
             # Manual restart: stop only this profile's gateway
+            from gateway.status import (
+                get_running_pid,
+                write_external_restart_request,
+            )
+
+            running_pid = get_running_pid()
+            if running_pid is not None:
+                write_external_restart_request(running_pid)
             if stop_profile_gateway():
                 print("✓ Stopped gateway for this profile")
 

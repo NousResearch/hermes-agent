@@ -43,6 +43,12 @@ describe('JsonRpcGatewayClient connect() URL guard', () => {
     )
   })
 
+  it('rejects a malformed ws URL before opening a socket', async () => {
+    const client = new JsonRpcGatewayClient()
+    await expect(client.connect('ws://')).rejects.toThrow(/requires a ws:\/\/ or wss:\/\/ URL string/)
+    expect(client.connectionState).toBe('idle')
+  })
+
   it('keeps connection state idle on rejection', async () => {
     const client = new JsonRpcGatewayClient()
     await client.connect(undefined as unknown as string).catch(() => undefined)

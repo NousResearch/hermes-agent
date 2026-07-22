@@ -78,6 +78,32 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
 
 
+def test_anthropic_usage_prefers_explicit_active_pool_key(monkeypatch):
+    # Regression for the pool-rotation bug: _fetch_anthropic_account_usage must
+    # use the caller-supplied key (the active pool entry) instead of reading the
+    # singleton token store, so /usage reflects the key currently in use.
+    calls = []
+    payload = {"five_hour": {"utilization": 0.21, "resets_at": 1779846359}}
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: (_ for _ in ()).throw(AssertionError("singleton token store should not be used")),
+    )
+
+    snapshot = account_usage.fetch_account_usage("anthropic", api_key="cc-live-agent-token")
+
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert calls[0]["url"] == "https://api.anthropic.com/api/oauth/usage"
+    assert calls[0]["headers"]["Authorization"] == "Bearer cc-live-agent-token"
+    assert snapshot.windows[0].used_percent == 21
+
+
 def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usage_payload):
     calls = []
     monkeypatch.setattr(

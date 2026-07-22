@@ -152,7 +152,7 @@ class FactRetriever:
                 )
 
         # Score against individual fact vectors directly
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND superseded_at IS NULL"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -212,7 +212,7 @@ class FactRetriever:
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
 
         # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND superseded_at IS NULL"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -291,7 +291,7 @@ class FactRetriever:
             entity_residuals.append(probe_key)
 
         # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND superseded_at IS NULL"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -441,6 +441,39 @@ class FactRetriever:
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
         return contradictions[:limit]
 
+    def trace(self, fact_id: int, depth: int = 5) -> list[dict]:
+        """Walk the supersede chain backward from a fact, returning its history.
+
+        Starting at `fact_id` (depth 0), follows fact_supersedes edges to each
+        older version (predecessor), up to `depth` hops back. The result
+        includes retired (superseded) versions that are hidden from normal
+        recall, ordered newest-first by hop distance. Each row carries a
+        `depth` field. Returns [] if the fact does not exist.
+
+        At this store's scale a single bounded recursive CTE is instant.
+        """
+        conn = self.store._conn
+        rows = conn.execute(
+            """
+            WITH RECURSIVE chain(fact_id, depth) AS (
+                SELECT ?, 0
+                UNION ALL
+                SELECT fs.old_id, c.depth + 1
+                FROM fact_supersedes fs
+                JOIN chain c ON fs.new_id = c.fact_id
+                WHERE c.depth < ?
+            )
+            SELECT f.fact_id, f.content, f.category, f.tags,
+                   f.trust_score, f.retrieval_count, f.helpful_count,
+                   f.created_at, f.updated_at, f.superseded_at, c.depth
+            FROM chain c
+            JOIN facts f ON f.fact_id = c.fact_id
+            ORDER BY c.depth
+            """,
+            (fact_id, depth),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def _score_facts_by_vector(
         self,
         target_vec: "np.ndarray",
@@ -450,7 +483,7 @@ class FactRetriever:
         """Score facts by similarity to a target vector."""
         conn = self.store._conn
 
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND superseded_at IS NULL"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -508,6 +541,8 @@ class FactRetriever:
 
         where_clauses.append("f.trust_score >= ?")
         params.append(min_trust)
+
+        where_clauses.append("f.superseded_at IS NULL")
 
         where_sql = " AND ".join(where_clauses)
 

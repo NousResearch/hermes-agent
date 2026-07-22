@@ -48,6 +48,8 @@ FACT_STORE_SCHEMA = {
         "• related — What connects to an entity? Structural adjacency.\n"
         "• reason — Compositional: facts connected to MULTIPLE entities simultaneously.\n"
         "• contradict — Memory hygiene: find facts making conflicting claims.\n"
+        "• supersede — Correct a fact without losing history: retires the old wording, stores the fix.\n"
+        "• trace — Show a fact's full version history, including retired versions.\n"
         "• update/remove/list — CRUD operations.\n\n"
         "IMPORTANT: Before answering questions about the user, ALWAYS probe or reason first."
     ),
@@ -56,13 +58,14 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "supersede", "trace", "update", "remove", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
             "query": {"type": "string", "description": "Search query (required for 'search')."},
             "entity": {"type": "string", "description": "Entity name for 'probe'/'related'."},
             "entities": {"type": "array", "items": {"type": "string"}, "description": "Entity names for 'reason'."},
-            "fact_id": {"type": "integer", "description": "Fact ID for 'update'/'remove'."},
+            "fact_id": {"type": "integer", "description": "Fact ID for 'update'/'remove'/'supersede'/'trace'."},
+            "depth": {"type": "integer", "description": "Max versions to walk back for 'trace' (default: 5)."},
             "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
@@ -333,6 +336,22 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                 )
                 return json.dumps({"updated": updated})
+
+            elif action == "supersede":
+                new_id = store.supersede(
+                    int(args["fact_id"]),
+                    args["content"],
+                    category=args.get("category"),
+                    tags=args.get("tags", ""),
+                )
+                return json.dumps({"fact_id": new_id, "old_id": int(args["fact_id"]), "status": "superseded"})
+
+            elif action == "trace":
+                chain = retriever.trace(
+                    int(args["fact_id"]),
+                    depth=int(args.get("depth", 5)),
+                )
+                return json.dumps({"chain": chain, "count": len(chain)})
 
             elif action == "remove":
                 removed = store.remove_fact(int(args["fact_id"]))

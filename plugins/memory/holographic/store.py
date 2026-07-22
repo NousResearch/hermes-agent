@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS fact_supersedes (
+    new_id     INTEGER NOT NULL REFERENCES facts(fact_id),
+    old_id     INTEGER NOT NULL REFERENCES facts(fact_id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (new_id, old_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supersedes_old ON fact_supersedes(old_id);
 """
 
 # Trust adjustment constants
@@ -179,6 +188,10 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: add superseded_at column if missing. NULL = live; a non-NULL
+        # timestamp marks a fact replaced by a newer version (see fact_supersedes).
+        if "superseded_at" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN superseded_at TIMESTAMP")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -269,6 +282,7 @@ class MemoryStore:
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
                 WHERE facts_fts MATCH ?
                   AND f.trust_score >= ?
+                  AND f.superseded_at IS NULL
                   {category_clause}
                 ORDER BY fts.rank, f.trust_score DESC
                 LIMIT ?
@@ -352,6 +366,93 @@ class MemoryStore:
 
             return True
 
+    def supersede(
+        self,
+        old_id: int,
+        content: str,
+        category: str | None = None,
+        tags: str = "",
+    ) -> int:
+        """Replace a fact with a corrected version, preserving history.
+
+        Inserts `content` as a new live fact, marks `old_id` superseded
+        (superseded_at = now) so its wording stops surfacing in recall, and
+        records a fact_supersedes(new_id, old_id) edge for tracing the chain.
+        The new fact inherits the old fact's category unless `category` is given.
+
+        The insert, retirement, and lineage edge are written as one explicit
+        transaction and rolled back together on any failure, so a partial
+        supersede can never persist under the autocommit connection (and no
+        dangling write lock is left behind).
+
+        Returns the new fact_id. Raises KeyError if `old_id` does not exist, and
+        ValueError if the new content is empty, identical to the old fact, or
+        already stored as another fact. The last case matters because
+        facts.content is UNIQUE: add_fact() would dedupe onto the existing row
+        and the lineage edge would then point at a pre-existing (possibly
+        already retired) fact, so supersede requires a genuinely new version.
+        """
+        with self._lock:
+            content = content.strip()
+            if not content:
+                raise ValueError("content must not be empty")
+
+            old = self._conn.execute(
+                "SELECT content, category FROM facts WHERE fact_id = ?", (old_id,)
+            ).fetchone()
+            if old is None:
+                raise KeyError(f"fact_id {old_id} not found")
+            if old["content"] == content:
+                raise ValueError("new content is identical to the existing fact")
+
+            dup = self._conn.execute(
+                "SELECT fact_id FROM facts WHERE content = ?", (content,)
+            ).fetchone()
+            if dup is not None:
+                raise ValueError(
+                    f"new content already exists as fact {int(dup['fact_id'])}; "
+                    "supersede requires distinct new content"
+                )
+
+            new_category = category or old["category"]
+            # Atomic state transition. isolation_level=None means we drive the
+            # transaction explicitly; ROLLBACK on any failure guarantees no
+            # partial supersede and no lingering write lock. The UNIQUE
+            # constraint on content is a backstop if a duplicate raced in past
+            # the check above (impossible while we hold the lock, but harmless).
+            self._conn.execute("BEGIN")
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO facts (content, category, tags, trust_score) "
+                    "VALUES (?, ?, ?, ?)",
+                    (content, new_category, tags, self.default_trust),
+                )
+                new_id = int(cur.lastrowid)
+                self._conn.execute(
+                    "UPDATE facts SET superseded_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
+                    (old_id,),
+                )
+                self._conn.execute(
+                    "INSERT INTO fact_supersedes (new_id, old_id) VALUES (?, ?)",
+                    (new_id, old_id),
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+            # Post-commit enrichment, mirroring add_fact's order (durable row
+            # first, then entities/HRR/bank). A failure here leaves a valid live
+            # fact that simply falls back to FTS recall until the next rebuild.
+            for name in self._extract_entities(content):
+                self._link_fact_entity(new_id, self._resolve_entity(name))
+            self._compute_hrr_vector(new_id, content)
+            self._rebuild_bank(new_category)
+            if old["category"] != new_category:
+                # Retiring old_id also drops it from its own bank.
+                self._rebuild_bank(old["category"])
+            return new_id
+
     def remove_fact(self, fact_id: int) -> bool:
         """Delete a fact and its entity links. Returns True if the row existed."""
         with self._lock:
@@ -363,6 +464,12 @@ class MemoryStore:
 
             self._conn.execute(
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
+            )
+            # Drop lineage rows referencing this fact (either end) so removal
+            # never leaves dangling supersede references.
+            self._conn.execute(
+                "DELETE FROM fact_supersedes WHERE new_id = ? OR old_id = ?",
+                (fact_id, fact_id),
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
             self._conn.commit()
@@ -392,6 +499,7 @@ class MemoryStore:
                        retrieval_count, helpful_count, created_at, updated_at
                 FROM facts
                 WHERE trust_score >= ?
+                  AND superseded_at IS NULL
                   {category_clause}
                 ORDER BY trust_score DESC
                 LIMIT ?
@@ -552,7 +660,8 @@ class MemoryStore:
 
             bank_name = f"cat:{category}"
             rows = self._conn.execute(
-                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL",
+                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL"
+                " AND superseded_at IS NULL",
                 (category,),
             ).fetchall()
 

@@ -451,7 +451,7 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 | **Data storage** | Local SQLite |
 | **Cost** | Free |
 
-**Tools:** `fact_store` (9 actions: add, search, probe, related, reason, contradict, update, remove, list), `fact_feedback` (helpful/unhelpful rating that trains trust scores)
+**Tools:** `fact_store` (11 actions: add, search, probe, related, reason, contradict, supersede, trace, update, remove, list), `fact_feedback` (helpful/unhelpful rating that trains trust scores)
 
 **Setup:**
 ```bash

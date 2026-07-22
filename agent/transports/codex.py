@@ -168,8 +168,14 @@ class ResponsesApiTransport(ProviderTransport):
         self._last_issuer_kind = issuer_kind
 
         # Resolve reasoning effort
+        # Default reasoning_enabled=False: non-reasoning models (gpt-4o-mini,
+        # gpt-4.1-mini, local MLX/Ollama, etc.) reject the Responses-API
+        # include[reasoning.encrypted_content] field with HTTP 400 "Encrypted
+        # content is not supported with this model." Reasoning-capable models
+        # (o1, o3, grok-thinking, etc.) still opt in via
+        # reasoning_config={"enabled": True} or {"effort": "medium"}.
         reasoning_effort = "medium"
-        reasoning_enabled = True
+        reasoning_enabled = False
         reasoning_config = params.get("reasoning_config")
         if reasoning_config and isinstance(reasoning_config, dict):
             if reasoning_config.get("enabled") is False:

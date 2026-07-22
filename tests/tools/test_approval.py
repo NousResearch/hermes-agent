@@ -167,6 +167,64 @@ class TestDetectDangerousRm:
                 assert "delete" in desc.lower(), command
 
 
+class TestKanbanWorkspaceRecursiveCleanup:
+    @pytest.mark.parametrize("flags", ("-rf", "-r -f"))
+    def test_single_literal_descendant_is_not_gated(self, monkeypatch, tmp_path, flags):
+        workspace = tmp_path / "task-workspace"
+        target = workspace / "generated" / "cache"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+
+        assert detect_dangerous_command(f"rm {flags} {target}") == (
+            False,
+            None,
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "command_factory",
+        (
+            lambda workspace, target, outside: f"rm -rf {workspace}",
+            lambda workspace, target, outside: f"rm -rf {outside}",
+            lambda workspace, target, outside: f"rm -rf {target} {outside}",
+            lambda workspace, target, outside: f"rm -rf {target}; touch {outside}",
+            lambda workspace, target, outside: f"rm -rf {target} && touch {outside}",
+            lambda workspace, target, outside: "rm -rf $TARGET",
+            lambda workspace, target, outside: "rm -rf ~/generated",
+            lambda workspace, target, outside: f"rm -rf {workspace}/*",
+            lambda workspace, target, outside: f"rm -rf {workspace}/item[0]",
+            lambda workspace, target, outside: f"rm -rf {workspace}/{{one,two}}",
+            lambda workspace, target, outside: "rm -rf $(pwd)",
+            lambda workspace, target, outside: f"rm -rf -- {target}",
+            lambda workspace, target, outside: f"sudo rm -rf {target}",
+        ),
+    )
+    def test_ambiguous_or_out_of_scope_variants_remain_gated(
+        self, monkeypatch, tmp_path, command_factory,
+    ):
+        workspace = tmp_path / "task-workspace"
+        target = workspace / "generated"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.chdir(workspace)
+
+        command = command_factory(workspace, target, outside)
+
+        assert detect_dangerous_command(command)[0] is True, command
+
+    def test_symlink_resolving_outside_workspace_remains_gated(self, monkeypatch, tmp_path):
+        workspace = tmp_path / "task-workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        link = workspace / "linked-outside"
+        link.symlink_to(outside, target_is_directory=True)
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+
+        assert detect_dangerous_command(f"rm -rf {link}")[0] is True
+
+
 class TestWindowsShellDestructiveCommands:
     def test_cmd_del_requires_approval(self):
         dangerous, key, desc = detect_dangerous_command(
@@ -320,6 +378,106 @@ class TestSafeCommand:
         assert is_dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestReadOnlyProfileConfigInspection:
+    @pytest.mark.parametrize(
+        "command_factory",
+        (
+            lambda config: f"cat {config}",
+            lambda config: f"head -n 20 {config}",
+            lambda config: f"tail -n +1 {config}",
+            lambda config: f"grep -n approvals {config}",
+            lambda config: f"rg -n approvals {config}",
+            lambda config: f"sed -n '1,80p' {config}",
+        ),
+    )
+    def test_strict_inspection_allowlist_skips_approval_routing(
+        self, monkeypatch, tmp_path, command_factory,
+    ):
+        hermes_home = tmp_path / "profile-home"
+        config = hermes_home / "config.yaml"
+        hermes_home.mkdir()
+        config.write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
+        scanner_calls = []
+
+        def warn(command):
+            scanner_calls.append(command)
+            return {
+                "action": "warn",
+                "findings": [{"rule_id": "sensitive-read", "title": "Sensitive read"}],
+                "summary": "profile config inspected",
+            }
+
+        monkeypatch.setattr("tools.tirith_security.check_command_security", warn)
+
+        result = approval_module.check_all_command_guards(
+            command_factory(config),
+            "local",
+            approval_callback=lambda *_args, **_kwargs: "deny",
+        )
+
+        assert result["approved"] is True
+        assert scanner_calls == []
+
+    @pytest.mark.parametrize(
+        "command_factory",
+        (
+            lambda config, other: f"cat {config} {other}",
+            lambda config, other: f"cat {config} > {other}",
+            lambda config, other: f"cat {config}; touch {other}",
+            lambda config, other: f"rg --pre 'sh -c touch' approvals {config}",
+            lambda config, other: f"python -c 'print(open(\"{config}\").read())'",
+        ),
+    )
+    def test_non_allowlisted_variants_still_reach_approval(
+        self, monkeypatch, tmp_path, command_factory,
+    ):
+        hermes_home = tmp_path / "profile-home"
+        config = hermes_home / "config.yaml"
+        other = tmp_path / "other"
+        hermes_home.mkdir()
+        config.write_text("approvals: {}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {
+                "action": "warn",
+                "findings": [{"rule_id": "inspection-review", "title": "Review"}],
+                "summary": "not a strict read-only inspection",
+            },
+        )
+
+        result = approval_module.check_all_command_guards(
+            command_factory(config, other),
+            "local",
+            approval_callback=lambda *_args, **_kwargs: "deny",
+        )
+
+        assert result["approved"] is False
+
+    @pytest.mark.parametrize(
+        "command_factory",
+        (
+            lambda config: f"echo 'approvals: {{mode: off}}' > {config}",
+            lambda config: f"sed -i 's/manual/off/' {config}",
+            lambda config: f"cp /tmp/replacement {config}",
+        ),
+    )
+    def test_profile_config_writes_remain_gated(self, monkeypatch, tmp_path, command_factory):
+        hermes_home = tmp_path / "profile-home"
+        config = hermes_home / "config.yaml"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert detect_dangerous_command(command_factory(config))[0] is True
 
 
 def _clear_session(key):
@@ -2328,6 +2486,7 @@ class TestApprovalTimeoutIsNotConsent:
         assert "do NOT retry" in msg.lower() or "Do NOT retry" in msg
         assert "rephrase" in msg.lower()
         assert "different command" in msg.lower()
+        assert "read-only inspection" in msg.lower()
 
     def test_explicit_deny_carries_same_no_consent_shape(self, monkeypatch):
         """An explicit /deny must produce the same shape as timeout —
@@ -2362,6 +2521,7 @@ class TestApprovalTimeoutIsNotConsent:
         assert "Silence is not consent" not in r["message"]  # this one IS denied, not timed-out
         assert "NOT consented" in r["message"]
         assert "rephrase" in r["message"].lower()
+        assert "read-only inspection" in r["message"].lower()
 
     def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
         """Plugins must be able to distinguish timeout from explicit deny.

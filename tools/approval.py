@@ -1985,6 +1985,30 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
+def _is_kanban_workspace_recursive_cleanup(command: str) -> bool:
+    workspace_value = os.getenv("HERMES_KANBAN_WORKSPACE", "").strip()
+    if not workspace_value or re.search(r"[;&|<>\n\r`$~*?\[\]{}]", command):
+        return False
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not (
+        len(argv) == 3 and argv[:2] == ["rm", "-rf"]
+        or len(argv) == 4 and argv[:3] == ["rm", "-r", "-f"]
+    ):
+        return False
+
+    workspace = os.path.realpath(os.path.abspath(workspace_value))
+    target = os.path.realpath(os.path.abspath(argv[-1]))
+    if target == workspace:
+        return False
+    try:
+        return os.path.commonpath((workspace, target)) == workspace
+    except ValueError:
+        return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -1993,7 +2017,7 @@ def detect_dangerous_command(command: str) -> tuple:
     """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
-    if _is_verification_artifact_cleanup(command):
+    if _is_verification_artifact_cleanup(command) or _is_kanban_workspace_recursive_cleanup(command):
         return (False, None, None)
 
     for command_variant in _command_detection_variants(command):
@@ -2874,6 +2898,51 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     return env_type in ("singularity", "modal", "daytona")
 
 
+def _is_read_only_profile_config_inspection(command: str) -> bool:
+    if re.search(r"[;&|<>\n\r`]|\$\(", command):
+        return False
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if len(argv) < 2:
+        return False
+
+    from hermes_constants import get_hermes_home
+
+    config_token = argv[-1]
+    active_config = os.path.realpath(get_hermes_home() / "config.yaml")
+    expanded_config = os.path.realpath(os.path.expandvars(os.path.expanduser(config_token)))
+    if expanded_config != active_config or config_token in argv[:-1]:
+        return False
+
+    executable = argv[0]
+    if executable == "cat":
+        return len(argv) == 2
+    if executable in {"head", "tail"}:
+        return (
+            len(argv) == 4
+            and argv[1] == "-n"
+            and re.fullmatch(r"\+?\d+", argv[2]) is not None
+        )
+    if executable == "grep":
+        return len(argv) >= 3
+    if executable == "rg":
+        unsafe_options = ("--pre", "--hostname-bin")
+        return len(argv) >= 3 and not any(
+            option == unsafe or option.startswith(f"{unsafe}=")
+            for option in argv[1:-1]
+            for unsafe in unsafe_options
+        )
+    if executable == "sed":
+        return (
+            len(argv) == 4
+            and argv[1] == "-n"
+            and re.fullmatch(r"(?:\d+|\$)(?:,(?:\d+|\$))?p", argv[2]) is not None
+        )
+    return False
+
+
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -3234,6 +3303,9 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
+    if _is_read_only_profile_config_inspection(command):
+        return {"approved": True, "message": None}
+
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
@@ -3513,7 +3585,9 @@ def check_all_command_guards(command: str, env_type: str,
                         f"BLOCKED: Command {reason}.{reason_addendum} The user "
                         f"has NOT consented to this action. Do NOT retry this "
                         f"command, do NOT rephrase it, and do NOT attempt the "
-                        f"same outcome via a different command. Stop the "
+                        f"same destructive or irreversible action via a different "
+                        f"command. Safe read-only inspection or discovery is "
+                        f"allowed. Otherwise, stop the "
                         f"current workflow and wait for the user to respond "
                         f"before taking any further destructive or "
                         f"irreversible action.{timeout_addendum}"
@@ -3606,8 +3680,10 @@ def check_all_command_guards(command: str, env_type: str,
             "message": (
                 "BLOCKED: User denied this command. The user has NOT consented "
                 "to this action. Do NOT retry this command, do NOT rephrase "
-                "it, and do NOT attempt the same outcome via a different "
-                "command. Stop the current workflow and wait for the user "
+                "it, and do NOT attempt the same destructive or irreversible "
+                "action via a different command. Safe read-only inspection or "
+                "discovery is allowed. Otherwise, stop the current workflow "
+                "and wait for the user "
                 "to respond before taking any further destructive or "
                 "irreversible action."
             ),

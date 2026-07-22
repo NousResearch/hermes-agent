@@ -171,7 +171,9 @@ interface PromptActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: (
+    preview?: string | null
+  ) => Promise<{ routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null } | null>
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string

@@ -90,30 +90,38 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  activeSessionIdRef: activeSessionIdRefProp,
+  getRouteToken,
   navigate = vi.fn(),
   onReady,
-  requestGateway
+  requestGateway,
+  selectedStoredSessionIdRef: selectedStoredSessionIdRefProp
 }: {
+  activeSessionIdRef?: MutableRefObject<string | null>
+  getRouteToken?: () => string
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  selectedStoredSessionIdRef?: MutableRefObject<string | null>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const activeSessionIdRef = activeSessionIdRefProp ?? ref<string | null>(null)
+  const selectedStoredSessionIdRef = selectedStoredSessionIdRefProp ?? ref<string | null>(null)
 
   const actions = useSessionActions({
     activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
+    activeSessionIdRef,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
-    getRouteToken: () => 'token',
+    getRouteToken: getRouteToken ?? (() => 'token'),
     getRoutedStoredSessionId: () => null,
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
-    selectedStoredSessionIdRef: ref<string | null>(null),
+    selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
@@ -441,6 +449,57 @@ describe('createBackendSessionForSend profile routing', () => {
     vi.restoreAllMocks()
   })
 
+  it('returns null when the user switches sessions during post-create YOLO setup', async () => {
+    const createdStoredSessionId = 'stored-created'
+    const createdRuntimeSessionId = 'rt-created'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    let releaseYolo: () => void = () => {}
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: createdRuntimeSessionId, stored_session_id: createdStoredSessionId } as never
+      }
+
+      if (method === 'config.set') {
+        await new Promise<void>(resolve => {
+          releaseYolo = resolve
+        })
+      }
+
+      return {} as never
+    })
+
+    // Arm YOLO so createBackendSessionForSend has a real post-navigation await.
+    const { setYoloActive } = await import('@/store/session')
+    setYoloActive(true)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const creating = handle!.createBackendSessionForSend('preview')
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('config.set', expect.anything()))
+
+    // User selects B while the new session's optional YOLO call is still pending.
+    selectedStoredSessionIdRef.current = 'stored-B'
+    routeToken = '/stored-B::'
+    releaseYolo()
+
+    expect(await creating).toBeNull()
+    setYoloActive(false)
+  })
+
   it('routes a plain new chat (no explicit profile) to the live gateway profile', async () => {
     // The "rubberband to default" bug: the top New Session button clears
     // $newChatProfile to null. In global-remote mode one backend serves every
@@ -511,7 +570,7 @@ describe('createBackendSessionForSend profile routing', () => {
     render(<Harness onReady={next => (handle = next)} requestGateway={requestGateway} />)
     await waitFor(() => expect(handle).not.toBeNull())
 
-    let createPromise!: Promise<null | string>
+    let createPromise!: Promise<{ routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null } | null>
     act(() => {
       createPromise = handle!.createBackendSessionForSend()
     })

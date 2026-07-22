@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $notifications } from '@/store/notifications'
 import { $busy, $connection, $messages, $sessions, $turnStartedAt, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -95,7 +96,7 @@ function Harness({
     state: Record<string, unknown>
   ) => void
   onReady: (handle: HarnessHandle) => void
-  onSeedState?: (state: Record<string, unknown>) => void
+  onSeedState?: (state: Record<string, unknown>, storedSessionId?: string | null) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -104,7 +105,9 @@ function Harness({
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
-  createBackendSessionForSend?: () => Promise<null | string>
+  createBackendSessionForSend?: () => Promise<
+    null | { routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null }
+  >
 }) {
   const localActiveSessionIdRef = useRef<string | null>(
     activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
@@ -130,7 +133,13 @@ function Harness({
     activeSessionIdRef,
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
-    createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
+    createBackendSessionForSend:
+      createBackendSessionForSend ??
+      (async () => ({
+        routeToken: selectedStoredSessionIdRef.current ? `/${selectedStoredSessionIdRef.current}::` : null,
+        runtimeSessionId: RUNTIME_SESSION_ID,
+        storedSessionId: selectedStoredSessionIdRef.current
+      })),
     getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),
     getRuntimeIdForStoredSession: getRuntimeIdForStoredSession ?? (() => null),
     getRouteToken: getRouteToken ?? (() => 'token'),
@@ -146,7 +155,7 @@ function Harness({
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
-      onSeedState?.(next)
+      onSeedState?.(next, storedSessionId)
       onUpdateState?.(sessionId, storedSessionId, next)
 
       return next as never
@@ -184,6 +193,7 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -497,6 +507,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -706,6 +717,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 describe('usePromptActions steerPrompt', () => {
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -1433,7 +1445,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // conversation via session.resume — createBackendSessionForSend would
     // silently fork the user's chat in two.
     const calls: { method: string; params?: Record<string, unknown> }[] = []
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
@@ -1469,7 +1486,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
   it('never replaces a selected stored session when its direct runtime resume fails', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     const busyRef: MutableRefObject<boolean> = { current: false }
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
@@ -1507,7 +1529,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     let boundRuntimeId: string | null = null
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
+
     const requestGateway = vi.fn(async () => ({}) as never)
 
     const resumeStoredSession = vi.fn(async (storedSessionId: string) => {
@@ -1619,7 +1647,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let recoverySucceeds = false
     let boundRuntimeId: string | null = null
 
-    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const createBackendSessionForSend = vi.fn(async () => ({
+      routeToken: '/brand-new-stored-WRONG::',
+      runtimeSessionId: 'brand-new-session-WRONG',
+      storedSessionId: 'brand-new-stored-WRONG'
+    }))
+
     const requestGateway = vi.fn(async () => ({}) as never)
 
     const resumeStoredSession = vi.fn(async () => {
@@ -1670,16 +1703,20 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
 
     // Mirror the real createBackendSessionForSend: a successful create
-    // re-homes the active runtime ref to the session it minted BEFORE
-    // returning. An inert stub here is what let the new-chat drift-abort
-    // regression ship green.
+    // re-homes runtime, stored selection, and route before returning.
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = RUNTIME_SESSION_ID
 
-      return RUNTIME_SESSION_ID
+      return {
+        routeToken: `/${RUNTIME_SESSION_ID}::`,
+        runtimeSessionId: RUNTIME_SESSION_ID,
+        storedSessionId: RUNTIME_SESSION_ID
+      }
     })
 
     const calls: string[] = []
@@ -1699,6 +1736,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={null}
       />
     )
@@ -1718,7 +1756,422 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
+  })
+
+  it('allows a genuine new-chat send to follow its own session-creation navigation', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = 'new-chat'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      // Real session creation selects the persisted row and navigates from the
+      // new-chat route before returning the runtime session id.
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      routeToken = `/${createdStoredSessionId}::`
+
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const accepted = await handle!.submitText('describe this image', {
+      attachments: [{ id: 'image:first', kind: 'image', label: 'first.png', refText: '@image:first.png' }]
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: createdRuntimeSessionId,
+        text: '@image:first.png\n\ndescribe this image'
+      },
+      1_800_000
+    )
+  })
+
+  it('allows the new-chat route token to update asynchronously during first attachment sync', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    let releaseAttach: () => void = () => {}
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+
+      // React Router has been asked to navigate, but routeTokenRef still exposes
+      // /new until the next render commit.
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const attachment = { id: 'image:first', kind: 'image' as const, label: 'first.png', path: 'C:/tmp/first.png' }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach') {
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+
+        return { attached: true, path: attachment.path } as never
+      }
+
+      return {} as never
+    })
+
+    let seededStoredSessionId: string | null | undefined
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        onSeedState={(_state, storedSessionId) => {
+          seededStoredSessionId = storedSessionId
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const submitting = handle!.submitText('describe this image', { attachments: [attachment] })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach', expect.anything()))
+    routeToken = `/${createdStoredSessionId}::`
+    releaseAttach()
+
+    expect(await submitting).toBe(true)
+    expect(seededStoredSessionId).toBe(createdStoredSessionId)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), 1_800_000)
+  })
+
+  it('aborts when create returns on an unrelated route without adopting it as the binding baseline', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new::'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      // A route-only user action (for example opening Settings) does not
+      // necessarily retarget either session ref.
+      routeToken = '/settings::'
+
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('must not submit from settings')).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+  })
+
+  it('resumes the created stored session when the first new-chat submit times out', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const recoveredRuntimeSessionId = 'rt-created-chat-recovered'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new::'
+    let submitAttempts = 0
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      routeToken = `/${createdStoredSessionId}::`
+
+      return {
+        routeToken,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('request timed out: prompt.submit')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: recoveredRuntimeSessionId } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('survive the first submit timeout')).toBe(true)
+    expect(calls.find(call => call.method === 'session.resume')?.params).toMatchObject({
+      session_id: createdStoredSessionId
+    })
+    expect(calls.filter(call => call.method === 'prompt.submit')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'prompt.submit')[1]?.params).toMatchObject({
+      session_id: recoveredRuntimeSessionId
+    })
+  })
+
+  it('silently aborts when create returns null after the user changes context', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new::'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_B
+      selectedStoredSessionIdRef.current = STORED_SESSION_B
+      routeToken = `/${STORED_SESSION_B}::`
+
+      return null
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('cancel this send')).toBe(false)
+    expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('aborts when the user switches chats after new-session navigation but before create returns', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = 'new-chat'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      // The create flow first performs its expected self-navigation...
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      routeToken = `/${createdStoredSessionId}::`
+      // ...then the user genuinely switches to another chat during a later await.
+      activeSessionIdRef.current = RUNTIME_SESSION_B
+      selectedStoredSessionIdRef.current = STORED_SESSION_B
+      routeToken = `session:${STORED_SESSION_B}`
+
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const accepted = await handle!.submitText('must stay in the original draft', {
+      attachments: [{ id: 'image:first', kind: 'image', label: 'first.png', refText: '@image:first.png' }]
+    })
+
+    expect(accepted).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+  })
+
+  it('aborts when create returns its own binding but the UI has already selected another stored route', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = 'new-chat'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      selectedStoredSessionIdRef.current = STORED_SESSION_B
+      routeToken = `session:${STORED_SESSION_B}`
+
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('must not be rebound to B')).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+  })
+
+  it('aborts an ABA switch that returns to the same stored route with a new runtime binding', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const reboundRuntimeSessionId = 'rt-created-chat-rebound'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = 'new-chat'
+
+    let releaseAttach: () => void = () => {}
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      routeToken = `/${createdStoredSessionId}::`
+
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>, _timeout?: number) => ({}) as never)
+    const attachment = { id: 'image:first', kind: 'image' as const, label: 'first.png', path: 'C:/tmp/first.png' }
+
+    // Hold attachment sync open while the user switches B → original stored
+    // route, whose resume produces a different live runtime binding.
+    requestGateway.mockImplementation(async method => {
+      if (method === 'image.attach') {
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+
+        return { attached: true, path: attachment.path } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const submitting = handle!.submitText('must not use the stale runtime', { attachments: [attachment] })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach', expect.anything()))
+
+    activeSessionIdRef.current = RUNTIME_SESSION_B
+    selectedStoredSessionIdRef.current = STORED_SESSION_B
+    routeToken = `session:${STORED_SESSION_B}`
+    activeSessionIdRef.current = reboundRuntimeSessionId
+    selectedStoredSessionIdRef.current = createdStoredSessionId
+    routeToken = `session:${createdStoredSessionId}`
+    releaseAttach()
+
+    expect(await submitting).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
   })
 
   it('aborts submit when the user switches sessions during session.resume (no misroute)', async () => {
@@ -1856,9 +2309,13 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = 'rt-new-chat'
       selectedStoredSessionIdRef.current = 'stored-new-chat'
-      routeToken = '/stored-new-chat'
+      routeToken = '/stored-new-chat::'
 
-      return 'rt-new-chat'
+      return {
+        routeToken: '/stored-new-chat::',
+        runtimeSessionId: 'rt-new-chat',
+        storedSessionId: 'stored-new-chat'
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -1909,7 +2366,11 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       selectedStoredSessionIdRef.current = STORED_SESSION_B
       routeToken = `/${STORED_SESSION_B}`
 
-      return 'rt-new-chat'
+      return {
+        routeToken: '/stored-new-chat::',
+        runtimeSessionId: 'rt-new-chat',
+        storedSessionId: 'stored-new-chat'
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -1936,6 +2397,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
     $connection.set(null)
     $composerAttachments.set([])

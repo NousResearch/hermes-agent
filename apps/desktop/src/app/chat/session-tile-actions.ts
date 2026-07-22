@@ -133,7 +133,13 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     activeSessionIdRef: runtimeIdRef,
     busyRef,
     copy,
-    createBackendSessionForSend: async () => runtimeIdRef.current,
+    createBackendSessionForSend: async () => ({
+      // A tile always owns its live session; this fallback only satisfies the
+      // shared submit contract if a caller reaches the create seam.
+      routeToken: runtimeId,
+      runtimeSessionId: runtimeId,
+      storedSessionId: storedIdRef.current
+    }),
     getRoutedStoredSessionId: () => storedIdRef.current,
     getRuntimeIdForStoredSession: storedId => (storedId === storedIdRef.current ? runtimeIdRef.current : null),
     // A tile IS its session — no route to abandon, so the create-abort guard's

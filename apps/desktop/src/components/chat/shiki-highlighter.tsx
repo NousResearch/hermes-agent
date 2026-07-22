@@ -156,7 +156,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         />
       </CodeCardHeader>
       <CodeCardBody>
-        <ExpandableBlock>
+        <ExpandableBlock collapseAlign="end">
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
             {plain ? (
               <PlainCode code={trimmed} />

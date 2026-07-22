@@ -469,5 +469,45 @@ class TestBomHandling:
         assert raw == self.BOM.encode("utf-8") + b"import os, json\nimport sys\n"
 
 
+class TestCheckSensitivePathWindows:
+    """Verify _check_sensitive_path covers Windows system dirs — parity with the
+    macOS ``/private/etc`` coverage added in 311dac197. The POSIX prefixes never
+    match a Windows path, so before this the guard was a no-op on Windows."""
+
+    def test_windows_prefixes_derived_from_env(self, monkeypatch):
+        from tools.file_tools import _windows_system_path_prefixes
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setenv("SystemRoot", "D:\\Win")
+        monkeypatch.setenv("ProgramFiles", "D:\\Apps")
+        prefixes = _windows_system_path_prefixes()
+        assert "D:\\Win\\" in prefixes
+        assert "D:\\Apps\\" in prefixes
+
+    def test_no_windows_prefixes_off_windows(self, monkeypatch):
+        from tools.file_tools import _windows_system_path_prefixes
+        monkeypatch.setattr(os, "name", "posix")
+        assert _windows_system_path_prefixes() == ()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows system paths")
+    def test_windows_system32_blocked(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(r"C:\Windows\System32\drivers\etc\hosts") is not None
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows system paths")
+    def test_windows_block_is_case_insensitive(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(r"c:\windows\system32\config\SAM") is not None
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows system paths")
+    def test_windows_program_files_blocked(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(r"C:\Program Files\Hermes\x.dll") is not None
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows system paths")
+    def test_windows_user_file_allowed(self):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(r"C:\Users\me\notes.txt") is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

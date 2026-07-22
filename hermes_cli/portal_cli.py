@@ -176,16 +176,19 @@ def _cmd_login(args) -> int:
     commands stay in lockstep: device-code login, pick a Nous model, switch the
     inference provider to Nous, then offer the Tool Gateway opt-in.
     """
-    from hermes_cli.setup import _run_portal_one_shot
+    from hermes_cli.setup import _run_portal_one_shot, run_setup_with_metrics
 
     config = load_config() or {}
     try:
-        _run_portal_one_shot(config)
+        completed = run_setup_with_metrics(
+            "portal",
+            lambda: _run_portal_one_shot(config),
+        )
     except (KeyboardInterrupt, EOFError):
         print()
         print("Portal setup cancelled.")
         return 1
-    return 0
+    return 0 if completed else 1
 
 
 def portal_command(args) -> int:

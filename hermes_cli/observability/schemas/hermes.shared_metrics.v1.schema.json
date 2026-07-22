@@ -197,7 +197,7 @@
           "required": ["mode"],
           "properties": {
             "mode": {
-              "enum": ["full", "portal", "quick", "reset", "section", "unknown"]
+              "enum": ["full", "interactive", "portal", "quick", "reset", "section", "unknown"]
             }
           }
         },
@@ -227,7 +227,7 @@
               "enum": ["execution", "none", "unknown"]
             },
             "mode": {
-              "enum": ["full", "portal", "quick", "reset", "section", "unknown"]
+              "enum": ["full", "interactive", "portal", "quick", "reset", "section", "unknown"]
             },
             "outcome": {
               "enum": ["cancelled", "failed", "success"]

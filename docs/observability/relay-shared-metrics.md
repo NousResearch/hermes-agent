@@ -63,11 +63,14 @@ resources. Concurrent Hermes processes share the SQLite latch, so simultaneous
 starts cannot double-count one install. A later session or task can attempt the
 mark again, but the subscriber suppresses it until the rolling window expires.
 
-An opted-in `hermes setup` run emits `hermes.setup.started` and
+An opted-in `hermes setup` run, including the equivalent `hermes portal`
+onboarding entry point, emits `hermes.setup.started` and
 `hermes.setup.finished` marks through a short-lived Relay scope. The marks
 contain only a bounded setup mode, outcome, and failure stage; provider names,
-credentials, answers, and error text are never included. Setup that begins
-before shared-metrics consent is available is not recorded retroactively. This
+credentials, answers, and error text are never included. An unflagged setup
+invocation is classified as `interactive` because a new user chooses quick,
+full, or blank-slate setup after the lifecycle begins. Setup that begins before
+shared-metrics consent is available is not recorded retroactively. This
 preserves the rule that no telemetry identity or local state exists before the
 profile has explicitly enabled collection.
 

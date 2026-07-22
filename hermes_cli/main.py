@@ -2897,11 +2897,7 @@ def cmd_whatsapp_cloud(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
-    from hermes_cli.setup import run_setup_wizard
-    from hermes_cli.observability.relay_shared_metrics import (
-        finish_setup_lifecycle,
-        start_setup_lifecycle,
-    )
+    from hermes_cli.setup import run_setup_wizard, run_setup_with_metrics
 
     if bool(getattr(args, "portal", False)):
         mode = "portal"
@@ -2912,27 +2908,9 @@ def cmd_setup(args):
     elif bool(getattr(args, "quick", False)):
         mode = "quick"
     else:
-        mode = "full"
+        mode = "interactive"
 
-    attempt = start_setup_lifecycle(mode)
-    try:
-        completed = run_setup_wizard(args)
-    except BaseException as exc:
-        cancelled = isinstance(exc, (EOFError, KeyboardInterrupt)) or (
-            isinstance(exc, SystemExit) and exc.code in (None, 0, 130)
-        )
-        finish_setup_lifecycle(
-            attempt,
-            outcome="cancelled" if cancelled else "failed",
-            failure_stage="execution",
-        )
-        raise
-    else:
-        finish_setup_lifecycle(
-            attempt,
-            outcome="success" if completed is not False else "failed",
-            failure_stage="none" if completed is not False else "unknown",
-        )
+    run_setup_with_metrics(mode, lambda: run_setup_wizard(args))
 
 
 def cmd_postinstall(args):

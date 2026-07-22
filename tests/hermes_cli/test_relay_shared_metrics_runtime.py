@@ -354,8 +354,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     first_usable_marks = [
         event
         for event in direct_runtime.events
-        if event[0] == "scope.event"
-        and event[1] == "hermes.client.first_usable"
+        if event[0] == "scope.event" and event[1] == "hermes.client.first_usable"
     ]
     assert len(first_usable_marks) == 2
     assert all(mark[2]["data"] == {} for mark in first_usable_marks)
@@ -782,10 +781,10 @@ def test_real_binding_records_setup_command_failure_without_raw_error_data(
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     by_metric = {row["metric_name"]: row for row in store.counter_snapshot()}
-    assert by_metric["hermes.setup.started"]["dimensions"] == {"mode": "full"}
+    assert by_metric["hermes.setup.started"]["dimensions"] == {"mode": "interactive"}
     assert by_metric["hermes.setup.finished"]["dimensions"] == {
         "failure_stage": "unknown",
-        "mode": "full",
+        "mode": "interactive",
         "outcome": "failed",
     }
     packages = [

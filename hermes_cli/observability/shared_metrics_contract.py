@@ -234,6 +234,7 @@ CLIENT_RESOURCE_KEYS: frozenset[str] = frozenset({
 })
 SETUP_MODES: frozenset[str] = frozenset({
     "full",
+    "interactive",
     "portal",
     "quick",
     "reset",

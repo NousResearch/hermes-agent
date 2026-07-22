@@ -19,7 +19,7 @@ import shutil
 import sys
 import copy
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -2611,6 +2611,39 @@ SETUP_SECTIONS = [
 ]
 
 
+def run_setup_with_metrics(
+    mode: str,
+    operation: Callable[[], bool | None],
+) -> bool:
+    """Run one setup entry point with a single terminal metrics outcome."""
+    from hermes_cli.observability.relay_shared_metrics import (
+        finish_setup_lifecycle,
+        start_setup_lifecycle,
+    )
+
+    attempt = start_setup_lifecycle(mode)
+    try:
+        completed = operation()
+    except BaseException as exc:
+        cancelled = isinstance(exc, (EOFError, KeyboardInterrupt)) or (
+            isinstance(exc, SystemExit) and exc.code in (None, 0, 130)
+        )
+        finish_setup_lifecycle(
+            attempt,
+            outcome="cancelled" if cancelled else "failed",
+            failure_stage="execution",
+        )
+        raise
+
+    succeeded = completed is not False
+    finish_setup_lifecycle(
+        attempt,
+        outcome="success" if succeeded else "failed",
+        failure_stage="none" if succeeded else "unknown",
+    )
+    return succeeded
+
+
 def _run_portal_one_shot(config: dict) -> bool:
     """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
 
@@ -2878,8 +2911,7 @@ def run_setup_wizard(args) -> bool:
         )
 
         if setup_mode == 0:
-            _run_first_time_quick_setup(config, hermes_home, is_existing)
-            return True
+            return _run_first_time_quick_setup(config, hermes_home, is_existing)
         if setup_mode == 2:
             _run_blank_slate_setup(config, hermes_home, is_existing)
             return True
@@ -2931,7 +2963,11 @@ def run_setup_wizard(args) -> bool:
     return True
 
 
-def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
+def _run_first_time_quick_setup(
+    config: dict,
+    hermes_home,
+    is_existing: bool,
+) -> bool:
     """Streamlined first-time setup via Nous Portal: OAuth, model, terminal & messaging.
 
     Routes straight to the Nous Portal provider — runs the device-code OAuth
@@ -2952,13 +2988,16 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print_info("  web search, image generation, TTS, browser automation.")
     print_info("Sign up: https://portal.nousresearch.com/manage-subscription")
     print()
+    portal_succeeded = True
     try:
         from hermes_cli.main import _model_flow_nous
         _model_flow_nous(config)
     except (KeyboardInterrupt, EOFError):
+        portal_succeeded = False
         print()
         print_info("Nous Portal setup cancelled.")
     except Exception as exc:
+        portal_succeeded = False
         logger.debug("_model_flow_nous error during quick setup: %s", exc)
         print_warning(f"Nous Portal setup encountered an error: {exc}")
         print_info("You can try again later with: hermes model")
@@ -3002,6 +3041,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print()
 
     _print_setup_summary(config, hermes_home)
+    return portal_succeeded
 
 
 def _blank_slate_minimal_toolsets(config: dict):

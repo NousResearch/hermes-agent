@@ -268,6 +268,67 @@ def _normalize_assignee_choice(
     return chosen
 
 
+def _review_policy(cfg: object) -> dict:
+    """Return the ``kanban.auto_review`` policy dict, or ``{}`` when unset.
+
+    Shape: ``{"review_roles": [...], "reviewer": "<profile>"}``. Missing or
+    malformed config returns ``{}`` so callers treat review-pairing as
+    disabled (opt-in).
+    """
+    kanban_cfg = (cfg or {}).get("kanban", {}) if isinstance(cfg, dict) else {}
+    policy = kanban_cfg.get("auto_review")
+    if not isinstance(policy, dict):
+        return {}
+    roles = policy.get("review_roles")
+    reviewer = policy.get("reviewer")
+    if not isinstance(roles, list) or not isinstance(reviewer, str):
+        return {}
+    clean_roles = [str(r).strip() for r in roles if str(r).strip()]
+    reviewer = reviewer.strip()
+    if not clean_roles or not reviewer:
+        return {}
+    return {"review_roles": clean_roles, "reviewer": reviewer}
+
+
+def _pair_review_tasks(children: list[dict], policy: dict) -> list[dict]:
+    """Append a reviewer task for each impl child whose assignee is a review role.
+
+    Pure transform: takes the built ``children`` list (each a dict with
+    ``title``/``body``/``assignee``/``parents`` where parents are indices into
+    this list) and returns a NEW list with review children appended. Each
+    review child is gated behind its impl child via ``parents=[impl_index]``.
+    Review children are appended AFTER all impl children so every pre-existing
+    parent index stays valid.
+
+    Empty/None ``policy`` (or missing reviewer/roles) returns ``children``
+    unchanged. A child already assigned to the reviewer is never paired
+    (no review of a review).
+    """
+    if not policy:
+        return children
+    review_roles = set(policy.get("review_roles") or [])
+    reviewer = (policy.get("reviewer") or "").strip()
+    if not review_roles or not reviewer:
+        return children
+    out = list(children)
+    for idx, child in enumerate(children):
+        assignee = child.get("assignee")
+        if assignee == reviewer or assignee not in review_roles:
+            continue
+        out.append({
+            "title": f"review: {child.get('title', '')}".strip()[:200],
+            "body": (
+                "Review the work produced by the parent task. Read the diff for "
+                "correctness, run its tests and confirm they pass, and verify the "
+                "work matches the task spec. Approve, or send it back with precise "
+                "change requests."
+            ),
+            "assignee": reviewer,
+            "parents": [idx],
+        })
+    return out
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -428,6 +489,11 @@ def decompose_task(
             "assignee": chosen,
             "parents": clean_parents,
         })
+
+    # Policy-gated review pairing: append a reviewer task behind each impl
+    # child whose role is in kanban.auto_review.review_roles. No-op when the
+    # policy is unset (opt-in).
+    children = _pair_review_tasks(children, _review_policy(cfg))
 
     try:
         with kb.connect_closing() as conn:

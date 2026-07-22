@@ -4635,6 +4635,61 @@ def complete_task(
     return True
 
 
+def submit_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running -> review`` so the dispatcher spawns a review agent.
+
+    The producer side of the review flow: a worker that has finished its
+    implementation calls this to hand the task to a reviewer instead of
+    completing it directly. The review consumer (review-column dispatch) already
+    exists; the task keeps its worktree so the review agent sees the diff.
+    Clears ``claim_lock`` / ``claim_expires`` / ``worker_pid`` so the review
+    dispatcher can claim it.
+
+    ``expected_run_id`` guards against a stale worker: when provided, the
+    transition only fires if the task's ``current_run_id`` still matches, so a
+    slow/abandoned run cannot move a newer retry's run to review. Mirrors the
+    ``complete_task`` stale-run contract. Returns True on success, False if the
+    task is not currently running (or the run id no longer matches).
+    """
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "submitted_for_review", {"run_id": expected_run_id})
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------

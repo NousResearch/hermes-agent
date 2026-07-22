@@ -677,6 +677,40 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(f"kanban_complete: {e}")
 
 
+def _handle_submit_review(args: dict, **kw) -> str:
+    """Hand the current running task to a reviewer (running -> review)."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.submit_review_task(
+                conn, tid, expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not submit {tid} for review (not running, or a "
+                    f"newer run has superseded this one)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, status="review",
+                       run_id=run.id if run else None)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_submit_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_submit_review failed")
+        return tool_error(f"kanban_submit_review: {e}")
+
+
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     tid = _default_task_id(args.get("task_id"))
@@ -1521,6 +1555,29 @@ KANBAN_COMPLETE_SCHEMA = {
     },
 }
 
+KANBAN_SUBMIT_REVIEW_SCHEMA = {
+    "name": "kanban_submit_review",
+    "description": (
+        "Hand your current task to a reviewer instead of completing it "
+        "yourself. Transitions the task from running to review and keeps its "
+        "worktree so the review agent sees your diff. Use this when your "
+        "implementation is done and should be checked (diff + tests + spec) "
+        "before it counts as complete. If no review is needed, call "
+        "kanban_complete directly."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
@@ -1946,6 +2003,15 @@ registry.register(
     handler=_handle_complete,
     check_fn=_check_kanban_mode,
     emoji="✔",
+)
+
+registry.register(
+    name="kanban_submit_review",
+    toolset="kanban",
+    schema=KANBAN_SUBMIT_REVIEW_SCHEMA,
+    handler=_handle_submit_review,
+    check_fn=_check_kanban_mode,
+    emoji="🔍",
 )
 
 registry.register(

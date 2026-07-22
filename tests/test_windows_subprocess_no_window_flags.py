@@ -289,6 +289,83 @@ def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
     assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
 
 
+def test_bounded_captured_run_fast_path_spawn_contract_windows(monkeypatch):
+    """``bounded_captured_run`` keeps PIPE/PIPE/DEVNULL + hide flags on Windows."""
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("ok\n", "warn\n")
+
+        def kill(self):  # pragma: no cover
+            raise AssertionError("kill() must not run when the child returns in time")
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _FakePopen)
+
+    result = _subprocess_compat.bounded_captured_run(
+        ["bash", "--noprofile", "--norc", "-c", "true"], timeout=15
+    )
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert result.stderr == "warn\n"
+    assert len(spawns) == 1
+    _cmd, kwargs = spawns[0]
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_bounded_captured_run_timeout_tree_kills_on_windows(monkeypatch):
+    """Timeout path must tree-kill + bounded drain, returning returncode=-1."""
+    from hermes_cli import _subprocess_compat
+
+    events = []
+    taskkills = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = None
+            self.pid = 5150
+
+        def communicate(self, timeout=None):
+            events.append(f"comm:{timeout}")
+            if timeout != 1:
+                raise subprocess.TimeoutExpired(cmd="bash", timeout=timeout)
+            return ("", "")
+
+        def kill(self):
+            events.append("kill")
+
+    def fake_run(cmd, **kwargs):
+        taskkills.append((cmd, kwargs))
+        return _Completed()
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _HangingPopen)
+    monkeypatch.setattr(_subprocess_compat.subprocess, "run", fake_run)
+
+    result = _subprocess_compat.bounded_captured_run(["bash", "-c", "true"], timeout=15)
+    assert result.returncode == -1
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert events == ["comm:15", "kill", "comm:1"]
+    kills = [c for c, _ in taskkills if c and c[0] == "taskkill"]
+    assert kills == [["taskkill", "/T", "/F", "/PID", "5150"]], taskkills
+
+
 def test_tui_gateway_git_probe_delegates_to_bounded_probe(monkeypatch):
     """run_git wires cwd/args through the shared bounded helper (hidden-window
     flags reach the spawn on Windows) and preserves its own timeout."""

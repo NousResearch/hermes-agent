@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_captured_run, windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -804,12 +804,14 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
-        result = subprocess.run(
+        # Same Windows post-timeout deadlock class as git probes: bash -c
+        # spawns MSYS ``true``/``cat`` children; ``subprocess.run(timeout=)``
+        # can hang forever in unbounded post-kill communicate(). Use the
+        # shared bounded Popen + tree-kill + 1s drain helper instead.
+        # stdin=DEVNULL is part of that contract (ACP/TUI JSON-RPC hosts).
+        result = bounded_captured_run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
-            text=True,
             timeout=15,
-            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
         ok = result.returncode == 0
         if not ok:

@@ -49,7 +49,9 @@ import json
 import logging
 import os
 import sys
+from importlib.metadata import version as distribution_version
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +151,122 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+class _FastMCP126SchemaAdapter:
+    """Install authoritative schemas on FastMCP 1.26's internal Tools.
+
+    FastMCP 1.26.0 has no public API for registering a callable with an
+    independent JSON Schema. Keep the unavoidable private access here and fail
+    closed if either the exact reviewed SDK version or its internal shape
+    changes. Calls are validated with the same schema that ``tools/list``
+    advertises; Pydantic only bridges the validated flat object to the existing
+    ``**kwargs`` Hermes dispatcher.
+    """
+
+    _SUPPORTED_VERSION = "1.26.0"
+
+    def __init__(self, server: Any) -> None:
+        installed = distribution_version("mcp")
+        if installed != self._SUPPORTED_VERSION:
+            raise RuntimeError(
+                "Hermes authoritative MCP schema adapter requires "
+                f"mcp=={self._SUPPORTED_VERSION}; found {installed}. "
+                "Re-review FastMCP's explicit-schema API and Tool internals "
+                "before changing the project pin."
+            )
+
+        manager = getattr(server, "_tool_manager", None)
+        get_tool = getattr(manager, "get_tool", None)
+        if manager is None or not callable(get_tool):
+            raise RuntimeError(
+                "mcp==1.26.0 compatibility failure: expected "
+                "FastMCP._tool_manager.get_tool"
+            )
+        self._get_tool = get_tool
+
+    def install(self, tool_name: str, schema: dict[str, Any]) -> None:
+        """Advertise and enforce ``schema`` on one registered FastMCP Tool."""
+        from jsonschema import FormatChecker, validators
+        from pydantic import ConfigDict, model_validator
+
+        # Private import is deliberately confined to this pinned-version adapter.
+        from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
+
+        registered_tool: Any = self._get_tool(tool_name)
+        metadata = getattr(registered_tool, "fn_metadata", None)
+        if (
+            registered_tool is None
+            or not isinstance(getattr(registered_tool, "parameters", None), dict)
+            or metadata is None
+            or not hasattr(metadata, "arg_model")
+        ):
+            raise RuntimeError(
+                "mcp==1.26.0 compatibility failure: registered Tool must expose "
+                "mutable parameters and fn_metadata.arg_model "
+                f"({tool_name!r})"
+            )
+
+        validator_type = validators.validator_for(schema)
+        validator_type.check_schema(schema)
+        format_checker = FormatChecker()
+
+        # jsonschema's RFC URI checker is an optional extra and is absent from
+        # mcp==1.26.0's dependency set. Register the minimum protocol-relevant
+        # check explicitly so advertised ``format: uri`` constraints are not
+        # silently ignored on a standard Hermes installation.
+        @format_checker.checks("uri")
+        def _is_uri(value: object) -> bool:
+            if not isinstance(value, str):
+                return True
+            parsed = urlsplit(value)
+            return bool(parsed.scheme) and not any(char.isspace() for char in value)
+
+        validator = validator_type(schema, format_checker=format_checker)
+
+        class _ValidatedHermesArguments(ArgModelBase):
+            model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
+            @model_validator(mode="before")
+            @classmethod
+            def _validate_authoritative_schema(cls, value: Any) -> Any:
+                error = next(validator.iter_errors(value), None)
+                if error is None:
+                    return value
+                path = "$" + "".join(
+                    f"[{part}]" if isinstance(part, int) else f".{part}"
+                    for part in error.absolute_path
+                )
+                raise ValueError(
+                    f"{tool_name} arguments fail JSON Schema at {path}: {error.message}"
+                )
+
+            def model_dump_one_level(self) -> dict[str, Any]:
+                return dict(self.__pydantic_extra__ or {})
+
+        try:
+            registered_tool.parameters = schema
+            metadata.arg_model = _ValidatedHermesArguments
+        except Exception as exc:
+            raise RuntimeError(
+                "mcp==1.26.0 compatibility failure: could not install Tool "
+                f"schema/argument model ({tool_name!r})"
+            ) from exc
+        if (
+            registered_tool.parameters != schema
+            or metadata.arg_model is not _ValidatedHermesArguments
+        ):
+            raise RuntimeError(
+                "mcp==1.26.0 compatibility failure: Tool schema/argument model "
+                f"mutation did not stick ({tool_name!r})"
+            )
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
     (we degrade to a clear error only when actually run)."""
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.types import CallToolResult, TextContent
     except ImportError as exc:  # pragma: no cover - install hint
         raise ImportError(
             f"hermes-tools MCP server requires the 'mcp' package: {exc}"
@@ -177,6 +289,37 @@ def _build_server() -> Any:
         ),
     )
 
+    def _convert_result(result: Any) -> Any:
+        """Translate Hermes' JSON-string convention to MCP result semantics."""
+        if isinstance(result, CallToolResult):
+            return result
+
+        decoded = result
+        if isinstance(result, str):
+            try:
+                decoded = json.loads(result)
+            except (json.JSONDecodeError, TypeError):
+                return result
+
+        if isinstance(decoded, dict):
+            # structuredContent must be JSON-native. Normalize native Hermes
+            # values (for example datetimes) while preserving Unicode.
+            normalized = json.loads(
+                json.dumps(decoded, ensure_ascii=False, default=str)
+            )
+            text = (
+                result
+                if isinstance(result, str)
+                else json.dumps(normalized, ensure_ascii=False)
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=text)],
+                structuredContent=normalized,
+                isError="error" in decoded,
+            )
+
+        return result
+
     # Pull authoritative Hermes tool schemas for the ones we expose, so
     # MCP clients see the same parameter docs Hermes gives the model.
     all_defs = {
@@ -184,56 +327,49 @@ def _build_server() -> Any:
         for td in (get_tool_definitions(quiet_mode=True) or [])
         if isinstance(td, dict) and td.get("type") == "function"
     }
+    schema_adapter = _FastMCP126SchemaAdapter(mcp)
 
     exposed_count = 0
 
     for name in EXPOSED_TOOLS:
         spec = all_defs.get(name)
         if spec is None:
-            logger.debug(
-                "skipping %s — not registered in this Hermes process", name
-            )
+            logger.debug("skipping %s — not registered in this Hermes process", name)
             continue
 
         description = spec.get("description") or f"Hermes {name} tool"
-        params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
+        params_schema = spec.get("parameters")
+        if not isinstance(params_schema, dict):
+            raise RuntimeError(
+                f"Hermes tool {name!r} has no authoritative object JSON Schema"
+            )
 
         # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
-        def _make_handler(tool_name: str, schema: dict | None):
-            sig, annots = _signature_from_schema(schema)
-
-            def _dispatch(**kwargs: Any) -> str:
+        # arguments dict and dispatches through Hermes. The SDK initially
+        # inspects this callable, then we replace that synthetic argument model
+        # and schema with validating pass-through plumbing plus Hermes'
+        # authoritative JSON Schema. This avoids lossy
+        # JSON-Schema-to-Python-signature translation.
+        def _make_handler(tool_name: str, tool_description: str) -> Any:
+            def _dispatch(**kwargs: Any) -> Any:
                 try:
-                    # Filter out None values before dispatch so unset optionals
-                    # aren't forwarded to the handler.
-                    args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    result = handle_function_call(tool_name, kwargs or {})
+                    return _convert_result(result)
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
-                    return json.dumps({"error": str(exc), "tool": tool_name})
+                    return _convert_result({"error": str(exc), "tool": tool_name})
 
             _dispatch.__name__ = tool_name
-            _dispatch.__doc__ = description
-            _dispatch.__signature__ = sig
-            _dispatch.__annotations__ = {**annots, "return": str}
+            _dispatch.__doc__ = tool_description
             return _dispatch
 
-        try:
-            mcp.add_tool(
-                _make_handler(name, params_schema),
-                name=name,
-                description=description,
-            )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style. The
-            # synthesized __signature__ on the handler still drives schema
-            # generation there.
-            handler = _make_handler(name, params_schema)
-            handler = mcp.tool(name=name, description=description)(handler)
+        mcp.add_tool(
+            _make_handler(name, description),
+            name=name,
+            description=description,
+        )
+
+        schema_adapter.install(name, params_schema)
 
         exposed_count += 1
 
@@ -263,7 +399,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         server = _build_server()
-    except ImportError as exc:
+    except (ImportError, RuntimeError) as exc:
         sys.stderr.write(f"hermes-tools MCP server cannot start: {exc}\n")
         return 2
 

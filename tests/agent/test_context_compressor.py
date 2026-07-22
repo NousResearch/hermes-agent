@@ -125,7 +125,15 @@ class TestPreflightDeferral:
         compressor.last_rough_tokens_when_real_prompt_fit = 90_000
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is True
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 93_000
+
+    def test_incremental_growth_is_cumulative_from_provider_proven_baseline(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(93_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
+        assert compressor.should_defer_preflight_to_real_usage(96_000) is False
 
     def test_does_not_defer_when_rough_growth_is_large(self, compressor):
         compressor.threshold_tokens = 85_000

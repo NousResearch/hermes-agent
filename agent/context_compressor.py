@@ -1804,7 +1804,10 @@ class ContextCompressor(ContextEngine):
         if growth > tolerated_growth:
             return False
 
-        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
+        # Keep the provider-proven baseline fixed until the next real usage
+        # update. Advancing it on every deferred preflight lets many small tool
+        # results ratchet rough pressure upward forever without ever crossing
+        # the cumulative-growth guard.
         return True
 
     def should_compress(self, prompt_tokens: int = None) -> bool:

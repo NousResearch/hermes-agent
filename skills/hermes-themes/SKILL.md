@@ -41,26 +41,33 @@ editors or ship built-in presets.
 3. `write_file` it to `<hermes-home>/skins/<name>.yaml`.
 4. Activate it (see Procedure). Confirm the change landed.
 
-## Quick Reference
+## Quick Reference — element → key
 
-Load-bearing color keys (hex, `#rrggbb`). The desktop GUI derives its whole
-palette from these; the TUI and CLI read the terminal-oriented ones directly.
+Hex (`#rrggbb`). Theming is **semantic**: one key colors every element that plays
+that role, so match the element to its key. To recolor a specific element, set the
+key in its row (element-specific keys fall back to the shared one when unset).
 
-| Key | Drives |
-|---|---|
-| `background` | Base surface. Paints the whole TUI (OSC 11) + seeds the GUI. Set it. |
-| `ui_accent` / `banner_accent` | Brand accent: buttons, rings, primary. |
-| `banner_title` | Headings / primary text. |
-| `banner_text` / `ui_text` | Body foreground. |
-| `banner_border` / `ui_border` | Borders. |
-| `banner_dim` | Muted / secondary text. |
-| `ui_ok` / `ui_warn` / `ui_error` | Semantic status colors. |
-| `status_bar_bg` / `status_bar_text` | TUI status bar. |
-| `response_border` | CLI response box. |
+| Visible element | Key to set | Falls back to |
+|---|---|---|
+| App background (whole TUI + GUI) | `background` | terminal default |
+| **Tool-call marker** (`●`, tool spinner) | `ui_tool` | `ui_accent` |
+| **Thinking / reasoning text** | `ui_thinking` | `banner_dim` |
+| Accent — headings, links, chevrons, `Σ` | `ui_accent` / `banner_accent` | — |
+| Heading / primary text | `banner_title` / `ui_primary` | — |
+| Body / label text, user messages | `ui_text` / `banner_text`, `ui_label` | — |
+| Muted / secondary, tree connectors | `banner_dim` | — |
+| Borders, rules, gutters | `ui_border` / `banner_border` | — |
+| Prompt symbol color | `prompt` | `banner_text` |
+| Success / warn / error | `ui_ok` / `ui_warn` / `ui_error` | — |
+| Status bar text + usage | `status_bar_text`, `status_bar_good/warn/bad/critical` | — |
+| Diff add/remove (line + word) | `diff_added` / `diff_removed` / `diff_added_word` / `diff_removed_word` | built-in |
+| Completion menu | `completion_menu_bg` / `completion_menu_current_bg` / `…_meta_bg` | — |
 
-`branding` (`agent_name`, `welcome`, `goodbye`, `prompt_symbol`, `help_header`),
-`spinner` (faces/verbs/wings), and `tool_prefix` are optional flavor. See the
-full schema in `hermes_cli/skin_engine.py`.
+Note the sharing: `ui_accent` colors tool markers **and** headings/links/chevrons,
+so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_tool`.
+`branding` (`agent_name`, `prompt_symbol`, `welcome`, `goodbye`, `help_header`),
+`spinner`, and `tool_prefix` are optional flavor; full schema in
+`hermes_cli/skin_engine.py`.
 
 ## Procedure
 

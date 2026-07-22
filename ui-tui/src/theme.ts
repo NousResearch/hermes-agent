@@ -18,6 +18,11 @@ export interface ThemeColors {
   error: string
   warn: string
 
+  /** Tool-call markers (● bullet, tool spinner). Defaults to `accent`. */
+  tool: string
+  /** Reasoning/thinking body text. Defaults to `muted`. */
+  thinking: string
+
   prompt: string
   sessionLabel: string
   sessionBorder: string
@@ -82,10 +87,11 @@ const ANSI_NORMALIZED_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'statusWarn',
   'statusBad',
   'statusCritical',
-  'shellDollar'
+  'shellDollar',
+  'tool'
 ]
 
-const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder']
+const ANSI_MUTED_FOREGROUNDS: readonly (keyof ThemeColors)[] = ['muted', 'sessionLabel', 'sessionBorder', 'thinking']
 
 function xtermEightBitRgb(colorNumber: number): [number, number, number] {
   if (colorNumber >= 232) {
@@ -298,6 +304,11 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     ok: seeds.ok,
     error: seeds.error,
     warn: seeds.warn,
+
+    // Element tokens: independently settable, but default to their semantic
+    // parents (tool marker → accent, reasoning body → muted).
+    tool: seeds.accent,
+    thinking: muted,
 
     prompt: seeds.prompt ?? seeds.text,
     // sessionLabel/sessionBorder track the muted tone — "same role, same
@@ -836,7 +847,15 @@ export function fromSkin(
     sessionBorder: c('session_border') ?? c('banner_dim') ?? derived.sessionBorder,
     statusBg: c('status_bar_bg') ?? surface,
     statusFg: c('status_bar_text') ?? derived.statusFg,
-    selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? derived.selectionBg
+    selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? derived.selectionBg,
+    // Element tokens + skinnable diffs (theme-sdk): overridable, else the
+    // derived defaults (tool→accent, thinking→muted, diff_* → DIFF_* ladder).
+    tool: c('ui_tool') ?? derived.tool,
+    thinking: c('ui_thinking') ?? derived.thinking,
+    diffAdded: c('diff_added') ?? derived.diffAdded,
+    diffRemoved: c('diff_removed') ?? derived.diffRemoved,
+    diffAddedWord: c('diff_added_word') ?? derived.diffAddedWord,
+    diffRemovedWord: c('diff_removed_word') ?? derived.diffRemovedWord
   }
 
   // 4. Guard: contrast floors against the real background + fill polarity.
@@ -851,11 +870,12 @@ export function fromSkin(
   return normalizeThemeForAnsiLightTerminal(
     {
       // The element tokens theme-sdk introduced (ui_primary, ui_text,
-      // ui_border, ui_ok/warn/error, shell_dollar, status_bar_*) are read
-      // above into `seeds` and flow through buildPalette → adaptColorsToBackground,
-      // so `adapted` already honors them AND applies #20379's contrast/polarity
-      // machinery. Emitting a hand-mapped color block here would bypass that
-      // adaptation and regress theme quality.
+      // ui_border, ui_ok/warn/error, ui_tool, ui_thinking, shell_dollar,
+      // status_bar_*, diff_*) are read into `seeds`/`assembled` above and
+      // flow through buildPalette → adaptColorsToBackground, so `adapted`
+      // already honors them AND applies #20379's contrast/polarity machinery.
+      // Emitting a hand-mapped color block here would bypass that adaptation
+      // and regress theme quality.
       color: adapted,
 
       brand: {

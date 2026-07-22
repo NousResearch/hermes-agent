@@ -176,6 +176,24 @@ async def test_queue_preserves_reply_context():
 
 
 @pytest.mark.asyncio
+async def test_queue_preserves_channel_context_file():
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+
+    event = MessageEvent(
+        text="/queue start with channel state",
+        source=_make_source(),
+        message_id="q-context",
+        channel_context_file="/tmp/channel-state.md",
+    )
+    result = await runner._handle_message(event)
+
+    assert result is not None and "queued" in result.lower()
+    queued = adapter._pending_messages[sk]
+    assert queued.channel_context_file == "/tmp/channel-state.md"
+
+
+@pytest.mark.asyncio
 async def test_queue_no_text_no_media_returns_usage():
     runner, adapter = _make_runner(_session_entry())
     _running(runner)

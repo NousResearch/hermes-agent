@@ -9852,8 +9852,19 @@ class TestMiniAppAdminOnlyMutatingEndpoints:
         assert "555001122" not in remaining.split(",")
         assert "42" in remaining.split(",")
 
-    def test_allowlist_merges_pairing_store_and_env_only_entries(self, monkeypatch):
+    def test_allowlist_merges_pairing_store_and_env_only_entries(self, monkeypatch, tmp_path):
+        import gateway.pairing as pairing_mod
         from gateway.pairing import PairingStore
+
+        # gateway.pairing.PAIRING_DIR is a module-level constant captured at
+        # import time from whichever HERMES_HOME was active then -- the
+        # _isolate_hermes_home fixture's per-test HERMES_HOME redirection
+        # doesn't retroactively move it (see
+        # tests/gateway/test_internal_event_bypass_pairing.py for the same
+        # note). Without this override, PairingStore() below writes into
+        # the real, live ~/.hermes/platforms/pairing/telegram-approved.json
+        # instead of an isolated tmp dir.
+        monkeypatch.setattr(pairing_mod, "PAIRING_DIR", tmp_path)
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88121904")
         store = PairingStore()

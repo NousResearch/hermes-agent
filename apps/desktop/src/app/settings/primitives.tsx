@@ -28,32 +28,40 @@ export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VA
   return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
 }
 
-export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {
+export function SectionHeading({
+  aside,
+  icon: Icon,
+  meta,
+  title
+}: {
+  // Right-aligned trailing content on the heading row (e.g. a compact status +
+  // action), so a single-item section needn't repeat its own label as a row.
+  aside?: ReactNode
+  icon: IconComponent
+  meta?: string
+  title: string
+}) {
   return (
     <div className="mb-2.5 flex items-center gap-2 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-      <Icon className="size-4 text-muted-foreground" />
+      <Icon className="size-4 shrink-0 text-muted-foreground" />
       <span>{title}</span>
       {meta && <Pill>{meta}</Pill>}
+      {aside && <div className="ml-auto flex min-w-0 items-center">{aside}</div>}
     </div>
   )
-}
-
-// The canonical settings surface: a soft-bordered muted well. Callers own the
-// inner padding (a `divide-y` list wants none; a single block wants `p-4`) so the
-// one container styling stays consistent across every settings page.
-export function SettingsCard({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('rounded-xl border border-border/70 bg-muted/20', className)}>{children}</div>
 }
 
 // A titled section: heading + body with the shared vertical rhythm. Keeps the
 // heading and its content welded together so pages stop hand-rolling
 // `<div className="mb-…"><SectionHeading/>…</div>` at every call site.
 export function SettingsSection({
+  aside,
   children,
   icon,
   meta,
   title
 }: {
+  aside?: ReactNode
   children: ReactNode
   icon: IconComponent
   meta?: string
@@ -61,7 +69,7 @@ export function SettingsSection({
 }) {
   return (
     <section className="mb-6">
-      <SectionHeading icon={icon} meta={meta} title={title} />
+      <SectionHeading aside={aside} icon={icon} meta={meta} title={title} />
       {children}
     </section>
   )

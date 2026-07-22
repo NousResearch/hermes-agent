@@ -3,12 +3,13 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
-import { ListRow, SectionHeading, SettingsCard, SettingsContent, SettingsSection } from '../primitives'
+import { ListRow, SectionHeading, SettingsContent, SettingsSection } from '../primitives'
 
 import { RowValue } from './account-row-value'
 import { BillingApiProvider } from './api'
@@ -45,6 +46,16 @@ const BILLING_DEV_FIXTURE_NAMES = import.meta.env.DEV
 
 type BillingFixtureSelection = 'live' | BillingDevFixtureName
 
+// DEV-only: a canned ~60%-full "ok" bar so the active progress-bar treatment can be
+// eyeballed on any account (a live/empty account only ever shows the hatch track).
+const DEV_PREVIEW_USAGE_ROW: BillingUsageRowView = {
+  bar: { label: 'Example usage (dev preview)', state: 'ok', tone: 'subscription', value: 0.62 },
+  caption: 'Preview only — dev build',
+  id: 'subscription_credits',
+  title: 'Example bar (dev preview)',
+  value: '$62 of $100 left'
+}
+
 function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | 'primary'; value: string }) {
   return (
     <div className="min-w-0">
@@ -65,16 +76,11 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
   const warn = notice.tone === 'warn'
 
   return (
-    <div
-      className={cn(
-        'mb-6 rounded-xl border p-4',
-        warn ? 'border-amber-500/30 bg-amber-500/5' : 'border-border/70 bg-muted/20'
-      )}
-    >
+    <div className={cn('mb-6 rounded-xl p-4', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}>
       <div
         className={cn(
           'text-[length:var(--conversation-text-font-size)] font-medium',
-          warn ? 'text-amber-600 dark:text-amber-300' : 'text-foreground'
+          warn ? 'text-(--ui-yellow)' : 'text-foreground'
         )}
       >
         {notice.title}
@@ -92,6 +98,31 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
         >
           {notice.action.label}
           <ExternalLink className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// The payment method as it rides in the "Payment & credits" heading: the current
+// card (muted) plus a single underline text action (Update / Add payment method).
+function PaymentMethodAside({ row }: { row: BillingAccountRowView }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2.5">
+      {row.value && (
+        <span className="min-w-0 truncate text-[length:var(--conversation-caption-font-size)] font-normal text-(--ui-text-tertiary)">
+          {row.value}
+        </span>
+      )}
+      {row.action && (
+        <Button
+          disabled={row.action.disabled}
+          onClick={row.action.url ? () => openExternal(row.action?.url) : undefined}
+          size="sm"
+          type="button"
+          variant="textStrong"
+        >
+          {row.action.label}
         </Button>
       )}
     </div>
@@ -155,22 +186,15 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
     <ListRow
       action={
         <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
-          {presets.map(preset => (
-            <Button
-              aria-pressed={amount === preset.amount}
-              disabled={controlsDisabled}
-              key={preset.amount}
-              onClick={() => setAmount(preset.amount)}
-              size="sm"
-              type="button"
-              variant={amount === preset.amount ? 'default' : 'outline'}
-            >
-              {preset.label}
-            </Button>
-          ))}
+          <SegmentedControl
+            disabled={controlsDisabled}
+            onChange={value => setAmount(value)}
+            options={presets.map(preset => ({ id: preset.amount, label: preset.label }))}
+            value={amount}
+          />
           <Input
             aria-label="Custom credit amount"
-            className="w-24 py-[3px]"
+            containerClassName="w-20"
             disabled={controlsDisabled}
             inputMode="decimal"
             max={billing.max_usd ?? undefined}
@@ -180,13 +204,14 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
               flow.reset()
               setAmount(event.target.value)
             }}
-            placeholder={billing.min_usd ? formatMoney(billing.min_usd) : '$'}
-            size="sm"
+            placeholder={billing.min_usd ?? ''}
+            prefix="$"
+            size="xs"
             step="0.01"
             type="number"
             value={amount}
           />
-          <Button disabled={!canBuy} onClick={startBuy} size="sm" type="button" variant="outline">
+          <Button disabled={!canBuy} onClick={startBuy} size="xs" type="button" variant="secondary">
             Buy
           </Button>
         </div>
@@ -311,8 +336,9 @@ function UsageBar({ bar, fallbackLabel }: { bar?: BillingUsageRowView['bar']; fa
         resolvedBar.track === 'danger'
           ? 'dither text-destructive/60 bg-destructive/10'
           : isEmpty
-            ? 'dither bg-(--ui-bg-elevated)'
-            : 'bg-muted shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ui-stroke-secondary)_50%,transparent)]'
+            ? // Muted currentColor so the hatch reads as a faint placeholder, not solid ink.
+              'dither text-(--ui-text-quaternary) bg-(--ui-bg-elevated)'
+            : 'bg-(--ui-bg-tertiary) shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ui-stroke-secondary)_50%,transparent)]'
       )}
       role="progressbar"
     >
@@ -381,7 +407,7 @@ function BillingFixtureSelect({
       <Select onValueChange={value => onValueChange(value as BillingFixtureSelection)} value={value}>
         <SelectTrigger
           aria-label="Billing preview fixture (dev only)"
-          className="h-7 w-36 border-dashed border-(--ui-stroke-secondary) bg-transparent px-2 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-muted/40 focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-muted/40"
+          className="h-7 w-36 border-dashed border-(--ui-stroke-secondary) bg-transparent px-2 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-(--ui-bg-tertiary) focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-(--ui-bg-tertiary)"
           size="sm"
         >
           <SelectValue />
@@ -440,12 +466,10 @@ function BillingSettingsContent({
 
   const { paymentRow, refillRow, topupRow } = view
 
-  // The Payment & credits card groups every money control (payment method,
-  // one-time top-up, auto-refill) into a single divide-y list instead of three
-  // free-floating one-row sections.
-  const accountRows = [paymentRow, topupRow, refillRow].filter(
-    (row): row is BillingAccountRowView => row !== undefined
-  )
+  // The payment method rides in the section header (right-aligned) — the
+  // "Payment & credits" title already names it, so a full labelled row would just
+  // repeat "Payment method". The stacked rows are the remaining money controls.
+  const accountRows = [topupRow, refillRow].filter((row): row is BillingAccountRowView => row !== undefined)
 
   // Gate the plans sub-view on the SAME capability that renders the in-app button
   // (`plan.action`): a team / non-changer deep-linking `bview=plans` must never
@@ -468,38 +492,41 @@ function BillingSettingsContent({
       {view.notice && <NoticeCard notice={view.notice} />}
 
       <div className="@container mb-6">
-        <SettingsCard className="grid gap-3 p-4 @2xl:grid-cols-3">
+        <div className="grid gap-3 @2xl:grid-cols-3">
           {view.summary.map(item => (
             <SummaryCard key={item.label} label={item.label} tone={item.tone} value={item.value} />
           ))}
-        </SettingsCard>
+        </div>
       </div>
 
       {view.plan && (
         <SettingsSection icon={Package} title="Plan">
-          <SettingsCard className="px-4">
-            <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
-          </SettingsCard>
+          <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
         </SettingsSection>
       )}
 
-      {accountRows.length > 0 && (
-        <SettingsSection icon={CreditCard} title="Payment & credits">
-          <SettingsCard className="divide-y divide-border/60 px-4">
-            {accountRows.map(row => (
-              <AccountRow billing={billing} key={row.id} row={row} />
-            ))}
-          </SettingsCard>
+      {(paymentRow || accountRows.length > 0) && (
+        <SettingsSection
+          aside={paymentRow ? <PaymentMethodAside row={paymentRow} /> : undefined}
+          icon={CreditCard}
+          title="Payment & credits"
+        >
+          {accountRows.map(row => (
+            <AccountRow billing={billing} key={row.id} row={row} />
+          ))}
         </SettingsSection>
       )}
 
       {view.usageRows.length > 0 && (
         <SettingsSection icon={BarChart3} title="Usage">
-          <SettingsCard className="@container px-4 py-2">
+          <div className="@container">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />
             ))}
-          </SettingsCard>
+            {/* DEV-only: a fully-filled example so the active (non-disabled) bar can be
+                reviewed on any account. Compiled out of production. */}
+            {import.meta.env.DEV && <UsageRow row={DEV_PREVIEW_USAGE_ROW} />}
+          </div>
         </SettingsSection>
       )}
 

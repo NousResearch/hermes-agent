@@ -120,7 +120,9 @@ describe('BillingSettings', () => {
 
     renderBilling()
 
-    expect(await screen.findByText('No card on file')).toBeTruthy()
+    // No card → the payment row collapses to a single "Add payment method" link.
+    expect(await screen.findByRole('button', { name: /Add payment method/ })).toBeTruthy()
+    expect(screen.queryByText('No card on file')).toBeNull()
     expect(screen.getByRole('button', { name: '$25' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: '$50' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: '$100' }).hasAttribute('disabled')).toBe(true)

@@ -190,6 +190,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "atlascloud": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("ATLASCLOUD_API_KEY",),
+        base_url_override="https://api.atlascloud.ai/v1",
+        base_url_env_var="ATLASCLOUD_BASE_URL",
+    ),
     "gmi": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("GMI_API_KEY",),
@@ -350,6 +356,10 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # atlascloud
+    "atlas": "atlascloud",
+    "atlas-cloud": "atlascloud",
+
     # gmi
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
@@ -391,6 +401,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "atlascloud": "Atlas Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 

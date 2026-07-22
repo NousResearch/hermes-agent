@@ -1,0 +1,5 @@
+name: atlascloud-provider
+kind: model-provider
+version: 1.0.0
+description: Atlas Cloud OpenAI-compatible unified model API
+author: Nous Research

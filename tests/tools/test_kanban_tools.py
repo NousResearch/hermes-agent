@@ -1,15 +1,13 @@
 """Tests for the Kanban tool surface (tools/kanban_tools.py).
 
-Verifies:
-  - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
-    zero kanban tools in its schema; a worker session sees the kanban set.
-  - Each handler's happy path.
-  - Error paths (missing required args, bad metadata type, etc).
+Tests cover worker/orchestrator schema gating, lifecycle handlers, administrative
+reassign/archive/notification routing, and structured validation/error paths.
 """
 from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 
 import pytest
 
@@ -88,13 +86,48 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     assert "kanban_list" not in names
 
 
-def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
-    """Task scope wins over profile config for board-routing tools.
+def test_task_scoped_orchestrator_with_kanban_toolset_sees_board_routing(
+    monkeypatch, tmp_path,
+):
+    """A router card keeps its admin surface when its profile explicitly
+    opts into ``platform_toolsets.cli: [kanban]``.
 
-    Even if a worker process happens to also have ``toolsets: [kanban]``
-    in its config, the HERMES_KANBAN_TASK env var means it's a focused
-    worker and must not see kanban_list / kanban_unblock.
+    Kanban orchestrators are themselves dispatcher-spawned tasks, so
+    HERMES_KANBAN_TASK alone cannot distinguish them from focused workers.
     """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    kanban = {n for n in names if n and n.startswith("kanban_")}
+    expected_admin = {
+        "kanban_list",
+        "kanban_unblock",
+        "kanban_reassign",
+        "kanban_archive",
+        "kanban_notify_subscribe",
+    }
+    assert expected_admin.issubset(kanban), (
+        f"Task-scoped orchestrator is missing admin tools: "
+        f"{expected_admin - kanban}"
+    )
+
+
+def test_legacy_top_level_toolsets_do_not_grant_admin_capability(
+    monkeypatch, tmp_path,
+):
+    """The deprecated top-level toolsets key is not a privilege boundary."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -106,24 +139,37 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
-    kanban = {n for n in names if n and n.startswith("kanban_")}
-    assert {
+    admin = {
         "kanban_list",
         "kanban_unblock",
-    }.isdisjoint(kanban), (
-        f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
-    )
+        "kanban_reassign",
+        "kanban_archive",
+        "kanban_notify_subscribe",
+    }
+    assert names.isdisjoint(admin)
+
+
+def test_admin_tools_are_static_kanban_members():
+    from toolsets import resolve_toolset
+
+    static = set(resolve_toolset("kanban", include_registry=False))
+    assert {
+        "kanban_reassign",
+        "kanban_archive",
+        "kanban_notify_subscribe",
+    }.issubset(static)
 
 
 def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
-    """Orchestrator profiles with toolsets: [kanban] see all kanban tools."""
+    """Orchestrator profiles with platform CLI kanban see all kanban tools."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
@@ -131,7 +177,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
@@ -139,6 +185,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
+        "kanban_reassign", "kanban_archive", "kanban_notify_subscribe",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -171,6 +218,463 @@ def worker_env(monkeypatch, tmp_path):
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
     return tid
+
+
+@pytest.fixture
+def ready_task(monkeypatch, tmp_path):
+    """Orchestrator fixture with an unclaimed ready task."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        return kb.create_task(conn, title="ready-admin-task", assignee="old-profile")
+
+
+def test_admin_schemas_are_bounded_and_explicit():
+    from tools import kanban_tools as kt
+    assert kt.KANBAN_REASSIGN_SCHEMA["parameters"]["required"] == ["task_id", "profile"]
+    assert kt.KANBAN_ARCHIVE_SCHEMA["parameters"]["properties"]["task_ids"]["maxItems"] == 100
+    assert kt.KANBAN_NOTIFY_SUBSCRIBE_SCHEMA["parameters"]["required"] == ["task_ids", "platform", "chat_id"]
+
+
+def test_reassign_same_and_different_ready_cards(ready_task):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    same = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "old-profile"}))
+    assert same["ok"] and same["assignee_changed"] is False
+    with kb.connect() as conn:
+        assigned = [e for e in kb.list_events(conn, ready_task) if e.kind == "assigned"]
+    assert assigned == []
+    changed = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "new-profile", "reclaim": True}))
+    assert changed["ok"] and changed["assignee_changed"] is True
+    assert changed["assignee"] == "new-profile"
+    assert changed["reclaim_requested"] is True
+    assert "reclaimed" not in changed
+
+
+def test_reassign_running_requires_reclaim_and_closes_run(ready_task):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    with kb.connect() as conn:
+        kb.claim_task(conn, ready_task)
+        run_id = kb.latest_run(conn, ready_task).id
+    rejected = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "new"}))
+    assert rejected.get("error")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, ready_task).current_run_id == run_id
+        assert kb.latest_run(conn, ready_task).ended_at is None
+    result = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "new", "reclaim": True}))
+    assert result["ok"] and result["status"] == "ready"
+    with kb.connect() as conn:
+        assert kb.latest_run(conn, ready_task).outcome == "reclaimed"
+
+
+def test_reassign_reclaim_uses_one_atomic_write_transaction(ready_task, monkeypatch):
+    """No ready-state gap may exist between reclaim and assignment."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        assert kb.claim_task(conn, ready_task)
+
+    original_write_txn = kb.write_txn
+    transaction_count = 0
+
+    @contextmanager
+    def counted_write_txn(conn):
+        nonlocal transaction_count
+        transaction_count += 1
+        with original_write_txn(conn) as tx:
+            yield tx
+
+    monkeypatch.setattr(kb, "write_txn", counted_write_txn)
+    result = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "new-profile",
+        "reclaim": True,
+    }))
+
+    assert result["ok"] is True
+    assert transaction_count == 1
+
+
+def test_reassign_rejects_actor_that_turns_stale_after_preflight(
+    ready_task, monkeypatch,
+):
+    """Freshness must be checked in the same transaction as the mutation."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        assert kb.claim_task(conn, ready_task)
+        actor_run = kb.latest_run(conn, ready_task)
+        assert actor_run is not None
+        target = kb.create_task(conn, title="race-target", assignee="old-profile")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(actor_run.id))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    original_reassign = kb.reassign_task
+    race_injected = False
+
+    def end_actor_then_reassign(conn, *args, **kwargs):
+        nonlocal race_injected
+        race_injected = True
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+                (ready_task,),
+            )
+            kb._end_run(conn, ready_task, outcome="completed", status="done")
+        return original_reassign(conn, *args, **kwargs)
+
+    monkeypatch.setattr(kb, "reassign_task", end_actor_then_reassign)
+    result = json.loads(kt._handle_reassign({
+        "task_id": target,
+        "profile": "new-profile",
+    }))
+
+    assert "stale task-scoped orchestrator" in result.get("error", "")
+    assert race_injected is True
+    with kb.connect() as conn:
+        target_task = kb.get_task(conn, target)
+    assert target_task is not None
+    assert target_task.assignee == "old-profile"
+
+
+def test_reassign_current_running_card_hands_off_without_signaling_self(
+    ready_task, monkeypatch,
+):
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        kb.claim_task(conn, ready_task)
+        current_run = kb.latest_run(conn, ready_task)
+        assert current_run is not None
+        run_id = current_run.id
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (os.getpid(), ready_task),
+        )
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+    termination_calls = []
+
+    def fake_terminate(pid, claim_lock, *, signal_fn=None):
+        termination_calls.append((pid, claim_lock, signal_fn))
+        return {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "sigkill": False,
+        }
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)
+
+    result = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "worker-code",
+        "reclaim": True,
+    }))
+
+    assert result["ok"] is True
+    assert result["assignee"] == "worker-code"
+    assert result["status"] == "ready"
+    assert termination_calls == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+        reclaimed = [
+            event for event in kb.list_events(conn, ready_task)
+            if event.kind == "reclaimed"
+        ]
+    assert task is not None
+    assert run is not None
+    assert reclaimed and reclaimed[-1].payload is not None
+    assert task.assignee == "worker-code"
+    assert task.worker_pid is None
+    assert run.outcome == "reclaimed"
+    assert reclaimed[-1].payload["self_handoff"] is True
+
+    # The old orchestrator process is still alive long enough to receive the
+    # tool result. Once the dispatcher claims the ready card for worker-code,
+    # stale calls from that old run must not reclaim the new worker.
+    with kb.connect() as conn:
+        assert kb.claim_task(conn, ready_task)
+        new_run = kb.latest_run(conn, ready_task)
+        assert new_run is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (424242, ready_task),
+        )
+    stale = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "worker-code",
+        "reclaim": True,
+    }))
+    assert "stale task-scoped orchestrator" in stale.get("error", "")
+    assert termination_calls == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+    assert task is not None
+    assert run is not None
+    assert task.assignee == "worker-code"
+    assert task.status == "running"
+    assert task.worker_pid == 424242
+    assert run.id == new_run.id
+    assert run.ended_at is None
+
+
+def test_reassign_validates_and_workers_are_rejected(ready_task, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_reassign({"task_id": ready_task})).get("error")
+    assert "reclaim must be" in json.loads(kt._handle_reassign({
+        "task_id": ready_task, "profile": "new", "reclaim": "maybe",
+    })).get("error", "")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    assert "orchestrator-only" in json.loads(kt._handle_reassign({
+        "task_id": ready_task, "profile": "new",
+    })).get("error", "")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, ready_task).assignee == "old-profile"
+
+
+def test_task_scoped_explicit_orchestrator_can_call_admin_handler(
+    ready_task, monkeypatch,
+):
+    from pathlib import Path
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        assert kb.claim_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+        assert run is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (os.getpid(), ready_task),
+        )
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+
+    result = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "new-profile",
+        "reclaim": True,
+    }))
+    assert result["ok"] is True
+    assert result["assignee"] == "new-profile"
+
+
+def test_task_scoped_orchestrator_atomic_context_covers_archive_and_notify(
+    ready_task, monkeypatch,
+):
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        assert kb.claim_task(conn, ready_task)
+        actor_run = kb.latest_run(conn, ready_task)
+        assert actor_run is not None
+        archive_target = kb.create_task(conn, title="archive-target")
+        notify_target = kb.create_task(conn, title="notify-target")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(actor_run.id))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    archived = json.loads(kt._handle_archive({"task_ids": [archive_target]}))
+    subscribed = json.loads(kt._handle_notify_subscribe({
+        "task_ids": [notify_target],
+        "platform": "discord",
+        "chat_id": "atomic-context",
+    }))
+
+    assert archived["ok"] is True
+    assert subscribed["ok"] is True
+    with kb.connect() as conn:
+        archived_task = kb.get_task(conn, archive_target)
+        subscriptions = kb.list_notify_subs(conn, notify_target)
+        actor = kb.get_task(conn, ready_task)
+    assert archived_task is not None and archived_task.status == "archived"
+    assert subscriptions[0]["notifier_profile"] == "test-orchestrator"
+    assert actor is not None and actor.status == "running"
+
+
+def test_archive_prevalidates_idempotently_and_deduplicates(ready_task):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    with kb.connect() as conn:
+        archived = kb.create_task(conn, title="archived", assignee="worker")
+        live = kb.create_task(conn, title="live", assignee="worker")
+        kb.archive_task(conn, archived)
+    result = json.loads(kt._handle_archive({"task_ids": [archived, live, archived, live]}))
+    assert result["ok"] and result["archived"] == [live]
+    assert result["already_archived"] == [archived] and result["count"] == 2
+    with kb.connect() as conn:
+        valid = kb.create_task(conn, title="valid", assignee="worker")
+    error = json.loads(kt._handle_archive({"task_ids": [valid, "t_unknown_admin"]}))
+    assert error.get("error")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, valid).status == "ready"
+
+
+def test_archive_refuses_task_claimed_after_preflight(ready_task, monkeypatch):
+    """The non-running constraint must be enforced by the archive CAS."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    original_archive = kb.archive_task
+    injected = False
+
+    def claim_then_archive(conn, task_id, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            assert kb.claim_task(conn, task_id)
+        return original_archive(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(kb, "archive_task", claim_then_archive)
+    result = json.loads(kt._handle_archive({"task_ids": [ready_task]}))
+
+    assert result["ok"] is False
+    assert result["archived"] == []
+    assert result["failed"] == [
+        {"task_id": ready_task, "error": "archive refused"}
+    ]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+    assert task is not None
+    assert task.status == "running"
+    assert run is not None and run.ended_at is None
+
+
+def test_archive_partial_error_envelope(ready_task, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first", assignee="worker")
+        second = kb.create_task(conn, title="second", assignee="worker")
+    original = kb.archive_task
+    def fail(conn, task_id, **kwargs):
+        if task_id == second:
+            raise RuntimeError("injected archive failure")
+        return original(conn, task_id, **kwargs)
+    monkeypatch.setattr(kb, "archive_task", fail)
+    result = json.loads(kt._handle_archive({"task_ids": [first, second]}))
+    assert result == {"ok": False, "partial": True, "archived": [first], "already_archived": [],
+                      "failed": [{"task_id": second, "error": "injected archive failure"}], "count": 2}
+
+
+@pytest.mark.parametrize("task_ids", [None, [], [""], [1], [str(i) for i in range(101)]])
+def test_archive_validates_batches(task_ids, ready_task):
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_archive({"task_ids": task_ids})).get("error")
+
+
+def test_notify_subscribe_round_trip_default_and_idempotency(ready_task, monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "cli-profile")
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    args = {"task_ids": [ready_task], "platform": "discord", "chat_id": "chat",
+            "thread_id": "thread", "user_id": "user"}
+    first = json.loads(kt._handle_notify_subscribe(args))
+    second = json.loads(kt._handle_notify_subscribe(args))
+    assert first["ok"] and second["ok"] and len(second["subscriptions"]) == 1
+    assert second["count"] == 1
+    assert second["subscriptions"][0]["notifier_profile"] == "cli-profile"
+    with kb.connect() as conn:
+        assert len(kb.list_notify_subs(conn, ready_task)) == 1
+
+
+def test_notify_subscribe_prevalidates_exact_destination_and_partial(ready_task, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    unknown = json.loads(kt._handle_notify_subscribe({"task_ids": [ready_task, "t_unknown_notify"], "platform": "discord", "chat_id": "chat"}))
+    assert unknown.get("error")
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, ready_task) == []
+        first = kb.create_task(conn, title="first", assignee="worker")
+        second = kb.create_task(conn, title="second", assignee="worker")
+    original = kb.add_notify_sub
+    def fail(conn, **kwargs):
+        if kwargs["task_id"] == second:
+            raise RuntimeError("injected subscription failure")
+        return original(conn, **kwargs)
+    monkeypatch.setattr(kb, "add_notify_sub", fail)
+    result = json.loads(kt._handle_notify_subscribe({"task_ids": [first, second], "platform": "discord", "chat_id": "chat"}))
+    assert result["ok"] is False and result["partial"] is True
+    assert [s["task_id"] for s in result["subscriptions"]] == [first]
+    assert result["failed"] == [{"task_id": second, "error": "injected subscription failure"}]
+
+
+def test_notify_subscribe_validates_destination_and_worker_rejection(ready_task, monkeypatch):
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_notify_subscribe({"task_ids": [ready_task], "platform": "", "chat_id": "chat"})).get("error")
+    assert json.loads(kt._handle_notify_subscribe({"task_ids": [ready_task], "platform": "discord", "chat_id": " "})).get("error")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    assert "orchestrator-only" in json.loads(kt._handle_notify_subscribe({
+        "task_ids": [ready_task], "platform": "discord", "chat_id": "chat",
+    })).get("error", "")
+    assert "orchestrator-only" in json.loads(kt._handle_archive({
+        "task_ids": [ready_task],
+    })).get("error", "")
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, ready_task).status == "ready"
+        assert kb.list_notify_subs(conn, ready_task) == []
+
+
+def test_archive_and_notify_never_expose_delete():
+    from tools import kanban_tools as kt
+    assert "delete" not in kt.KANBAN_ARCHIVE_SCHEMA["description"].lower()
 
 
 def test_show_defaults_to_env_task_id(worker_env):
@@ -1065,6 +1569,58 @@ def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
         assert child.workspace_kind == "scratch"
     finally:
         conn.close()
+
+
+def test_create_persists_explicit_worktree_branch(worker_env):
+    """Router cards can pin the exact branch required by an approved plan."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "planned worktree",
+        "assignee": "peer",
+        "workspace_kind": "worktree",
+        "workspace_path": "/tmp/planned-worktree",
+        "branch_name": "feature/planned-branch",
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, result["task_id"])
+        assert task is not None
+        assert task.workspace_kind == "worktree"
+        assert task.workspace_path == "/tmp/planned-worktree"
+        assert task.branch_name == "feature/planned-branch"
+
+
+def test_create_rejects_branch_for_non_worktree(worker_env):
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "invalid branch",
+        "assignee": "peer",
+        "workspace_kind": "scratch",
+        "branch_name": "feature/not-a-worktree",
+    }))
+    assert "branch_name is only valid for worktree workspaces" in result["error"]
+
+
+@pytest.mark.parametrize(
+    "branch_name",
+    ["bad branch", "bad..branch", "bad@{branch", "-bad", "bad.lock"],
+)
+def test_create_rejects_invalid_git_branch_names(worker_env, branch_name):
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "invalid git ref",
+        "assignee": "peer",
+        "workspace_kind": "worktree",
+        "workspace_path": "/tmp/invalid-git-ref",
+        "branch_name": branch_name,
+    }))
+
+    assert "invalid git branch name" in result["error"]
 
 
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
@@ -2097,6 +2653,479 @@ def test_board_param_in_all_schemas():
         assert "board" not in schema["parameters"].get("required", []), (
             f"{schema['name']} marks board as required; must be optional"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task-scoped admin tools must be pinned to HERMES_KANBAN_BOARD (PR #65372).
+#
+# The pre-fix vulnerability: ``_require_orchestrator_tool`` validates the
+# (task_id, run_id, assignee) triple on the DB the dispatcher pinned via
+# HERMES_KANBAN_BOARD, but the handlers themselves open a *different* DB
+# when the caller passes ``board=<slug>``. If two boards happen to contain
+# a task with the same id sharing the same run_id and assignee — i.e. the
+# actor triple — the ``_assert_fresh_admin_actor`` CAS passes inside the
+# target DB and the mutation lands on the wrong board.
+#
+# The fix is a single shared guard: when HERMES_KANBAN_TASK is set (the
+# task-scoped anchor), reject any explicit ``board`` that does not match
+# the pinned board BEFORE the handler opens the requested DB. Orchestrators
+# without HERMES_KANBAN_TASK keep the existing override freedom.
+# ---------------------------------------------------------------------------
+
+
+def _seed_cross_board_actor(monkeypatch, tmp_path):
+    """Seed two DBs ('default' + 'alt') with a colliding actor triple.
+
+    Both boards end up with a running task whose id / run_id / assignee
+    matches what the dispatcher would pin (HERMES_KANBAN_TASK /
+    HERMES_KANBAN_RUN_ID / notifier profile). Without the guard, any
+    task-scoped admin tool that passes ``board="alt"`` would satisfy
+    its ``_assert_fresh_admin_actor`` CAS on the wrong board and mutate
+    a sibling task there.
+
+    Returns the fixture state with the alt-board victim task id that
+    callers use to assert no cross-board mutation landed.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    # Pin the dispatcher's board env to 'default' so _require_orchestrator_tool
+    # resolves its own freshness check to the default DB.
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    # Shared triple used by both boards for the actor collision.
+    actor_task_id = "t_collision"
+    actor_run_id = 9001
+    profile = "test-orchestrator"
+
+    # Default board: the dispatcher's actual worker ctx.
+    conn = kb.connect()
+    try:
+        kb.create_task(conn, title="default-actor", assignee=profile)
+        for row in conn.execute(
+            "SELECT id FROM tasks WHERE title = 'default-actor'"
+        ).fetchall():
+            conn.execute(
+                "UPDATE tasks SET id = ? WHERE id = ?",
+                (actor_task_id, row["id"]),
+            )
+        assert kb.claim_task(conn, actor_task_id)
+        run_row = conn.execute(
+            "SELECT id FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (actor_task_id,),
+        ).fetchone()
+        assert run_row is not None
+        conn.execute(
+            "UPDATE task_runs SET id = ?, profile = ? WHERE id = ?",
+            (actor_run_id, profile, run_row["id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET assignee = ?, current_run_id = ? "
+            "WHERE id = ?",
+            (profile, actor_run_id, actor_task_id),
+        )
+    finally:
+        conn.close()
+
+    # Alt board: same triple but a different physical DB.
+    conn = kb.connect(board="alt")
+    try:
+        kb.create_task(conn, title="alt-actor", assignee=profile)
+        alt_row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-actor'"
+        ).fetchone()
+        # Force the alt row into the running triple that the CAS expects,
+        # without going through claim_task (which requires status='ready').
+        conn.execute(
+            "INSERT INTO task_runs (id, task_id, profile, status, started_at) "
+            "VALUES (?, ?, ?, 'running', ?)",
+            (actor_run_id, alt_row["id"], profile, int(__import__('time').time())),
+        )
+        conn.execute(
+            "UPDATE tasks SET id = ?, status = 'running', "
+            "assignee = ?, current_run_id = ? WHERE id = ?",
+            (actor_task_id, profile, actor_run_id, alt_row["id"]),
+        )
+
+        kb.create_task(conn, title="alt-victim", assignee="peer")
+        victim_row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-victim'"
+        ).fetchone()
+        victim_id = victim_row["id"]
+        conn.execute(
+            "UPDATE tasks SET id = ? WHERE id = ?",
+            ("t_victim_alt", victim_id),
+        )
+    finally:
+        conn.close()
+
+    return {
+        "actor_task_id": actor_task_id,
+        "actor_run_id": actor_run_id,
+        "profile": profile,
+        "victim_id": "t_victim_alt",
+    }
+
+
+def test_task_scoped_reassign_cross_board_is_rejected(monkeypatch, tmp_path):
+    """Task-scoped orchestrator pinned to board 'default' must NOT be
+    able to mutate board 'alt' by passing ``board='alt'`` even when
+    the actor triple collides on both boards."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_reassign({
+        "task_id": seed["victim_id"],
+        "profile": "evil-claim",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected cross-board reassign to fail, got {payload!r}"
+    )
+    # The alt-board victim must be untouched.
+    with kb.connect(board="alt") as conn:
+        victim = kb.get_task(conn, seed["victim_id"])
+    assert victim is not None
+    assert victim.assignee == "peer", (
+        f"alt board victim was mutated cross-board: assignee={victim.assignee!r}"
+    )
+
+
+def test_task_scoped_archive_cross_board_is_rejected(monkeypatch, tmp_path):
+    """Same guarantee for kanban_archive."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_archive({
+        "task_ids": [seed["victim_id"]],
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error") or payload.get("ok") is False, (
+        f"expected cross-board archive to fail closed, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        victim = kb.get_task(conn, seed["victim_id"])
+    assert victim is not None
+    assert victim.status != "archived", (
+        f"alt board victim was archived cross-board: status={victim.status!r}"
+    )
+
+
+def test_task_scoped_notify_subscribe_cross_board_is_rejected(
+    monkeypatch, tmp_path,
+):
+    """Same guarantee for kanban_notify_subscribe — a write that
+    silently mutates the wrong board's subscription table."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_notify_subscribe({
+        "task_ids": [seed["victim_id"]],
+        "platform": "discord",
+        "chat_id": "leak-chat",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error") or payload.get("ok") is False, (
+        f"expected cross-board subscribe to fail closed, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        subs = kb.list_notify_subs(conn, seed["victim_id"])
+    assert subs == [], (
+        f"alt board victim got a subscription cross-board: {subs!r}"
+    )
+
+
+def test_task_scoped_unblock_cross_board_is_rejected(monkeypatch, tmp_path):
+    """kanban_unblock must also be pinned; even when the caller
+    passes ``task_id=HERMES_KANBAN_TASK`` (same id collision as the
+    actor triple), opening the alt DB and calling ``unblock_task``
+    would mutate a different physical task there.
+
+    Without ``_enforce_worker_task_ownership`` triggering (which already
+    blocks foreign task IDs), the only thing standing between a
+    task-scoped orchestrator and the alt board's same-id task is the
+    cross-board guard we're adding here.
+    """
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Put the alt-board actor task (same id, different DB) into the
+    # 'blocked' state so an unblock flip is observable, then RESTORE
+    # the running-triple claim/run/assignee so ``_assert_fresh_admin_actor``
+    # would happily pass on the alt DB. Without the cross-board guard,
+    # ``_handle_unblock`` then proceeds and flips the alt row back to
+    # 'ready'.
+    with kb.connect(board="alt") as conn:
+        kb.block_task(conn, seed["actor_task_id"], reason="poisoned")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', "
+            "current_run_id = ?, assignee = ? WHERE id = ?",
+            (seed["actor_run_id"], seed["profile"], seed["actor_task_id"]),
+        )
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (seed["actor_task_id"],),
+        ).fetchone()
+    assert row["status"] == "blocked", (
+        f"alt board setup didn't reach blocked state: {row['status']!r}"
+    )
+
+    out = kt._handle_unblock({
+        "task_id": seed["actor_task_id"],
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected cross-board unblock to fail, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (seed["actor_task_id"],),
+        ).fetchone()
+    assert row["status"] == "blocked", (
+        f"alt board victim was unblocked cross-board: status={row['status']!r}"
+    )
+
+
+def test_task_scoped_list_cross_board_does_not_recompute(
+    monkeypatch, tmp_path,
+):
+    """kanban_list(board='alt') calls recompute_ready(conn) on the alt
+    DB, which is a write side effect. The guard must block it from a
+    task-scoped orchestrator pinned to the default board."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Stage an alt board 'todo' task that would be auto-promoted to
+    # 'ready' by recompute_ready; assertions then guard the lack of
+    # side effect.
+    with kb.connect(board="alt") as conn:
+        kb.create_task(
+            conn, title="alt-promotable", assignee="peer",
+        )
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-promotable'"
+        ).fetchone()
+        conn.execute(
+            "UPDATE tasks SET status = 'todo' WHERE id = ?",
+            (row["id"],),
+        )
+        promotable_id = row["id"]
+
+    out = kt._handle_list({"board": "alt", "limit": 10})
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected cross-board list to fail, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (promotable_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "todo", (
+        f"alt board recompute ran cross-board: status={row['status']!r}"
+    )
+
+
+def test_task_scoped_explicit_board_matching_pin_succeeds(monkeypatch, tmp_path):
+    """When the task-scoped orchestrator's explicit ``board`` matches
+    HERMES_KANBAN_BOARD, behaviour is preserved (no regression)."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Create a same-board target on the default board to reassign.
+    with kb.connect() as conn:
+        kb.create_task(conn, title="same-board-target", assignee="old-profile")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'same-board-target'"
+        ).fetchone()
+        same_board_target = row["id"]
+
+    out = kt._handle_reassign({
+        "task_id": same_board_target,
+        "profile": "new-profile",
+        "board": "default",
+    })
+    payload = json.loads(out)
+    assert payload.get("ok") is True, payload
+
+
+def test_task_scoped_omitted_board_preserves_behaviour(monkeypatch, tmp_path):
+    """Omitting the ``board`` arg must still resolve to the pinned
+    board. No regression."""
+    seed = _seed_cross_board_actor(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", seed["actor_task_id"])
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(seed["actor_run_id"]))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="omitted-board-target", assignee="old-profile")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'omitted-board-target'"
+        ).fetchone()
+        target = row["id"]
+
+    out = kt._handle_reassign({
+        "task_id": target,
+        "profile": "new-profile",
+    })
+    payload = json.loads(out)
+    assert payload.get("ok") is True, payload
+
+
+def test_task_scoped_explicit_board_without_pin_fails_closed(monkeypatch, tmp_path):
+    """If the task-scoped orchestrator has no HERMES_KANBAN_BOARD pin
+    but passes an explicit board=, that is also a cross-board attempt:
+    there is no anchor to compare against, so fail closed. Even when
+    the alt DB happens to have a matching target task, the cross-board
+    mutation must be rejected."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        kb.create_task(conn, title="no-pin-actor", assignee="test-orchestrator")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'no-pin-actor'"
+        ).fetchone()
+        actor_task_id = row["id"]
+        assert kb.claim_task(conn, actor_task_id)
+        run = kb.latest_run(conn, actor_task_id)
+        run_id = run.id
+    # Seed the alt board with a cross-board mutatable victim so the
+    # pre-fix code (which had no guard) would mutate it on success.
+    with kb.connect(board="alt") as conn:
+        kb.create_task(conn, title="no-pin-victim", assignee="peer")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'no-pin-victim'"
+        ).fetchone()
+        alt_victim = row["id"]
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", actor_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    from tools import kanban_tools as kt
+
+    out = kt._handle_reassign({
+        "task_id": alt_victim,
+        "profile": "new-profile",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("error"), (
+        f"expected explicit-board-without-pin to fail, got {payload!r}"
+    )
+    with kb.connect(board="alt") as conn:
+        task = kb.get_task(conn, alt_victim)
+    assert task.assignee == "peer", (
+        f"alt victim mutated cross-board despite no HERMES_KANBAN_BOARD pin:"
+        f" assignee={task.assignee!r}"
+    )
+
+
+def test_non_task_scoped_orchestrator_keeps_board_override(monkeypatch, tmp_path):
+    """An orchestrator profile WITHOUT HERMES_KANBAN_TASK is not pinned
+    and may legitimately target alt boards via ``board=``. Guard must
+    not trigger for that case."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "cli-orchestrator")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect(board="alt") as conn:
+        kb.create_task(conn, title="alt-free-target", assignee="old-profile")
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'alt-free-target'"
+        ).fetchone()
+        alt_target = row["id"]
+
+    from tools import kanban_tools as kt
+    out = kt._handle_reassign({
+        "task_id": alt_target,
+        "profile": "new-profile",
+        "board": "alt",
+    })
+    payload = json.loads(out)
+    assert payload.get("ok") is True, payload
+    with kb.connect(board="alt") as conn:
+        task = kb.get_task(conn, alt_target)
+    assert task.assignee == "new-profile"
+
 
 
 # ---------------------------------------------------------------------------

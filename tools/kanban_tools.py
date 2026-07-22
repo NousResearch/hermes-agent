@@ -24,7 +24,8 @@ Humans continue to use the CLI (``hermes kanban …``), the dashboard
 (``hermes dashboard``), and the slash command (``/kanban …``) — all
 three bypass the agent entirely. The tools are for dispatcher-spawned
 worker handoffs and for configured orchestrator profiles that route work
-through the board.
+through the board, including narrow administrative reassign, archive, and
+notification-subscription operations that task-scoped workers cannot access.
 """
 from __future__ import annotations
 
@@ -47,17 +48,29 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_ADMIN_BATCH_MAX = 100
 
 
 def _profile_has_kanban_toolset() -> bool:
-    # Uses load_config() which has mtime-based caching, so this adds
-    # negligible overhead. The check_fn results are further TTL-cached
-    # (~30s) by the tool registry.
+    """Return whether the active CLI profile explicitly enables ``kanban``.
+
+    ``platform_toolsets.cli`` is the authoritative configuration consumed by
+    worker dispatch. The deprecated top-level ``toolsets`` key is deliberately
+    not a privilege boundary. ``load_config()`` is mtime-cached and check_fn
+    results receive a further short TTL in the tool registry.
+    """
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        platform_toolsets = cfg.get("platform_toolsets", {}) if isinstance(cfg, dict) else {}
+        configured = (
+            platform_toolsets.get("cli", [])
+            if isinstance(platform_toolsets, dict)
+            else []
+        )
+        if not isinstance(configured, list):
+            return False
+        return any(str(item).strip().lower() == "kanban" for item in configured)
     except Exception:
         return False
 
@@ -80,17 +93,20 @@ def _check_kanban_mode() -> bool:
 
 
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock) are intentionally
-    hidden from task workers.
+    """Expose board-routing tools only to profiles that explicitly opt in.
 
-    Dispatcher-spawned workers should close their own task via the
-    lifecycle tools (complete/block/heartbeat), not enumerate or unblock
-    board state. Profiles that explicitly opt into the kanban toolset
-    and are NOT scoped to a single task are the orchestrator surface.
+    Kanban orchestrators are themselves dispatcher-spawned tasks, so
+    ``HERMES_KANBAN_TASK`` cannot distinguish a router card from a focused
+    worker. The profile's configured ``platform_toolsets.cli: [kanban]`` is
+    the capability boundary; regular worker profiles receive lifecycle tools
+    through the dispatcher but do not carry this explicit config opt-in.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return False
     return _profile_has_kanban_toolset()
+
+
+def _is_task_scoped_worker_context() -> bool:
+    """Return True for task workers without the explicit router capability."""
+    return bool(os.environ.get("HERMES_KANBAN_TASK")) and not _check_kanban_orchestrator_mode()
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +331,50 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     return default, f"{name} must be a boolean or 'true'/'false'"
 
 
+def _parse_admin_task_ids(args: dict) -> tuple[list[str], Optional[str]]:
+    """Validate and deduplicate a bounded administrative task-id array."""
+    raw = args.get("task_ids")
+    if not isinstance(raw, list):
+        return [], "task_ids must be an array of task id strings"
+    if len(raw) > KANBAN_ADMIN_BATCH_MAX:
+        return [], f"task_ids must contain at most {KANBAN_ADMIN_BATCH_MAX} task ids"
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return [], "task_ids must contain only non-empty strings"
+        task_id = item.strip()
+        if task_id not in seen:
+            seen.add(task_id)
+            ids.append(task_id)
+    if not ids:
+        return [], "task_ids must contain at least one task id"
+    return ids, None
+
+
+def _required_nonempty_string(args: dict, name: str) -> tuple[Optional[str], Optional[str]]:
+    value = args.get(name)
+    if not isinstance(value, str) or not value.strip():
+        return None, f"{name} is required and must be a non-empty string"
+    return value.strip(), None
+
+
+def _default_notifier_profile() -> str:
+    """Match the interactive CLI's profile ownership resolution order."""
+    from hermes_cli.profiles import normalize_profile_name
+
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = os.environ.get(env_name)
+        if value and value.strip():
+            return normalize_profile_name(value)
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return normalize_profile_name(get_active_profile_name() or "user")
+    except Exception:
+        return "user"
+
+
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     """Belt-and-suspenders runtime guard for orchestrator-only handlers.
 
@@ -323,14 +383,117 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     or test harness routes a worker to one of them anyway, return a
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
+
+    Task-scoped orchestrators get one additional freshness check. A self-
+    reassign intentionally ends their run while the process may still be alive
+    long enough to receive the tool result. Any later admin call from that old
+    process must be rejected, otherwise it can reclaim the new assignee's run.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if _is_task_scoped_worker_context():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
             "kanban_comment for their assigned task."
         )
+
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return None
+    run_id = _worker_run_id(task_id)
+    profile = _default_notifier_profile()
+    try:
+        kb, conn = _connect()
+        try:
+            task = kb.get_task(conn, task_id)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "%s could not validate task-scoped orchestrator freshness: %r",
+            tool_name, exc,
+        )
+        return tool_error(
+            f"{tool_name}: could not validate task-scoped orchestrator context"
+        )
+    if (
+        task is None
+        or run_id is None
+        or task.status != "running"
+        or task.current_run_id != run_id
+        or task.assignee != profile
+    ):
+        return tool_error(
+            f"{tool_name}: stale task-scoped orchestrator context for "
+            f"{task_id}; the run ended or ownership changed. Stop this process "
+            "without mutating the board again."
+        )
     return None
+
+
+def _admin_actor_kwargs() -> dict[str, Any]:
+    """Trusted task-scoped actor fields for an atomic DB freshness check."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return {}
+    return {
+        "actor_task_id": task_id,
+        "actor_run_id": _worker_run_id(task_id),
+        "actor_assignee": _default_notifier_profile(),
+    }
+
+
+def _enforce_board_pin(args: dict, tool_name: str) -> Optional[str]:
+    """Pin a task-scoped admin tool to the dispatcher-pinned board.
+
+    The ``_require_orchestrator_tool`` envelope validates the actor
+    triple on the board the dispatcher pinned via ``HERMES_KANBAN_BOARD``
+    (PR fixes #19534 / friends), but the per-call ``board=`` argument
+    can still send the *mutation* to a different DB. When two boards
+    collide on the same task id + run_id + assignee triple (e.g.
+    seed/test data, a forged cross-tenant card), the
+    ``_assert_fresh_admin_actor`` CAS inside the target DB passes and
+    the change lands on the wrong board (PR #65372).
+
+    Close this hole at the handler boundary: when the call is
+    task-scoped (``HERMES_KANBAN_TASK`` is set), an explicit ``board``
+    that does not match ``HERMES_KANBAN_BOARD`` fails closed *before*
+    the requested DB is opened. Orchestrators without
+    ``HERMES_KANBAN_TASK`` keep full override freedom — they're not
+    pinned to a single board.
+
+    Returns ``None`` on success, or a ``tool_error`` string when the
+    call must be rejected. Handlers should ``return`` the error
+    verbatim.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return None  # not task-scoped: no pin to enforce
+    explicit = args.get("board")
+    if not explicit:
+        return None  # omitted → resolves to the env-pinned board
+    pinned = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if not pinned:
+        return tool_error(
+            f"{tool_name}: task-scoped call passed board={explicit!r} but no "
+            f"HERMES_KANBAN_BOARD is pinned — refusing to target a cross-board "
+            f"DB without an authoritative anchor."
+        )
+    try:
+        from hermes_cli import kanban_db as _kb
+        pinned_norm = _kb._normalize_board_slug(pinned) or pinned
+        explicit_norm = _kb._normalize_board_slug(explicit)
+    except ValueError:
+        # An invalid slug surfaces from the handler itself; don't double
+        # report it here — let the existing ``_normalize_board_slug``
+        # message win.
+        return None
+    if explicit_norm is None or explicit_norm == pinned_norm:
+        return None
+    return tool_error(
+        f"{tool_name}: task-scoped call is pinned to board {pinned_norm!r} "
+        f"via HERMES_KANBAN_BOARD and cannot target {explicit_norm!r}. "
+        f"Cross-board admin operations are not allowed from a task-scoped "
+        f"context — drop the ``board`` argument to use the pinned board."
+    )
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -445,6 +608,9 @@ def _handle_list(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_list")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_list")
+    if pin_guard:
+        return pin_guard
     assignee = args.get("assignee")
     status = args.get("status")
     tenant = args.get("tenant")
@@ -1094,6 +1260,7 @@ def _handle_create(args: dict, **kw) -> str:
     # fall back to scratch as before. Explicit None path stays None.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    branch_name = args.get("branch_name")
     project_id = args.get("project") or args.get("project_id")
     _inherit_workspace = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
@@ -1149,6 +1316,7 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                branch_name=branch_name,
                 project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
@@ -1280,11 +1448,210 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         return False
 
 
+def _handle_reassign(args: dict, **kw) -> str:
+    """Reassign one card in place, optionally reclaiming an active run."""
+    guard = _require_orchestrator_tool("kanban_reassign")
+    if guard:
+        return guard
+    pin_guard = _enforce_board_pin(args, "kanban_reassign")
+    if pin_guard:
+        return pin_guard
+    task_id, error = _required_nonempty_string(args, "task_id")
+    if error:
+        return tool_error(error)
+    profile, error = _required_nonempty_string(args, "profile")
+    if error:
+        return tool_error(error)
+    reclaim, bool_error = _parse_bool_arg(args, "reclaim")
+    if bool_error:
+        return tool_error(bool_error)
+    reason = args.get("reason")
+    if reason is not None:
+        if not isinstance(reason, str):
+            return tool_error("reason must be a string when provided")
+        reason = reason.strip() or None
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            before = kb.get_task(conn, task_id)
+            if before is None:
+                return tool_error(f"task {task_id} not found")
+            if before.assignee == profile and before.status != "running":
+                return _ok(
+                    task_id=task_id,
+                    assignee=before.assignee,
+                    status=before.status,
+                    assignee_changed=False,
+                    reclaim_requested=reclaim,
+                )
+            try:
+                changed = kb.reassign_task(
+                    conn, task_id, profile,
+                    reclaim_first=reclaim, reason=reason,
+                    **_admin_actor_kwargs(),
+                )
+            except Exception as exc:
+                return tool_error(f"kanban_reassign: {exc}")
+            if not changed:
+                return tool_error(
+                    f"could not reassign {task_id}; running tasks require reclaim=true"
+                )
+            after = kb.get_task(conn, task_id)
+            if after is None:
+                return tool_error(f"task {task_id} disappeared during reassign")
+            return _ok(
+                task_id=task_id,
+                assignee=after.assignee,
+                status=after.status,
+                assignee_changed=before.assignee != after.assignee,
+                reclaim_requested=reclaim,
+            )
+        finally:
+            conn.close()
+    except ValueError as exc:
+        return tool_error(f"kanban_reassign: {exc}")
+    except Exception as exc:
+        logger.exception("kanban_reassign failed")
+        return tool_error(f"kanban_reassign: {exc}")
+
+
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a bounded batch, preserving history and reporting partial writes."""
+    guard = _require_orchestrator_tool("kanban_archive")
+    if guard:
+        return guard
+    pin_guard = _enforce_board_pin(args, "kanban_archive")
+    if pin_guard:
+        return pin_guard
+    task_ids, error = _parse_admin_task_ids(args)
+    if error:
+        return tool_error(error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            tasks = {task_id: kb.get_task(conn, task_id) for task_id in task_ids}
+            missing = [task_id for task_id in task_ids if tasks[task_id] is None]
+            if missing:
+                return tool_error(f"unknown task id(s): {', '.join(missing)}")
+            already_archived = [
+                task_id for task_id in task_ids if tasks[task_id].status == "archived"
+            ]
+            archived: list[str] = []
+            failed: list[dict[str, str]] = []
+            for task_id in task_ids:
+                if task_id in already_archived:
+                    continue
+                try:
+                    if kb.archive_task(
+                        conn,
+                        task_id,
+                        allow_running=False,
+                        **_admin_actor_kwargs(),
+                    ):
+                        archived.append(task_id)
+                    else:
+                        failed.append({"task_id": task_id, "error": "archive refused"})
+                except Exception as exc:
+                    failed.append({"task_id": task_id, "error": str(exc)})
+            return json.dumps({
+                "ok": not failed,
+                "partial": bool(failed),
+                "archived": archived,
+                "already_archived": already_archived,
+                "failed": failed,
+                "count": len(task_ids),
+            })
+        finally:
+            conn.close()
+    except ValueError as exc:
+        return tool_error(f"kanban_archive: {exc}")
+    except Exception as exc:
+        logger.exception("kanban_archive failed")
+        return tool_error(f"kanban_archive: {exc}")
+
+
+def _handle_notify_subscribe(args: dict, **kw) -> str:
+    """Subscribe a bounded batch to one exact terminal-event destination."""
+    guard = _require_orchestrator_tool("kanban_notify_subscribe")
+    if guard:
+        return guard
+    pin_guard = _enforce_board_pin(args, "kanban_notify_subscribe")
+    if pin_guard:
+        return pin_guard
+    task_ids, error = _parse_admin_task_ids(args)
+    if error:
+        return tool_error(error)
+    platform, error = _required_nonempty_string(args, "platform")
+    if error:
+        return tool_error(error)
+    chat_id, error = _required_nonempty_string(args, "chat_id")
+    if error:
+        return tool_error(error)
+    optional: dict[str, Optional[str]] = {}
+    for name in ("thread_id", "user_id", "notifier_profile"):
+        value = args.get(name)
+        if value is not None:
+            if not isinstance(value, str) or not value.strip():
+                return tool_error(f"{name} must be a non-empty string when provided")
+            optional[name] = value.strip()
+        else:
+            optional[name] = None
+    notifier_profile = optional["notifier_profile"] or _default_notifier_profile()
+    thread_id = optional["thread_id"]
+    user_id = optional["user_id"]
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            tasks = {task_id: kb.get_task(conn, task_id) for task_id in task_ids}
+            missing = [task_id for task_id in task_ids if tasks[task_id] is None]
+            if missing:
+                return tool_error(f"unknown task id(s): {', '.join(missing)}")
+            subscriptions: list[dict] = []
+            failed: list[dict[str, str]] = []
+            for task_id in task_ids:
+                try:
+                    kb.add_notify_sub(
+                        conn, task_id=task_id, platform=platform, chat_id=chat_id,
+                        thread_id=thread_id, user_id=user_id,
+                        notifier_profile=notifier_profile,
+                        **_admin_actor_kwargs(),
+                    )
+                    rows = kb.list_notify_subs(conn, task_id)
+                    subscriptions.extend(
+                        row for row in rows
+                        if row.get("platform") == platform
+                        and row.get("chat_id") == chat_id
+                        and row.get("thread_id", "") == (thread_id or "")
+                    )
+                except Exception as exc:
+                    failed.append({"task_id": task_id, "error": str(exc)})
+            return json.dumps({
+                "ok": not failed,
+                "partial": bool(failed),
+                "subscriptions": subscriptions,
+                "failed": failed,
+                "count": len(task_ids),
+            })
+        finally:
+            conn.close()
+    except ValueError as exc:
+        return tool_error(f"kanban_notify_subscribe: {exc}")
+    except Exception as exc:
+        logger.exception("kanban_notify_subscribe failed")
+        return tool_error(f"kanban_notify_subscribe: {exc}")
+
+
 def _handle_unblock(args: dict, **kw) -> str:
     """Transition a blocked task to ready, or todo while parents remain open."""
     guard = _require_orchestrator_tool("kanban_unblock")
     if guard:
         return guard
+    pin_guard = _enforce_board_pin(args, "kanban_unblock")
+    if pin_guard:
+        return pin_guard
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")
@@ -1792,6 +2159,13 @@ KANBAN_CREATE_SCHEMA = {
                     "Relative paths are rejected at dispatch."
                 ),
             },
+            "branch_name": {
+                "type": "string",
+                "description": (
+                    "Exact git branch for a 'worktree' workspace. Rejected "
+                    "for other workspace kinds."
+                ),
+            },
             "project": {
                 "type": "string",
                 "description": (
@@ -1895,6 +2269,58 @@ KANBAN_UNBLOCK_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": ["task_id"],
+    },
+}
+
+_ADMIN_TASK_IDS_SCHEMA = {
+    "type": "array",
+    "items": {"type": "string"},
+    "minItems": 1,
+    "maxItems": KANBAN_ADMIN_BATCH_MAX,
+    "description": "One or more non-empty task ids; duplicates are ignored while preserving order.",
+}
+
+KANBAN_REASSIGN_SCHEMA = {
+    "name": "kanban_reassign",
+    "description": "Orchestrator-only in-place task reassignment. Running cards require explicit reclaim=true, which closes the active run before assigning the new profile.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id to reassign."},
+            "profile": {"type": "string", "description": "New assignee profile."},
+            "reclaim": {"type": "boolean", "description": "Explicitly reclaim an active running worker first."},
+            "reason": {"type": "string", "description": "Optional audit reason."},
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "profile"],
+    },
+}
+
+KANBAN_ARCHIVE_SCHEMA = {
+    "name": "kanban_archive",
+    "description": "Orchestrator-only archive that preserves history; archived parents no longer block descendants. Writes are per-task and partial failures must be retried.",
+    "parameters": {
+        "type": "object",
+        "properties": {"task_ids": _ADMIN_TASK_IDS_SCHEMA, "board": _board_schema_prop()},
+        "required": ["task_ids"],
+    },
+}
+
+KANBAN_NOTIFY_SUBSCRIBE_SCHEMA = {
+    "name": "kanban_notify_subscribe",
+    "description": "Orchestrator-only idempotent terminal-event subscription. The destination key is (task_id, platform, chat_id, thread_id); partial failures are returned explicitly.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_ids": _ADMIN_TASK_IDS_SCHEMA,
+            "platform": {"type": "string", "description": "Notification platform."},
+            "chat_id": {"type": "string", "description": "Destination chat id."},
+            "thread_id": {"type": "string", "description": "Optional thread id."},
+            "user_id": {"type": "string", "description": "Optional user id."},
+            "notifier_profile": {"type": "string", "description": "Optional notifier profile; defaults like the CLI."},
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_ids", "platform", "chat_id"],
     },
 }
 
@@ -2018,6 +2444,33 @@ registry.register(
     handler=_handle_unblock,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
+)
+
+registry.register(
+    name="kanban_reassign",
+    toolset="kanban",
+    schema=KANBAN_REASSIGN_SCHEMA,
+    handler=_handle_reassign,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔀",
+)
+
+registry.register(
+    name="kanban_archive",
+    toolset="kanban",
+    schema=KANBAN_ARCHIVE_SCHEMA,
+    handler=_handle_archive,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🗄",
+)
+
+registry.register(
+    name="kanban_notify_subscribe",
+    toolset="kanban",
+    schema=KANBAN_NOTIFY_SUBSCRIBE_SCHEMA,
+    handler=_handle_notify_subscribe,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔔",
 )
 
 registry.register(

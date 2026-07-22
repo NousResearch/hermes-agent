@@ -119,17 +119,13 @@ def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
 
 
 def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
-    """Normalize an optional branch name from ``kanban create --branch``."""
+    """Normalize and validate ``kanban create --branch`` as a Git ref."""
     if value is None:
         return None
-    branch = value.strip()
-    if not branch:
-        raise argparse.ArgumentTypeError("--branch requires a non-empty name")
-    if branch.startswith("-"):
-        raise argparse.ArgumentTypeError("--branch must not start with '-'")
-    if any(ch.isspace() for ch in branch):
-        raise argparse.ArgumentTypeError("--branch must not contain whitespace")
-    return branch
+    try:
+        return kb.validate_branch_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _check_dispatcher_presence() -> tuple[bool, str]:

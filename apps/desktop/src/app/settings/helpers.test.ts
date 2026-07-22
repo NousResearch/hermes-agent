@@ -44,6 +44,25 @@ describe('settings helpers', () => {
     expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
   })
 
+  it('prefers the discovered provider set over the static fallback for memory.provider', () => {
+    // config-settings.tsx passes the live getMemoryStatus() providers as
+    // dynamicOptions; user-installed/pip providers must appear, not just the
+    // hardcoded honcho/hindsight subset.
+    const discovered = ['', 'honcho', 'hindsight', 'mem0', 'supermemory']
+    const options = enumOptionsFor('memory.provider', '', {}, discovered)
+
+    expect(options).toEqual(discovered)
+  })
+
+  it('keeps the current memory.provider value visible even if discovery omits it', () => {
+    // A provider selected in config but not (yet) returned by discovery must
+    // still render as the current selection rather than silently vanishing.
+    const discovered = ['', 'honcho']
+    const options = enumOptionsFor('memory.provider', 'hindsight', {}, discovered)
+
+    expect(options).toEqual(['', 'honcho', 'hindsight'])
+  })
+
   describe('isExternalMemoryProvider', () => {
     it('treats only real plugin names as external providers', () => {
       expect(isExternalMemoryProvider('honcho')).toBe(true)

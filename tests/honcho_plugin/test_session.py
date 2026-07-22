@@ -1861,6 +1861,41 @@ class TestDialecticLiveness:
         result = p.prefetch("what's new")
         assert "recent synthesis" in result
 
+    def test_vacuous_pending_result_is_dropped_when_base_context_exists(self):
+        """Generic "I know nothing" summaries must not contradict cached facts."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 3}})
+        p._session_key = "test"
+        p._base_context_cache = "## User Representation\nBrendon prefers concise replies."
+        with p._prefetch_lock:
+            p._prefetch_result = (
+                "I don't have any gathered information about this person in memory, "
+                "so I can't reliably identify who they are."
+            )
+            p._prefetch_result_fired_at = 8
+        p._turn_count = 9
+        p._last_dialectic_turn = 8
+
+        result = p.prefetch("what's new")
+        assert "Brendon prefers concise replies." in result
+        assert "gathered information about this person" not in result.lower()
+
+    def test_vacuous_pending_result_is_kept_without_base_context(self):
+        """Cold-start sessions still surface the dialectic result they have."""
+        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 3}})
+        p._session_key = "test"
+        p._base_context_cache = ""
+        with p._prefetch_lock:
+            p._prefetch_result = (
+                "I don't have any gathered information about this person in memory, "
+                "so I can't reliably identify who they are."
+            )
+            p._prefetch_result_fired_at = 8
+        p._turn_count = 9
+        p._last_dialectic_turn = 8
+
+        result = p.prefetch("what's new")
+        assert "gathered information about this person" in result.lower()
+
     def test_empty_streak_widens_effective_cadence(self):
         """After N empty returns, the gate waits cadence + N turns."""
         p = self._make_provider(cfg_extra={"dialectic_cadence": 1})

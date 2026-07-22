@@ -969,7 +969,8 @@ export const zh: Translations = {
       defaultsFailed: '保存模型默认值失败',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
-      auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
+      staleAuxWarning: (count, names, provider) => `${count} 个辅助任务 (${names}) 正在使用 ${provider}，而非您的主模型。`,
+      auxiliaryDesc: '默认情况下，辅助任务使用主模型。分配专用模型给任务以覆盖。',
       setToMain: '设为主模型',
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
@@ -2868,6 +2869,36 @@ export const zh: Translations = {
       title: '侧边栏',
       description: '显示移动端侧边栏。',
       toggle: '切换侧边栏'
+    }
+  },
+
+  uninstall: {
+    dangerZone: '危险区域',
+    checking: '正在检查安装内容…',
+    confirmTitle: '确认卸载',
+    confirmBody: consequence => `这将移除${consequence}。此操作无法撤销。`,
+    uninstalling: '正在卸载…',
+    yesUninstall: '是，卸载',
+    couldNotStart: '无法启动卸载。',
+    cancel: '取消',
+    uninstallHermes: '卸载 Hermes',
+    uninstallDescription: '选择要移除的内容。应用会关闭以完成操作；随时可以重新打开安装程序。',
+    options: {
+      gui: {
+        title: '仅卸载聊天界面',
+        description: '移除此桌面应用。Hermes 代理、配置和聊天记录都会保留。',
+        consequence: '桌面聊天界面（此应用及其数据）'
+      },
+      lite: {
+        title: '卸载界面 + 代理，保留数据',
+        description: '移除应用和 Hermes 代理，但保留配置、聊天记录和密钥以供将来重新安装。',
+        consequence: '聊天界面和 Hermes 代理（配置、聊天记录和密钥将被保留）'
+      },
+      full: {
+        title: '全部卸载',
+        description: '移除应用、代理和所有用户数据——配置、聊天记录、定时任务、密钥、日志。',
+        consequence: '所有内容——聊天界面、Hermes 代理以及您的所有配置、聊天记录、密钥和日志'
+      }
     }
   }
 }

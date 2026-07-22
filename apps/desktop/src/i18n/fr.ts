@@ -70,8 +70,6 @@ export const fr = defineLocale({
       loadingSessions: 'Chargement des sessions récentes',
       startingDesktopConnection: 'Démarrage de la connexion bureau',
       startingHermesDesktop: 'Lancement de Hermes Desktop…',
-      connectingPrefix: 'CONN',
-      connectingTail: 'EXION',
     },
     errors: {
       backgroundExited: 'Le processus Hermes en arrière-plan s\'est arrêté.',

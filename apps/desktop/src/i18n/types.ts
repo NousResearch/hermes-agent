@@ -664,6 +664,7 @@ export interface Translations {
       defaultsFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxWarning: (count: number, names: string, provider: string) => string
       auxiliaryDesc: string
       setToMain: string
       change: string

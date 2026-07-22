@@ -1107,3 +1107,126 @@ def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
         {"agents": {"defaults": {"model": "some-model-id"}}},
     )
     assert _extract_model(parsed) == "some-model-id"
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Regression: same-file failure when workspace-target == source root
+# https://github.com/pavkam/aelita/issues/737
+# ───────────────────────────────────────────────────────────────────────
+
+def test_relative_label_outside_root_returns_basename():
+    """relative_label must return path.name (not str(path)) when path is
+    outside root, preventing pathlib absolute-join from clobbering archive_dir."""
+    mod = load_module()
+    outside = Path("/home/alex/agent_workspace/IDENTITY.md")
+    root = Path("/home/alex/.openclaw")
+    label = mod.relative_label(outside, root)
+    # Must be a plain filename, NOT an absolute path
+    assert label == "IDENTITY.md", f"Expected 'IDENTITY.md', got {label!r}"
+    # A relative label must never start with '/' (absolute path)
+    assert not label.startswith("/"), f"relative_label returned an absolute path: {label!r}"
+
+
+def test_archive_docs_skips_same_file_when_custom_workspace_is_archive_dir(tmp_path: Path):
+    """Regression for shutil.SameFileError: when archive_path is called with a source
+    whose resolved path equals the resolved destination, it must record 'skipped'
+    instead of raising shutil.SameFileError.
+
+    This covers the case where a custom workspace file (outside source_root) is
+    archived into a directory that resolves to the same location as the source.
+    """
+    import shutil
+    from dataclasses import asdict
+
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    # Use a separate archive dir so Migrator initialises correctly.
+    custom_ws = tmp_path / "agent_workspace"
+    archive_dir = tmp_path / "archive"
+
+    target.mkdir()
+    source.mkdir()
+    custom_ws.mkdir()
+    archive_dir.mkdir()
+
+    # Place IDENTITY.md in both custom_ws AND archive_dir so that
+    # archive_dir / relative_label(identity, source) == identity.
+    # After fix: relative_label returns 'IDENTITY.md' (basename), so
+    # destination = archive_dir / 'IDENTITY.md', which != source.
+    # We instead directly patch archive_dir on the migrator to custom_ws
+    # to exercise the same-file guard in archive_path.
+    identity = custom_ws / "IDENTITY.md"
+    identity.write_text("# Identity\n", encoding="utf-8")
+
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(custom_ws)}}}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+        selected_options={"archive"},
+    )
+    # Force archive_dir to custom_ws so destination == source for IDENTITY.md
+    migrator.archive_dir = custom_ws
+
+    # archive_path must NOT raise shutil.SameFileError
+    migrator.archive_path(identity, reason="regression test")
+
+    items = [asdict(i) for i in migrator.items]
+    skipped = [
+        i for i in items
+        if i.get("status") == "skipped" and "same-file" in (i.get("reason") or "")
+    ]
+    assert skipped, f"Expected a 'same-file: skipped self-copy' record, got: {items}"
+
+
+def test_archive_docs_does_not_abort_when_custom_workspace_outside_source_root(tmp_path: Path):
+    """Regression: running migrate when agents.defaults.workspace points to a
+    directory *outside* source_root (e.g. /home/alex/agent_workspace) must
+    not raise shutil.SameFileError.  Previously relative_label returned
+    str(path) (an absolute path), causing pathlib to replace archive_dir
+    entirely, making destination == source for the shutil.copy2 call.
+    """
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    # custom workspace is intentionally *outside* source_root
+    custom_ws = tmp_path / "agent_workspace"
+
+    target.mkdir()
+    source.mkdir()
+    custom_ws.mkdir()
+
+    (custom_ws / "IDENTITY.md").write_text("# Identity\n", encoding="utf-8")
+
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(custom_ws)}}}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+        selected_options={"archive"},
+    )
+
+    # Must not raise shutil.SameFileError
+    report = migrator.migrate()
+    assert report is not None
+    # IDENTITY.md must have been archived into the proper archive dir (not clobbered back to source)
+    items = report.get("items", [])
+    archive_items = [i for i in items if i.get("kind") == "archive" and "IDENTITY" in str(i.get("source", ""))]
+    assert archive_items, f"Expected archive record for IDENTITY.md, got: {[i.get('kind') for i in items]}"

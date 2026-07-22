@@ -563,7 +563,9 @@ def relative_label(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root))
     except ValueError:
-        return str(path)
+        # path is outside root — fall back to basename to avoid pathlib absolute-join
+        # clobbering the archive root when the result is used in `archive_dir / label`.
+        return path.name
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -2091,6 +2093,14 @@ class Migrator:
         destination = self.archive_dir / relative_label(source, self.source_root) if self.archive_dir else None
         if self.execute and destination is not None:
             ensure_parent(destination)
+            # Guard: skip self-copy when source and destination resolve to the same file.
+            # This can happen when a file from a custom workspace outside source_root is
+            # archived and relative_label returns its basename — if archive_dir happens to
+            # be the same directory, destination == source and shutil.copy2 raises
+            # shutil.SameFileError.  Silently skip rather than abort the migration.
+            if source.resolve() == destination.resolve():
+                self.record("archive", source, destination, "skipped", "same-file: skipped self-copy")
+                return
             if source.is_dir():
                 shutil.copytree(source, destination, dirs_exist_ok=True)
             else:

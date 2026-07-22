@@ -63,6 +63,40 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_init_backfills_legacy_attachment_deletion_identity(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy attachment")
+        attachment_dir = kb.task_attachments_dir(task_id)
+        attachment_dir.mkdir(parents=True)
+        blob = attachment_dir / "legacy.txt"
+        blob.write_text("legacy")
+        cursor = conn.execute(
+            "INSERT INTO task_attachments "
+            "(task_id, filename, stored_path, content_type, size, uploaded_by, "
+            "created_at, filesystem_identity) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+            (
+                task_id,
+                blob.name,
+                str(blob.resolve()),
+                "text/plain",
+                blob.stat().st_size,
+                "legacy",
+                int(time.time()),
+            ),
+        )
+        attachment_id = int(cursor.lastrowid)
+        conn.commit()
+
+    kb.init_db()
+    with kb.connect() as conn:
+        attachment = kb.get_attachment(conn, attachment_id)
+        assert attachment is not None
+        assert attachment.filesystem_identity is not None
+        assert kb.delete_attachment(conn, attachment_id) is not None
+
+    assert not blob.exists()
+
+
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
     """All kanban connections should use the explicit busy-timeout knob.
 
@@ -2452,6 +2486,7 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
         run = kb.latest_run(conn, t)
 
     assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert list(ws.parent.glob(f".{ws.name}.hermes-delete-*")) == []
     assert persisted.exists(), "artifact copy should survive scratch cleanup"
     assert persisted.parent == kb.task_attachments_dir(t)
     assert persisted.name == "chart.png"
@@ -3019,12 +3054,18 @@ def test_scratch_workspace_has_exact_owner_marker(kanban_home):
 
     marker = workspace / ".hermes-kanban-owner.json"
     assert marker.is_file()
+    workspace_identity = workspace.lstat()
     assert json.loads(marker.read_text(encoding="utf-8")) == {
-        "version": 1,
+        "version": 2,
         "task_id": task_id,
         "board": "default",
         "tenant": "tenant-a",
         "workspace": str(workspace.resolve()),
+        "workspace_identity": [
+            workspace_identity.st_dev,
+            workspace_identity.st_ino,
+            workspace_identity.st_ctime_ns if os.name == "nt" else None,
+        ],
     }
 
 
@@ -3045,6 +3086,50 @@ def test_interrupted_scratch_marker_creation_preserves_evidence(
             kb.resolve_workspace(task)
         assert canonical.exists()
         assert (canonical / kb._SCRATCH_OWNER_MARKER_NAME).read_text() == "{"
+
+
+def test_scratch_marker_creation_rejects_replaced_workspace(
+    kanban_home, monkeypatch
+):
+    """A replacement directory cannot inherit a newly published owner marker."""
+    real_create = kb._create_scratch_owner_marker
+    replaced = False
+    displaced = None
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="marker publication race")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.workspaces_root() / task_id
+
+        def replace_before_marker(path, **kwargs):
+            nonlocal replaced, displaced
+            if not replaced:
+                replaced = True
+                if kwargs["workspace_fd"] is not None:
+                    try:
+                        os.close(kwargs["workspace_fd"])
+                    except OSError:
+                        pass
+                displaced = workspace.with_name(f"{workspace.name}-agent-original")
+                kb.os.replace(workspace, displaced)
+                workspace.mkdir()
+                (workspace / "human.txt").write_text("keep")
+            return real_create(path, **kwargs)
+
+        monkeypatch.setattr(
+            kb, "_create_scratch_owner_marker", replace_before_marker
+        )
+        with pytest.raises(ValueError, match="scratch workspace changed"):
+            kb.resolve_workspace(task)
+
+    assert displaced is not None and displaced.is_dir()
+    assert (workspace / "human.txt").read_text() == "keep"
+    assert not kb._scratch_workspace_is_owned(
+        workspace,
+        task_id=task_id,
+        board="default",
+        tenant=None,
+    )
 
 
 def test_scratch_cleanup_preserves_cross_task_workspace(kanban_home):
@@ -3226,8 +3311,8 @@ def test_scratch_cleanup_binds_owner_proof_to_original_directory(
 
     assert displaced is not None and (displaced / "agent.txt").read_text() == "agent"
     quarantines = list(workspace.parent.glob(f".{workspace.name}.hermes-delete-*"))
-    assert len(quarantines) == 1
-    assert (quarantines[0] / "human.txt").read_text() == "keep"
+    assert quarantines == []
+    assert (workspace / "human.txt").read_text() == "keep"
 
 
 # ---------------------------------------------------------------------------

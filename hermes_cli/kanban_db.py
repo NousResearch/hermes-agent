@@ -143,7 +143,7 @@ KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 # pre-existing directory (or an existing marker) is never silently claimed by
 # a different task.
 _SCRATCH_OWNER_MARKER_NAME = ".hermes-kanban-owner.json"
-_SCRATCH_OWNER_VERSION = 1
+_SCRATCH_OWNER_VERSION = 2
 _TXN_ROLLBACK_CLEANUPS: dict[int, list[Any]] = {}
 
 
@@ -2403,6 +2403,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 "filesystem_identity",
                 "filesystem_identity TEXT",
             )
+        # Legacy rows predate exact deletion provenance. Backfill only files
+        # whose row name and absolute parent independently bind them to this
+        # task's managed attachment directory; anything ambiguous stays NULL
+        # and is preserved rather than adopted.
+        board_for_attachments = _connection_board(conn)
+        legacy_attachments = conn.execute(
+            "SELECT id, task_id, filename, stored_path FROM task_attachments "
+            "WHERE filesystem_identity IS NULL"
+        ).fetchall()
+        for attachment in legacy_attachments:
+            try:
+                stored = Path(attachment["stored_path"])
+                owned_root = task_attachments_dir(
+                    attachment["task_id"], board=board_for_attachments
+                ).resolve(strict=True)
+                selected = stored.lstat()
+                if (
+                    not stored.is_absolute()
+                    or stored.name != attachment["filename"]
+                    or stored.parent.resolve(strict=True) != owned_root
+                    or not stat.S_ISREG(selected.st_mode)
+                    or _stat_is_reparse(selected)
+                ):
+                    continue
+                conn.execute(
+                    "UPDATE task_attachments SET filesystem_identity = ? "
+                    "WHERE id = ? AND filesystem_identity IS NULL",
+                    (
+                        _encode_filesystem_identity(_filesystem_identity(selected)),
+                        attachment["id"],
+                    ),
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -3518,7 +3552,10 @@ def _atomic_remove_expected_file(path: Path, expected: _FilesystemIdentity) -> b
         moved = quarantine.lstat()
         if (
             not stat.S_ISREG(moved.st_mode)
-            or _filesystem_identity(moved) != expected
+            or moved.st_dev != expected[0]
+            or moved.st_ino != expected[1]
+            or stat.S_IFMT(moved.st_mode) != stat.S_IFMT(expected[2])
+            or (os.name == "nt" and moved.st_ctime_ns != expected[5])
         ):
             return False
         quarantine.unlink()
@@ -5252,6 +5289,7 @@ def _owner_marker_payload(
     board: str,
     tenant: Optional[str],
     workspace: Path,
+    workspace_identity: os.stat_result,
 ) -> dict[str, Any]:
     return {
         "version": _SCRATCH_OWNER_VERSION,
@@ -5259,6 +5297,11 @@ def _owner_marker_payload(
         "board": board,
         "tenant": tenant,
         "workspace": str(workspace),
+        "workspace_identity": [
+            workspace_identity.st_dev,
+            workspace_identity.st_ino,
+            workspace_identity.st_ctime_ns if os.name == "nt" else None,
+        ],
     }
 
 
@@ -5268,12 +5311,20 @@ def _read_scratch_owner_marker(
     task_id: str,
     board: Optional[str],
     tenant: Optional[str],
+    expected_workspace: Optional[Path] = None,
 ) -> bool:
     """Validate the exact owner marker; malformed evidence fails closed."""
     if not board:
         return False
     marker = workspace / _SCRATCH_OWNER_MARKER_NAME
+    marker_workspace = expected_workspace or workspace
     try:
+        workspace_identity = workspace.lstat()
+        if (
+            not stat.S_ISDIR(workspace_identity.st_mode)
+            or _stat_is_reparse(workspace_identity)
+        ):
+            return False
         if marker.is_symlink() or not marker.is_file():
             return False
         payload = json.loads(marker.read_text(encoding="utf-8"))
@@ -5281,7 +5332,14 @@ def _read_scratch_owner_marker(
         return False
     if not isinstance(payload, dict):
         return False
-    if set(payload) != {"version", "task_id", "board", "tenant", "workspace"}:
+    if set(payload) != {
+        "version",
+        "task_id",
+        "board",
+        "tenant",
+        "workspace",
+        "workspace_identity",
+    }:
         return False
     if payload["version"] != _SCRATCH_OWNER_VERSION:
         return False
@@ -5289,9 +5347,17 @@ def _read_scratch_owner_marker(
         return False
     if payload["tenant"] != tenant or not isinstance(payload["workspace"], str):
         return False
+    if payload["workspace_identity"] != _owner_marker_payload(
+        task_id=task_id,
+        board=board,
+        tenant=tenant,
+        workspace=marker_workspace,
+        workspace_identity=workspace_identity,
+    )["workspace_identity"]:
+        return False
     # The marker must name the canonical workspace text, not an alias that
     # merely resolves to it.
-    return _same_canonical_path(Path(payload["workspace"]), workspace)
+    return _same_canonical_path(Path(payload["workspace"]), marker_workspace)
 
 
 def _create_scratch_owner_marker(
@@ -5300,7 +5366,9 @@ def _create_scratch_owner_marker(
     task_id: str,
     board: str,
     tenant: Optional[str],
-) -> None:
+    workspace_identity: os.stat_result,
+    workspace_fd: Optional[int],
+) -> os.stat_result:
     """Create a new marker without overwriting any pre-existing evidence."""
     marker = workspace / _SCRATCH_OWNER_MARKER_NAME
     payload = _owner_marker_payload(
@@ -5308,16 +5376,28 @@ def _create_scratch_owner_marker(
         board=board,
         tenant=tenant,
         workspace=workspace,
+        workspace_identity=workspace_identity,
     )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
-    fd = os.open(str(marker), flags, 0o600)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if workspace_fd is not None and os.open in os.supports_dir_fd:
+        fd = os.open(
+            _SCRATCH_OWNER_MARKER_NAME,
+            flags,
+            0o600,
+            dir_fd=workspace_fd,
+        )
+    else:
+        fd = os.open(str(marker), flags, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, separators=(",", ":"), ensure_ascii=False)
             stream.flush()
             os.fsync(stream.fileno())
+            return os.fstat(stream.fileno())
     except Exception:
         # The marker may be partial after an interrupted write. Do not remove
         # or replace it: future cleanup must fail closed on that evidence.
@@ -5339,6 +5419,7 @@ def _materialize_owned_scratch_workspace(
     try:
         canonical.parent.mkdir(parents=True, exist_ok=True)
         created = False
+        workspace_fd: Optional[int] = None
         try:
             canonical.mkdir()
             created = True
@@ -5347,22 +5428,59 @@ def _materialize_owned_scratch_workspace(
                 raise ValueError(f"scratch workspace is not a regular directory: {canonical}")
         if created:
             try:
-                _create_scratch_owner_marker(
+                workspace_identity = canonical.lstat()
+                if (
+                    not stat.S_ISDIR(workspace_identity.st_mode)
+                    or _stat_is_reparse(workspace_identity)
+                ):
+                    raise ValueError(
+                        f"scratch workspace is not a regular directory: {canonical}"
+                    )
+                if os.name != "nt":
+                    directory_flags = os.O_RDONLY
+                    if hasattr(os, "O_BINARY"):
+                        directory_flags |= os.O_BINARY
+                    if hasattr(os, "O_DIRECTORY"):
+                        directory_flags |= os.O_DIRECTORY
+                    if hasattr(os, "O_NOFOLLOW"):
+                        directory_flags |= os.O_NOFOLLOW
+                    workspace_fd = os.open(canonical, directory_flags)
+                    if not os.path.samestat(
+                        workspace_identity, os.fstat(workspace_fd)
+                    ):
+                        raise ValueError(
+                            f"scratch workspace changed before marker creation: {canonical}"
+                        )
+                marker_identity = _create_scratch_owner_marker(
                     canonical,
                     task_id=task.id,
                     board=board_slug,
                     tenant=task.tenant,
+                    workspace_identity=workspace_identity,
+                    workspace_fd=workspace_fd,
                 )
+                current_workspace = canonical.lstat()
+                current_marker = (
+                    canonical / _SCRATCH_OWNER_MARKER_NAME
+                ).lstat()
+                if (
+                    not os.path.samestat(workspace_identity, current_workspace)
+                    or not os.path.samestat(marker_identity, current_marker)
+                ):
+                    raise ValueError(
+                        f"scratch workspace changed during marker creation: {canonical}"
+                    )
             except Exception:
-                # Never unlink marker evidence by pathname after an error: a
-                # concurrent writer may have replaced it. Remove only an
-                # actually empty directory; partial/foreign evidence remains
-                # fail-closed for an operator to inspect.
-                try:
-                    canonical.rmdir()
-                except OSError:
-                    pass
+                # Never remove by pathname after an error: a concurrent
+                # writer may have replaced the newly-created directory.
+                # Partial/foreign evidence remains fail-closed for inspection.
                 raise
+            finally:
+                if workspace_fd is not None:
+                    try:
+                        os.close(workspace_fd)
+                    except OSError:
+                        pass
         elif not _read_scratch_owner_marker(
             canonical,
             task_id=task.id,
@@ -5500,6 +5618,7 @@ def _scratch_workspace_ownership_evidence(
         board=board,
         tenant=tenant,
         workspace=canonical,
+        workspace_identity=workspace_identity,
     )
     if payload != expected_payload:
         return None
@@ -5592,6 +5711,7 @@ def _remove_managed_scratch_workspace(
                 task_id=task_id,
                 board=board,
                 tenant=tenant,
+                expected_workspace=wp,
             )
         ):
             _log.warning(

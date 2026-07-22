@@ -7180,6 +7180,22 @@ def _gateway_command_inner(args):
             print("Starting gateway...")
             run_gateway(verbose=0)
 
+    elif subcmd == "reload":
+        snapshot = get_gateway_runtime_snapshot(system=False)
+        pids = snapshot.gateway_pids
+        if not pids:
+            print("✗ Gateway is not running (nothing to reload)")
+            sys.exit(1)
+
+        for pid in pids:
+            try:
+                # SIGUSR2 is caught by the gateway to hot-reload substrate (MCP/Skills)
+                print(f"Reloading gateway (PID {pid})...")
+                os.kill(pid, signal.SIGUSR2)
+                print("✓ Hot reload signal sent.")
+            except Exception as e:
+                print(f"✗ Failed to send reload signal to {pid}: {e}")
+
     elif subcmd == "status":
         deep = getattr(args, "deep", False)
         full = getattr(args, "full", False)

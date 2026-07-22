@@ -143,6 +143,11 @@ def build_gateway_parser(
     )
     _add_compat_platform_flag(gateway_restart)
 
+    # gateway reload
+    gateway_subparsers.add_parser(
+        "reload", help="Reload MCP servers and skills mid-turn without restarting"
+    )
+
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")

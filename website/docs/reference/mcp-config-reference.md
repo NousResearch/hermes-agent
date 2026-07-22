@@ -163,11 +163,12 @@ Behavior:
 
 - `main` (default) — the tool is available to the MAIN agent and all subagents.
   This is exactly today's behavior; omitting `scope` is byte-for-byte identical.
-- `subagent_only` — the tool is **withheld from the MAIN agent's tool schema**
+- `subagent_only` — the tool is **omitted from the MAIN agent's tool schema**
   and exposed **only to subagents** spawned via `delegate_task`. Use this for
   powerful or risky operations you want a focused worker to perform without the
-  top-level agent calling them directly. This *adds* a containment surface
-  (MAIN can no longer reach the tool); it never removes capability from a child.
+  top-level agent calling them directly. This hides the tool from MAIN's model
+  schema (the standard containment mechanism); it never removes capability from
+  a child.
 
 `scope` can be set at two granularities:
 
@@ -182,8 +183,10 @@ Behavior:
        scope: subagent_only
    ```
 
-2. **`tools:`-level** — applies only to the tool set selected by
-   `tools.include` / `tools.exclude`. Precedence mirrors `include` over
+2. **`tools:`-level** — overrides for the tool set selected by
+   `tools.include` / `tools.exclude`. When a filter is present, `tools.scope`
+   applies only to the selected tools; when no filter is set, `tools.scope`
+   applies to ALL tools of the server. Precedence mirrors `include` over
    `exclude`: if `include` is set and `tools.scope: subagent_only`, only those
    included tools are registered **and** scoped `subagent_only`. Tools the
    `include` list does not select are *not* registered at all (the `include`

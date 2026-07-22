@@ -5513,9 +5513,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     # Visibility scope (see ToolEntry.scope). Server-level `scope` applies to
     # all of this server's tools (and its utility tools). A `scope` inside the
-    # `tools:` block applies only to the tool(s) selected by include/exclude:
-    # when include/exclude filtered the tool in, and tools.scope is set, that
-    # narrower scope wins; otherwise the server-level scope (or "main") applies.
+    # `tools:` block overrides for the include/exclude-selected tools when a
+    # filter is present; when no include/exclude filter is set, `tools.scope`
+    # applies to ALL tools of the server (so `tools: { scope: subagent_only }`
+    # without a filter does not silently leave every tool at "main").
     server_scope = _normalize_mcp_scope(config.get("scope"), f"mcp_servers.{name}.scope")
     tools_scope = _normalize_mcp_scope(
         tools_filter.get("scope"), f"mcp_servers.{name}.tools.scope"
@@ -5529,11 +5530,17 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         return True
 
     def _tool_scope(tool_name: str) -> str:
-        # Per-tool scope only narrows when the tools block explicitly scopes
-        # the include/exclude-selected set AND this tool was actually selected
-        # by that filter. Mirrors include/exclude precedence.
-        if (include_set or exclude_set) and tools_filter.get("scope"):
-            if _should_register(tool_name):
+        if tools_filter.get("scope"):
+            if include_set or exclude_set:
+                # Per-tool scope applies only to the include/exclude-selected
+                # set. Mirrors include/exclude precedence.
+                if _should_register(tool_name):
+                    return tools_scope
+            else:
+                # No include/exclude filter: tools.scope applies to ALL tools
+                # of this server. Without this, `tools: { scope: subagent_only }`
+                # would silently leave every tool at "main" — the same failure
+                # class (inverted) that _normalize_mcp_scope warns against.
                 return tools_scope
         return server_scope
 

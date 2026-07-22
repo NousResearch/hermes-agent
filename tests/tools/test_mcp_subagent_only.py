@@ -207,6 +207,34 @@ def test_register_server_tools_per_tool_scope_mixed():
     assert reg.get_entry("mcp__mixed__safe_op") is None
 
 
+def test_register_server_tools_scope_without_filter_applies_to_all():
+    """tools.scope without include/exclude must apply to ALL tools.
+
+    A config like `tools: { scope: subagent_only }` with no include/exclude
+    filter must not silently leave every tool at "main" — that would expose
+    tools the user intended to hide (same failure class, inverted, that
+    _normalize_mcp_scope warns against).
+    """
+    reg = _fresh_registry()
+    server = _FakeServer([
+        _FakeMcpTool("op_a", "operation a"),
+        _FakeMcpTool("op_b", "operation b"),
+    ])
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr("tools.registry.registry", reg)
+        mcp_tool_mod._register_server_tools(
+            "nofilter", server,
+            {"command": "x", "tools": {"scope": "subagent_only"}})
+    # Both tools registered (no filter) and both scoped subagent_only.
+    assert reg.get_entry("mcp__nofilter__op_a").scope == "subagent_only"
+    assert reg.get_entry("mcp__nofilter__op_b").scope == "subagent_only"
+    # MAIN must not see either tool.
+    main_defs = {d["function"]["name"] for d in reg.get_definitions(
+        {"mcp__nofilter__op_a", "mcp__nofilter__op_b"})}
+    assert "mcp__nofilter__op_a" not in main_defs
+    assert "mcp__nofilter__op_b" not in main_defs
+
+
 def test_register_server_tools_unknown_scope_defaults_main(caplog):
     reg = _fresh_registry()
     server = _FakeServer([_FakeMcpTool("op", "op")])

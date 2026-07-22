@@ -58,6 +58,33 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
+function isLegacyEndpoint(endpoint: CustomEndpoint) {
+  return endpoint.source === 'custom_providers'
+}
+
+function EndpointSummary({ endpoint }: { endpoint: CustomEndpoint }) {
+  return (
+    <>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-medium">{endpoint.name}</span>
+        {endpoint.is_current && (
+          <Pill tone="primary">
+            <Check className="size-3" />
+            Active
+          </Pill>
+        )}
+        {isLegacyEndpoint(endpoint) && <Pill tone="warn">Legacy config</Pill>}
+        {endpoint.source === 'direct-config' && <Pill>config.yaml</Pill>}
+      </div>
+      <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground">{endpoint.base_url}</div>
+      <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+        <span>{endpoint.model}</span>
+        {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? 'API key set'}</span>}
+      </div>
+    </>
+  )
+}
+
 function toPayload(form: EndpointForm): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
@@ -100,7 +127,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         }
 
         setEndpoints(data.endpoints)
-        const current = data.endpoints.find(endpoint => endpoint.is_current) ?? data.endpoints[0]
+        const editableEndpoints = data.endpoints.filter(endpoint => !isLegacyEndpoint(endpoint))
+        const current = editableEndpoints.find(endpoint => endpoint.is_current) ?? editableEndpoints[0]
 
         if (current) {
           setForm(formFromEndpoint(current))
@@ -200,8 +228,8 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     try {
       setDeleting(endpoint.id)
-      const response = await deleteCustomEndpoint(endpoint.id)
-      setEndpoints(response.endpoints)
+      await deleteCustomEndpoint(endpoint.id, endpoint.source)
+      await refresh()
 
       if (form.id === endpoint.id) {
         setForm(EMPTY_FORM)
@@ -231,59 +259,59 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
           <SectionHeading icon={Globe} meta={`${endpoints.length}`} title="Custom Endpoints" />
           <div className="divide-y divide-border/40 rounded-md border border-border/50">
             {endpoints.length ? (
-              endpoints.map(endpoint => (
-                <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" key={endpoint.id}>
-                  <button
-                    className="min-w-0 text-left"
-                    onClick={() => {
-                      setForm(formFromEndpoint(endpoint))
-                      setDiscoveredModels(endpoint.models)
-                    }}
-                    type="button"
+              endpoints.map(endpoint => {
+                const isLegacy = isLegacyEndpoint(endpoint)
+
+                return (
+                  <div
+                    className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                    key={`${endpoint.source ?? 'unknown'}:${endpoint.id}`}
                   >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-sm font-medium">{endpoint.name}</span>
-                      {endpoint.is_current && (
-                        <Pill tone="primary">
-                          <Check className="size-3" />
-                          Active
-                        </Pill>
-                      )}
-                      {endpoint.source === 'direct-config' && <Pill>config.yaml</Pill>}
-                    </div>
-                    <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground">
-                      {endpoint.base_url}
-                    </div>
-                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                      <span>{endpoint.model}</span>
-                      {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? 'API key set'}</span>}
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-2 sm:justify-end">
-                    <Button
-                      disabled={endpoint.is_current || activating === endpoint.id}
-                      onClick={() => void handleActivate(endpoint)}
-                      size="sm"
-                      variant="outline"
-                    >
-                      {activating === endpoint.id ? <Loader2 className="animate-spin" /> : <Zap />}
-                      Use
-                    </Button>
-                    {endpoint.source !== 'direct-config' && (
-                      <Button
-                        className="hover:text-destructive"
-                        disabled={deleting === endpoint.id}
-                        onClick={() => void handleDelete(endpoint)}
-                        size="icon-sm"
-                        title="Delete endpoint"
-                        variant="ghost"
+                    {isLegacy ? (
+                      <div className="min-w-0">
+                        <EndpointSummary endpoint={endpoint} />
+                      </div>
+                    ) : (
+                      <button
+                        className="min-w-0 text-left"
+                        onClick={() => {
+                          setForm(formFromEndpoint(endpoint))
+                          setDiscoveredModels(endpoint.models)
+                        }}
+                        type="button"
                       >
-                        {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
-                      </Button>
+                        <EndpointSummary endpoint={endpoint} />
+                      </button>
                     )}
+                    <div className="flex items-center gap-2 sm:justify-end">
+                      {!isLegacy && (
+                        <Button
+                          disabled={endpoint.is_current || activating === endpoint.id}
+                          onClick={() => void handleActivate(endpoint)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          {activating === endpoint.id ? <Loader2 className="animate-spin" /> : <Zap />}
+                          Use
+                        </Button>
+                      )}
+                      {endpoint.source !== 'direct-config' && (
+                        <Button
+                          aria-label={`Delete ${endpoint.name}`}
+                          className="hover:text-destructive"
+                          disabled={deleting === endpoint.id}
+                          onClick={() => void handleDelete(endpoint)}
+                          size="icon-sm"
+                          title="Delete endpoint"
+                          variant="ghost"
+                        >
+                          {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))
+                )
+              })
             ) : (
               <EmptyState description="Add an OpenAI-compatible endpoint below." title="No custom endpoints" />
             )}

@@ -4230,6 +4230,174 @@ class TestWebServerEndpoints:
         assert data["endpoints"][0]["source"] == "direct-config"
         assert data["endpoints"][0]["has_api_key"] is True
 
+    def test_custom_endpoints_list_includes_legacy_entries_and_redacts_keys(self):
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom:acme-legacy",
+                "default": "acme/model-1",
+                "base_url": "https://legacy.acme.test/v1",
+            },
+            "custom_providers": [
+                {
+                    "name": "Acme Legacy",
+                    "api": "https://legacy.acme.test/v1",
+                    "api_key": "sk-super-secret-value",
+                    "model": "acme/model-1",
+                    "models": ["acme/model-1", "acme/model-2"],
+                    "discover_models": False,
+                },
+                {"name": "Broken", "base_url": "not-a-url"},
+            ],
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["endpoints"]) == 1
+        endpoint = data["endpoints"][0]
+        assert endpoint["id"].startswith("legacy-0-")
+        assert endpoint["source"] == "custom_providers"
+        assert endpoint["models"] == ["acme/model-1", "acme/model-2"]
+        assert endpoint["discover_models"] is False
+        assert endpoint["has_api_key"] is True
+        assert endpoint["api_key_preview"] == redact_key("sk-super-secret-value")
+        assert endpoint["is_current"] is True
+        assert "sk-super-secret-value" not in resp.text
+
+    def _delete_legacy_endpoint(self, name: str):
+        endpoints = self.client.get(
+            "/api/providers/custom-endpoints"
+        ).json()["endpoints"]
+        endpoint = next(
+            row
+            for row in endpoints
+            if row["source"] == "custom_providers" and row["name"] == name
+        )
+        return self.client.request(
+            "DELETE",
+            "/api/providers/custom-endpoints",
+            params={"endpoint_id": endpoint["id"], "source": endpoint["source"]},
+        )
+
+    def test_custom_endpoints_deduplicates_legacy_equivalent_of_provider_entry(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {
+                "provider": "custom:acme",
+                "default": "acme/m1",
+                "base_url": "https://llm.acme.test/v1",
+                "api_key": "model-secret",
+                "api_mode": "codex_responses",
+            },
+            "custom_providers": [{
+                "name": "Acme",
+                "base_url": "https://llm.acme.test/v1/",
+                "model": "acme/m1",
+                "api_key": "legacy-secret",
+            }],
+            "providers": {"acme": {
+                "name": " Acme ",
+                "api": "https://llm.acme.test/v1",
+                "default_model": " acme/m1 ",
+                "api_key": "modern-secret",
+            }},
+        })
+
+        endpoints = self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+
+        assert [(row["id"], row["source"]) for row in endpoints] == [
+            ("acme", "providers")
+        ]
+        assert endpoints[0]["is_current"] is True
+        assert endpoints[0]["name"] == "Acme"
+        assert endpoints[0]["model"] == "acme/m1"
+        assert "legacy-secret" not in json.dumps(endpoints)
+        assert "modern-secret" not in json.dumps(endpoints)
+
+        resp = self.client.request("DELETE", "/api/providers/custom-endpoints/acme")
+
+        assert resp.status_code == 200
+        cfg = load_config()
+        assert cfg["providers"] == {}
+        assert cfg["custom_providers"] == [{
+            "name": "Acme",
+            "base_url": "https://llm.acme.test/v1/",
+            "model": "acme/m1",
+            "api_key": "legacy-secret",
+        }]
+        model_cfg = cfg["model"]
+        for field in ("provider", "base_url", "api_key", "api", "api_mode"):
+            assert field not in model_cfg
+        assert [row["source"] for row in resp.json()["endpoints"]] == ["custom_providers"]
+
+    def test_legacy_management_id_excludes_url_credentials_and_fragment(self):
+        from hermes_cli.config import save_config
+
+        def endpoint_id(base_url: str) -> str:
+            save_config({
+                "custom_providers": [{
+                    "name": "Acme",
+                    "base_url": base_url,
+                    "model": "acme/m1",
+                }],
+            })
+            return self.client.get(
+                "/api/providers/custom-endpoints"
+            ).json()["endpoints"][0]["id"]
+
+        first_id = endpoint_id("https://user:first-secret@LLM.ACME.TEST:443/v1#first")
+        second_id = endpoint_id("https://user:second-secret@llm.acme.test/v1#second")
+
+        assert first_id == second_id
+        assert "secret" not in first_id
+
+    def test_custom_endpoint_identity_preserves_url_path_and_model_case(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "providers": {"acme": {
+                "name": "Acme",
+                "base_url": "HTTPS://LLM.ACME.TEST:443/v1/Alpha",
+                "model": "acme/Model",
+            }},
+            "custom_providers": [
+                {
+                    "name": "Acme",
+                    "base_url": "https://llm.acme.test/v1/alpha",
+                    "model": "acme/Model",
+                },
+                {
+                    "name": "Acme",
+                    "base_url": "https://llm.acme.test/v1/Alpha",
+                    "model": "acme/model",
+                },
+            ],
+        })
+
+        endpoints = self.client.get(
+            "/api/providers/custom-endpoints"
+        ).json()["endpoints"]
+
+        assert [(row["source"], row["base_url"], row["model"]) for row in endpoints] == [
+            ("providers", "HTTPS://LLM.ACME.TEST:443/v1/Alpha", "acme/Model"),
+            ("custom_providers", "https://llm.acme.test/v1/alpha", "acme/Model"),
+            ("custom_providers", "https://llm.acme.test/v1/Alpha", "acme/model"),
+        ]
+
+        resp = self.client.request(
+            "DELETE", "/api/providers/custom-endpoints/acme"
+        )
+
+        assert resp.status_code == 200
+        assert [row["model"] for row in load_config()["custom_providers"]] == [
+            "acme/Model",
+            "acme/model",
+        ]
+
     def test_custom_endpoint_upsert_persists_provider_and_sets_default(self):
         """Desktop can persist an OpenAI-compatible proxy in providers and make
         it the default for new chats.
@@ -4464,6 +4632,245 @@ class TestWebServerEndpoints:
         assert model_cfg.get("provider") == "other"
         assert model_cfg.get("api_key") == "sk-other"
         assert model_cfg.get("base_url") == "https://llm.other.corp/v1"
+
+    def test_deleting_active_legacy_endpoint_scrubs_all_model_credentials(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {
+                "provider": "custom:acme-legacy",
+                "default": "acme/m1",
+                "base_url": "https://legacy.acme.test/v1",
+                "api_key": "new-alias-secret",
+                "api": "old-alias-secret",
+                "api_mode": "anthropic_messages",
+            },
+            "custom_providers": [
+                {
+                    "name": "Acme Legacy",
+                    "base_url": "https://legacy.acme.test/v1",
+                    "api_key": "provider-secret",
+                    "model": "acme/m1",
+                },
+                {
+                    "name": "Keep Me",
+                    "base_url": "https://keep.example/v1",
+                    "api_key": "keep-secret",
+                },
+            ],
+        })
+
+        resp = self._delete_legacy_endpoint("Acme Legacy")
+
+        assert resp.status_code == 200
+        cfg = load_config()
+        assert [row["name"] for row in cfg["custom_providers"]] == ["Keep Me"]
+        model_cfg = cfg["model"]
+        for field in ("provider", "base_url", "api_key", "api", "api_mode"):
+            assert field not in model_cfg
+        assert model_cfg["default"] == "acme/m1"
+        assert "provider-secret" not in resp.text
+
+    def test_deleting_inactive_legacy_endpoint_preserves_active_model(self):
+        from hermes_cli.config import load_config, save_config
+
+        active_model = {
+            "provider": "other",
+            "default": "other/m1",
+            "base_url": "https://other.example/v1",
+            "api_key": "other-secret",
+            "api": "other-old-secret",
+            "api_mode": "chat_completions",
+        }
+        save_config({
+            "model": dict(active_model),
+            "custom_providers": [{
+                "name": "Acme Legacy",
+                "base_url": "https://legacy.acme.test/v1",
+                "api_key": "provider-secret",
+            }],
+        })
+
+        resp = self._delete_legacy_endpoint("Acme Legacy")
+
+        assert resp.status_code == 200
+        assert load_config()["model"] == active_model
+
+    def test_deleting_unknown_legacy_endpoint_returns_404_without_changes(self):
+        from hermes_cli.config import load_config, save_config
+
+        original = {
+            "model": {"provider": "nous", "default": "hermes-4"},
+            "custom_providers": [{
+                "name": "Acme Legacy",
+                "base_url": "https://legacy.acme.test/v1",
+            }],
+        }
+        save_config(original)
+        before = load_config()
+
+        resp = self.client.request(
+            "DELETE",
+            "/api/providers/custom-endpoints",
+            params={
+                "endpoint_id": "legacy-99-does-not-exist",
+                "source": "custom_providers",
+            },
+        )
+
+        assert resp.status_code == 404
+        assert load_config() == before
+
+    def test_bare_custom_legacy_delete_only_detaches_matching_base_url(self):
+        from hermes_cli.config import load_config, save_config
+
+        model_cfg = {
+            "provider": "custom",
+            "default": "other/m1",
+            "base_url": "https://other.example/v1",
+            "api_key": "other-secret",
+            "api": "other-old-secret",
+            "api_mode": "chat_completions",
+        }
+        save_config({
+            "model": dict(model_cfg),
+            "custom_providers": [{
+                "name": "Acme Legacy",
+                "base_url": "https://legacy.acme.test/v1",
+                "api_key": "provider-secret",
+            }],
+        })
+
+        resp = self._delete_legacy_endpoint("Acme Legacy")
+
+        assert resp.status_code == 200
+        assert load_config()["model"] == model_cfg
+
+    def test_bare_custom_legacy_delete_detaches_matching_base_url(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "acme/m1",
+                "base_url": "https://legacy.acme.test/v1/",
+                "api_key": "new-alias-secret",
+                "api": "old-alias-secret",
+                "api_mode": "chat_completions",
+            },
+            "custom_providers": [{
+                "name": "Acme Legacy",
+                "base_url": "https://legacy.acme.test/v1",
+                "api_key": "provider-secret",
+            }],
+        })
+
+        resp = self._delete_legacy_endpoint("Acme Legacy")
+
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        for field in ("provider", "base_url", "api_key", "api", "api_mode"):
+            assert field not in model_cfg
+
+    def test_bare_custom_legacy_delete_preserves_case_distinct_active_url(self):
+        from hermes_cli.config import load_config, save_config
+
+        model_cfg = {
+            "provider": "custom",
+            "default": "other/m1",
+            "base_url": "https://legacy.acme.test/v1/Alpha",
+            "api_key": "other-secret",
+            "api_mode": "chat_completions",
+        }
+        save_config({
+            "model": dict(model_cfg),
+            "custom_providers": [{
+                "name": "Acme Legacy",
+                "base_url": "https://LEGACY.ACME.TEST:443/v1/alpha",
+                "api_key": "provider-secret",
+            }],
+        })
+
+        resp = self._delete_legacy_endpoint("Acme Legacy")
+
+        assert resp.status_code == 200
+        assert load_config()["model"] == model_cfg
+
+    def test_legacy_delete_distinguishes_modern_id_and_colliding_legacy_slugs(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"provider": "other", "default": "other/m1"},
+            "providers": {
+                "custom:foo-bar": {
+                    "name": "Modern Foo",
+                    "base_url": "https://modern.example/v1",
+                    "model": "modern/m1",
+                }
+            },
+            "custom_providers": [
+                {
+                    "name": "Foo Bar",
+                    "base_url": "https://first.example/v1",
+                    "model": "first/m1",
+                },
+                {
+                    "name": "foo-bar",
+                    "base_url": "https://second.example/v1",
+                    "model": "second/m1",
+                },
+            ],
+        })
+
+        endpoints = self.client.get(
+            "/api/providers/custom-endpoints"
+        ).json()["endpoints"]
+        legacy_rows = [row for row in endpoints if row["source"] == "custom_providers"]
+        assert len({row["id"] for row in legacy_rows}) == 2
+
+        target = next(row for row in legacy_rows if row["name"] == "Foo Bar")
+        resp = self.client.request(
+            "DELETE",
+            "/api/providers/custom-endpoints",
+            params={"endpoint_id": target["id"], "source": target["source"]},
+        )
+
+        assert resp.status_code == 200
+        cfg = load_config()
+        assert "custom:foo-bar" in cfg["providers"]
+        assert [row["name"] for row in cfg["custom_providers"]] == ["foo-bar"]
+
+    def test_legacy_delete_accepts_slash_in_display_name_without_path_routing(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "custom_providers": [{
+                "name": "Acme/Proxy",
+                "base_url": "https://slash.example/v1",
+                "model": "slash/m1",
+            }],
+        })
+
+        resp = self._delete_legacy_endpoint("Acme/Proxy")
+
+        assert resp.status_code == 200
+        assert load_config()["custom_providers"] == []
+
+    def test_legacy_delete_requires_source_qualified_management_id(self):
+        from hermes_cli.config import load_config, save_config
+
+        original = {
+            "custom_providers": [
+                {"name": "Foo Bar", "base_url": "https://first.example/v1"},
+                {"name": "foo-bar", "base_url": "https://second.example/v1"},
+            ],
+        }
+        save_config(original)
+
+        resp = self.client.request("DELETE", "/api/providers/custom-endpoints/custom:foo-bar")
+
+        assert resp.status_code == 404
+        assert load_config()["custom_providers"] == original["custom_providers"]
 
     def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
         """Selecting a named custom endpoint from the Desktop model picker

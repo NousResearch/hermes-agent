@@ -72,11 +72,13 @@ from hermes_cli.config import (
     check_config_version,
     detect_install_method,
     format_docker_update_message,
+    get_compatible_custom_providers,
     recommended_update_command_for_method,
     redact_key,
     write_platform_config_field,
     _deep_merge,
 )
+from hermes_cli.providers import custom_provider_slug
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
     ProviderField,
@@ -7213,6 +7215,104 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
+def _canonical_endpoint_url(raw_url: str) -> str:
+    """Normalize URL components that are case-insensitive by specification."""
+    value = raw_url.strip()
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+        if not parsed.scheme or not hostname:
+            return value.rstrip("/")
+
+        host = f"[{hostname.lower()}]" if ":" in hostname else hostname.lower()
+        port = parsed.port
+        if port is not None and not (
+            (parsed.scheme.lower() == "http" and port == 80)
+            or (parsed.scheme.lower() == "https" and port == 443)
+        ):
+            host = f"{host}:{port}"
+
+        return urllib.parse.urlunsplit((
+            parsed.scheme.lower(),
+            host,
+            parsed.path.rstrip("/"),
+            parsed.query,
+            "",
+        ))
+    except ValueError:
+        return value.rstrip("/")
+
+
+def _custom_endpoint_signature(name: str, base_url: str, model: str) -> Tuple[str, str, str]:
+    """Return the compatibility identity used to deduplicate endpoint rows."""
+    return (
+        name.strip().lower(),
+        _canonical_endpoint_url(base_url),
+        model.strip(),
+    )
+
+
+def _legacy_custom_endpoint_id(index: int, name: str, base_url: str, model: str) -> str:
+    """Build a path-safe management ID for one legacy list entry.
+
+    The runtime slug is not suitable here: different names can normalize to
+    the same slug, and slashes in a name do not survive a single-segment REST
+    route. Including the list position and a non-secret content fingerprint
+    also lets deletion reject a stale row after the config has changed.
+    """
+    identity = "\0".join(_custom_endpoint_signature(name, base_url, model))
+    digest = hashlib.blake2s(identity.encode("utf-8"), digest_size=6).hexdigest()
+    return f"legacy-{index}-{digest}"
+
+
+def _legacy_custom_endpoint_rows(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Project valid legacy ``custom_providers`` entries into Desktop rows."""
+    raw_entries = cfg.get("custom_providers")
+    if not isinstance(raw_entries, list):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for index, raw_entry in enumerate(raw_entries):
+        if not isinstance(raw_entry, dict):
+            continue
+        # Use the public compatibility path so aliases and model-list shapes
+        # stay aligned with runtime resolution. Pass a copy because the
+        # normalizer accepts camelCase aliases by materialising snake_case keys.
+        normalized = get_compatible_custom_providers({
+            "custom_providers": [dict(raw_entry)],
+        })
+        if not normalized:
+            continue
+        entry = normalized[0]
+        name = str(entry.get("name") or "").strip()
+        base_url = str(entry.get("base_url") or "").strip()
+        if not name or not base_url:
+            continue
+        models = _models_from_custom_endpoint_entry(entry)
+        model = str(entry.get("model") or (models[0] if models else "")).strip()
+        api_key = str(entry.get("api_key") or "").strip()
+        rows.append({
+            "id": _legacy_custom_endpoint_id(index, name, base_url, model),
+            "_config_index": index,
+            "name": name,
+            "base_url": base_url,
+            "model": model,
+            "models": models,
+            "context_length": entry.get("context_length"),
+            "discover_models": bool(entry.get("discover_models", True)),
+            "has_api_key": bool(api_key),
+            "api_key_preview": redact_key(api_key) if api_key else None,
+            "source": "custom_providers",
+        })
+    return rows
+
+
+def _endpoint_url_matches(left: str, right: str) -> bool:
+    return bool(left.strip() and right.strip()) and (
+        _canonical_endpoint_url(left) == _canonical_endpoint_url(right)
+    )
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -7220,6 +7320,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     current_base_url = str(model_cfg.get("base_url", "") or "")
 
     endpoints: List[Dict[str, Any]] = []
+    modern_by_signature: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     providers = cfg.get("providers")
     if isinstance(providers, dict):
         for provider_id, raw_entry in providers.items():
@@ -7230,10 +7331,15 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             endpoint_id = str(provider_id)
             models = _models_from_custom_endpoint_entry(raw_entry)
-            endpoint_model = str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else ""))
-            endpoints.append({
+            endpoint_model = str(
+                raw_entry.get("model")
+                or raw_entry.get("default_model")
+                or (models[0] if models else "")
+            ).strip()
+            name = str(raw_entry.get("name") or endpoint_id).strip() or endpoint_id
+            endpoint = {
                 "id": endpoint_id,
-                "name": str(raw_entry.get("name") or endpoint_id),
+                "name": name,
                 "base_url": base_url,
                 "model": endpoint_model,
                 "models": models,
@@ -7243,9 +7349,49 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "api_key_preview": redact_key(str(raw_entry.get("api_key", "") or "")) if raw_entry.get("api_key") else None,
                 "is_current": endpoint_id == current_provider,
                 "source": "providers",
-            })
+            }
+            endpoints.append(endpoint)
+            modern_by_signature[
+                _custom_endpoint_signature(name, base_url, endpoint_model)
+            ] = endpoint
 
-    if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
+    for legacy_row in _legacy_custom_endpoint_rows(cfg):
+        endpoint = {
+            key: value
+            for key, value in legacy_row.items()
+            if key != "_config_index"
+        }
+        signature = _custom_endpoint_signature(
+            endpoint["name"], endpoint["base_url"], endpoint["model"]
+        )
+        current_provider_lower = current_provider.strip().lower()
+        endpoint["is_current"] = (
+            current_provider_lower
+            in {
+                custom_provider_slug(endpoint["name"]).lower(),
+                endpoint["name"].strip().lower(),
+            }
+            or (
+                current_provider_lower == "custom"
+                and _endpoint_url_matches(current_base_url, endpoint["base_url"])
+            )
+        )
+        if signature in modern_by_signature:
+            if endpoint["is_current"]:
+                modern_by_signature[signature]["is_current"] = True
+            continue
+        endpoints.append(endpoint)
+
+    if (
+        current_provider.lower() == "custom"
+        and current_base_url
+        and not any(e["id"] == "custom" for e in endpoints)
+        and not any(
+            e["source"] == "custom_providers"
+            and _endpoint_url_matches(current_base_url, e["base_url"])
+            for e in endpoints
+        )
+    ):
         endpoints.insert(0, {
             "id": "custom",
             "name": "Custom",
@@ -7270,7 +7416,13 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> None:
+def _detach_main_model_from_provider(
+    cfg: Dict[str, Any],
+    provider_key: str,
+    *,
+    base_urls: Tuple[str, ...] = (),
+    provider_aliases: Tuple[str, ...] = (),
+) -> None:
     """Drop the main-slot mirror of a provider that no longer exists.
 
     ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
@@ -7286,10 +7438,17 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
     model_cfg = cfg.get("model")
     if not isinstance(model_cfg, dict):
         return
-    if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
+    current_provider = str(model_cfg.get("provider") or "").strip().lower()
+    identities = {provider_key.strip().lower()}
+    identities.update(alias.strip().lower() for alias in provider_aliases if alias.strip())
+    if current_provider == "custom":
+        current_base_url = str(model_cfg.get("base_url") or "")
+        if not any(_endpoint_url_matches(current_base_url, url) for url in base_urls):
+            return
+    elif current_provider not in identities:
         return
-    for field in ("provider", "base_url", "api_key"):
-        model_cfg.pop(field, None)
+    model_cfg.pop("provider", None)
+    clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
     cfg["model"] = model_cfg
 
 
@@ -7415,18 +7574,60 @@ def activate_custom_endpoint(endpoint_id: str):
         raise HTTPException(status_code=500, detail="Failed to activate custom endpoint")
 
 
+@app.delete("/api/providers/custom-endpoints")
 @app.delete("/api/providers/custom-endpoints/{endpoint_id}")
-def delete_custom_endpoint(endpoint_id: str):
-    """Remove a configured custom endpoint from ``providers``."""
+def delete_custom_endpoint(endpoint_id: str, source: Optional[str] = None):
+    """Remove a configured custom endpoint from either supported schema."""
     try:
         cfg = load_config()
         provider_key = _custom_endpoint_id(endpoint_id)
         providers = cfg.get("providers")
-        if not isinstance(providers, dict) or provider_key not in providers:
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
-        providers.pop(provider_key, None)
-        cfg["providers"] = providers
-        _detach_main_model_from_provider(cfg, provider_key)
+        requested_id = endpoint_id.strip()
+        if source not in {None, "providers", "custom_providers"}:
+            raise HTTPException(status_code=400, detail="unsupported custom endpoint source")
+        modern_provider_key: Optional[str] = None
+        if source != "custom_providers" and isinstance(providers, dict):
+            if requested_id in providers:
+                modern_provider_key = requested_id
+            elif not requested_id.lower().startswith("custom:") and provider_key in providers:
+                modern_provider_key = provider_key
+        if isinstance(providers, dict) and modern_provider_key is not None:
+            providers.pop(modern_provider_key, None)
+            cfg["providers"] = providers
+            _detach_main_model_from_provider(
+                cfg,
+                modern_provider_key,
+                provider_aliases=(
+                    custom_provider_slug(modern_provider_key),
+                ),
+            )
+        else:
+            if source != "custom_providers":
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
+            raw_legacy = cfg.get("custom_providers")
+            if not isinstance(raw_legacy, list):
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
+
+            legacy_rows = _legacy_custom_endpoint_rows(cfg)
+            matched_rows = [row for row in legacy_rows if row["id"] == requested_id]
+            if not matched_rows:
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
+            if len(matched_rows) > 1:
+                raise HTTPException(status_code=409, detail="custom endpoint id is ambiguous")
+
+            matched_row = matched_rows[0]
+            matched_index = matched_row["_config_index"]
+            cfg["custom_providers"] = [
+                raw_entry
+                for index, raw_entry in enumerate(raw_legacy)
+                if index != matched_index
+            ]
+            _detach_main_model_from_provider(
+                cfg,
+                custom_provider_slug(matched_row["name"]),
+                base_urls=(matched_row["base_url"],),
+                provider_aliases=(matched_row["name"],),
+            )
         save_config(cfg)
         response = _custom_endpoint_response(cfg)
         response["ok"] = True

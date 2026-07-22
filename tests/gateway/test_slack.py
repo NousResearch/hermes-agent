@@ -5520,12 +5520,14 @@ class TestSlashEphemeralAck:
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
-        """Failed response_url POST falls back to normal channel delivery (#19688)."""
+        """Failed response_url POST falls back to chat.postEphemeral — never
+        a public channel post (#19688)."""
         import time
         from plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/bad",
+            "user_id": "U1",
             "ts": time.monotonic(),
         }
 
@@ -5544,6 +5546,9 @@ class TestSlashEphemeralAck:
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ts": "1234.5678", "ok": True}
         )
+        adapter._app.client.chat_postEphemeral = AsyncMock(
+            return_value={"ok": True}
+        )
 
         token = _slash_user_id.set("U1")
         try:
@@ -5554,18 +5559,69 @@ class TestSlashEphemeralAck:
         finally:
             _slash_user_id.reset(token)
 
-        # Reply must not be silently dropped: channel fallback delivered it.
+        # Reply delivered ephemerally via postEphemeral; the public
+        # chat.postMessage path must NOT be used for a slash reply.
         assert result.success is True
-        adapter._app.client.chat_postMessage.assert_awaited_once()
+        adapter._app.client.chat_postEphemeral.assert_awaited_once()
+        adapter._app.client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_both_paths_fail_never_posts_publicly(
+        self, adapter
+    ):
+        """When response_url AND chat.postEphemeral both fail, the reply is
+        dropped with an error — never leaked to the public channel (#19688)."""
+        import time
+        from plugins.platforms.slack.adapter import _slash_user_id
+
+        adapter._slash_command_contexts[("C1", "U1")] = {
+            "response_url": "https://hooks.slack.com/commands/bad",
+            "user_id": "U1",
+            "ts": time.monotonic(),
+        }
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_resp.content = None
+        mock_resp.text = AsyncMock(return_value="Internal Server Error")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "1234.5678", "ok": True}
+        )
+        adapter._app.client.chat_postEphemeral = AsyncMock(
+            return_value={"ok": False, "error": "channel_not_found"}
+        )
+
+        token = _slash_user_id.set("U1")
+        try:
+            with patch(
+                "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+            ):
+                result = await adapter.send("C1", "Some response")
+        finally:
+            _slash_user_id.reset(token)
+
+        assert result.success is False
+        assert "postEphemeral" in (result.error or "")
+        adapter._app.client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_exception(self, adapter):
-        """aiohttp exception on response_url falls back to channel delivery (#19688)."""
+        """aiohttp exception on response_url falls back to chat.postEphemeral,
+        not to public channel delivery (#19688)."""
         import time
         from plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/timeout",
+            "user_id": "U1",
             "ts": time.monotonic(),
         }
 
@@ -5576,6 +5632,9 @@ class TestSlashEphemeralAck:
 
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ts": "1234.5678", "ok": True}
+        )
+        adapter._app.client.chat_postEphemeral = AsyncMock(
+            return_value={"ok": True}
         )
 
         token = _slash_user_id.set("U1")
@@ -5588,7 +5647,8 @@ class TestSlashEphemeralAck:
             _slash_user_id.reset(token)
 
         assert result.success is True
-        adapter._app.client.chat_postMessage.assert_awaited_once()
+        adapter._app.client.chat_postEphemeral.assert_awaited_once()
+        adapter._app.client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_multichunk_delivers_all_parts(self, adapter):
@@ -5703,6 +5763,7 @@ class TestSlashEphemeralAck:
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/oversized",
+            "user_id": "U1",
             "ts": time.monotonic(),
         }
         response = _FakeResponse(
@@ -5716,6 +5777,9 @@ class TestSlashEphemeralAck:
 
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ts": "1234.5678", "ok": True}
+        )
+        adapter._app.client.chat_postEphemeral = AsyncMock(
+            return_value={"ok": True}
         )
 
         from plugins.platforms.slack.adapter import _slash_user_id

@@ -1241,6 +1241,56 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def _post_ephemeral_fallback(
+        self,
+        chat_id: str,
+        ctx: Dict[str, Any],
+        content: str,
+    ) -> "SendResult":
+        """Deliver a slash reply via ``chat.postEphemeral``.
+
+        Fallback for when the ``response_url`` POST fails (#19688).
+        ``chat.postEphemeral`` is an independent Web API path that keeps the
+        reply private to the invoking user — unlike a public channel post,
+        which must never happen for a reply the user expects to be ephemeral.
+
+        Unlike response_url, this cannot ``replace_original``, so the
+        "Running /cmd…" ack stays; the reply arrives as new ephemeral
+        message(s) below it. Chunked like normal sends; no 5-POST cap
+        applies to postEphemeral.
+        """
+        user_id = ctx.get("user_id", "")
+        if not user_id:
+            return SendResult(
+                success=False,
+                error="no user_id in slash context for postEphemeral",
+            )
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if not chunks:
+            chunks = [formatted]
+        try:
+            client = self._get_client(chat_id)
+            for chunk in chunks:
+                result = await client.chat_postEphemeral(
+                    channel=chat_id,
+                    user=user_id,
+                    text=chunk,
+                )
+                if not (isinstance(result, dict) and result.get("ok")):
+                    err = (
+                        result.get("error", "unknown_error")
+                        if isinstance(result, dict)
+                        else "unexpected_response"
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"chat.postEphemeral failed: {err}",
+                    )
+            return SendResult(success=True, message_id=None)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
         """Nudge existing installs to reinstall when group-DM scopes are absent.
 
@@ -1853,15 +1903,35 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 if ephemeral_result.success:
                     return ephemeral_result
-                # Ephemeral delivery failed (#19688): fall through to normal
-                # channel delivery so the command reply is never silently
-                # dropped. The stale "Running /cmd…" ack remains, but the
-                # user still gets the actual answer.
+                # response_url delivery failed (#19688): fall back to
+                # chat.postEphemeral — an independent API path that keeps
+                # the reply private ("Only visible to you"). We do NOT fall
+                # back to a public channel post: a slash reply the user
+                # expects to be ephemeral must never surface to the whole
+                # channel just because a delivery path failed.
                 logger.warning(
-                    "[Slack] Ephemeral slash reply failed (%s); falling back "
-                    "to channel delivery",
+                    "[Slack] response_url slash reply failed (%s); retrying "
+                    "via chat.postEphemeral",
                     ephemeral_result.error,
                 )
+                fallback_result = await self._post_ephemeral_fallback(
+                    chat_id,
+                    slash_ctx,
+                    content,
+                )
+                if fallback_result.success:
+                    return fallback_result
+                # Both ephemeral paths failed — surface the failure instead
+                # of leaking the reply publicly. The user still has the
+                # "Running /cmd…" ack; the error is logged and returned so
+                # the gateway can react (retry surfacing happens upstream).
+                logger.error(
+                    "[Slack] Ephemeral slash reply failed on both "
+                    "response_url and chat.postEphemeral (%s); dropping "
+                    "rather than posting publicly",
+                    fallback_result.error,
+                )
+                return fallback_result
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
@@ -5913,6 +5983,9 @@ class SlackAdapter(BasePlatformAdapter):
         if response_url and user_id and channel_id and text.startswith("/"):
             self._slash_command_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
+                # Kept for the chat.postEphemeral fallback when response_url
+                # delivery fails — postEphemeral needs an explicit user.
+                "user_id": user_id,
                 "ts": time.monotonic(),
             }
 

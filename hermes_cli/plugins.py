@@ -212,6 +212,18 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # ACP session mode change hook. Fired by the ACP adapter when the editor
+    # switches the session mode (e.g. from the mode picker in VS Code / Zed).
+    # Fires AFTER the new mode is persisted to SessionState, so the hook
+    # always sees durable state.  Observers only: return values are ignored.
+    # Plugins that contribute custom modes via ``ctx.register_acp_mode()``
+    # should listen here to enforce their mode's semantics.
+    #
+    # Kwargs:
+    #   session_id:       str  — ACP session being changed
+    #   mode_id:          str  — the newly active mode id
+    #   previous_mode_id: str  — the mode id before the switch
+    "on_session_mode_change",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -643,7 +655,35 @@ class PluginContext:
             self.manifest.name, engine.name,
         )
 
-    # -- image gen provider registration ------------------------------------
+    # -- ACP mode registration -----------------------------------------------
+
+    def register_acp_mode(self, mode_id: str, name: str, description: str = "") -> None:
+        """Register a custom ACP session mode for editor mode pickers.
+
+        The *mode_id* must be unique across all plugins.  When the editor
+        switches to this mode, the ``on_session_mode_change`` hook fires so
+        the plugin can enforce its semantics (e.g. block write tools in PLAN
+        mode via a ``pre_tool_call`` hook).
+
+        Duplicate ``mode_id`` values are rejected with a warning so two
+        plugins cannot silently clobber each other's mode.
+        """
+        existing_ids = {m["id"] for m in self._manager._acp_modes}
+        if mode_id in existing_ids:
+            logger.warning(
+                "Plugin '%s' tried to register ACP mode '%s' but it is already "
+                "registered. Ignoring duplicate.",
+                self.manifest.name,
+                mode_id,
+            )
+            return
+        self._manager._acp_modes.append({
+            "id": str(mode_id),
+            "name": str(name),
+            "description": str(description),
+            "plugin": self.manifest.name,
+        })
+        logger.debug("Plugin %s registered ACP mode: %s", self.manifest.name, mode_id)
 
     def register_image_gen_provider(self, provider) -> None:
         """Register an image generation backend.
@@ -1271,6 +1311,10 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # ACP modes contributed by plugins. Each entry is a dict with keys:
+        # id, name, description, plugin. Merged into the ACP mode picker
+        # alongside the built-in default/accept_edits/dont_ask modes.
+        self._acp_modes: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1301,6 +1345,7 @@ class PluginManager:
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
+            self._acp_modes.clear()
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
         # raises so a failed scan is NOT cached as "discovered with an empty
@@ -2404,6 +2449,19 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_acp_modes() -> List[Dict[str, Any]]:
+    """Return ACP session modes contributed by plugins.
+
+    Each entry is a dict with keys ``id``, ``name``, ``description``, and
+    ``plugin`` (the registering plugin's name).  The list is returned in
+    registration order so a consistent ordering appears in editor mode pickers.
+
+    Triggers idempotent plugin discovery so callers can read the registry
+    before any explicit ``discover_plugins()`` call.
+    """
+    return list(_ensure_plugins_discovered()._acp_modes)
 
 
 def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:

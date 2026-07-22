@@ -526,6 +526,13 @@ def build_session_context_prompt(
             "current message's Slack block/attachment payload when available, but "
             "you still cannot call Slack APIs yourself."
         )
+        if context.shared_multi_user_session:
+            lines.append(
+                "In shared Slack threads, use the current turn's sender prefix "
+                "as the only verified current-author mention target. Do not "
+                "guess or reuse `<@U...>` mentions from names, memory, or prior "
+                "conversation history."
+            )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into

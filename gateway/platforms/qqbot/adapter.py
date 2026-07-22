@@ -159,6 +159,13 @@ class QQAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
+    # Intake policy failures are attacker-controlled. Keep the first useful
+    # diagnostic for each reason/subject while bounding both log volume and
+    # in-memory tracking when callers rotate sender or group IDs.
+    _POLICY_DROP_REPEAT_SECONDS = 300.0
+    _POLICY_DROP_WINDOW_SECONDS = 60.0
+    _POLICY_DROP_MAX_PER_WINDOW = 10
+    _POLICY_DROP_CACHE_SIZE = 1024
 
     @property
     def _log_tag(self) -> str:
@@ -231,6 +238,12 @@ class QQAdapter(BasePlatformAdapter):
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+
+        # Bounded throttling state for unauthenticated intake diagnostics.
+        # Keyed by (reason, subject); per-reason windows also stop a caller
+        # from bypassing repeat suppression by continuously rotating IDs.
+        self._policy_drop_log_times: Dict[Tuple[str, str], float] = {}
+        self._policy_drop_log_windows: Dict[str, Tuple[float, int]] = {}
 
         # Last inbound message ID per chat — used by send_typing
         self._last_msg_id: Dict[str, str] = {}
@@ -1389,10 +1402,6 @@ class QQAdapter(BasePlatformAdapter):
         guild_id = str(d.get("guild_id", ""))
         author_id = str(author.get("id", ""))
         if not self._is_group_allowed(guild_id or channel_id, author_id):
-            logger.debug(
-                "[%s] Guild message blocked by ACL: channel=%s user=%s",
-                self._log_tag, channel_id, author_id,
-            )
             return
 
         member = d.get("member") if isinstance(d.get("member"), dict) else {}
@@ -1463,10 +1472,6 @@ class QQAdapter(BasePlatformAdapter):
         # bypass the configured allowlist via direct messages.
         author_id = str(author.get("id", ""))
         if not self._is_dm_intake_allowed(author_id):
-            logger.debug(
-                "[%s] Guild DM blocked by ACL: guild=%s user=%s",
-                self._log_tag, guild_id, author_id,
-            )
             return
 
         text = content
@@ -3165,6 +3170,59 @@ class QQAdapter(BasePlatformAdapter):
             return True
         return os.getenv("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
+    def _log_policy_drop(
+        self,
+        level: int,
+        reason: str,
+        subject: str,
+        message: str,
+        *args: Any,
+    ) -> None:
+        """Emit a bounded intake-policy diagnostic.
+
+        Repeat messages for the same reason and subject are suppressed for a
+        short interval. A second per-reason budget bounds output even when an
+        unauthenticated caller rotates IDs, and the tracking cache is capped.
+        """
+        if not logger.isEnabledFor(level):
+            return
+
+        now = time.monotonic()
+        key = (reason, str(subject))
+        previous = self._policy_drop_log_times.get(key)
+        if previous is not None and 0.0 <= now - previous < self._POLICY_DROP_REPEAT_SECONDS:
+            return
+
+        window_started, emitted = self._policy_drop_log_windows.get(reason, (now, 0))
+        if now < window_started or now - window_started >= self._POLICY_DROP_WINDOW_SECONDS:
+            window_started, emitted = now, 0
+        if emitted >= self._POLICY_DROP_MAX_PER_WINDOW:
+            self._policy_drop_log_windows[reason] = (window_started, emitted)
+            return
+
+        if len(self._policy_drop_log_times) >= self._POLICY_DROP_CACHE_SIZE:
+            cutoff = now - self._POLICY_DROP_REPEAT_SECONDS
+            expired = [
+                cached_key
+                for cached_key, timestamp in self._policy_drop_log_times.items()
+                if timestamp <= cutoff or timestamp > now
+            ]
+            for cached_key in expired:
+                self._policy_drop_log_times.pop(cached_key, None)
+            if len(self._policy_drop_log_times) >= self._POLICY_DROP_CACHE_SIZE:
+                oldest = min(
+                    self._policy_drop_log_times,
+                    key=self._policy_drop_log_times.__getitem__,
+                )
+                self._policy_drop_log_times.pop(oldest, None)
+
+        # Reinsert elapsed keys so insertion order continues to approximate
+        # recency if the timestamp clock has coarse resolution.
+        self._policy_drop_log_times.pop(key, None)
+        self._policy_drop_log_times[key] = now
+        self._policy_drop_log_windows[reason] = (window_started, emitted + 1)
+        logger.log(level, message, *args)
+
     def _is_dm_allowed(self, user_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False
@@ -3177,26 +3235,103 @@ class QQAdapter(BasePlatformAdapter):
     def _is_dm_intake_allowed(self, user_id: str) -> bool:
         principal = str(user_id or "").strip()
         if not principal:
+            self._log_policy_drop(
+                logging.DEBUG,
+                "dm-missing-sender",
+                "",
+                "[%s] DM dropped at intake: missing sender id",
+                self._log_tag,
+            )
             return False
         if self._dm_policy == "disabled":
+            self._log_policy_drop(
+                logging.DEBUG,
+                "dm-disabled",
+                "",
+                "[%s] DM dropped at intake: dm_policy is disabled",
+                self._log_tag,
+            )
             return False
         if self._dm_policy == "allowlist":
-            return self._entry_matches(self._allow_from, principal)
+            if self._entry_matches(self._allow_from, principal):
+                return True
+            self._log_policy_drop(
+                logging.INFO,
+                "dm-allowlist-miss",
+                principal,
+                "[%s] DM dropped at intake: sender=%r is not in allow_from",
+                self._log_tag,
+                principal,
+            )
+            return False
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":
-            return self._open_dm_opted_in()
+            if self._open_dm_opted_in():
+                return True
+            self._log_policy_drop(
+                logging.WARNING,
+                "dm-open-without-opt-in",
+                "",
+                "[%s] DM dropped at intake: dm_policy is open but neither "
+                "GATEWAY_ALLOW_ALL_USERS nor QQ_ALLOW_ALL_USERS is enabled",
+                self._log_tag,
+            )
+            return False
+        self._log_policy_drop(
+            logging.WARNING,
+            "dm-unsupported-policy",
+            self._dm_policy,
+            "[%s] DM dropped at intake: unsupported dm_policy=%r",
+            self._log_tag,
+            self._dm_policy,
+        )
         return False
 
     def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
         if self._group_policy == "disabled":
+            self._log_policy_drop(
+                logging.DEBUG,
+                "group-disabled",
+                "",
+                "[%s] Group message dropped at intake: group_policy is disabled",
+                self._log_tag,
+            )
             return False
         if self._group_policy == "allowlist":
-            return self._entry_matches(self._group_allow_from, group_id)
+            if self._entry_matches(self._group_allow_from, group_id):
+                return True
+            self._log_policy_drop(
+                logging.INFO,
+                "group-allowlist-miss",
+                group_id,
+                "[%s] Group message dropped at intake: group=%r is not in "
+                "group_allow_from",
+                self._log_tag,
+                group_id,
+            )
+            return False
         if self._group_policy == "pairing":
+            self._log_policy_drop(
+                logging.DEBUG,
+                "group-pairing",
+                group_id,
+                "[%s] Group message dropped at intake: group=%r; "
+                "group_policy pairing supports DMs only",
+                self._log_tag,
+                group_id,
+            )
             return False
         if self._group_policy == "open":
             return True
+        self._log_policy_drop(
+            logging.WARNING,
+            "group-unsupported-policy",
+            self._group_policy,
+            "[%s] Group message dropped at intake: unsupported group_policy=%r",
+            self._log_tag,
+            self._group_policy,
+        )
         return False
 
     @staticmethod

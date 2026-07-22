@@ -1,6 +1,7 @@
 """Tests for the QQ Bot platform adapter."""
 
 import asyncio
+import logging
 import os
 from types import SimpleNamespace
 from unittest import mock
@@ -8,6 +9,15 @@ from unittest import mock
 import pytest
 
 from gateway.config import PlatformConfig
+
+
+QQBOT_LOGGER = "gateway.platforms.qqbot.adapter"
+
+
+def _single_qqbot_log(caplog):
+    records = [record for record in caplog.records if record.name == QQBOT_LOGGER]
+    assert len(records) == 1
+    return records[0]
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +318,108 @@ class TestDmAllowed:
         adapter = self._make_adapter(app_id="a", client_secret="b", dm_policy="allowlist", allow_from="*")
         assert adapter._is_dm_allowed("anyone") is True
 
+    @pytest.mark.parametrize(
+        ("policy", "user_id", "level", "expected", "hidden"),
+        [
+            pytest.param(
+                "allowlist", "user3", logging.INFO,
+                ("sender='user3'", "allow_from"), ("user1", "user2"),
+                id="allowlist-miss",
+            ),
+            pytest.param(
+                "disabled", "private-user-id", logging.DEBUG,
+                ("dm_policy is disabled",), ("private-user-id",), id="disabled",
+            ),
+            pytest.param(
+                "open", "private-user-id", logging.WARNING,
+                ("dm_policy is open", "GATEWAY_ALLOW_ALL_USERS", "QQ_ALLOW_ALL_USERS"),
+                ("private-user-id",),
+                id="open-without-opt-in",
+            ),
+            pytest.param(
+                "unexpected", "private-user-id", logging.WARNING,
+                ("unsupported dm_policy='unexpected'",), ("private-user-id",),
+                id="unknown-policy",
+            ),
+            pytest.param(
+                "pairing", "  ", logging.DEBUG, ("missing sender id",), (),
+                id="missing-sender",
+            ),
+        ],
+    )
+    def test_intake_denial_logs_reason_without_unneeded_ids(
+        self, caplog, monkeypatch, policy, user_id, level, expected, hidden
+    ):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("QQ_ALLOW_ALL_USERS", raising=False)
+        adapter = self._make_adapter(
+            app_id="a",
+            client_secret="b",
+            dm_policy=policy,
+            allow_from="user1,user2",
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=QQBOT_LOGGER):
+            assert adapter._is_dm_intake_allowed(user_id) is False
+
+        record = _single_qqbot_log(caplog)
+        message = record.getMessage()
+        assert record.levelno == level
+        assert all(fragment in message for fragment in expected)
+        assert all(fragment not in message for fragment in hidden)
+
+    @pytest.mark.parametrize(
+        ("policy", "user_id", "allow_from", "opt_in"),
+        [
+            pytest.param("pairing", "unpaired-user", "", None, id="pairing"),
+            pytest.param("allowlist", "user1", "user1", None, id="allowlist"),
+            pytest.param(
+                "open", "any-user", "", "QQ_ALLOW_ALL_USERS", id="open-with-opt-in",
+            ),
+        ],
+    )
+    def test_intake_allowed_paths_do_not_log_drop(
+        self, caplog, monkeypatch, policy, user_id, allow_from, opt_in
+    ):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("QQ_ALLOW_ALL_USERS", raising=False)
+        if opt_in:
+            monkeypatch.setenv(opt_in, "true")
+        adapter = self._make_adapter(
+            app_id="a",
+            client_secret="b",
+            dm_policy=policy,
+            allow_from=allow_from,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=QQBOT_LOGGER):
+            assert adapter._is_dm_intake_allowed(user_id) is True
+
+        assert caplog.records == []
+
+    def test_intake_drop_log_suppresses_repeats_until_interval(
+        self, caplog, monkeypatch
+    ):
+        now = [100.0]
+        monkeypatch.setattr(
+            "gateway.platforms.qqbot.adapter.time.monotonic", lambda: now[0]
+        )
+        adapter = self._make_adapter(
+            app_id="a",
+            client_secret="b",
+            dm_policy="allowlist",
+            allow_from="user1",
+        )
+
+        with caplog.at_level(logging.INFO, logger=QQBOT_LOGGER):
+            assert adapter._is_dm_intake_allowed("blocked-user") is False
+            assert adapter._is_dm_intake_allowed("blocked-user") is False
+            now[0] += adapter._POLICY_DROP_REPEAT_SECONDS
+            assert adapter._is_dm_intake_allowed("blocked-user") is False
+
+        records = [record for record in caplog.records if record.name == QQBOT_LOGGER]
+        assert len(records) == 2
+
 
 # ---------------------------------------------------------------------------
 # _is_group_allowed
@@ -343,6 +455,99 @@ class TestGroupAllowed:
     def test_pairing_default_forwards_dm_to_gateway_intake(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
         assert adapter._is_dm_intake_allowed("any_user") is True
+
+    @pytest.mark.parametrize(
+        ("policy", "group_id", "level", "expected", "hidden"),
+        [
+            pytest.param(
+                "allowlist", "grp2", logging.INFO,
+                ("group='grp2'", "group_allow_from"), ("grp1", "private-user-id"),
+                id="allowlist-miss",
+            ),
+            pytest.param(
+                "disabled", "private-group-id", logging.DEBUG,
+                ("group_policy is disabled",), ("private-group-id", "private-user-id"),
+                id="disabled",
+            ),
+            pytest.param(
+                "pairing", "grp2", logging.DEBUG,
+                ("group='grp2'", "group_policy pairing supports DMs only"),
+                ("private-user-id",), id="pairing",
+            ),
+            pytest.param(
+                "unexpected", "private-group-id", logging.WARNING,
+                ("unsupported group_policy='unexpected'",),
+                ("private-group-id", "private-user-id"),
+                id="unknown-policy",
+            ),
+        ],
+    )
+    def test_denial_logs_reason_without_unneeded_ids(
+        self, caplog, policy, group_id, level, expected, hidden
+    ):
+        adapter = self._make_adapter(
+            app_id="a",
+            client_secret="b",
+            group_policy=policy,
+            group_allow_from="grp1",
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=QQBOT_LOGGER):
+            assert adapter._is_group_allowed(group_id, "private-user-id") is False
+
+        record = _single_qqbot_log(caplog)
+        message = record.getMessage()
+        assert record.levelno == level
+        assert all(fragment in message for fragment in expected)
+        assert all(fragment not in message for fragment in hidden)
+
+    @pytest.mark.parametrize(
+        ("policy", "group_id", "group_allow_from"),
+        [
+            pytest.param("open", "grp1", "", id="open"),
+            pytest.param("allowlist", "grp1", "grp1", id="allowlist"),
+        ],
+    )
+    def test_allowed_paths_do_not_log_drop(
+        self, caplog, policy, group_id, group_allow_from
+    ):
+        adapter = self._make_adapter(
+            app_id="a",
+            client_secret="b",
+            group_policy=policy,
+            group_allow_from=group_allow_from,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=QQBOT_LOGGER):
+            assert adapter._is_group_allowed(group_id, "user1") is True
+
+        assert caplog.records == []
+
+    def test_drop_log_bounds_rotating_subjects_and_tracking_cache(
+        self, caplog, monkeypatch
+    ):
+        now = [100.0]
+        monkeypatch.setattr(
+            "gateway.platforms.qqbot.adapter.time.monotonic", lambda: now[0]
+        )
+        adapter = self._make_adapter(
+            app_id="a",
+            client_secret="b",
+            group_policy="allowlist",
+            group_allow_from="trusted-group",
+        )
+        monkeypatch.setattr(adapter, "_POLICY_DROP_MAX_PER_WINDOW", 3)
+        monkeypatch.setattr(adapter, "_POLICY_DROP_CACHE_SIZE", 2)
+
+        with caplog.at_level(logging.INFO, logger=QQBOT_LOGGER):
+            for index in range(5):
+                assert adapter._is_group_allowed(f"blocked-{index}", "user") is False
+            now[0] += adapter._POLICY_DROP_WINDOW_SECONDS
+            assert adapter._is_group_allowed("blocked-after-window", "user") is False
+
+        records = [record for record in caplog.records if record.name == QQBOT_LOGGER]
+        assert len(records) == 4
+        assert len(adapter._policy_drop_log_times) == 2
 
 # ---------------------------------------------------------------------------
 # _resolve_stt_config

@@ -18,6 +18,8 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _find_skill,
+    _find_skill_in_other_profiles,
     skill_manage,
     MAX_NAME_LENGTH,
 )
@@ -258,6 +260,57 @@ class TestCreateSkill:
         assert result["success"] is False
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    """Create a directory symlink or skip where the platform forbids it."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable on this platform")
+
+
+class TestFindSkillSymlinks:
+    """Regression tests for #35184 and #54195."""
+
+    def test_find_skill_follows_external_directory_symlink(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "external"
+        source = tmp_path / "source" / "repo-backed-skill"
+        local.mkdir()
+        external.mkdir()
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        installed = external / "repo-backed-skill"
+        _symlink_or_skip(installed, source)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local), patch(
+            "agent.skill_utils.get_all_skills_dirs",
+            return_value=[local, external],
+        ):
+            result = _find_skill("repo-backed-skill")
+
+        assert result == {"path": installed}
+
+    def test_other_profile_lookup_follows_directory_symlink(self, tmp_path):
+        root = tmp_path / "hermes"
+        active_skills = root / "skills"
+        profile_skills = root / "profiles" / "researcher" / "skills"
+        source_category = tmp_path / "source" / "category"
+        source_skill = source_category / "profile-skill"
+        active_skills.mkdir(parents=True)
+        profile_skills.mkdir(parents=True)
+        source_skill.mkdir(parents=True)
+        (source_skill / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        installed_category = profile_skills / "category"
+        _symlink_or_skip(installed_category, source_category)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", active_skills), patch(
+            "hermes_constants.get_default_hermes_root", return_value=root
+        ):
+            result = _find_skill_in_other_profiles("profile-skill")
+
+        assert result == [("researcher", installed_category / "profile-skill")]
 
 
 class TestEditSkill:

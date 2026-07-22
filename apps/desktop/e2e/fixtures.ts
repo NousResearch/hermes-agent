@@ -27,7 +27,7 @@ import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
-import { startMockServer } from './mock-server'
+import { startMockServer, type MockServerOptions } from './mock-server'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -318,6 +318,7 @@ export async function launchDesktop(
 export interface MockBackendFixture {
   app: ElectronApplication
   page: Page
+  mock: Awaited<ReturnType<typeof startMockServer>>
   mockUrl: string
   sandbox: Sandbox
   cleanup: () => Promise<void>
@@ -330,9 +331,13 @@ export interface MockBackendFixture {
  *   3. Launch the desktop app
  *   4. Return handles for test interaction
  */
-export async function setupMockBackend(): Promise<MockBackendFixture> {
+export interface MockBackendOptions {
+  mockServer?: MockServerOptions
+}
+
+export async function setupMockBackend(options: MockBackendOptions = {}): Promise<MockBackendFixture> {
   // 1. Start mock server
-  const mock = await startMockServer()
+  const mock = await startMockServer(options.mockServer)
 
   // 2. Create sandbox + write config
   const sandbox = createSandbox('mock')
@@ -346,6 +351,7 @@ export async function setupMockBackend(): Promise<MockBackendFixture> {
   return {
     app,
     page,
+    mock,
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {

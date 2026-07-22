@@ -327,11 +327,19 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
 _MANAGED_SYSTEM_NAMES = {
-    "brew": "Homebrew",
-    "homebrew": "Homebrew",
     "nix": "NixOS",
     "nixos": "NixOS",
 }
+# The Nix store root. Used by detect_install_method to identify installs
+# from `nix run` / `nix profile install` (which don't set HERMES_MANAGED).
+# A module-level constant so tests can patch it without creating files
+# under the real /nix/store.
+_NIX_STORE = Path("/nix/store")
+# Values that used to signal a Homebrew-managed install. Homebrew is no
+# longer a supported distribution method, so these are explicitly ignored
+# rather than treated as a managed system — they fall through to git/unknown
+# detection instead of blocking config writes.
+_IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
 
 
 def get_managed_system() -> Optional[str]:
@@ -339,6 +347,8 @@ def get_managed_system() -> Optional[str]:
     raw = os.getenv("HERMES_MANAGED", "").strip()
     if raw:
         normalized = raw.lower()
+        if normalized in _IGNORED_MANAGED_VALUES:
+            return None
         if normalized in _MANAGED_TRUE_VALUES:
             return "NixOS"
         return _MANAGED_SYSTEM_NAMES.get(normalized, raw)
@@ -359,14 +369,15 @@ def is_managed() -> bool:
     return get_managed_system() is not None
 
 
-_NIX_UPDATE_MSG = "Update your Nix flake input and rebuild (e.g. nix flake update, nixos-rebuild, or home-manager switch)"
+_NIX_UPDATE_MSG = (
+    "Update Hermes through the Nix source that installed it "
+    "(e.g. nix profile upgrade, or update your flake input and rebuild with nixos-rebuild or home-manager switch)"
+)
 
 
 def get_managed_update_command() -> Optional[str]:
     """Return the preferred upgrade command for a managed install."""
     managed_system = get_managed_system()
-    if managed_system == "Homebrew":
-        return "brew upgrade hermes-agent"
     if managed_system == "NixOS":
         return _NIX_UPDATE_MSG
     return None
@@ -376,10 +387,10 @@ def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
     """Resolve the directory that holds the *running code* (the install tree).
 
     This is the parent of ``hermes_cli/`` — i.e. the git checkout for source
-    installs, ``/opt/hermes`` inside the published image, the venv's
-    site-packages root for pip installs. It is a property of the running
-    interpreter, NOT of ``$HERMES_HOME``, which is why a code-scoped stamp
-    here is immune to two installs sharing one data directory.
+    installs, ``/opt/hermes`` inside the published image. It is a property of
+    the running interpreter, NOT of ``$HERMES_HOME``, which is why a
+    code-scoped stamp here is immune to two installs sharing one data
+    directory.
     """
     if project_root is not None:
         return project_root
@@ -387,7 +398,7 @@ def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
+    """Detect how Hermes was installed: 'docker', 'nix', 'nixos', 'git', or 'unknown'.
 
     Resolution order:
     1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
@@ -395,9 +406,10 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     2. Legacy home-scoped stamp ``$HERMES_HOME/.install_method`` — read for
        backward compatibility, but a ``docker`` value is IGNORED when we are
        not actually running inside a container (see below).
-    3. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
-    4. .git directory presence -> 'git'
-    5. Fallback -> 'pip'
+    3. HERMES_MANAGED env / .managed marker (NixOS managed mode)
+    4. /nix/store/ path detection -> 'nix' (nix run / nix profile install)
+    5. .git directory presence -> 'git'
+    6. Fallback -> 'unknown'
 
     Why the stamp is code-scoped, not home-scoped (issue: shared ``~/.hermes``)
     --------------------------------------------------------------------------
@@ -416,7 +428,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     Self-healing for already-poisoned homes: a legacy ``docker`` value in the
     home-scoped stamp is only honoured when we are genuinely in a container.
     On a host install that read a contaminating ``docker`` stamp, we fall
-    through to managed/.git/pip detection instead — so existing shared-home
+    through to managed/.git detection instead — so existing shared-home
     setups recover without the user touching anything.
 
     Note: running inside a container is NOT treated as "docker" on its own.
@@ -426,15 +438,16 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
       - the published ``nousresearch/hermes-agent`` image bakes a ``docker``
         stamp into ``/opt/hermes`` at build time.
     An unsupported manual install dropped into a container (no stamp) falls
-    through to the ``.git``/pip checks and behaves like any off-path install.
+    through to the ``.git`` checks and behaves like any off-path install.
     See issue #34397.
     """
     root = _install_method_project_root(project_root)
+    supported_methods = {"docker", "nix", "nixos", "git", "unknown"}
 
     # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
         method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
-        if method:
+        if method in supported_methods:
             return method
     except OSError:
         pass
@@ -450,7 +463,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
             .strip()
             .lower()
         )
-        if method and not (method == "docker" and not _running_in_container()):
+        if method in supported_methods and not (method == "docker" and not _running_in_container()):
             return method
     except OSError:
         pass
@@ -458,7 +471,18 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    
+
+    # detect Nix installs that don't set HERMES_MANAGED (e.g. ``nix run``,
+    # ``nix profile install``). The code lives under /nix/store/ which is the
+    # hallmark of a nix-built install — no other supported install path puts
+    # code there.
+    try:
+        resolved = root.resolve()
+        if resolved != _NIX_STORE and _NIX_STORE in resolved.parents:
+            return "nix"
+    except OSError:
+        pass
+
     # detect git repo installs (normal installer, development env)
     git_path = root / ".git"
     if git_path.is_dir():
@@ -472,7 +496,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
                 return "git"
         except OSError:
             pass
-    return "pip"
+    return "unknown"
 
 
 def _running_in_container() -> bool:
@@ -506,49 +530,12 @@ def stamp_install_method(method: str, project_root: Optional[Path] = None) -> No
         pass
 
 
-def is_uv_tool_install() -> bool:
-    """Return True when the *running* Hermes lives in a ``uv tool`` layout.
-
-    ``uv tool install hermes-agent`` places the install at
-    ``.../uv/tools/hermes-agent/...`` (default ``~/.local/share/uv/tools``,
-    or ``$UV_TOOL_DIR/...``). Such installs live outside any virtualenv, so
-    ``uv pip install`` fails with ``No virtual environment found`` and the
-    update path must use ``uv tool upgrade`` instead.
-
-    Detection is intentionally restricted to properties of the running
-    interpreter (``sys.prefix`` / ``sys.executable``). We deliberately do
-    NOT consult ``uv tool list``: it would also return True when
-    ``hermes-agent`` happens to be uv-tool-installed on the machine while
-    the *active* Hermes is a regular pip/venv install, causing
-    ``hermes update`` to upgrade the wrong copy. It would also block on a
-    subprocess call (~seconds) just to compute a recommendation string.
-    """
-    def _has_uv_tool_marker(path: str) -> bool:
-        norm = os.path.normpath(path).replace(os.sep, "/").lower()
-        return "/uv/tools/hermes-agent/" in norm + "/"
-
-    if _has_uv_tool_marker(sys.prefix):
-        return True
-    if _has_uv_tool_marker(sys.executable or ""):
-        return True
-    return False
-
-
 def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
-    if method == "nixos":
+    if method in {"nix", "nixos"}:
         return _NIX_UPDATE_MSG
-    if method == "homebrew":
-        return "brew upgrade hermes-agent"
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
-    if method == "pip":
-        if is_uv_tool_install():
-            return "uv tool upgrade hermes-agent"
-        import shutil
-        if shutil.which("uv"):
-            return "uv pip install --upgrade hermes-agent"
-        return "pip install --upgrade hermes-agent"
     return "hermes update"
 
 
@@ -559,50 +546,6 @@ def recommended_update_command() -> str:
         return managed_cmd
     method = detect_install_method(get_project_root())
     return recommended_update_command_for_method(method)
-
-
-# =============================================================================
-# Unsupported install methods (pip, Homebrew) — deprecation notice
-# =============================================================================
-#
-# pip/PyPI and Homebrew are NOT an officially supported distribution method
-# (see website/docs/getting-started/platform-support.md, "Unsupported"
-# section). pip exists on PyPI for internal/CI reasons, not end-user installs;
-# Homebrew is a legacy packaging path. Unlike NixOS/Homebrew "managed mode"
-# (which hard-blocks config writes), this is a warn-don't-block deprecation
-# notice surfaced everywhere the user might see install-method state: the CLI
-# banner, the TUI/desktop session info panel, and ``hermes update``. NixOS
-# stays fully supported (Tier 2) and must never hit this path.
-
-PLATFORM_SUPPORT_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/getting-started/platform-support"
-
-_UNSUPPORTED_INSTALL_METHODS = frozenset({"pip", "homebrew"})
-
-
-def is_unsupported_install_method(method: str) -> bool:
-    """Whether ``method`` (from ``detect_install_method()``) is deprecated."""
-    return method in _UNSUPPORTED_INSTALL_METHODS
-
-
-def unsupported_install_method_label(method: str) -> str:
-    """Human-readable name for an unsupported install method."""
-    return "pip" if method == "pip" else "Homebrew"
-
-
-def format_unsupported_install_warning(method: str) -> str:
-    """Plain-text (no markup) deprecation notice for pip/Homebrew installs.
-
-    Shared verbatim across the CLI banner, TUI/desktop ``session.info``, and
-    ``hermes update`` / ``hermes update --check`` so the wording — and the
-    docs link — stays consistent across every surface instead of drifting
-    into three slightly different warnings.
-    """
-    label = unsupported_install_method_label(method)
-    return (
-        f"{label} installs are no longer an officially supported platform and "
-        f"will not receive further updates. See {PLATFORM_SUPPORT_DOCS_URL} "
-        "for supported install methods."
-    )
 
 
 # Long-form text for ``hermes update`` / ``--check`` when running inside the
@@ -669,15 +612,6 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
             f"(HERMES_MANAGED={env_hint}).\n"
             "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
             "  sudo nixos-rebuild switch"
-        )
-
-    if managed_system == "Homebrew":
-        env_hint = raw or "homebrew"
-        return (
-            f"Cannot {action}: this Hermes installation is managed by Homebrew "
-            f"(HERMES_MANAGED={env_hint}).\n"
-            "Use:\n"
-            "  brew upgrade hermes-agent"
         )
 
     return (
@@ -8985,6 +8919,19 @@ def set_config_value(key: str, value: str, force: bool = False):
     env_var = terminal_config_env_var_for_key(key)
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
+
+    # Setting display.skin is an explicit "apply NOW" — bump the skin file's
+    # mtime so the gateway watcher's (name, mtime) signature moves even when the
+    # name is unchanged (re-affirming the active skin after a surface missed the
+    # original activation). Built-ins have no file; a name switch already moves
+    # their signature.
+    if key == "display.skin" and isinstance(value, str) and value:
+        try:
+            skin_file = get_hermes_home() / "skins" / f"{value}.yaml"
+            if skin_file.exists():
+                skin_file.touch()
+        except Exception:
+            pass  # best-effort: the config write above already succeeded
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml

@@ -36,6 +36,12 @@ describe('desktop git facade', () => {
     $connection.set(null)
   })
 
+  it('returns undefined after the renderer global is torn down', () => {
+    vi.stubGlobal('window', undefined)
+
+    expect(desktopGit()).toBeUndefined()
+  })
+
   it('uses Electron git locally', async () => {
     $connection.set({ mode: 'local' } as never)
 

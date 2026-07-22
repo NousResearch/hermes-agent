@@ -17,15 +17,42 @@
 import http from 'node:http'
 
 /** A canned assistant reply used for every chat completion request. */
-const CANNED_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
+export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
+
+export interface MockServerOptions {
+  /**
+   * Pause a streaming response just after its first token when the latest user
+   * prompt contains this text. E2E tests use this to switch away from a real,
+   * still-running inference turn before resuming that session.
+   */
+  holdFirstStreamForPrompt?: string
+}
+
+export interface MockServer {
+  port: number
+  url: string
+  receivedPrompts: string[]
+  waitForHeldStream: () => Promise<void>
+  releaseHeldStream: () => void
+  close: () => Promise<void>
+}
 
 /**
  * Start the mock server on an ephemeral port.
  *
- * @returns a handle with `port`, `url`, and `close()`.
+ * @returns a handle with `port`, `url`, received user prompts, and `close()`.
  */
-export function startMockServer(): Promise<{ port: number; url: string; close: () => Promise<void> }> {
+export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
+    const receivedPrompts: string[] = []
+    let resolveHeldStreamStarted: (() => void) | null = null
+    let releaseHeldStream: (() => void) | null = null
+    const heldStreamStarted = new Promise<void>(resolveHeld => {
+      resolveHeldStreamStarted = resolveHeld
+    })
+    const heldStreamReleased = new Promise<void>(resolveRelease => {
+      releaseHeldStream = resolveRelease
+    })
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
       // don't hurt and make the server usable from a browser context too.
@@ -75,6 +102,14 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
             // malformed JSON — treat as non-streaming with defaults
           }
 
+          const lastUserMessage = [...(parsed.messages ?? [])]
+            .reverse()
+            .find((message: { role?: unknown }) => message?.role === 'user')
+
+          if (typeof lastUserMessage?.content === 'string') {
+            receivedPrompts.push(lastUserMessage.content)
+          }
+
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
 
@@ -86,7 +121,11 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
             })
 
             // Send the content in a few chunks to simulate streaming.
-            const words = CANNED_REPLY.split(' ')
+            const words = MOCK_REPLY.split(' ')
+            const holdThisStream = Boolean(
+              options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
+                lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
+            )
             let i = 0
 
             const sendChunk = () => {
@@ -129,6 +168,11 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
                 })}\n\n`,
               )
               i++
+              if (holdThisStream && i === 1) {
+                resolveHeldStreamStarted?.()
+                heldStreamReleased.then(() => setTimeout(sendChunk, 20))
+                return
+              }
               // Small delay between chunks to simulate real streaming.
               setTimeout(sendChunk, 20)
             }
@@ -146,7 +190,7 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
                 choices: [
                   {
                     index: 0,
-                    message: { role: 'assistant', content: CANNED_REPLY },
+                    message: { role: 'assistant', content: MOCK_REPLY },
                     finish_reason: 'stop',
                   },
                 ],
@@ -187,6 +231,9 @@ export function startMockServer(): Promise<{ port: number; url: string; close: (
       resolve({
         port,
         url,
+        receivedPrompts,
+        waitForHeldStream: () => heldStreamStarted,
+        releaseHeldStream: () => releaseHeldStream?.(),
         close: () =>
           new Promise((resolveClose, rejectClose) => {
             server.close((err) => {

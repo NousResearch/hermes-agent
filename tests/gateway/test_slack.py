@@ -6484,3 +6484,70 @@ class TestMissingCredentials:
         assert "SLACK_APP_TOKEN" in fatal_errors[0]["message"]
         assert "hermes gateway setup" in fatal_errors[0]["message"].lower() or ".env" in fatal_errors[0]["message"]
 
+
+
+# ---------------------------------------------------------------------------
+# TestThreadContextCacheBounded
+# ---------------------------------------------------------------------------
+
+
+class TestThreadContextCacheBounded:
+    """_thread_context_cache must evict expired entries when it exceeds
+    _THREAD_CACHE_MAX, symmetric with _bot_message_ts / _mentioned_threads /
+    _assistant_threads which all enforce their respective MAX constants."""
+
+    @pytest.mark.asyncio
+    async def test_expired_entries_evicted_when_cache_exceeds_max(self, adapter):
+        from plugins.platforms.slack.adapter import _ThreadContextCache
+
+        adapter._THREAD_CACHE_MAX = 2
+
+        stale_ts = time.monotonic() - 120.0  # 120 s ago, past TTL of 60 s
+        for i in range(3):
+            adapter._thread_context_cache[f"C_stale:{i}:"] = _ThreadContextCache(
+                content=f"old {i}", fetched_at=stale_ts
+            )
+        assert len(adapter._thread_context_cache) == 3
+
+        # Pre-load user name so _resolve_user_name skips the API call
+        adapter._user_name_cache[("", "U1")] = "Alice"
+
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [{"ts": "msg-a", "user": "U1", "text": "hello"}]
+            }
+        )
+
+        # Fetch a fresh key — triggers cache write → eviction fires
+        await adapter._fetch_thread_context(
+            channel_id="C_fresh", thread_ts="ts-new", current_ts="ts-new"
+        )
+
+        assert len(adapter._thread_context_cache) <= adapter._THREAD_CACHE_MAX
+
+    @pytest.mark.asyncio
+    async def test_fresh_entries_not_evicted(self, adapter):
+        from plugins.platforms.slack.adapter import _ThreadContextCache
+
+        adapter._THREAD_CACHE_MAX = 2
+
+        fresh_ts = time.monotonic()
+        for i in range(2):
+            adapter._thread_context_cache[f"C_fresh:{i}:"] = _ThreadContextCache(
+                content=f"fresh {i}", fetched_at=fresh_ts
+            )
+
+        adapter._user_name_cache[("", "U2")] = "Bob"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [{"ts": "msg-b", "user": "U2", "text": "hi"}]
+            }
+        )
+
+        await adapter._fetch_thread_context(
+            channel_id="C_extra", thread_ts="ts-extra", current_ts="ts-extra"
+        )
+
+        # Fresh entries must survive — only stale entries are evicted
+        for i in range(2):
+            assert f"C_fresh:{i}:" in adapter._thread_context_cache

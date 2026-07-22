@@ -191,6 +191,52 @@ def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     return f"call_{digest}"
 
 
+def _clamp_call_id(call_id: str) -> str:
+    """Clamp a Responses API call_id to the 64-character hard limit.
+
+    The Responses API rejects call_ids longer than 64 characters with a
+    non-retryable HTTP 400 (``Invalid input[N].call_id: string too long,
+    max 64``).  This can happen in the background-review replay path: when
+    a tool call is stored with only a ``response_item_id`` (an ``fc_``
+    string, typically ~67 characters) and no explicit ``call_id``, the
+    reconstruction in ``_chat_messages_to_responses_input`` synthesises
+    ``"call_" + fc_id[3:]`` — which is ``5 + 64 = 69`` characters, well
+    over the limit.
+
+    The clamp is deterministic: a ``function_call`` and its paired
+    ``function_call_output`` share the same raw call_id string, so hashing
+    identically keeps the pair matched and the API's pairing requirement
+    intact.  Short ids (≤ 64 chars) are returned unchanged, preserving
+    prompt-cache prefix hits.
+    """
+    cid = (call_id or "").strip()
+    if len(cid) <= 64:
+        return cid
+    prefix = "fc_" if cid.startswith("fc_") else "call_"
+    digest = hashlib.sha256(cid.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"{prefix}{digest}"
+
+
+def _sanitize_fn_name(name: str) -> str:
+    """Sanitize a replayed function_call name to the Responses API contract.
+
+    The Responses API requires function names to match ``^[a-zA-Z0-9_-]+$``.
+    When a background-review replay carries a name with invalid characters
+    (e.g. dots or spaces from an earlier degeneration), the API rejects the
+    request with a non-retryable HTTP 400.  This helper coerces the name at
+    the last normalisation point (``_preflight_codex_input_items``) so the
+    replay can proceed.
+
+    This applies only to *replayed* function_call input items, not to live
+    tool definitions — live tool names must match the tool registry and must
+    not be mutated.  Pairing is by call_id, so renaming a replayed name does
+    not break function_call / function_call_output correspondence.
+    """
+    n = re.sub(r"[^A-Za-z0-9_-]", "_", (name or "").strip())
+    n = re.sub(r"_+", "_", n).strip("_")
+    return n[:64] or "fn"
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -633,8 +679,8 @@ def _preflight_codex_input_items(
             normalized.append(
                 {
                     "type": "function_call",
-                    "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "call_id": _clamp_call_id(call_id),
+                    "name": _sanitize_fn_name(name),
                     "arguments": arguments,
                 }
             )
@@ -674,7 +720,7 @@ def _preflight_codex_input_items(
                 normalized.append(
                     {
                         "type": "function_call_output",
-                        "call_id": call_id.strip(),
+                        "call_id": _clamp_call_id(call_id),
                         "output": cleaned if cleaned else "",
                     }
                 )
@@ -685,7 +731,7 @@ def _preflight_codex_input_items(
             normalized.append(
                 {
                     "type": "function_call_output",
-                    "call_id": call_id.strip(),
+                    "call_id": _clamp_call_id(call_id),
                     "output": output,
                 }
             )

@@ -863,11 +863,11 @@ def resolve_display_context_length(
         configured_model or configured_provider or configured_base_url
     ):
         try:
-            from agent.agent_init import _context_route_mismatch
+            from hermes_cli.route_identity import should_clear_context_pin
 
-            if (
-                configured_model and configured_model != model
-            ) or _context_route_mismatch(
+            if should_clear_context_pin(
+                configured_model,
+                model,
                 configured_base_url,
                 base_url,
                 configured_provider,

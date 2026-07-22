@@ -38,6 +38,20 @@ class TestChromiumSearchRoots:
         home = os.path.expanduser("~")
         assert any(r == os.path.join(home, ".cache", "ms-playwright") for r in roots)
 
+    def test_includes_agent_browser_browsers_dir(self, monkeypatch):
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.delenv("AGENT_BROWSER_STATE", raising=False)
+        roots = bt._chromium_search_roots()
+        home = os.path.expanduser("~")
+        assert any(
+            r == os.path.join(home, ".agent-browser", "browsers") for r in roots
+        )
+
+    def test_agent_browser_state_env_overrides_browsers_path(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGENT_BROWSER_STATE", str(tmp_path))
+        roots = bt._chromium_search_roots()
+        assert os.path.join(str(tmp_path), "browsers") in roots
+
 
 class TestChromiumInstalled:
     def test_true_when_plain_chromium_on_path(self, monkeypatch):
@@ -60,8 +74,37 @@ class TestChromiumInstalled:
         (tmp_path / "chromium_headless_shell-1208").mkdir()
         assert bt._chromium_installed() is True
 
+    def test_true_when_agent_browser_chrome_dir_present(self, monkeypatch, tmp_path):
+        """agent-browser 0.26+ downloads 'Chrome for Testing' as chrome-<version>."""
+        monkeypatch.setenv("AGENT_BROWSER_STATE", str(tmp_path))
+        browsers = tmp_path / "browsers"
+        browsers.mkdir()
+        (browsers / "chrome-148.0.7778.56").mkdir()
+        assert bt._chromium_installed() is True
 
+    def test_ignores_non_chrome_dirs_in_agent_browser(self, monkeypatch, tmp_path):
+        """Only chrome-* / chromium-* prefixes should match, not arbitrary dirs."""
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.shutil, "which", lambda _: None)
+        monkeypatch.setenv("AGENT_BROWSER_STATE", str(tmp_path))
+        browsers = tmp_path / "browsers"
+        browsers.mkdir()
+        (browsers / "user-data").mkdir()
+        (browsers / "config").mkdir()
+        assert bt._chromium_installed() is False
 
+    def test_agent_browser_state_env_overrides_default(self, monkeypatch, tmp_path):
+        """AGENT_BROWSER_STATE env var should be respected over ~/.agent-browser."""
+        custom_state = tmp_path / "custom-state"
+        custom_state.mkdir()
+        browsers = custom_state / "browsers"
+        browsers.mkdir()
+        (browsers / "chrome-148.0.7778.56").mkdir()
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.shutil, "which", lambda _: None)
+        monkeypatch.setenv("AGENT_BROWSER_STATE", str(custom_state))
+        assert bt._agent_browser_state_dir() == str(custom_state)
+        assert bt._chromium_installed() is True
 
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))

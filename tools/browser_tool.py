@@ -4546,6 +4546,17 @@ def cleanup_all_browsers() -> None:
 _cached_chromium_installed: Optional[bool] = None
 
 
+def _agent_browser_state_dir() -> str:
+    """Return the agent-browser state directory (default ``~/.agent-browser``).
+
+    Respects the ``AGENT_BROWSER_STATE`` env var which agent-browser itself
+    uses to override the default.
+    """
+    return os.environ.get("AGENT_BROWSER_STATE", "") or os.path.join(
+        os.path.expanduser("~"), ".agent-browser"
+    )
+
+
 def _chromium_search_roots() -> List[str]:
     """Directories to scan for a Chromium / headless-shell build.
 
@@ -4557,6 +4568,8 @@ def _chromium_search_roots() -> List[str]:
     3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
     4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
+    5. ``<AGENT_BROWSER_STATE>/browsers`` — agent-browser 0.26+ downloads
+       "Chrome for Testing" here (defaults to ``~/.agent-browser/browsers``).
     """
     roots: List[str] = []
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
@@ -4571,6 +4584,10 @@ def _chromium_search_roots() -> List[str]:
             home, "AppData", "Local"
         )
         roots.append(os.path.join(local, "ms-playwright"))
+    # 5. agent-browser 0.26+ manages its own Chrome for Testing builds.
+    ab_state = _agent_browser_state_dir()
+    if ab_state:
+        roots.append(os.path.join(ab_state, "browsers"))
     return roots
 
 
@@ -4583,14 +4600,14 @@ def _chromium_installed() -> bool:
        agent-browser at a pre-installed Chrome/Chromium.
     2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
        ``chromium-browser``, ``chrome``).
-    3. Playwright's browser cache (current logic) — directories containing
-       ``chromium-*`` or ``chromium_headless_shell-*``.
+    3. Browser caches — directories containing ``chromium-*``,
+       ``chromium_headless_shell-*``, or ``chrome-*`` (agent-browser 0.26+).
 
-    agent-browser (0.26+) downloads Playwright's chromium / headless-shell
-    builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without at least
-    one of the three above being present.  Without a browser binary the CLI
-    hangs on first use until the command timeout fires (often ~30s).  Guarding
-    the tool behind this check prevents advertising a capability that will
+    agent-browser (0.26+) downloads "Chrome for Testing" into its own state
+    directory (``~/.agent-browser/browsers`` by default, overridable via
+    ``AGENT_BROWSER_STATE``).  Without a browser binary the CLI hangs on
+    first use until the command timeout fires (often ~30s).  Guarding the
+    tool behind this check prevents advertising a capability that will
     fail at runtime.
     """
     global _cached_chromium_installed
@@ -4615,7 +4632,8 @@ def _chromium_installed() -> bool:
         _cached_chromium_installed = True
         return True
 
-    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
+    # 3. Browser caches — scan for chromium-* / chromium_headless_shell-* /
+    #    chrome-* (agent-browser 0.26+ names them "chrome-<version>").
     for root in _chromium_search_roots():
         if not root or not os.path.isdir(root):
             continue
@@ -4624,11 +4642,12 @@ def _chromium_installed() -> bool:
         except OSError:
             continue
         # Playwright names them ``chromium-<build>`` and
-        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
+        # ``chromium_headless_shell-<build>``; agent-browser 0.26+
+        # downloads "Chrome for Testing" as ``chrome-<version>``.
         for entry in entries:
             if entry.startswith("chromium-") or entry.startswith(
                 "chromium_headless_shell-"
-            ):
+            ) or entry.startswith("chrome-"):
                 _cached_chromium_installed = True
                 return True
 

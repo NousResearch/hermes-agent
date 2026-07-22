@@ -46,6 +46,9 @@ def check_msgraph_webhook_requirements() -> bool:
 class MSGraphWebhookAdapter(BasePlatformAdapter):
     """Receive Microsoft Graph change notifications and surface them internally."""
 
+    # Same single-shot HTTP ingress as generic webhook (#69145 / #66617).
+    supports_async_delivery: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MSGRAPH_WEBHOOK)
         extra = config.extra or {}

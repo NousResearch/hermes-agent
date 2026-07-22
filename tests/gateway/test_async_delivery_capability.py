@@ -205,6 +205,12 @@ class TestAdapterCapabilityFlag:
 
         assert APIServerAdapter.supports_async_delivery is False
 
+        from gateway.platforms.webhook import WebhookAdapter
+        from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+
+        assert WebhookAdapter.supports_async_delivery is False
+        assert MSGraphWebhookAdapter.supports_async_delivery is False
+
     def test_api_server_bind_chokepoint_hardwires_no_delivery(self):
         """Every API-server agent-entry path binds through
         _bind_api_server_session, which hardwires async_delivery=False — a new

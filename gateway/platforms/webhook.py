@@ -153,6 +153,11 @@ class WebhookAdapter(BasePlatformAdapter):
     # interactive acknowledgement that abandons the task (#57056).
     interactive_resume: bool = False
 
+    # Webhook sessions are one inbound → one response. Background completions
+    # after the parent turn ends are dropped by the #55578 ended_at guard
+    # (see #69145 / #66617). Force sync delegation like api_server.
+    supports_async_delivery: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
         # ``host`` may be None (dual-stack default) or a user-pinned string.

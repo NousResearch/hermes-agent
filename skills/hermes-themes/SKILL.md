@@ -93,19 +93,19 @@ so to recolor *only* tool calls (the classic "change the gold `●`") set `ui_to
 ## Tweak the active look (change one thing)
 
 When the user wants to adjust the CURRENT look ("make the tool `●` cyan", "warmer
-background"), **edit the active skin in place** — do NOT create a new skin from
-`default`, which drops the current palette (background included).
+background"), use the one deterministic command — it edits the ACTIVE skin's ONE
+key in place, so everything else (background included) is untouched:
 
-1. Find the active skin: `hermes config get display.skin`.
-2. **If a file exists** at `<hermes-home>/skins/<active>.yaml`: `patch` ONLY the
-   key(s) you're changing (e.g. add/replace `ui_tool: "#00FFFF"`), leaving every
-   other line untouched. Saving bumps the file's mtime; the watcher repaints live
-   — no `config set` needed, name unchanged.
-3. **If the active skin is a built-in** (no file — e.g. `default`, `mono`): fork
-   it once, carrying its FULL palette into a new user skin, then change the one
-   key and `hermes config set display.skin <newname>`. Copy `templates/skin.yaml`
-   and match the built-in's colors; never start from a bare `default` fork that
-   omits `background`.
+```
+hermes skin set <key> <hex>      # e.g. hermes skin set ui_tool "#00FFFF"
+```
+
+It edits the active skin's file (a built-in is forked into an editable copy that
+keeps its full palette), the watcher repaints live, and nothing else moves. Do
+NOT hand-write a new skin from `default` for a tweak — that drops the current
+palette and resets the background. `hermes skin set background "#08201f"` changes
+only the background; `hermes skin use <name>` / `hermes skin list` switch and
+enumerate.
 
 ## Pitfalls
 

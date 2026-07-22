@@ -257,13 +257,20 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    session_key: str = None,
+    scope: str = "global",
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
+            session_key=session_key,
         )  # fetch extra so we can skip current
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
@@ -291,6 +298,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         return json.dumps({
             "success": True,
             "mode": "browse",
+            "scope": scope,
             "results": results,
             "count": len(results),
             "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
@@ -433,6 +441,7 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    session_key: str = None,
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -440,7 +449,10 @@ def _title_match_result(
         return None
 
     try:
-        session_id = db.resolve_session_by_title(title_query)
+        session_id = db.resolve_session_by_title(
+            title_query,
+            session_key=session_key,
+        )
     except Exception:
         logging.debug("resolve_session_by_title failed for %r", title_query, exc_info=True)
         return None
@@ -503,11 +515,18 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    session_key: str = None,
+    scope: str = "global",
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(
+        db,
+        query,
+        current_lineage_root,
+        session_key=session_key,
+    )
 
     try:
         raw_results = db.search_messages(
@@ -519,6 +538,7 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            session_key=session_key,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -534,6 +554,7 @@ def _discover(
         return json.dumps({
             "success": True,
             "mode": "discover",
+            "scope": scope,
             "query": query,
             "results": [],
             "count": 0,
@@ -609,11 +630,39 @@ def _discover(
     return json.dumps({
         "success": True,
         "mode": "discover",
+        "scope": scope,
         "query": query,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
     }, ensure_ascii=False)
+
+
+def _resolve_search_scope(
+    scope: str = None,
+    current_session_key: str = None,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Resolve the model-visible scope to an internal session-key filter."""
+    if scope is None or (isinstance(scope, str) and not scope.strip()):
+        if current_session_key:
+            return "current_chat", current_session_key, None
+        return "global", None, None
+
+    if not isinstance(scope, str):
+        return "global", None, "scope must be 'current_chat' or 'global'"
+
+    normalized = scope.strip().lower()
+    if normalized == "global":
+        return "global", None, None
+    if normalized == "current_chat":
+        if current_session_key:
+            return "current_chat", current_session_key, None
+        return (
+            "current_chat",
+            None,
+            "current_chat scope is unavailable outside a gateway conversation",
+        )
+    return "global", None, "scope must be 'current_chat' or 'global'"
 
 
 def session_search(
@@ -630,6 +679,10 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    # Discovery/browse scope
+    scope: str = None,
+    # Host-only stable gateway conversation key (never model-supplied)
+    current_session_key: str = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -641,6 +694,10 @@ def session_search(
     Pass ``profile`` to read another profile's sessions (e.g. resolving an
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
+
+    Discovery and browse default to the current gateway chat/thread when
+    ``current_session_key`` is available. Pass ``scope="global"`` to search
+    across chats. CLI callers have no gateway key and remain global by default.
     """
     if db is None:
         try:
@@ -674,6 +731,7 @@ def session_search(
         if profile_db is not None:
             db = profile_db
             current_session_id = None
+            current_session_key = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
@@ -714,9 +772,22 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 10))
 
+    resolved_scope, session_key_filter, scope_error = _resolve_search_scope(
+        scope=scope,
+        current_session_key=current_session_key,
+    )
+    if scope_error:
+        return tool_error(scope_error, success=False)
+
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            session_key=session_key_filter,
+            scope=resolved_scope,
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -737,6 +808,8 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        session_key=session_key_filter,
+        scope=resolved_scope,
     )
 
 
@@ -755,6 +828,10 @@ SESSION_SEARCH_SCHEMA = {
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
         "shape returns actual messages from the DB.\n\n"
+        "CHAT SCOPE\n\n"
+        "  Gateway DISCOVERY/BROWSE defaults to the current chat. Use "
+        "`scope=\"global\"` only for an explicit cross-chat request. CLI stays "
+        "global; explicit READ/SCROLL is unscoped.\n\n"
         "SOURCE-FIRST LIMIT\n\n"
         "  This tool searches Hermes conversation history only. It is not evidence "
         "about the current contents of external sources. If the user provided a "
@@ -848,6 +925,15 @@ SESSION_SEARCH_SCHEMA = {
                     "and browse shapes."
                 ),
             },
+            "scope": {
+                "type": "string",
+                "enum": ["current_chat", "global"],
+                "description": (
+                    "Discovery/browse scope. Gateway defaults to 'current_chat'; "
+                    "use 'global' only on an explicit cross-chat request. CLI "
+                    "defaults global. Ignored for read/scroll."
+                ),
+            },
             "session_id": {
                 "type": "string",
                 "description": (
@@ -913,8 +999,10 @@ registry.register(
         window=args.get("window", 5),
         sort=args.get("sort"),
         profile=args.get("profile"),
+        scope=args.get("scope"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        current_session_key=kw.get("current_session_key"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

@@ -233,6 +233,8 @@ class TestRunBackgroundTask:
     async def test_successful_task_sends_result(self):
         """When the agent completes successfully, the result is sent."""
         runner = _make_runner()
+        expected_session_key = "agent:main:telegram:dm:67890"
+        runner._session_key_for_source = MagicMock(return_value=expected_session_key)
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
@@ -280,6 +282,8 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+        assert MockAgent.call_args.kwargs["gateway_session_key"] == expected_session_key
+        runner._session_key_for_source.assert_any_call(source)
 
     @pytest.mark.asyncio
     async def test_media_files_routed_by_type(self, monkeypatch):

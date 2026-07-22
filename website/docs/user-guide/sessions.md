@@ -525,7 +525,7 @@ For deeper analytics — token usage, cost estimates, tool breakdown, and activi
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
+The agent has a built-in `session_search` tool that performs full-text search over past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. In messaging gateways, discovery and browse default to prior sessions from the current DM, group, channel, or thread; CLI searches remain global. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
 
 ### Three calling shapes
 
@@ -584,6 +584,7 @@ The keyword mode supports standard FTS5 query syntax:
 
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
+- `scope` — discovery/browse scope: `current_chat` or `global`. Gateway conversations default to `current_chat`, reusing the same participant and thread isolation as live routing. Use `global` only when the user asks to search across chats. Explicit read/scroll calls remain addressable by session ID.
 
 ### When It's Used
 

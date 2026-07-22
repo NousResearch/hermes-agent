@@ -434,7 +434,7 @@ Database size: 12.4 MB
 
 ## Session 搜索工具
 
-Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎对所有历史对话进行全文搜索，并允许 agent 滚动浏览找到的任何 session。无需 LLM 调用、无需摘要、无截断。每种调用形式都从数据库返回实际消息。
+Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎搜索历史对话，并允许 agent 滚动浏览找到的任何 session。在消息 Gateway 中，发现和浏览默认只搜索当前私聊、群聊、频道或线程的历史 session；CLI 搜索仍默认为全局。无需 LLM 调用、无需摘要、无截断。每种调用形式都从数据库返回实际消息。
 
 ### 三种调用形式
 
@@ -493,6 +493,7 @@ session_search()
 
 - `sort` — `newest` 或 `oldest`，在 FTS5 排名之上排序。省略则仅按相关性排序（默认；适合探索性召回）。对于"我们在哪里停下了 X"的问题使用 `newest`，对于"X 是怎么开始的"的问题使用 `oldest`。
 - `role_filter` — 逗号分隔的角色列表。发现模式默认为 `user,assistant`（工具输出通常是噪音）。传入 `user,assistant,tool` 以包含工具输出（调试工具行为），或传入 `tool` 仅搜索工具输出。
+- `scope` — 发现/浏览范围：`current_chat` 或 `global`。Gateway 对话默认为 `current_chat`，复用实时路由的参与者和线程隔离规则。只有当用户明确要求跨聊天搜索时才使用 `global`。通过 session ID 显式读取/滚动不受该范围限制。
 
 ### 使用时机
 

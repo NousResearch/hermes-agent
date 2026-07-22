@@ -79,6 +79,7 @@ import random
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -4761,13 +4762,20 @@ def _persist_scratch_completion_artifacts(
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
     used_destinations: set[Path] = set()
-    copied_identities: dict[Path, tuple[int, int, int, int, int]] = {}
+    copied_identities: dict[Path, tuple[int, int, int, int, int, int]] = {}
     changed = False
 
-    def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
-        return (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns)
+    def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int, int]:
+        return (
+            st.st_dev,
+            st.st_ino,
+            st.st_mode,
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ctime_ns,
+        )
 
-    def _current_identity(path: Path) -> Optional[tuple[int, int, int, int, int]]:
+    def _current_identity(path: Path) -> Optional[tuple[int, int, int, int, int, int]]:
         try:
             return _stat_identity(path.lstat())
         except OSError:
@@ -4803,7 +4811,7 @@ def _persist_scratch_completion_artifacts(
             persisted.append(artifact)
             continue
 
-        if not src.is_file():
+        if src.is_symlink() or not src.is_file():
             _discard_copies()
             raise ArtifactPreservationError(
                 f"declared scratch artifact is unavailable or not a regular file: {artifact}"
@@ -4818,12 +4826,17 @@ def _persist_scratch_completion_artifacts(
             )
 
         dest: Optional[Path] = None
-        dest_identity: Optional[tuple[int, int, int, int, int]] = None
+        dest_identity: Optional[tuple[int, int, int, int, int, int]] = None
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
                 try:
+                    source_before = _stat_identity(os.fstat(source_file.fileno()))
+                    if not stat.S_ISREG(source_before[2]):
+                        raise ArtifactPreservationError(
+                            f"declared scratch artifact is not a regular file: {artifact}"
+                        )
                     copied = 0
                     while chunk := source_file.read(1024 * 1024):
                         copied += len(chunk)
@@ -4832,14 +4845,23 @@ def _persist_scratch_completion_artifacts(
                                 f"declared scratch artifact grew beyond the size limit: {artifact}"
                             )
                         destination_file.write(chunk)
+                    source_after = _stat_identity(os.fstat(source_file.fileno()))
+                    if source_after != source_before or copied != source_before[3]:
+                        raise ArtifactPreservationError(
+                            f"declared scratch artifact changed while being copied: {artifact}"
+                        )
                 finally:
                     try:
                         destination_file.flush()
                         os.fsync(destination_file.fileno())
-                        dest_identity = _stat_identity(os.fstat(destination_file.fileno()))
-                    except OSError:
-                        dest_identity = None
-        except Exception as exc:
+                    finally:
+                        try:
+                            dest_identity = _stat_identity(
+                                os.fstat(destination_file.fileno())
+                            )
+                        except OSError:
+                            dest_identity = None
+        except BaseException as exc:
             if dest is not None:
                 try:
                     if dest_identity is not None and _current_identity(dest) == dest_identity:
@@ -4848,6 +4870,8 @@ def _persist_scratch_completion_artifacts(
                     pass
             _discard_copies()
             if isinstance(exc, ArtifactPreservationError):
+                raise
+            if not isinstance(exc, Exception):
                 raise
             raise ArtifactPreservationError(
                 f"could not preserve declared scratch artifact {artifact}: {exc}"
@@ -5100,11 +5124,11 @@ def _materialize_owned_scratch_workspace(
                     tenant=task.tenant,
                 )
             except Exception:
-                # We exclusively created this directory. Remove only the
-                # marker we attempted and the directory if it is otherwise
-                # empty, so an interrupted marker write can be retried safely.
+                # Never unlink marker evidence by pathname after an error: a
+                # concurrent writer may have replaced it. Remove only an
+                # actually empty directory; partial/foreign evidence remains
+                # fail-closed for an operator to inspect.
                 try:
-                    (canonical / _SCRATCH_OWNER_MARKER_NAME).unlink(missing_ok=True)
                     canonical.rmdir()
                 except OSError:
                     pass

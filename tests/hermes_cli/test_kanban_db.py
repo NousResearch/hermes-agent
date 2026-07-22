@@ -2624,6 +2624,143 @@ def test_rollback_cleanup_preserves_replaced_staged_path(
     assert replacement.read_text() == "human replacement"
 
 
+def test_artifact_copy_interrupt_removes_only_partial_destination(
+    kanban_home, monkeypatch
+):
+    """An interrupt inside destination.write cannot strand the partial copy."""
+    original_open = Path.open
+
+    class InterruptingWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def write(self, data):
+            self.stream.write(data[:1])
+            raise KeyboardInterrupt()
+
+    def interrupt_destination(path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        return InterruptingWriter(stream) if mode == "xb" else stream
+
+    monkeypatch.setattr(Path, "open", interrupt_destination)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="copy interrupt")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "report.txt"
+        artifact.write_text("result")
+
+        with pytest.raises(KeyboardInterrupt):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(artifact)]},
+            )
+
+        assert conn.in_transaction is False
+        assert kb.get_task(conn, task_id).status == "ready"
+
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
+
+
+def test_artifact_copy_fsync_failure_removes_bound_destination(
+    kanban_home, monkeypatch
+):
+    """fstat identity remains available when durability flushing fails."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="copy fsync failure")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "report.txt"
+        artifact.write_text("result")
+        monkeypatch.setattr(kb.os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("fsync")))
+
+        with pytest.raises(kb.ArtifactPreservationError, match="could not preserve"):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(artifact)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
+
+
+def test_artifact_copy_rejects_source_changed_at_end_of_stream(
+    kanban_home, monkeypatch
+):
+    """A concurrent writer cannot produce a mixed completion artifact."""
+    original_open = Path.open
+    source_path = None
+
+    class MutatingReader:
+        def __init__(self, stream, path):
+            self.stream = stream
+            self.path = path
+            self.mutated = False
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def read(self, *args, **kwargs):
+            data = self.stream.read(*args, **kwargs)
+            if not data and not self.mutated:
+                self.mutated = True
+                with original_open(self.path, "ab") as writer:
+                    writer.write(b"-changed")
+            return data
+
+    def mutate_source(path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if mode == "rb" and source_path is not None and path == source_path:
+            return MutatingReader(stream, path)
+        return stream
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="source mutation")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        source_path = workspace / "report.txt"
+        source_path.write_text("result")
+        monkeypatch.setattr(Path, "open", mutate_source)
+
+        with pytest.raises(kb.ArtifactPreservationError, match="changed while"):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(source_path)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert source_path.read_text() == "result-changed"
+
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
+
+
 def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
     """A declared scratch deliverable must not disappear behind a false Done."""
     with kb.connect() as conn:
@@ -2836,16 +2973,14 @@ def test_scratch_workspace_has_exact_owner_marker(kanban_home):
     }
 
 
-def test_interrupted_scratch_marker_creation_can_retry(
+def test_interrupted_scratch_marker_creation_preserves_evidence(
     kanban_home, monkeypatch
 ):
-    """An interrupted marker write does not poison the canonical path forever."""
+    """An interrupted marker is never unlinked without exact identity proof."""
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="retry marker")
         task = kb.get_task(conn, task_id)
         canonical = kb.workspaces_root() / task_id
-        original = kb._create_scratch_owner_marker
-
         def interrupt(workspace, **_kwargs):
             (workspace / kb._SCRATCH_OWNER_MARKER_NAME).write_text("{")
             raise OSError("interrupted marker write")
@@ -2853,11 +2988,8 @@ def test_interrupted_scratch_marker_creation_can_retry(
         monkeypatch.setattr(kb, "_create_scratch_owner_marker", interrupt)
         with pytest.raises(ValueError, match="could not materialize"):
             kb.resolve_workspace(task)
-        assert not canonical.exists()
-
-        monkeypatch.setattr(kb, "_create_scratch_owner_marker", original)
-        assert kb.resolve_workspace(task) == canonical
-        assert (canonical / kb._SCRATCH_OWNER_MARKER_NAME).is_file()
+        assert canonical.exists()
+        assert (canonical / kb._SCRATCH_OWNER_MARKER_NAME).read_text() == "{"
 
 
 def test_scratch_cleanup_preserves_cross_task_workspace(kanban_home):

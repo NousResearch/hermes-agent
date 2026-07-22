@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { ListRow, Pill } from '../primitives'
@@ -25,6 +26,7 @@ export function AutoReloadRow({
   row: BillingAccountRowView
 }) {
   const api = useBillingApi()
+  const { t } = useI18n()
   const queryClient = useQueryClient()
   const [confirmDisable, setConfirmDisable] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -95,7 +97,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill updated.' })
+    setMessage({ kind: 'success', text: t.billing.autoRefillUpdated })
     setEditing(false)
   }
 
@@ -125,7 +127,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill turned off.' })
+    setMessage({ kind: 'success', text: t.billing.autoRefillTurnedOff })
     setEditing(false)
   }
 
@@ -180,7 +182,7 @@ export function AutoReloadRow({
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                   Threshold
                   <Input
-                    aria-label="Auto-refill threshold"
+                    aria-label={t.billing.autoRefillThreshold}
                     className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
@@ -197,7 +199,7 @@ export function AutoReloadRow({
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                   Reload to
                   <Input
-                    aria-label="Auto-refill reload-to amount"
+                    aria-label={t.billing.autoRefillReloadTo}
                     className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"

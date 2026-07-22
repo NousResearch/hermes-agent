@@ -419,6 +419,7 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeSearchPlaceholder: '搜索你的主题或 VS Code 市场…',
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
@@ -969,7 +970,8 @@ export const zh: Translations = {
       defaultsFailed: '保存模型默认值失败',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
-      auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
+      staleAuxWarning: (count, names, provider) => `${count} 个辅助任务 (${names}) 正在使用 ${provider}，而非您的主模型。`,
+      auxiliaryDesc: '默认情况下，辅助任务使用主模型。分配专用模型给任务以覆盖。',
       setToMain: '设为主模型',
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
@@ -977,6 +979,19 @@ export const zh: Translations = {
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      moa: {
+        sectionTitle: '混合代理',
+        description: '配置在混合代理提供方下显示为模型的命名预设。聚合器是执行模型。',
+        presetPlaceholder: '预设',
+        setDefault: '设为默认',
+        deletePreset: '删除',
+        newPresetPlaceholder: '新建预设',
+        addPreset: '添加预设',
+        defaultLabel: '默认：',
+        referenceLabel: (n) => `参考 ${n}`,
+        addReferenceModel: '添加参考模型',
+        aggregatorTitle: '聚合器'
+      },
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },
@@ -2589,6 +2604,7 @@ export const zh: Translations = {
     hideHeader: '隐藏标题栏',
     minimize: '最小化',
     restore: '还原',
+    toggleLayoutEditMode: '切换布局编辑模式',
     closeRunningTitle: '关闭正在运行的标签？',
     closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
     closeRunningConfirm: '关闭标签',
@@ -2870,5 +2886,50 @@ export const zh: Translations = {
       description: '显示移动端侧边栏。',
       toggle: '切换侧边栏'
     }
+  },
+
+  uninstall: {
+    dangerZone: '危险区域',
+    checking: '正在检查安装内容…',
+    confirmTitle: '确认卸载',
+    confirmBody: consequence => `这将移除${consequence}。此操作无法撤销。`,
+    uninstalling: '正在卸载…',
+    yesUninstall: '是，卸载',
+    couldNotStart: '无法启动卸载。',
+    cancel: '取消',
+    uninstallHermes: '卸载 Hermes',
+    uninstallDescription: '选择要移除的内容。应用会关闭以完成操作；随时可以重新打开安装程序。',
+    options: {
+      gui: {
+        title: '仅卸载聊天界面',
+        description: '移除此桌面应用。Hermes 代理、配置和聊天记录都会保留。',
+        consequence: '桌面聊天界面（此应用及其数据）'
+      },
+      lite: {
+        title: '卸载界面 + 代理，保留数据',
+        description: '移除应用和 Hermes 代理，但保留配置、聊天记录和密钥以供将来重新安装。',
+        consequence: '聊天界面和 Hermes 代理（配置、聊天记录和密钥将被保留）'
+      },
+      full: {
+        title: '全部卸载',
+        description: '移除应用、代理和所有用户数据——配置、聊天记录、定时任务、密钥、日志。',
+        consequence: '所有内容——聊天界面、Hermes 代理以及您的所有配置、聊天记录、密钥和日志'
+      }
+    }
+  },
+
+  billing: {
+    autoRefill: '自动充值',
+    balance: '余额',
+    plan: '套餐',
+    connectTitle: '连接你的 Nous 账户',
+    connectMessage: '在终端运行 /portal 或打开 Nous 门户来连接你的账户。',
+    openPortal: '打开门户',
+    openPortalArrow: '打开门户 ↗',
+    autoRefillUpdated: '自动充值已更新。',
+    autoRefillTurnedOff: '自动充值已关闭。',
+    autoRefillThreshold: '自动充值阈值',
+    autoRefillReloadTo: '自动充值金额',
+    autoRefillCaption: cardLabel => `自动充值从 ${cardLabel} 扣款 — 在门户上管理`
   }
 }

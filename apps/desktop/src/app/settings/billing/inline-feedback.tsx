@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink } from '@/lib/icons'
 
@@ -45,6 +46,7 @@ export function StepUpInlineAction({ flow }: { flow: ReturnType<typeof useStepUp
 
 export function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | null }) {
   const stepUp = useStepUpFlow()
+  const { t } = useI18n()
 
   if (!refusal) {
     return null
@@ -61,7 +63,7 @@ export function BillingRefusalInline({ refusal }: { refusal: BillingRefusal | nu
       {resolved.action.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => openExternalLink(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {t.billing.openPortal}
           <ExternalLink className="size-3.5" />
         </Button>
       )}

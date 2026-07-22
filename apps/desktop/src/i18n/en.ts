@@ -430,6 +430,7 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
       installTitle: 'Install from VS Code',
       installDesc:
@@ -767,7 +768,8 @@ export const en: Translations = {
       defaultsFailed: 'Failed to save model defaults',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
-      auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
+      staleAuxWarning: (count, names, provider) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run${count === 1 ? 's' : ''} on ${provider}, not your main model.`,
+      auxiliaryDesc: 'Auxiliary tasks use the main model by default. Assign a dedicated model to a task to override.',
       setToMain: 'Set to main',
       change: 'Change',
       autoUseMain: 'auto · use main model',
@@ -775,6 +777,19 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moa: {
+        sectionTitle: 'Mixture of Agents',
+        description: 'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+        presetPlaceholder: 'Preset',
+        setDefault: 'Set default',
+        deletePreset: 'Delete',
+        newPresetPlaceholder: 'new preset',
+        addPreset: 'Add preset',
+        defaultLabel: 'Default:',
+        referenceLabel: (n) => `Reference ${n}`,
+        addReferenceModel: 'Add reference model',
+        aggregatorTitle: 'Aggregator'
+      },
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -2413,6 +2428,7 @@ export const en: Translations = {
     hideHeader: 'Hide header',
     minimize: 'Minimize',
     restore: 'Restore',
+    toggleLayoutEditMode: 'Toggle layout edit mode',
     closeRunningTitle: 'Close running tab?',
     closeRunningBody:
       'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',
@@ -2712,5 +2728,50 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: 'Toggle Sidebar'
     }
+  },
+
+  uninstall: {
+    dangerZone: 'Danger zone',
+    checking: "Checking what's installed\u2026",
+    confirmTitle: 'Confirm uninstall',
+    confirmBody: consequence => `This removes ${consequence}. This can't be undone.`,
+    uninstalling: 'Uninstalling\u2026',
+    yesUninstall: 'Yes, uninstall',
+    couldNotStart: 'Uninstall could not start.',
+    cancel: 'Cancel',
+    uninstallHermes: 'Uninstall Hermes',
+    uninstallDescription: 'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+    options: {
+      gui: {
+        title: 'Uninstall Chat GUI only',
+        description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+        consequence: 'the desktop Chat GUI (this app and its data)'
+      },
+      lite: {
+        title: 'Uninstall GUI + agent, keep my data',
+        description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+        consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+      },
+      full: {
+        title: 'Uninstall everything',
+        description: 'Remove the app, the agent, and all user data \u2014 config, chats, scheduled jobs, secrets, logs.',
+        consequence: 'EVERYTHING \u2014 the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+      }
+    }
+  },
+
+  billing: {
+    autoRefill: 'Auto-refill',
+    balance: 'Balance',
+    plan: 'Plan',
+    connectTitle: 'Connect your Nous account',
+    connectMessage: 'Run /portal in the TUI or open the Nous portal to connect your account.',
+    openPortal: 'Open portal',
+    openPortalArrow: 'Open portal ↗',
+    autoRefillUpdated: 'Auto-refill updated.',
+    autoRefillTurnedOff: 'Auto-refill turned off.',
+    autoRefillThreshold: 'Auto-refill threshold',
+    autoRefillReloadTo: 'Auto-refill reload-to amount',
+    autoRefillCaption: cardLabel => `Auto-refill charges ${cardLabel} — reconcile on the portal`
   }
 }

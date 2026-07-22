@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'fr' | 'zh' | 'zh-hant' | 'ja'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -345,6 +345,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string
@@ -664,6 +665,7 @@ export interface Translations {
       defaultsFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxWarning: (count: number, names: string, provider: string) => string
       auxiliaryDesc: string
       setToMain: string
       change: string
@@ -672,6 +674,19 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moa: {
+        sectionTitle: string
+        description: string
+        presetPlaceholder: string
+        setDefault: string
+        deletePreset: string
+        newPresetPlaceholder: string
+        addPreset: string
+        defaultLabel: string
+        referenceLabel: (n: number) => string
+        addReferenceModel: string
+        aggregatorTitle: string
+      }
       tasks: Record<string, AuxTaskCopy>
     }
     providers: {
@@ -2033,6 +2048,7 @@ export interface Translations {
     hideHeader: string
     minimize: string
     restore: string
+    toggleLayoutEditMode: string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string
@@ -2289,5 +2305,38 @@ export interface Translations {
       description: string
       toggle: string
     }
+  }
+
+  uninstall: {
+    dangerZone: string
+    checking: string
+    confirmTitle: string
+    confirmBody: (consequence: string) => string
+    uninstalling: string
+    yesUninstall: string
+    couldNotStart: string
+    cancel: string
+    uninstallHermes: string
+    uninstallDescription: string
+    options: {
+      gui: { title: string; description: string; consequence: string }
+      lite: { title: string; description: string; consequence: string }
+      full: { title: string; description: string; consequence: string }
+    }
+  }
+
+  billing: {
+    autoRefill: string
+    balance: string
+    plan: string
+    connectTitle: string
+    connectMessage: string
+    openPortal: string
+    openPortalArrow: string
+    autoRefillUpdated: string
+    autoRefillTurnedOff: string
+    autoRefillThreshold: string
+    autoRefillReloadTo: string
+    autoRefillCaption: (cardLabel: string) => string
   }
 }

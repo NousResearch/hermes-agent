@@ -1656,11 +1656,16 @@ class AIAgent:
         """
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
+        foreground_generation = int(getattr(self, "_foreground_turn_generation", 0) or 0)
         target, _prompt = spawn_background_review_thread(
             self,
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
+            foreground_generation=foreground_generation,
+            idle_delay_seconds=float(
+                getattr(self, "_background_review_idle_delay_seconds", 0.0) or 0.0
+            ),
         )
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).

@@ -36,6 +36,38 @@ logger = logging.getLogger(__name__)
 # practical limit for readable messages — matching OpenClaw's choice).
 MAX_POST_LENGTH = 4000
 
+
+def _visible_file_post_name(name: Any, max_len: int = 160) -> str:
+    """Return a compact, non-pinging filename label for a file post body."""
+    label = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not label:
+        return ""
+    # Avoid creating accidental @channel/@user pings from untrusted filenames.
+    label = label.replace("@", "@\u200b")
+    if len(label) > max_len:
+        label = f"{label[: max_len - 1]}…"
+    return label
+
+
+def _file_post_message(caption: Optional[str], filenames: List[str]) -> str:
+    """Return a Mattermost post body for file attachments.
+
+    Mattermost accepts posts whose only visible content is ``file_ids`` with an
+    empty ``message``, but some clients/threads can make those file-only replies
+    easy to miss.  Use the explicit caption when present; otherwise include a
+    tiny filename line so attachment posts remain visible and discoverable.
+    """
+    body = str(caption or "")
+    if body.strip():
+        return body
+    clean = [label for name in filenames if (label := _visible_file_post_name(name))]
+    if not clean:
+        return "📎 Attachment"
+    if len(clean) == 1:
+        return f"📎 {clean[0]}"
+    return "\n".join(f"📎 {name}" for name in clean)
+
+
 # Channel type codes returned by the Mattermost API.
 _CHANNEL_TYPE_MAP = {
     "D": "dm",
@@ -545,7 +577,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         payload: Dict[str, Any] = {
             "channel_id": chat_id,
-            "message": caption or "",
+            "message": _file_post_message(caption, [fname]),
             "file_ids": [file_id],
         }
         resolved_root = await self._thread_root_for_send(reply_to, metadata)
@@ -586,7 +618,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         payload: Dict[str, Any] = {
             "channel_id": chat_id,
-            "message": caption or "",
+            "message": _file_post_message(caption, [fname]),
             "file_ids": [file_id],
         }
         resolved_root = await self._thread_root_for_send(reply_to, metadata)
@@ -628,6 +660,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 await asyncio.sleep(human_delay)
 
             file_ids: List[str] = []
+            uploaded_names: List[str] = []
             caption_parts: List[str] = []
             try:
                 for image_url, alt_text in chunk:
@@ -668,13 +701,14 @@ class MattermostAdapter(BasePlatformAdapter):
                     fid = await self._upload_file(chat_id, file_data, fname, ct)
                     if fid:
                         file_ids.append(fid)
+                        uploaded_names.append(fname)
 
                 if not file_ids:
                     continue
 
                 payload: Dict[str, Any] = {
                     "channel_id": chat_id,
-                    "message": "\n".join(caption_parts),
+                    "message": _file_post_message("\n".join(caption_parts), uploaded_names),
                     "file_ids": file_ids,
                 }
                 resolved_root = await self._thread_root_for_send(None, metadata)
@@ -1038,70 +1072,101 @@ async def _standalone_send(
             timeout=aiohttp.ClientTimeout(total=60),
             **_sess_kw,
         ) as session:
-            # 1. Upload media (if any) and collect file_ids.
-            file_ids: List[str] = []
+            # Mattermost accepts only a bounded set of file_ids per post. Keep
+            # the conservative five-file cap used by the live adapter so
+            # standalone/Cron sends cannot upload everything and then fail at
+            # post creation.
+            media_paths: List[str] = []
             for media in media_files:
-                file_path = media.get("path") if isinstance(media, dict) else media
-                if not file_path or not os.path.exists(file_path):
-                    continue
-                form = aiohttp.FormData()
-                # Mattermost requires channel_id on file uploads so the
-                # server can attribute them.
-                form.add_field("channel_id", chat_id)
-                with open(file_path, "rb") as fh:
-                    form.add_field(
-                        "files",
-                        fh.read(),
-                        filename=os.path.basename(file_path),
-                    )
+                if isinstance(media, dict):
+                    file_path = media.get("path")
+                elif isinstance(media, (tuple, list)):
+                    # BasePlatformAdapter.extract_media() emits
+                    # ``(path, is_voice)`` tuples. Mattermost stores all media
+                    # as ordinary file attachments, so only the path matters.
+                    file_path = media[0] if media else None
+                else:
+                    file_path = media
+                if file_path and os.path.exists(file_path):
+                    media_paths.append(file_path)
+
+            file_batches = [
+                media_paths[index:index + 5]
+                for index in range(0, len(media_paths), 5)
+            ] or [[]]
+            last_data: Dict[str, Any] = {}
+
+            for batch_index, file_batch in enumerate(file_batches):
+                file_ids: List[str] = []
+                uploaded_names: List[str] = []
+                for file_path in file_batch:
+                    filename = os.path.basename(file_path)
+                    form = aiohttp.FormData()
+                    # Mattermost requires channel_id on file uploads so the
+                    # server can attribute them.
+                    form.add_field("channel_id", chat_id)
+                    with open(file_path, "rb") as fh:
+                        form.add_field(
+                            "files",
+                            fh.read(),
+                            filename=filename,
+                        )
+                    async with session.post(
+                        f"{base_url}/api/v4/files",
+                        data=form,
+                        headers=upload_headers,
+                        **_req_kw,
+                    ) as upload_resp:
+                        if upload_resp.status not in {200, 201}:
+                            body = await upload_resp.text()
+                            return {
+                                "error": (
+                                    f"Mattermost file upload failed "
+                                    f"({upload_resp.status}): {body[:400]}"
+                                )
+                            }
+                        upload_data = await upload_resp.json()
+                        for info in upload_data.get("file_infos", []):
+                            if info.get("id"):
+                                file_ids.append(info["id"])
+                                uploaded_names.append(filename)
+
+                # Preserve an explicit caption exactly once. Additional file
+                # batches use safe visible filename fallbacks instead.
+                batch_message = message if batch_index == 0 else ""
+                payload: Dict[str, Any] = {
+                    "channel_id": chat_id,
+                    "message": (
+                        _file_post_message(batch_message, uploaded_names)
+                        if file_ids
+                        else batch_message
+                    ),
+                }
+                if thread_id:
+                    payload["root_id"] = thread_id
+                if file_ids:
+                    payload["file_ids"] = file_ids
                 async with session.post(
-                    f"{base_url}/api/v4/files",
-                    data=form,
-                    headers=upload_headers,
+                    f"{base_url}/api/v4/posts",
+                    headers=headers,
+                    json=payload,
                     **_req_kw,
-                ) as upload_resp:
-                    if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
+                ) as resp:
+                    if resp.status not in {200, 201}:
+                        body = await resp.text()
                         return {
                             "error": (
-                                f"Mattermost file upload failed "
-                                f"({upload_resp.status}): {body[:400]}"
+                                f"Mattermost API error ({resp.status}): "
+                                f"{body[:400]}"
                             )
                         }
-                    upload_data = await upload_resp.json()
-                    for info in upload_data.get("file_infos", []):
-                        if info.get("id"):
-                            file_ids.append(info["id"])
+                    last_data = await resp.json()
 
-            # 2. Post the message (with thread root + attached file_ids).
-            payload: Dict[str, Any] = {
-                "channel_id": chat_id,
-                "message": message,
-            }
-            if thread_id:
-                payload["root_id"] = thread_id
-            if file_ids:
-                payload["file_ids"] = file_ids
-            async with session.post(
-                f"{base_url}/api/v4/posts",
-                headers=headers,
-                json=payload,
-                **_req_kw,
-            ) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return {
-                        "error": (
-                            f"Mattermost API error ({resp.status}): "
-                            f"{body[:400]}"
-                        )
-                    }
-                data = await resp.json()
             return {
                 "success": True,
                 "platform": "mattermost",
                 "chat_id": chat_id,
-                "message_id": data.get("id"),
+                "message_id": last_data.get("id"),
             }
     except aiohttp.ClientError as exc:
         return {"error": f"Mattermost send failed (network): {exc}"}

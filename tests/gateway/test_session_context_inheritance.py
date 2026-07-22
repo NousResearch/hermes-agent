@@ -178,6 +178,18 @@ def test_reset_session_vars_restores_unset_not_empty():
         assert var.get() is _UNSET, f"{name} is {var.get()!r}, expected _UNSET"
 
 
+def test_unattended_session_var_is_context_local_and_bridgeable():
+    set_session_vars(**MINE, unattended=True)
+
+    assert sc.get_session_env("HERMES_UNATTENDED_SESSION") == "1"
+    env = _make_run_env({})
+    assert env["HERMES_UNATTENDED_SESSION"] == "1"
+
+    reset_session_vars()
+    assert sc.get_session_env("HERMES_UNATTENDED_SESSION") == ""
+    assert "HERMES_UNATTENDED_SESSION" not in _make_run_env({})
+
+
 # ---------------------------------------------------------------------------
 # Async-delivery capability inheritance (the sibling var outside _VAR_MAP)
 # ---------------------------------------------------------------------------

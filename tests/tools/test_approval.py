@@ -1722,11 +1722,63 @@ class TestGitDestructiveOps:
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_safe_git_push_not_flagged(self):
-        """Normal push without --force must not be flagged."""
+    def test_git_push_detected(self):
+        """Remote ref updates require approval even without --force."""
         cmd = "git push origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "remote refs" in desc.lower()
+
+    def test_git_push_delete_detected(self):
+        cmd = "git push origin --delete feature-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "remote refs" in desc.lower()
+
+    def test_git_push_dry_run_not_flagged(self):
+        cmd = "git push --dry-run origin main"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+    def test_git_push_help_not_flagged(self):
+        cmd = "git push --help"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_gh_pr_merge_detected(self):
+        cmd = "gh pr merge 60 --squash --delete-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "merge" in desc.lower()
+
+    def test_mutating_gh_api_short_method_detected(self):
+        cmd = "gh api -X POST repos/owner/repo/releases"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "mutating" in desc.lower()
+
+    def test_mutating_gh_api_long_method_detected(self):
+        cmd = "gh api graphql --method DELETE -f id=THREAD"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "mutating" in desc.lower()
+
+    def test_graphql_mutation_without_explicit_method_detected(self):
+        cmd = "gh api graphql -f query='mutation { resolveReviewThread(input: {}) { clientMutationId } }'"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "graphql mutation" in desc.lower()
+
+    def test_readonly_gh_api_not_flagged(self):
+        cmd = "gh api graphql -f query='{viewer{login}}'"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_gh_release_create_detected(self):
+        cmd = "gh release create v1.0.0"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "release" in desc.lower()
 
     def test_git_branch_lowercase_d_also_flagged(self):
         """git branch -d triggers approval too — IGNORECASE is global.
@@ -1765,6 +1817,49 @@ class TestGitDestructiveOps:
         cmd = "git branch --delete feature-branch"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+class TestUnattendedApprovalContext:
+    def test_unattended_dangerous_command_blocks_without_gateway_prompt(self, monkeypatch):
+        monkeypatch.setenv("HERMES_UNATTENDED_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+        result = approval_module.check_all_command_guards(
+            "gh pr merge 60 --squash --delete-branch",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert "without a user present" in result["message"]
+
+    def test_kanban_worker_dangerous_command_blocks(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+        result = approval_module.check_all_command_guards("git push origin main", "local")
+
+        assert result["approved"] is False
+        assert "kanban worker" in result["message"].lower()
+
+    def test_unattended_approve_mode_allows_existing_opt_in(self, monkeypatch):
+        monkeypatch.setenv("HERMES_UNATTENDED_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "approve")
+
+        result = approval_module.check_all_command_guards("git push origin main", "local")
+
+        assert result["approved"] is True
 
 
 class TestChmodExecuteCombo:

@@ -188,6 +188,28 @@ def test_guard_cron_deny_blocks(monkeypatch):
     assert res["outcome"] == "blocked"
 
 
+def test_guard_unattended_deny_blocks(monkeypatch):
+    monkeypatch.setenv("HERMES_UNATTENDED_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
+    res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is False
+    assert res["outcome"] == "blocked"
+    assert "without a user present" in res["message"]
+
+
+def test_guard_unattended_approve_allows(monkeypatch):
+    monkeypatch.setenv("HERMES_UNATTENDED_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "approve")
+    res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is True
+
+
 def test_guard_gateway_user_approves_is_one_shot(gw_session):
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os; print(1)", "local")
@@ -242,6 +264,67 @@ def test_guard_session_approval_short_circuits_prompt(gw_session):
         with A._lock:
             s = A._session_approved.get(gw_session, set())
             s.discard("execute_code")
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import subprocess\nsubprocess.run(['git', 'push', 'origin', 'main'], check=True)",
+        (
+            "import requests\n"
+            "requests.post('https://api.github.com/graphql', "
+            "json={'query': 'mutation { mergePullRequest(input: {}) { clientMutationId } }'})"
+        ),
+    ],
+    ids=["subprocess-git-push", "github-graphql-post"],
+)
+def test_generic_session_approval_does_not_cover_remote_mutations(gw_session, code):
+    A.approve_session(gw_session, "execute_code")
+    try:
+        shown = _register_capturing_resolver(gw_session, "deny")
+        result = A.check_execute_code_guard(code, "local")
+
+        assert result["approved"] is False
+        assert result["outcome"] == "denied"
+        assert shown["approval_data"]["pattern_key"] == (
+            "execute_code:remote_repository_mutation"
+        )
+        assert A.is_approved(gw_session, "execute_code") is True
+        assert A.is_approved(
+            gw_session, "execute_code:remote_repository_mutation"
+        ) is False
+    finally:
+        with A._lock:
+            approvals = A._session_approved.get(gw_session, set())
+            approvals.discard("execute_code")
+            approvals.discard("execute_code:remote_repository_mutation")
+
+
+def test_remote_mutation_session_approval_uses_its_own_key(gw_session):
+    code = "import subprocess\nsubprocess.run(['git', 'push', 'origin', 'main'])"
+    try:
+        shown = _register_capturing_resolver(gw_session, "session")
+        result = A.check_execute_code_guard(code, "local")
+
+        assert result["approved"] is True
+        assert shown["approval_data"]["pattern_key"] == (
+            "execute_code:remote_repository_mutation"
+        )
+        assert A.is_approved(
+            gw_session, "execute_code:remote_repository_mutation"
+        ) is True
+        assert A.is_approved(gw_session, "execute_code") is False
+
+        no_prompt = A.check_execute_code_guard(
+            "import subprocess\nsubprocess.run(['git', 'push', 'origin', 'feature'])",
+            "local",
+        )
+        assert no_prompt["approved"] is True
+    finally:
+        with A._lock:
+            A._session_approved.get(gw_session, set()).discard(
+                "execute_code:remote_repository_mutation"
+            )
 
 
 def test_guard_gateway_user_denies_blocks(gw_session):

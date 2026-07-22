@@ -544,6 +544,7 @@ class GatewayKanbanWatchersMixin:
                                         message_type=MessageType.TEXT,
                                         source=_source,
                                         internal=True,
+                                        metadata={"unattended_session": True},
                                     )
                                     await adapter.handle_message(_synth_event)
                                     logger.info(

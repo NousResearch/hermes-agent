@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import ast
 import contextvars
 import fnmatch
 import functools
@@ -224,6 +225,45 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _get_session_env_flag(name: str) -> bool:
+    """Read a truthy session/env flag, preferring gateway ContextVars."""
+    try:
+        from gateway.session_context import get_session_env
+
+        value = get_session_env(name, "")
+    except Exception:
+        value = os.getenv(name, "")
+    return is_truthy_value(value)
+
+
+def _is_unattended_approval_context() -> bool:
+    """True when the current turn has no live approver attached."""
+    return (
+        env_var_enabled("HERMES_CRON_SESSION")
+        or _get_session_env_flag("HERMES_UNATTENDED_SESSION")
+        or bool(os.getenv("HERMES_KANBAN_TASK"))
+    )
+
+
+def _unattended_context_label() -> str:
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        return "Cron jobs"
+    if bool(os.getenv("HERMES_KANBAN_TASK")):
+        return "Kanban worker sessions"
+    return "Unattended sessions"
+
+
+def _unattended_dangerous_block_message(description: str) -> str:
+    label = _unattended_context_label()
+    return (
+        f"BLOCKED: Command flagged as dangerous ({description}) "
+        f"but {label.lower()} run without a user present to approve it. "
+        "Find an alternative approach that avoids this command. "
+        "To allow dangerous commands in unattended jobs, set "
+        "approvals.cron_mode: approve in config.yaml."
+    )
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -238,7 +278,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_unattended_approval_context():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -761,7 +801,8 @@ DANGEROUS_PATTERNS = [
     # a full shell context.
     (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
-    # shared history. Not captured by rm/chmod/etc patterns.
+    # shared history, plus remote VCS operations that mutate repository state
+    # outside the local checkout. Not captured by rm/chmod/etc patterns.
     # `git reset --hard` accepts any unambiguous long-flag prefix (--h,
     # --ha, --har, --hard) because git's own option parser resolves
     # abbreviated long flags -- `--hard` is the only `git reset` mode
@@ -771,6 +812,8 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (_CMDPOS + r'git\s+push\b(?![^;|&\n]*\s(?:--dry-run|-n)\b)(?![^;|&\n]*\s(?:--help|-h)\b)',
+     "git push (updates remote refs)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` is shorthand for `-d --force`; the long-flag spellings
@@ -783,6 +826,13 @@ DANGEROUS_PATTERNS = [
     # later command in the same script.
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (_CMDPOS + r'gh\s+pr\s+merge\b', "gh pr merge (merges remote pull request)"),
+    (_CMDPOS + r'gh\s+api\b[^;|&\n]*(?:-X\s*(?:post|put|patch|delete)\b|--method(?:=|\s+)(?:post|put|patch|delete)\b)',
+     "gh api mutating request"),
+    (_CMDPOS + r'gh\s+api\s+graphql\b[^;|&\n]*\bmutation\b',
+     "gh api GraphQL mutation"),
+    (_CMDPOS + r'gh\s+release\s+(?:create|delete|edit|upload)\b',
+     "gh release mutation"),
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
@@ -2647,7 +2697,7 @@ def _run_approval_gate(
     description: str,
     display_target: str,
     approval_callback=None,
-    cron_deny_message: str,
+    unattended_deny_message: str,
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
@@ -2675,8 +2725,8 @@ def _run_approval_gate(
         approval_callback: Optional CLI prompt callback. When ``None`` the
             per-thread callback registered via
             ``tools.terminal_tool.set_approval_callback`` is used.
-        cron_deny_message: Message returned when a cron job hits this gate
-            under ``cron_mode: deny``.
+        unattended_deny_message: Message returned when an unattended turn hits
+            this gate under ``cron_mode: deny``.
         autoapprove_log_prefix: Log line prefix for the non-interactive
             auto-approve warning (identifies command vs plugin origin).
         fail_closed_when_no_human: When True, a non-interactive non-gateway
@@ -2713,12 +2763,12 @@ def _run_approval_gate(
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        # No-human turns share the existing cron-mode trust switch.
+        if _is_unattended_approval_context():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
-                    "message": cron_deny_message,
+                    "message": unattended_deny_message,
                     "pattern_key": pattern_key,
                     "description": description,
                 }
@@ -2931,13 +2981,7 @@ def check_dangerous_command(command: str, env_type: str,
         description=description,
         display_target=command,
         approval_callback=approval_callback,
-        cron_deny_message=(
-            f"BLOCKED: Command flagged as dangerous ({description}) "
-            "but cron jobs run without a user present to approve it. "
-            "Find an alternative approach that avoids this command. "
-            "To allow dangerous commands in cron jobs, set "
-            "approvals.cron_mode: approve in config.yaml."
-        ),
+        unattended_deny_message=_unattended_dangerous_block_message(description),
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
@@ -3012,10 +3056,10 @@ def request_tool_approval(
         description=description,
         display_target=display_target,
         approval_callback=approval_callback,
-        cron_deny_message=(
+        unattended_deny_message=(
             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
-            "but cron jobs run without a user present to approve it. Find an "
-            "alternative approach. To allow flagged actions in cron jobs, set "
+            "but this unattended turn has no user present to approve it. Find "
+            "an alternative approach. To allow flagged unattended actions, set "
             "approvals.cron_mode: approve in config.yaml."
         ),
         autoapprove_log_prefix=(
@@ -3238,24 +3282,19 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
-    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
+    # Preserve the existing non-interactive behavior for truly local trusted
+    # flows, but fail closed for explicitly unattended jobs that have no
+    # approver attached.
     if not is_cli and not is_gateway and not is_ask:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        # Unattended sessions: respect the existing cron-mode trust switch.
+        if _is_unattended_approval_context():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
                     return {
                         "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
+                        "message": _unattended_dangerous_block_message(description),
                     }
                 # Also run tirith check in cron-deny mode so content-level
                 # threats (homograph URLs, pipe-to-interpreter, terminal
@@ -3270,9 +3309,9 @@ def check_all_command_guards(command: str, env_type: str,
                             "approved": False,
                             "message": (
                                 f"BLOCKED: {_cron_desc} "
-                                "but cron jobs run without a user present to approve it. "
+                                f"but {_unattended_context_label().lower()} run without a user present to approve it. "
                                 "Find an alternative approach that avoids this command. "
-                                "To allow dangerous commands in cron jobs, set "
+                                "To allow dangerous commands in unattended jobs, set "
                                 "approvals.cron_mode: approve in config.yaml."
                             ),
                         }
@@ -3298,7 +3337,7 @@ def check_all_command_guards(command: str, env_type: str,
                                 "BLOCKED: the Tirith security scanner could not be "
                                 "imported and security.tirith_fail_open is false, "
                                 "so this command cannot be silently allowed — and "
-                                "cron jobs run without a user present to approve it. "
+                                f"{_unattended_context_label().lower()} run without a user present to approve it. "
                                 "Find an alternative approach, install tirith, or set "
                                 "approvals.cron_mode: approve in config.yaml."
                             ),
@@ -3634,6 +3673,130 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+_EXECUTE_CODE_REMOTE_MUTATION_KEY = "execute_code:remote_repository_mutation"
+_REMOTE_REPOSITORY_MUTATION_DESCRIPTIONS = frozenset({
+    "git push (updates remote refs)",
+    "git force push (rewrites remote history)",
+    "git force push short flag (rewrites remote history)",
+    "gh pr merge (merges remote pull request)",
+    "gh api mutating request",
+    "gh api GraphQL mutation",
+    "gh release mutation",
+})
+_RAW_PYTHON_COMMAND_CALLS = frozenset({
+    "asyncio.create_subprocess_exec",
+    "asyncio.create_subprocess_shell",
+    "call",
+    "check_call",
+    "check_output",
+    "getoutput",
+    "getstatusoutput",
+    "os.popen",
+    "os.system",
+    "popen",
+    "run",
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+    "subprocess.getoutput",
+    "subprocess.getstatusoutput",
+    "subprocess.popen",
+    "subprocess.run",
+})
+
+
+def _ast_qualified_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id.lower()
+    if isinstance(node, ast.Attribute):
+        parent = _ast_qualified_name(node.value)
+        return f"{parent}.{node.attr.lower()}" if parent else node.attr.lower()
+    return ""
+
+
+def _ast_literal_text(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            value.value if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            else "{value}"
+            for value in node.values
+        )
+    if isinstance(node, (ast.List, ast.Tuple)):
+        parts = []
+        for item in node.elts:
+            value = _ast_literal_text(item)
+            parts.append(value if value is not None else "{value}")
+        return " ".join(parts)
+    if isinstance(node, ast.Dict):
+        parts = []
+        for key, value_node in zip(node.keys, node.values):
+            key_text = _ast_literal_text(key) if key is not None else None
+            value_text = _ast_literal_text(value_node)
+            if key_text is not None:
+                parts.append(key_text)
+            if value_text is not None:
+                parts.append(value_text)
+        return " ".join(parts)
+    return None
+
+
+def _detect_execute_code_remote_mutation(code: str) -> str | None:
+    """Return a remote-repository mutation description for raw Python code."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    literal_texts = []
+    for node in ast.walk(tree):
+        literal = _ast_literal_text(node)
+        if literal:
+            literal_texts.append(literal)
+
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _ast_qualified_name(node.func)
+        if call_name not in _RAW_PYTHON_COMMAND_CALLS:
+            continue
+
+        command_parts = []
+        args = node.args if call_name.endswith("create_subprocess_exec") else node.args[:1]
+        for arg in args:
+            text = _ast_literal_text(arg)
+            if text:
+                command_parts.append(text)
+        if not command_parts:
+            continue
+
+        dangerous, _pattern_key, description = detect_dangerous_command(
+            " ".join(command_parts)
+        )
+        if dangerous and description in _REMOTE_REPOSITORY_MUTATION_DESCRIPTIONS:
+            return description
+
+    literals = "\n".join(literal_texts).lower()
+    if "mutation" in literals and "graphql" in literals and "github" in literals:
+        return "GitHub GraphQL mutation from raw Python"
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        method = _ast_qualified_name(node.func).rsplit(".", 1)[-1]
+        if method not in {"delete", "patch", "post", "put"}:
+            continue
+        call_literals = " ".join(
+            text
+            for arg in (*node.args, *(keyword.value for keyword in node.keywords))
+            if (text := _ast_literal_text(arg))
+        ).lower()
+        if "api.github.com" in call_literals or "github.com/graphql" in call_literals:
+            return "GitHub API mutation from raw Python"
+
+    return None
+
+
 def check_execute_code_guard(code: str, env_type: str,
                              has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
@@ -3645,20 +3808,25 @@ def check_execute_code_guard(code: str, env_type: str,
     the script as a whole before it runs (#30882). Returns the same dict
     contract as ``check_all_command_guards``.
 
-    Scope (documented limitation, #30882): in a purely local non-interactive
-    non-gateway session (no TTY, not gateway, not cron-deny) this returns
-    approved — matching the existing terminal auto-approve contract. The
-    hardline floor still blocks catastrophic ``terminal()`` commands the script
-    issues; running arbitrary code headlessly without any approval surface is
-    trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode`` to
-    require approval).
+    Scope: in a purely local non-interactive non-gateway session that is not
+    marked unattended, this returns approved — matching the existing terminal
+    auto-approve contract. Explicit no-approver jobs (cron, kanban workers,
+    notification wakeups) fail closed by default via ``approvals.cron_mode``.
     """
-    pattern_key = "execute_code"
-    description = (
-        "execute_code script execution. The script can spawn subprocesses or "
-        "mutate files without passing through terminal command approval; "
-        "approval is one-shot for this run."
-    )
+    remote_mutation = _detect_execute_code_remote_mutation(code)
+    if remote_mutation:
+        pattern_key = _EXECUTE_CODE_REMOTE_MUTATION_KEY
+        description = (
+            "execute_code remote repository mutation. The script can mutate "
+            f"remote state without passing through terminal approval ({remote_mutation})."
+        )
+    else:
+        pattern_key = "execute_code"
+        description = (
+            "execute_code script execution. The script can spawn subprocesses or "
+            "mutate files without passing through terminal command approval; "
+            "approval is one-shot for this run."
+        )
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops
@@ -3677,18 +3845,19 @@ def check_execute_code_guard(code: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
-    # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    # Unattended jobs have no user present to approve arbitrary code.
+    if _is_unattended_approval_context():
         if _get_cron_approval_mode() == "deny":
+            label = _unattended_context_label()
             return {
                 "approved": False,
                 "message": (
                     "BLOCKED: execute_code runs arbitrary local Python "
                     "(including subprocess calls that bypass shell-string "
-                    "approval checks). Cron jobs run without a user present "
+                    f"approval checks). {label} run without a user present "
                     "to approve it. Use normal tools instead, or set "
-                    "approvals.cron_mode: approve only if this cron profile "
-                    "is intentionally trusted."
+                    "approvals.cron_mode: approve only if this unattended "
+                    "profile is intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
                 "description": description,

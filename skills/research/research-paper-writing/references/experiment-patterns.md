@@ -481,7 +481,7 @@ Next: Run significance tests on these results.
 | **Process crash** | PID gone, log stops mid-problem | Re-run script (resumes from last checkpoint) |
 | **Wrong model ID** | Model not found errors | Fix ID (e.g., `claude-opus-4-6` not `claude-opus-4.6`) |
 | **Parallel slowdown** | Each experiment taking 2x longer | Reduce parallel experiments to 2-3 max |
-| **Security scan blocks** | Commands blocked by security | Use `execute_code` instead of piped `terminal` commands |
+| **Security scan blocks** | Commands blocked by security | Rewrite the command to avoid pipe-to-interpreter patterns, split fetch and parsing into separate approved steps, or ask for explicit approval |
 | **Delegation failures** | `delegate_task` returns errors | Fall back to doing work directly |
 | **Timeout on hard problems** | Process stuck, no log progress | Kill, skip problem, note in results |
 | **Dataset path mismatch** | File not found errors | Verify paths before launching |

@@ -4,6 +4,7 @@ import os
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
@@ -167,6 +168,29 @@ def test_set_session_env_handles_missing_optional_fields():
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
 
     runner._clear_session_env(tokens)
+
+
+def test_set_session_env_marks_synthetic_event_as_unattended():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="kanban-notifications",
+        chat_type="channel",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    event = MessageEvent(
+        text="Kanban task completed",
+        source=source,
+        metadata={"unattended_session": True},
+    )
+
+    tokens = runner._set_session_env(context, event=event)
+    try:
+        assert get_session_env("HERMES_UNATTENDED_SESSION") == "1"
+    finally:
+        runner._clear_session_env(tokens)
+
+    assert get_session_env("HERMES_UNATTENDED_SESSION") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -393,4 +417,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

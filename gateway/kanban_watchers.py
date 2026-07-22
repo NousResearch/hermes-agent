@@ -109,6 +109,24 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _rate_limited_log(
+    warn_state: list,  # [last_warn_epoch]; mutable for caller-side closure
+    now: int,
+    message: str,
+    *args: object,
+) -> None:
+    """Rate-limit warning logs: first occurrence at WARNING, then once every 5 minutes.
+
+    Used by the dispatcher watcher so persistent misconfigurations (e.g. no
+    auxiliary client configured) are visible without spamming every tick.
+    """
+    if now - warn_state[0] >= 300:
+        logger.warning(message, *args)
+        warn_state[0] = now
+    else:
+        logger.debug(message, *args)
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -940,6 +958,7 @@ class GatewayKanbanWatchersMixin:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        _decompose_warn_state = [0]  # [last_warn_epoch]; mutable for closure
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
         # surface as "database disk image is malformed" for one tick.
@@ -1195,9 +1214,12 @@ class GatewayKanbanWatchersMixin:
                                     slug, tid,
                                 )
                         else:
-                            # Common no-op reasons (no aux client configured) shouldn't
-                            # spam logs every tick. Log at debug.
-                            logger.debug(
+                            # First failure at WARNING, then once every 5 min
+                            # so persistent misconfigurations are visible
+                            # without spamming on transient hiccups.
+                            _rate_limited_log(
+                                _decompose_warn_state,
+                                int(time.time()),
                                 "kanban auto-decompose [%s]: %s skipped: %s",
                                 slug, tid, outcome.reason,
                             )

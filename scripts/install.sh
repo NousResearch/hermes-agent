@@ -902,6 +902,11 @@ install_node() {
 
     log_info "Extracting to ~/.hermes/node/..."
     if [[ "$tarball_name" == *.tar.xz ]]; then
+        # Ensure xz support is available (missing on minimal server installs)
+        if ! tar --version 2>/dev/null | grep -q "xz" && command -v apt-get &>/dev/null; then
+            log_info "Installing xz-utils for .tar.xz extraction..."
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xz-utils >/dev/null 2>&1 || true
+        fi
         tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
     else
         tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"

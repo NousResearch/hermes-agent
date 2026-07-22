@@ -1192,6 +1192,32 @@ class TestExportImport:
         assert imported.is_dir()
         assert (imported / "marker.txt").read_text() == "hello"
 
+    def test_export_default_profile_keeps_profile_metadata(self, profile_env, tmp_path):
+        """``profile.yaml`` must survive ``export_profile("default")``.
+
+        The default profile's export is filtered by a root allow-list (its home
+        IS ``$HERMES_HOME``, which in Docker/cwd deployments holds arbitrary
+        unrelated files). ``profile.yaml`` holds the role description the kanban
+        decomposer routes on, so dropping it silently exports an agent that has
+        forgotten what it is for. Named profiles use a different, blacklist-based
+        filter and were never affected.
+        """
+        from hermes_cli.profiles import _get_default_hermes_home, write_profile_meta
+
+        default_home = _get_default_hermes_home()
+        write_profile_meta(default_home, description="a useful researcher")
+        assert (default_home / "profile.yaml").is_file()
+
+        archive_path = tmp_path / "export" / "default.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(archive_path))
+
+        with tarfile.open(str(archive_path)) as tar:
+            names = tar.getnames()
+        assert "default/profile.yaml" in names, (
+            f"profile.yaml was dropped from the default profile export; got {names}"
+        )
+
     def test_import_to_existing_name_raises(self, profile_env, tmp_path):
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")

@@ -192,7 +192,11 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind origin/main in a local checkout.
+
+    Returns None when the fetch fails — a stale zero is worse than
+    no information, because it silently hides real updates.
+    """
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
@@ -217,13 +221,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        subprocess.run(
+        result = subprocess.run(
             fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
+        if result.returncode != 0:
+            return None
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        return None  # Offline or timeout — can't trust stale refs
 
     if is_shallow:
         # No history to count across the shallow boundary. `origin/main` may not
@@ -360,9 +366,12 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
-        )
+        # Only cache non-None results — a failed fetch should retry next
+        # startup, not get locked into the 6-hour cache as "no info."
+        if behind is not None:
+            cache_file.write_text(
+                json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            )
     except Exception:
         pass
 

@@ -372,3 +372,95 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+def test_check_via_local_git_failed_fetch_returns_none(tmp_path):
+    """A non-zero fetch return code must return None, not count stale refs.
+
+    Regression: previously the fetch return code was ignored, so a failed
+    fetch (network error, auth failure) silently fell through to counting
+    stale local refs — which could report '0 behind' and hide real updates.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd[:2] == ["git", "fetch"]:
+            # Simulate a failed fetch (network error, auth failure, etc.)
+            return MagicMock(returncode=1, stdout="")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result is None
+
+
+def test_check_via_local_git_fetch_timeout_returns_none(tmp_path):
+    """A fetch timeout (subprocess exception) must also return None."""
+    import subprocess as _subprocess
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd[:2] == ["git", "fetch"]:
+            raise _subprocess.TimeoutExpired(cmd, 10)
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result is None
+
+
+def test_check_for_updates_does_not_cache_none(tmp_path, monkeypatch):
+    """When the fetch fails (behind=None), no cache entry must be written.
+
+    Regression: a failed fetch cached as None would be returned for the full
+    6-hour TTL, suppressing the retry that should happen on the next startup.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="false\n")
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=1, stdout="")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    # Point __file__ at the temp repo so check_for_updates finds the .git
+    fake_banner = tmp_path / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner.check_for_updates()
+
+    assert result is None
+    # No cache file should exist — None must not be persisted.
+    assert not cache_file.exists()

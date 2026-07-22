@@ -3438,6 +3438,13 @@ async def get_system_stats():
 
 @app.get("/api/curator")
 async def get_curator_status():
+    """Curator status snapshot.
+
+    Per-profile: state (.curator_state) and the stale count (.usage.json)
+    are read from the server process's active profile home.
+    ``stale_skill_count`` is the cheap usage-telemetry count (skills with no
+    activity for ``stale_after_days``); it is 0 when the curator is disabled.
+    """
     try:
         from agent import curator
     except Exception as exc:
@@ -3451,9 +3458,11 @@ async def get_curator_status():
         "paused": _safe_call(curator, "is_paused", False),
         "interval_hours": _safe_call(curator, "get_interval_hours", None),
         "last_run_at": state.get("last_run_at"),
+        "last_run_summary": state.get("last_run_summary"),
         "min_idle_hours": _safe_call(curator, "get_min_idle_hours", None),
         "stale_after_days": _safe_call(curator, "get_stale_after_days", None),
         "archive_after_days": _safe_call(curator, "get_archive_after_days", None),
+        "stale_skill_count": _safe_call(curator, "stale_skill_count", None),
     }
 
 

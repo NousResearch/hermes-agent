@@ -671,6 +671,45 @@ class TestCuratorEndpoints:
         r = self.client.put("/api/curator/paused", json={"paused": False})
         assert r.status_code == 200 and r.json()["paused"] is False
 
+    def test_status_surfaces_staleness_findings(self):
+        """last_run_summary + stale_skill_count ride along the status payload."""
+        from agent import curator
+        from hermes_constants import get_hermes_home
+        from tools import skill_usage
+
+        state = curator.load_state()
+        state["last_run_summary"] = "auto: 2 marked stale"
+        curator.save_state(state)
+
+        # Seed one long-idle managed skill so the count is non-zero.
+        idle_at = "2020-01-01T00:00:00+00:00"
+        skill_dir = get_hermes_home() / "skills" / "dusty-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: dusty-skill\ndescription: test skill\n---\n",
+            encoding="utf-8",
+        )
+        data = skill_usage.load_usage()
+        data["dusty-skill"] = {
+            "created_by": "agent",
+            "use_count": 1,
+            "last_used_at": idle_at,
+            "created_at": idle_at,
+            "state": "active",
+            "pinned": False,
+        }
+        skill_usage.save_usage(data)
+
+        body = self.client.get("/api/curator").json()
+        assert body["last_run_summary"] == "auto: 2 marked stale"
+        assert body["stale_skill_count"] == 1
+
+    def test_status_empty_state_staleness_defaults(self):
+        """Fresh home: no summary yet, zero stale — fields present, not errors."""
+        body = self.client.get("/api/curator").json()
+        assert body["last_run_summary"] is None
+        assert body["stale_skill_count"] == 0
+
 
 class TestPortalEndpoint:
     @pytest.fixture(autouse=True)

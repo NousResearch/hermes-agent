@@ -1739,9 +1739,11 @@ export interface CuratorStatus {
   paused: boolean;
   interval_hours: number | null;
   last_run_at: string | null;
+  last_run_summary: string | null;
   min_idle_hours: number | null;
   stale_after_days: number | null;
   archive_after_days: number | null;
+  stale_skill_count: number | null;
 }
 
 export interface PortalFeature {

@@ -542,6 +542,28 @@ def show_status(args):
         print("  Jobs:         0")
 
     # =========================================================================
+    # Skill Curator
+    # =========================================================================
+    # Staleness surfacing only — a count plus a command pointer, never a
+    # skill list. Per-profile: the count reads the active profile's
+    # ~/.hermes/skills/.usage.json. Silent when the curator is disabled,
+    # and any failure here must never break the rest of the status page.
+    try:
+        from agent import curator
+        if curator.is_enabled():
+            stale = curator.stale_skill_count()
+            days = curator.get_stale_after_days()
+            print()
+            print(color("◆ Skill Curator", Colors.CYAN, Colors.BOLD))
+            if stale:
+                noun = "skill" if stale == 1 else "skills"
+                print(f"  Staleness:    {stale} {noun} unused >{days}d — see hermes curator usage")
+            else:
+                print(f"  Staleness:    no skills unused >{days}d")
+    except Exception:
+        pass
+
+    # =========================================================================
     # Sessions
     # =========================================================================
     print()

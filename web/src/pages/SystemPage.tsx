@@ -1008,29 +1008,42 @@ export default function SystemPage() {
           <Sparkles className="h-4 w-4" /> Skill curator
         </H2>
         <Card>
-          <CardContent className="flex items-center justify-between py-4">
-            <div className="flex items-center gap-3">
-              <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
-                {curator?.paused ? "paused" : curator?.enabled ? "active" : "disabled"}
-              </Badge>
-              <span className="text-sm text-muted-foreground">
-                {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
-                {curator?.last_run_at ? ` · last run ${new Date(curator.last_run_at).toLocaleString()}` : " · never run"}
-              </span>
+          <CardContent className="flex flex-col gap-2 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
+                  {curator?.paused ? "paused" : curator?.enabled ? "active" : "disabled"}
+                </Badge>
+                <span className="text-sm text-muted-foreground">
+                  {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
+                  {curator?.last_run_at ? ` · last run ${new Date(curator.last_run_at).toLocaleString()}` : " · never run"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" ghost onClick={toggleCuratorPaused}>
+                  {curator?.paused ? "Resume" : "Pause"}
+                </Button>
+                <Button
+                  size="sm"
+                  ghost
+                  prefix={<Play className="h-3.5 w-3.5" />}
+                  onClick={() => runOp(api.runCurator, "Curator review")}
+                >
+                  Run now
+                </Button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" ghost onClick={toggleCuratorPaused}>
-                {curator?.paused ? "Resume" : "Pause"}
-              </Button>
-              <Button
-                size="sm"
-                ghost
-                prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() => runOp(api.runCurator, "Curator review")}
-              >
-                Run now
-              </Button>
-            </div>
+            {(curator?.stale_skill_count ?? 0) > 0 && (
+              <p className="text-sm text-warning">
+                {curator?.stale_skill_count} skill{curator?.stale_skill_count === 1 ? "" : "s"} unused &gt;
+                {curator?.stale_after_days ?? 30}d — see <span className="font-mono">hermes curator usage</span>
+              </p>
+            )}
+            {curator?.last_run_summary && (
+              <p className="text-xs text-muted-foreground">
+                last run: {curator.last_run_summary.split("\n")[0]}
+              </p>
+            )}
           </CardContent>
         </Card>
       </section>

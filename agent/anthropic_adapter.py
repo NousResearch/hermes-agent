@@ -1355,6 +1355,7 @@ def run_oauth_setup_token() -> Optional[str]:
     Returns the token string, or None if no credentials were obtained.
     Raises FileNotFoundError if the 'claude' CLI is not installed.
     """
+    import errno
     import shutil
     import subprocess
 
@@ -1372,6 +1373,21 @@ def run_oauth_setup_token() -> Optional[str]:
     try:
         subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
+        return None
+    except OSError as e:
+        if e.errno != errno.ENOEXEC:
+            raise
+        # The claude binary exists but is not runnable on this platform —
+        # e.g. the npm package's Linux ELF binary on FreeBSD. Return None so
+        # the caller's manual paste-token prompt takes over.
+        print()
+        print(f"  Cannot execute '{claude_path}' on this platform.")
+        print("  The Claude Code binary is a Linux/macOS executable and cannot")
+        print("  run here (e.g. on FreeBSD).")
+        print()
+        print("  To get a setup-token, run this on a supported machine:")
+        print("    claude setup-token")
+        print("  Then paste the sk-ant-oat... token at the prompt below.")
         return None
 
     # Check if credentials were saved to Claude Code's config files

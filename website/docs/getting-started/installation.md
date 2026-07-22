@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, or Android via Termux"
+description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, FreeBSD, or Android via Termux"
 ---
 
 # Installation
@@ -36,6 +36,54 @@ If you want to install & run Hermes Desktop after a command-line only install, s
 ```bash
 hermes desktop
 ```
+
+#### FreeBSD
+
+:::note Community port (Tier 2)
+FreeBSD support is a community-maintained [Tier 2 platform](./platform-support.md#tier-2). Tested on FreeBSD 14 (bare-metal and jails). Core chat, memory, skills, cron, and the messaging gateways work. Browser-based features (Playwright, dashboard chat pane) are **not** wired up — see below.
+:::
+
+Install `bash` first (the installer is a bash script), then run the standard installer:
+
+```sh
+pkg install bash    # if not already installed
+bash -c "$(curl -fsSL https://hermes-agent.nousresearch.com/install.sh)"
+```
+
+The installer detects FreeBSD and sources every dependency (Node.js, ripgrep, ffmpeg, uv) from `pkg` rather than the platform-specific binaries used elsewhere — the astral.sh `uv` installer and the nodejs.org tarballs have no FreeBSD builds. `uv` is linked into `$HERMES_HOME/bin/uv` so `hermes update` keeps working like on any other platform.
+
+**Authentication.** The Claude Code binary (`claude setup-token`) is a Linux/macOS executable and cannot run on FreeBSD. Use an API key instead — run `hermes model`, pick your provider (e.g. Anthropic or OpenRouter), and paste the key. If a `setup-token` OAuth flow is attempted, Hermes detects the unrunnable binary and falls back to a manual paste prompt.
+
+**Browser tools.** Playwright ships no FreeBSD browser builds, so the bundled Chromium download is skipped. To enable browser tools, install Chromium from packages and point Hermes at it:
+
+```sh
+sudo pkg install chromium
+export AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chromium
+```
+
+**Run at boot with rc.d.** To start the gateway automatically, create `/usr/local/etc/rc.d/hermes`:
+
+```sh
+#!/bin/sh
+# PROVIDE: hermes
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+. /etc/rc.subr
+name="hermes"
+rcvar="hermes_enable"
+command="/usr/local/bin/hermes"
+command_args="gateway start"
+load_rc_config $name
+run_rc_command "$1"
+```
+
+```sh
+chmod +x /usr/local/etc/rc.d/hermes
+sysrc hermes_enable=YES
+service hermes start
+```
+
+If you see `echoti: no such terminfo capability: colors`, set `export TERM=xterm-256color` in your shell profile.
 
 ### What the Installer Does
 

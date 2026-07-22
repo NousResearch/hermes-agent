@@ -253,3 +253,59 @@ class TestInstallUvInternals:
             mock_windows.assert_called_once()
             call_env = mock_windows.call_args[0][0]
             assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
+
+
+# ---------------------------------------------------------------------------
+# FreeBSD: no astral binary — the managed path is a symlink to a system uv
+# ---------------------------------------------------------------------------
+
+class TestInstallUvFreeBSD:
+    def test_freebsd_dispatches_to_symlink_installer(self, tmp_path):
+        target = tmp_path / "bin" / "uv"
+        with patch("hermes_cli.managed_uv.platform.system", return_value="FreeBSD"), \
+             patch("hermes_cli.managed_uv._install_uv_freebsd") as mock_bsd:
+            from hermes_cli.managed_uv import _install_uv
+            _install_uv(target)
+            mock_bsd.assert_called_once_with(target)
+
+    def test_links_system_uv_into_managed_path(self, tmp_path):
+        """The managed contract ($HERMES_HOME/bin/uv, executable) must hold on
+        FreeBSD even though the binary comes from pkg, so install.sh and
+        `hermes update` keep resolving the exact same path as elsewhere."""
+        system_uv = tmp_path / "usr-local-bin" / "uv"
+        _make_executable(system_uv)
+        target = tmp_path / "bin" / "uv"
+        target.parent.mkdir(parents=True)
+
+        with patch("hermes_cli.managed_uv.shutil.which", return_value=str(system_uv)):
+            from hermes_cli.managed_uv import _install_uv_freebsd
+            _install_uv_freebsd(target)
+
+        assert target.is_symlink()
+        assert os.path.realpath(target) == os.path.realpath(system_uv)
+        assert os.access(target, os.X_OK)
+
+    def test_replaces_dangling_symlink(self, tmp_path):
+        """A pkg upgrade can leave the managed symlink dangling; re-linking heals it."""
+        system_uv = tmp_path / "usr-local-bin" / "uv"
+        _make_executable(system_uv)
+        target = tmp_path / "bin" / "uv"
+        target.parent.mkdir(parents=True)
+        target.symlink_to(tmp_path / "gone" / "uv")  # dangling
+
+        with patch("hermes_cli.managed_uv.shutil.which", return_value=str(system_uv)):
+            from hermes_cli.managed_uv import _install_uv_freebsd
+            _install_uv_freebsd(target)
+
+        assert os.path.realpath(target) == os.path.realpath(system_uv)
+
+    def test_without_system_uv_raises_actionable_error(self, tmp_path):
+        target = tmp_path / "bin" / "uv"
+        target.parent.mkdir(parents=True)
+
+        with patch("hermes_cli.managed_uv.shutil.which", return_value=None):
+            from hermes_cli.managed_uv import _install_uv_freebsd
+            with pytest.raises(FileNotFoundError, match="pkg install uv"):
+                _install_uv_freebsd(target)
+
+        assert not target.exists()

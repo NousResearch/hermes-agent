@@ -765,6 +765,41 @@ class TestRunOauthSetupToken:
 
         assert token is None
 
+    def test_returns_none_on_enoexec(self, monkeypatch, capsys):
+        """A claude binary that cannot execute on this platform falls back.
+
+        The npm package ships a Linux ELF binary; on FreeBSD exec'ing it
+        raises OSError(ENOEXEC). That must not crash the setup wizard —
+        run_oauth_setup_token returns None so the caller's manual
+        paste-token prompt takes over."""
+        import errno
+
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/claude")
+
+        with patch(
+            "subprocess.run",
+            side_effect=OSError(errno.ENOEXEC, "Exec format error"),
+        ):
+            token = run_oauth_setup_token()
+
+        assert token is None
+        out = capsys.readouterr().out
+        assert "Cannot execute" in out
+        assert "claude setup-token" in out
+
+    def test_reraises_other_oserrors(self, monkeypatch):
+        """Only ENOEXEC is a graceful fallback; other OS errors still surface."""
+        import errno
+
+        monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/claude")
+
+        with patch(
+            "subprocess.run",
+            side_effect=OSError(errno.EACCES, "Permission denied"),
+        ):
+            with pytest.raises(OSError):
+                run_oauth_setup_token()
+
 
 # ---------------------------------------------------------------------------
 # Model name normalization

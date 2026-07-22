@@ -1060,6 +1060,16 @@ def is_termux() -> bool:
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
 
 
+def is_freebsd() -> bool:
+    """Return True when running on FreeBSD.
+
+    ``sys.platform`` carries the major version Python was built on
+    (``freebsd13``, ``freebsd14``, ...), so match on the prefix rather than
+    an exact string.  Import-safe — no heavy deps.
+    """
+    return sys.platform.startswith("freebsd")
+
+
 _wsl_detected: bool | None = None
 
 

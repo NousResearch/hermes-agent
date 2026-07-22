@@ -29,6 +29,12 @@ def _load_release_module(monkeypatch, tmp_root: Path):
     monkeypatch.setattr(
         module, "ACP_REGISTRY_MANIFEST", tmp_root / "acp_registry" / "agent.json"
     )
+    # Module-level path constants are resolved against the real REPO_ROOT at
+    # import time, so they must be re-pinned to the temp tree or the bump would
+    # scribble on the actual repo files during tests.
+    monkeypatch.setattr(
+        module, "DESKTOP_PACKAGE_JSON", tmp_root / "apps" / "desktop" / "package.json"
+    )
     return module
 
 
@@ -69,6 +75,68 @@ def test_update_acp_registry_versions_bumps_manifest_and_pin(monkeypatch, tmp_pa
     assert manifest["distribution"]["uvx"]["package"] == "hermes-agent[acp]==0.14.0"
     # args stay untouched so we don't accidentally rewrite them.
     assert manifest["distribution"]["uvx"]["args"] == ["hermes-acp"]
+
+
+def _write_desktop_package(root: Path, version: str) -> Path:
+    pkg_dir = root / "apps" / "desktop"
+    pkg_dir.mkdir(parents=True)
+    pkg = pkg_dir / "package.json"
+    pkg.write_text(
+        json.dumps({"name": "hermes", "version": version}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return pkg
+
+
+def _prepare_min_tree(module, monkeypatch, tmp_path: Path) -> None:
+    """Minimal pyproject/__init__ so update_version_files() runs end-to-end."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.13.0"\n', encoding="utf-8"
+    )
+    version_dir = tmp_path / "hermes_cli"
+    version_dir.mkdir()
+    (version_dir / "__init__.py").write_text(
+        '__version__ = "0.13.0"\n__release_date__ = "2026-05-14"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "VERSION_FILE", version_dir / "__init__.py")
+    monkeypatch.setattr(module, "PYPROJECT_FILE", tmp_path / "pyproject.toml")
+
+
+def test_update_version_files_bumps_and_returns_desktop_package(
+    monkeypatch, tmp_path
+):
+    """The desktop package.json bump must both land AND be reported back so the
+    release commit can stage it (#68783) — writing it without returning it is
+    exactly how it got silently dropped before."""
+    _write_manifest(tmp_path, "0.13.0")
+    pkg = _write_desktop_package(tmp_path, "0.13.0")
+
+    module = _load_release_module(monkeypatch, tmp_path)
+    _prepare_min_tree(module, monkeypatch, tmp_path)
+    assert module.DESKTOP_PACKAGE_JSON == pkg  # loader pins it to the temp tree
+
+    modified = module.update_version_files("0.14.0", "2026-05-21")
+
+    assert json.loads(pkg.read_text(encoding="utf-8"))["version"] == "0.14.0"
+    # The path is returned so main()'s `git add` covers it.
+    assert pkg in modified
+    assert module.VERSION_FILE in modified
+    assert module.PYPROJECT_FILE in modified
+
+
+def test_update_version_files_skips_absent_desktop_package(monkeypatch, tmp_path):
+    """Older release branches without the desktop app must not raise or return a
+    phantom path."""
+    _write_manifest(tmp_path, "0.13.0")
+
+    module = _load_release_module(monkeypatch, tmp_path)
+    _prepare_min_tree(module, monkeypatch, tmp_path)
+    assert not module.DESKTOP_PACKAGE_JSON.exists()  # no desktop app in this tree
+
+    modified = module.update_version_files("0.14.0", "2026-05-21")
+
+    assert module.DESKTOP_PACKAGE_JSON not in modified
 
 
 def test_update_acp_registry_versions_is_silent_when_manifest_missing(

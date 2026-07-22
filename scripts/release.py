@@ -34,6 +34,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
+# The desktop Electron app carries its own package.json version, which
+# app.getVersion()/packaging metadata (Info.plist CFBundleShortVersionString)
+# read at build time. It must track pyproject so built apps don't report a
+# stale version (#68783).
+DESKTOP_PACKAGE_JSON = REPO_ROOT / "apps" / "desktop" / "package.json"
+
 # ACP Registry manifest must stay version-locked with pyproject.toml.
 # tests/acp/test_registry_manifest.py enforces this lockstep so the release
 # bump touches both files atomically.
@@ -2163,8 +2169,16 @@ def bump_version(current: str, part: str) -> str:
     return f"{major}.{minor}.{patch}"
 
 
-def update_version_files(semver: str, calver_date: str):
-    """Update version strings in source files."""
+def update_version_files(semver: str, calver_date: str) -> list[Path]:
+    """Update version strings in source files.
+
+    Returns the list of files actually written, so the caller can stage
+    exactly the set that changed. Keeping "written" and "staged" derived from
+    one source prevents a newly-bumped file from being silently dropped from
+    the release commit (#68783).
+    """
+    modified: list[Path] = [VERSION_FILE, PYPROJECT_FILE]
+
     # Update __init__.py
     content = VERSION_FILE.read_text()
     content = re.sub(
@@ -2193,20 +2207,24 @@ def update_version_files(semver: str, calver_date: str):
     # Python package version. The desktop About panel reads the live Hermes
     # version at runtime, but app.getVersion()/packaging metadata still come
     # from this field, so it must track pyproject to avoid drift.
-    desktop_pkg = REPO_ROOT / "apps" / "desktop" / "package.json"
-    if desktop_pkg.exists():
-        pkg_text = desktop_pkg.read_text(encoding="utf-8")
+    if DESKTOP_PACKAGE_JSON.exists():
+        pkg_text = DESKTOP_PACKAGE_JSON.read_text(encoding="utf-8")
         pkg_text = re.sub(
             r'("version"\s*:\s*)"[^"]+"',
             rf'\g<1>"{semver}"',
             pkg_text,
             count=1,
         )
-        desktop_pkg.write_text(pkg_text, encoding="utf-8")
+        DESKTOP_PACKAGE_JSON.write_text(pkg_text, encoding="utf-8")
+        modified.append(DESKTOP_PACKAGE_JSON)
 
     # Update ACP Registry manifest + npm launcher (must stay version-locked
     # with pyproject — enforced by tests/acp/test_registry_manifest.py).
     _update_acp_registry_versions(semver)
+    if ACP_REGISTRY_MANIFEST.exists():
+        modified.append(ACP_REGISTRY_MANIFEST)
+
+    return modified
 
 
 def _update_acp_registry_versions(semver: str) -> None:
@@ -2602,13 +2620,14 @@ def main():
 
         # Update version files
         if args.bump:
-            update_version_files(new_version, calver_date)
+            modified_files = update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # Commit version bump
-            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
-            if ACP_REGISTRY_MANIFEST.exists():
-                add_files.append(str(ACP_REGISTRY_MANIFEST))
+            # Commit version bump. Stage exactly what update_version_files
+            # wrote so a newly-bumped file can't be dropped from the commit
+            # (the desktop package.json bump was silently lost this way — see
+            # #68783).
+            add_files = [str(path) for path in modified_files]
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")

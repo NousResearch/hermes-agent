@@ -11236,6 +11236,8 @@ async def get_session_messages(
     profile: Optional[str] = None,
     limit: Optional[int] = None,
     offset: int = 0,
+    include_compacted: bool = False,
+    from_end: bool = False,
 ):
     def _read():
         db = _open_session_db_for_profile(profile)
@@ -11244,23 +11246,37 @@ async def get_session_messages(
             if not sid:
                 return None
             sid = db.resolve_resume_session_id(sid)
-            # Clamp limit to prevent abuse (max 500 per page)
-            _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            # Clamp limit to prevent abuse (max 500 per page).
+            _limit = max(0, min(limit, 500)) if limit is not None else None
+            total = db.get_message_count(
+                sid,
+                include_compacted=include_compacted,
+            )
+            effective_offset = max(offset, 0)
+            if from_end and _limit is not None:
+                effective_offset = max(total - _limit, 0)
+            messages = db.get_messages(
+                sid,
+                limit=_limit,
+                offset=effective_offset,
+                include_compacted=include_compacted,
+            )
+            return sid, _limit, effective_offset, total, messages
         finally:
             db.close()
 
     result = await asyncio.to_thread(_read)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    sid, _limit, messages = result
+    sid, _limit, effective_offset, total, messages = result
     return {
         "session_id": sid,
         "messages": messages,
         "pagination": {
             "limit": _limit,
-            "offset": offset,
+            "offset": effective_offset,
             "returned": len(messages),
+            "total": total,
         },
     }
 

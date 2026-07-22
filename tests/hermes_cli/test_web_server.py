@@ -2160,6 +2160,59 @@ class TestWebServerEndpoints:
         assert payload["session_id"] == "desktop-tip"
         assert [m["content"] for m in payload["messages"]] == ["after compression"]
 
+    def test_get_session_messages_pages_compacted_history_from_end(self):
+        """History clients can start at the newest page, then page backward
+        through pre-compaction turns without exposing rewound rows."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="long-chat", source="desktop")
+            db.append_message("long-chat", role="user", content="opening turn")
+            db.append_message("long-chat", role="assistant", content="opening reply")
+            db.archive_and_compact(
+                "long-chat",
+                [{"role": "system", "content": "compaction summary"}],
+            )
+            db.append_message("long-chat", role="user", content="recent turn")
+            db.append_message("long-chat", role="assistant", content="recent reply")
+            db.append_message("long-chat", role="user", content="rewound turn")
+            db._conn.execute(
+                "UPDATE messages SET active = 0, compacted = 0 "
+                "WHERE content = 'rewound turn'",
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        latest = self.client.get(
+            "/api/sessions/long-chat/messages"
+            "?include_compacted=true&from_end=true&limit=2",
+        )
+        assert latest.status_code == 200
+        latest_payload = latest.json()
+        assert [m["content"] for m in latest_payload["messages"]] == [
+            "recent turn",
+            "recent reply",
+        ]
+        assert latest_payload["pagination"] == {
+            "limit": 2,
+            "offset": 3,
+            "returned": 2,
+            "total": 5,
+        }
+
+        oldest = self.client.get(
+            "/api/sessions/long-chat/messages"
+            "?include_compacted=true&limit=3&offset=0",
+        )
+        assert oldest.status_code == 200
+        assert [m["content"] for m in oldest.json()["messages"]] == [
+            "opening turn",
+            "opening reply",
+            "compaction summary",
+        ]
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 

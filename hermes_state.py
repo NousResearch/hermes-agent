@@ -5358,13 +5358,15 @@ class SessionDB:
         include_inactive: bool = False,
         limit: Optional[int] = None,
         offset: int = 0,
+        include_compacted: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
         By default only active messages are returned. Pass
-        ``include_inactive=True`` to load soft-deleted rows (e.g. for
-        audit / debug views of rewound history). See
-        :meth:`rewind_to_message` for the soft-delete mechanic.
+        ``include_compacted=True`` to include compression-archived history
+        while still hiding rewound/undone rows. Pass ``include_inactive=True``
+        to load every soft-deleted row (e.g. for audit/debug views of rewound
+        history). See :meth:`rewind_to_message` for the soft-delete mechanic.
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
@@ -5375,7 +5377,12 @@ class SessionDB:
         ``offset`` alone (without ``limit``) also pages — SQLite requires a
         LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1`` (unbounded).
         """
-        active_clause = "" if include_inactive else " AND active = 1"
+        if include_inactive:
+            active_clause = ""
+        elif include_compacted:
+            active_clause = " AND (active = 1 OR compacted = 1)"
+        else:
+            active_clause = " AND active = 1"
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
             f"{active_clause} ORDER BY id"
@@ -5401,6 +5408,27 @@ class SessionDB:
                     msg["tool_calls"] = []
             result.append(msg)
         return result
+
+    def get_message_count(
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        include_compacted: bool = False,
+    ) -> int:
+        """Count messages using the same visibility rules as get_messages()."""
+        if include_inactive:
+            active_clause = ""
+        elif include_compacted:
+            active_clause = " AND (active = 1 OR compacted = 1)"
+        else:
+            active_clause = " AND active = 1"
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?"
+                f"{active_clause}",
+                (session_id,),
+            )
+            return int(cursor.fetchone()[0])
 
     def get_messages_around(
         self,

@@ -7004,6 +7004,34 @@ class TestGetMessagesPagination:
         page = db.get_messages("s1", limit=3, offset=0)
         assert [m["content"] for m in page] == ["msg-2", "msg-3", "msg-4"]
 
+    def test_include_compacted_pages_history_without_rewound_rows(self, db):
+        """Transcript UIs may page compression archives, but must not resurrect
+        messages that the user rewound or undid."""
+        self._seed(db, n=6)
+        rows = db.get_messages("s1")
+        rewound_id = rows[0]["id"]
+        compacted_ids = [rows[1]["id"], rows[2]["id"]]
+        db._conn.execute(
+            "UPDATE messages SET active = 0 WHERE id = ?",
+            (rewound_id,),
+        )
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 "
+            "WHERE id IN (?, ?)",
+            compacted_ids,
+        )
+        db._conn.commit()
+
+        page = db.get_messages(
+            "s1",
+            limit=3,
+            offset=0,
+            include_compacted=True,
+        )
+
+        assert [m["content"] for m in page] == ["msg-1", "msg-2", "msg-3"]
+        assert db.get_message_count("s1", include_compacted=True) == 5
+
     def test_offset_without_limit_pages(self, db):
         """offset alone must not be silently ignored (review finding):
         SQLite needs LIMIT for OFFSET, emitted as LIMIT -1."""

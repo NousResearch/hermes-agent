@@ -1896,7 +1896,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _max_tokens = _rp.get("max_output_tokens")
         _acp_command = _rp.get("command")
         _acp_args = list(_rp.get("args") or [])
-        if isinstance(_rp.get("model"), str) and _rp["model"].strip():
+        # Don't overwrite _model_name with the provider's default_model.
+        # _resolve_review_runtime() already picked the right model from
+        # auxiliary.curator.model; resolve_runtime_provider's "model" field
+        # is the provider's default_model (e.g. glm-5.2), which would
+        # override the user's explicit choice.
+        if (isinstance(_rp.get("model"), str) and _rp["model"].strip()
+                and not _model_name):
             _model_name = _rp["model"].strip()
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
@@ -1926,7 +1932,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             # API calls against hundreds of candidate skills. The
             # single-session review path caps itself at a much smaller
             # number because it's not doing a curation sweep.
-            max_iterations=9999,
+            max_iterations=200,
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

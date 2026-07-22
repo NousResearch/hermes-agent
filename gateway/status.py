@@ -323,6 +323,120 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def detect_active_cli_process(proc_dir: Path = Path("/proc")) -> bool:
+    """True if a bare/interactive ``hermes`` CLI (``hermes`` or ``hermes chat``,
+    NOT a subcommand like ``gateway``/``dashboard``/``setup``) is currently
+    running on THIS host.
+
+    Linux-only, best-effort, and explicitly local-host: it scans
+    ``/proc/*/cmdline`` for a process whose argv invokes the installed
+    ``hermes`` script (``.../bin/hermes``, matched by basename so it doesn't
+    also catch ``hermes-agent``/``hermes-acp``), then reuses
+    ``hermes_cli.main``'s OWN subcommand-detection logic
+    (``_first_positional_from_argv`` + ``_BUILTIN_SUBCOMMANDS``) against the
+    rest of that process's argv, so "is this a chat session" is defined in
+    exactly one place rather than reimplemented here and left to drift.
+    A subcommand of ``None`` or ``"chat"`` counts as active; any other
+    recognized subcommand (``gateway``, ``dashboard``, ``setup``, ...) does
+    not. The gateway/dashboard services themselves are invoked via
+    ``python -m hermes_cli.main <subcommand>`` (no ``.../bin/hermes`` in
+    their argv at all), so they never match this scan by construction.
+
+    Unlike :func:`_get_process_start_time`, has no non-Linux fallback: this
+    is a nice-to-have status indicator, not a correctness-load-bearing
+    liveness check, so silently returning ``False`` off Linux (or on any
+    read error) is the right amount of effort here. And because it only
+    sees processes on the SAME host as the dashboard process, it reports
+    nothing for a CLI session running on a different machine or in a
+    different container than wherever this code executes — a real
+    limitation, not a bug, given what ``/proc`` can see.
+    """
+    if not proc_dir.is_dir():
+        return False
+
+    try:
+        from hermes_cli.main import _BUILTIN_SUBCOMMANDS, _first_positional_from_argv
+    except Exception:
+        return False
+
+    for entry in proc_dir.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            continue  # process gone, or not ours to read — skip, not fatal
+        if not raw:
+            continue
+        argv = raw.decode("utf-8", errors="replace").split("\x00")
+        if argv and argv[-1] == "":
+            argv.pop()  # cmdline is NUL-terminated, trailing empty split artifact
+
+        # Find the "hermes" script token specifically (not hermes-agent /
+        # hermes-acp — those are different entry points with their own
+        # process shapes, not the interactive CLI).
+        hermes_idx = next(
+            (i for i, tok in enumerate(argv) if Path(tok).name == "hermes"), None
+        )
+        if hermes_idx is None:
+            continue
+
+        subcommand = _first_positional_from_argv(argv[hermes_idx + 1 :])
+        if subcommand is None or subcommand == "chat":
+            return True
+        if subcommand not in _BUILTIN_SUBCOMMANDS:
+            # Unrecognized token in the position argparse would treat as the
+            # subcommand -- most likely a chat message passed positionally
+            # (e.g. `hermes "summarize this"`), which is still a chat
+            # invocation, not a real subcommand we should ignore.
+            return True
+
+    return False
+
+
+def _get_process_start_epoch(pid: int) -> Optional[int]:
+    """Return the process's creation time as a Unix epoch (seconds), or None.
+
+    DISTINCT from :func:`_get_process_start_time`, which returns a
+    boot-relative fingerprint (``/proc`` clock ticks since boot) usable only
+    for same-host equality comparison — NOT a wall-clock time. Anything that
+    needs an actual timestamp (e.g. the Mini App dashboard's gateway-uptime
+    display and its ``env_mtime > gateway_start`` restart-needed banner, both
+    of which compare against real epoch values) must use THIS, or it ends up
+    subtracting clock-ticks-since-boot from a Unix epoch and getting a
+    decades-long "uptime" / an always-true banner.
+
+    Linux: ``btime`` (boot epoch, from ``/proc/stat``) plus the process's
+    start-ticks-since-boot divided by ``CLK_TCK``. Elsewhere: psutil's
+    ``create_time()``, already a float epoch. Returns an int (whole seconds)
+    on both paths.
+    """
+    try:
+        start_ticks = int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+        clk_tck = os.sysconf("SC_CLK_TCK")
+        btime = None
+        with open("/proc/stat", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    btime = int(line.split()[1])
+                    break
+        if btime is not None and clk_tck:
+            return int(btime + start_ticks / clk_tck)
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    try:
+        import psutil  # type: ignore
+        return int(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def get_process_start_epoch(pid: int) -> Optional[int]:
+    """Public wrapper for the wall-clock process creation epoch."""
+    return _get_process_start_epoch(pid)
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
@@ -572,6 +686,10 @@ def _build_pid_record() -> dict:
         # explicit cross-profile --replace can place its planned-takeover
         # marker where the target process will actually read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        # Wall-clock creation epoch (seconds), separate from start_time's
+        # boot-relative fingerprint -- consumed by the Mini App dashboard's
+        # uptime + restart-needed banner, which need a real timestamp.
+        "start_epoch": _get_process_start_epoch(os.getpid()),
     }
 
 
@@ -993,6 +1111,7 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["start_epoch"] = current_record["start_epoch"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

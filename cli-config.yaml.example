@@ -1391,6 +1391,20 @@ updates:
 # =============================================================================
 # Web Dashboard
 # =============================================================================
+# Telegram Mini App dashboard (a mobile view of this dashboard inside
+# Telegram's own in-app browser). Off by default -- also requires
+# TELEGRAM_BOT_TOKEN in .env; without it the plugin stays disabled even if
+# enabled is true here (nothing to verify Telegram's initData against).
+# Two tiers once enabled: paired/allowlisted Telegram users get read-only
+# access; TELEGRAM_DASHBOARD_ADMIN_USERS (.env, unset by default) opts
+# specific user ids into full admin access. Leaving that env var unset
+# means enabling this section alone grants admin to no one -- see its
+# comment in .env.example.
+dashboard:
+  telegram_miniapp:
+    enabled: false
+    max_age_seconds: 3600  # how long an initData credential stays valid (60min; see docs)
+
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
 # The bundled Nous Portal plugin reads these on startup; settings here are
 # the canonical surface. Each can be overridden by an environment variable:

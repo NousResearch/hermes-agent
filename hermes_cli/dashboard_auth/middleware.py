@@ -59,6 +59,27 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/ds-assets/",
     "/fonts/",
     "/fonts-terminal/",
+    # The Telegram Mini App's page shell. Every OTHER SPA route (deep-linking
+    # into /sessions, /skills, etc.) correctly redirects an anonymous caller
+    # to /login -- that's right for the desktop dashboard's own cookie-based
+    # auth. /miniapp is different in kind: it's the entry point for an
+    # entirely separate, non-cookie auth flow (Telegram's HMAC-signed
+    # initData, verified per-API-call, never via a cookie). A real Telegram
+    # user visiting this page for the very first time cannot possibly have a
+    # dashboard session cookie -- gating the page shell itself behind one
+    # would make the Mini App permanently unreachable for the exact audience
+    # it exists for, redirecting them to a login form that means nothing to
+    # them. Safe to leave public for the same reason /assets/ already is:
+    # _serve_index() never injects the session token into the HTML when
+    # auth_required is True, so serving this page to an anonymous caller
+    # leaks nothing -- the real security boundary stays where it already
+    # correctly is, at the API layer (_require_dashboard_admin,
+    # _dashboard_requester_scope, initData HMAC verification), not the page
+    # shell. Discovered empirically against a real auth_required=True
+    # deployment behind Cloudflare Tunnel -- every prior test of this
+    # feature ran with auth_required=False, which never exercises this gate
+    # at all.
+    "/miniapp",
 )
 
 

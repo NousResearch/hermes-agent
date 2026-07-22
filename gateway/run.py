@@ -1914,6 +1914,7 @@ from gateway.session import (
     AsyncSessionStore,
     SessionStore,
     SessionSource,
+    SessionEntry,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -5084,6 +5085,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Drain-control watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
+    # ------------------------------------------------------------------
+    # External resume control (Mini App "make active session" button,
+    # gateway/resume_control.py). Same reasoning as the drain watcher above:
+    # the dashboard cannot safely mutate this process's SessionStore
+    # directly (its routing table is loaded once at startup and a live
+    # _save() would silently clobber a direct external write), so it writes
+    # a marker and this watcher performs the switch in-process instead.
+    # ------------------------------------------------------------------
+    async def _resume_control_watcher(self, interval: float = 1.0) -> None:
+        """Background task: apply pending Mini App resume requests.
+
+        Polls ``.miniapp_resume_requests.json`` (gateway/resume_control.py).
+        Each entry is applied via ``_apply_session_switch`` (the same
+        mechanics ``/resume`` uses) and then cleared regardless of outcome —
+        a request that fails to apply (unknown session_key: this gateway
+        instance has never seen that chat) is not retried forever, since
+        nothing about a fixed retry changes that outcome. Best-effort: any
+        per-request or per-tick error is logged and the loop continues.
+        """
+        from gateway.resume_control import (
+            clear_resume_request,
+            pending_resume_requests,
+        )
+
+        while self._running:
+            try:
+                for session_key, target_id in pending_resume_requests().items():
+                    try:
+                        applied = await self._apply_session_switch(session_key, target_id)
+                        if applied:
+                            logger.info(
+                                "Mini App resume request applied: %s -> %s",
+                                session_key, target_id,
+                            )
+                        else:
+                            logger.info(
+                                "Mini App resume request could not be applied "
+                                "(unknown session_key %s on this gateway "
+                                "instance) — discarding.",
+                                session_key,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Mini App resume request for %s failed", session_key
+                        )
+                    finally:
+                        clear_resume_request(session_key)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Resume-control watcher tick error: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
+
     def _update_platform_runtime_status(
         self,
         platform: str,
@@ -8161,6 +8215,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # is ignored via its instantiation epoch; only a current-epoch marker
         # engages drain on the first tick.
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
+
+        # Start background resume-control watcher — applies pending
+        # ".miniapp_resume_requests.json" entries (the Telegram Mini App's
+        # "make this the active session" button) by performing the same
+        # switch /resume does, in-process.
+        asyncio.create_task(self._resume_control_watcher())
 
         logger.info("Press Ctrl+C to stop")
         
@@ -17702,6 +17762,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return True if *agent_model* matches an active /model session override."""
         override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
+
+    async def _apply_session_switch(
+        self, session_key: str, target_id: str
+    ) -> Optional[SessionEntry]:
+        """Switch ``session_key`` to point at ``target_id``, mirroring /resume.
+
+        Extracted from ``SlashCommandsMixin._handle_resume_command`` (gateway/
+        slash_commands.py) so a second caller — ``_resume_control_watcher``,
+        which applies a Mini App-requested resume without a live
+        ``MessageEvent`` to hang the slash-command flow off of — can perform
+        the identical switch mechanics without duplicating them. The slash
+        command still owns its own already-on-this-session / not-found /
+        ownership checks (this only does the actual mutation); a caller here
+        is responsible for its own equivalent checks first.
+
+        Async (via ``async_session_store``, the ``asyncio.to_thread`` boundary
+        over the thread-safe sync ``SessionStore``) so the switch's blocking
+        SQLite I/O never runs directly on the event loop -- matches every
+        other session_store call site in this file post-async-migration.
+
+        Returns the new ``SessionEntry``, or ``None`` if
+        ``session_store.switch_session`` itself returned ``None`` (unknown
+        ``session_key`` — no prior entry to switch).
+        """
+        self._release_running_agent_state(session_key)
+
+        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        if not new_entry:
+            return None
+
+        # Conversation boundary: clear ALL conversation-scoped per-session
+        # state (model/reasoning overrides #10702, one-turn restores, model
+        # notes, last-resolved cache #58403, /queue overflow) + security
+        # state in one funnel call. See _CONVERSATION_SCOPED_STATE.
+        self._clear_conversation_scope(session_key, reason="resume")
+
+        # Evict any cached agent for this session so the next message
+        # rebuilds with the correct session_id end-to-end — mirrors /branch
+        # and /reset. Without this, the cached AIAgent (and its memory
+        # provider, which cached `_session_id` during initialize()) keeps
+        # writing into the wrong session's record. See #6672.
+        self._evict_cached_agent(session_key)
+        return new_entry
 
     def _release_running_agent_state(
         self,

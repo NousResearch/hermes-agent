@@ -9,6 +9,7 @@ behaviour.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional
 
 import pytest
@@ -118,10 +119,11 @@ class _FakeClient:
 class _FakeRequest:
     """Minimal Request stand-in for the seam (no real Starlette needed)."""
 
-    def __init__(self, path="/api/gateway/drain", headers=None):
+    def __init__(self, path="/api/gateway/drain", headers=None, method="GET"):
         self.url = _FakeURL(path)
         self.headers = headers or {}
         self.client = _FakeClient()
+        self.method = method
 
         class _State:
             pass
@@ -338,3 +340,407 @@ def test_seam_503_on_provider_unreachable():
     )
     resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
     assert resp.status_code == 503
+
+
+# --------------------------------------------------------------------------
+# register_token_route(match=...) — additive prefix support
+# --------------------------------------------------------------------------
+
+
+def test_register_token_route_default_is_exact():
+    token_auth.register_token_route("/api/sessions")
+    assert token_auth.is_token_route("/api/sessions") is True
+    assert token_auth.is_token_route("/api/sessions/abc123") is False
+
+
+def test_register_token_route_rejects_invalid_match():
+    with pytest.raises(ValueError):
+        token_auth.register_token_route("/api/sessions", match="glob")
+
+
+def test_register_token_route_prefix_matches_dynamic_segment():
+    token_auth.register_token_route("/api/sessions/", match="prefix")
+    assert token_auth.is_token_route("/api/sessions/abc123") is True
+    assert token_auth.is_token_route("/api/sessions/abc123/messages") is True
+    assert token_auth.is_token_route("/api/sessions") is False
+
+
+def test_register_token_route_exact_takes_precedence_over_prefix():
+    # A route that happens to fall under a registered prefix, but was ALSO
+    # exactly registered elsewhere, must still match — precedence is a
+    # property of is_token_route, not registration order.
+    token_auth.register_token_route("/api/sessions/", match="prefix")
+    token_auth.register_token_route("/api/sessions/search")
+    assert token_auth.is_token_route("/api/sessions/search") is True
+    assert token_auth.is_token_route("/api/sessions/anything-else") is True
+
+
+def test_register_token_route_prefix_does_not_widen_existing_exact_routes():
+    # Registering an unrelated prefix must not affect a pre-existing exact
+    # registration's behaviour — additive only, per drain's own contract.
+    token_auth.register_token_route("/api/gateway/drain")
+    token_auth.register_token_route("/api/sessions/", match="prefix")
+    assert token_auth.is_token_route("/api/gateway/drain") is True
+    assert token_auth.is_token_route("/api/gateway/drain/extra") is False
+
+
+def test_clear_token_routes_clears_both_exact_and_prefix():
+    token_auth.register_token_route("/api/gateway/drain")
+    token_auth.register_token_route("/api/sessions/", match="prefix")
+    token_auth.clear_token_routes()
+    assert token_auth.is_token_route("/api/gateway/drain") is False
+    assert token_auth.is_token_route("/api/sessions/abc123") is False
+
+
+def test_seam_accepts_valid_token_on_prefix_registered_route():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/sessions/", match="prefix")
+    req = _FakeRequest(
+        path="/api/sessions/abc123/messages",
+        headers={"authorization": "Bearer good"},
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+# --------------------------------------------------------------------------
+# register_token_route(match="regex") — additive, pattern-constrained dynamic
+# segment (for a sibling-literal-route collision "prefix" can't avoid, e.g.
+# /api/sessions/{session_id} vs. /api/sessions/search)
+# --------------------------------------------------------------------------
+
+_SESSION_ID_PATTERN = r"/api/sessions/\d{8}_\d{6}_[0-9a-f]{6,8}"
+_SESSION_MESSAGES_PATTERN = r"/api/sessions/\d{8}_\d{6}_[0-9a-f]{6,8}/messages"
+
+
+def test_register_token_route_regex_matches_constrained_shape():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4") is True
+    # 6-hex branch/thread session ids (gateway/slash_commands.py's shorter
+    # uuid slice) must also match — not just the 8-hex "new session" shape.
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3") is True
+
+
+def test_register_token_route_regex_rejects_sibling_literal_routes():
+    # The exact collision this mode exists to prevent: a blanket prefix would
+    # sweep these in, a shape-constrained regex must not.
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    for sibling in ("search", "stats", "bulk-delete", "prune"):
+        assert token_auth.is_token_route(f"/api/sessions/{sibling}") is False
+    assert token_auth.is_token_route("/api/sessions/empty/count") is False
+
+
+def test_register_token_route_regex_requires_full_match_not_substring():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    # fullmatch semantics: trailing/leading junk must not sneak a match in.
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4/messages") is False
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4x") is False
+    assert token_auth.is_token_route("x/api/sessions/20260702_143022_a1b2c3d4") is False
+
+
+def test_register_token_route_regex_separate_pattern_for_messages_suffix():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    token_auth.register_token_route(_SESSION_MESSAGES_PATTERN, match="regex")
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4/messages") is True
+    assert token_auth.is_token_route("/api/sessions/search/messages") is False
+
+
+def test_register_token_route_rejects_invalid_regex():
+    with pytest.raises(re.error):
+        token_auth.register_token_route("/api/sessions/[", match="regex")
+
+
+def test_register_token_route_regex_is_idempotent():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    assert len(token_auth._token_route_regexes) == 1
+
+
+def test_register_token_route_exact_takes_precedence_over_regex():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    token_auth.register_token_route("/api/sessions/20260702_143022_a1b2c3d4")
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4") is True
+
+
+def test_register_token_route_regex_does_not_widen_existing_exact_or_prefix_routes():
+    token_auth.register_token_route("/api/gateway/drain")
+    token_auth.register_token_route("/api/sessions/", match="prefix")
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    assert token_auth.is_token_route("/api/gateway/drain") is True
+    assert token_auth.is_token_route("/api/sessions/abc123") is True  # unaffected prefix behaviour
+
+
+def test_clear_token_routes_clears_regex_too():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    token_auth.clear_token_routes()
+    assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4") is False
+
+
+def test_seam_accepts_valid_token_on_regex_registered_route():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    req = _FakeRequest(
+        path="/api/sessions/20260702_143022_a1b2c3d4",
+        headers={"authorization": "Bearer good"},
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+def test_seam_passthrough_for_sibling_literal_route_not_swept_by_regex():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex")
+    req = _FakeRequest(path="/api/sessions/bulk-delete", headers={})
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    # Not a registered token route at all -> pass through to whatever the
+    # existing cookie/session gate does (here, the fake call_next -> 200).
+    assert resp.status_code == 200
+    assert not hasattr(req.state, "token_authenticated")
+
+
+# --------------------------------------------------------------------------
+# register_token_route(required=...) — optional (additive, non-exclusive)
+# token auth for routes also reachable via the existing cookie/session gate.
+#
+# NOTE: the load-bearing claim here — "no Authorization header on a
+# required=False route actually falls through to and is decided by the
+# downstream cookie/session gate, inside the real Starlette middleware
+# stack" — is NOT verified by this file's _FakeRequest-based unit tests
+# below; a fake call_next always "succeeds" so it can't distinguish
+# fallthrough from every other path also returning 200. That claim is
+# verified separately, against the real app and real TestClient, in
+# tests/hermes_cli/test_web_server.py
+# (TestTokenAuthOptionalFallthroughIntegration).
+# --------------------------------------------------------------------------
+
+
+def test_register_token_route_default_required_true():
+    token_auth.register_token_route("/api/gateway/drain")
+    assert token_auth.is_token_route_required("/api/gateway/drain") is True
+
+
+def test_register_token_route_required_false_exact():
+    token_auth.register_token_route("/api/status", required=False)
+    assert token_auth.is_token_route("/api/status") is True
+    assert token_auth.is_token_route_required("/api/status") is False
+
+
+def test_register_token_route_required_false_prefix():
+    token_auth.register_token_route("/api/sessions/", match="prefix", required=False)
+    assert token_auth.is_token_route_required("/api/sessions/abc123") is False
+
+
+def test_register_token_route_required_false_regex():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex", required=False)
+    assert token_auth.is_token_route_required(
+        "/api/sessions/20260702_143022_a1b2c3d4"
+    ) is False
+
+
+def test_register_token_route_required_merge_stricter_wins_exact():
+    # Same exact path registered twice with different required values: the
+    # stricter (True) value must win regardless of registration order, so a
+    # fail-closed registration can never be silently loosened later.
+    token_auth.register_token_route("/api/status", required=False)
+    token_auth.register_token_route("/api/status", required=True)
+    assert token_auth.is_token_route_required("/api/status") is True
+
+
+def test_register_token_route_required_merge_stricter_wins_exact_reverse_order():
+    token_auth.register_token_route("/api/status", required=True)
+    token_auth.register_token_route("/api/status", required=False)
+    assert token_auth.is_token_route_required("/api/status") is True
+
+
+def test_register_token_route_required_merge_stricter_wins_across_overlapping_prefixes():
+    # Two different prefix registrations, one strict, one not, both matching
+    # the same path — the stricter one must win.
+    token_auth.register_token_route("/api/sessions/", match="prefix", required=False)
+    token_auth.register_token_route("/api/sessions/admin", match="prefix", required=True)
+    assert token_auth.is_token_route_required("/api/sessions/admin/x") is True
+    assert token_auth.is_token_route_required("/api/sessions/other") is False
+
+
+def test_is_token_route_required_exact_wins_over_looser_regex():
+    # An exact registration's required flag is authoritative even if a
+    # looser (required=False) regex also matches the same path.
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex", required=False)
+    token_auth.register_token_route(
+        "/api/sessions/20260702_143022_a1b2c3d4", required=True
+    )
+    assert token_auth.is_token_route_required(
+        "/api/sessions/20260702_143022_a1b2c3d4"
+    ) is True
+
+
+def test_seam_no_token_falls_through_on_required_false_route():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/status", required=False)
+    req = _FakeRequest(path="/api/status", headers={})
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    # Fell through untouched — the seam never ran a decision, so it must not
+    # have attached any auth state at all.
+    assert not hasattr(req.state, "token_authenticated")
+    assert not hasattr(req.state, "token_principal")
+
+
+def test_seam_valid_token_still_decided_by_seam_on_required_false_route():
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/status", required=False)
+    req = _FakeRequest(
+        path="/api/status", headers={"authorization": "Bearer good"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+    assert req.state.token_principal.provider == "tok"
+
+
+def test_seam_invalid_token_still_401s_on_required_false_route():
+    # A PRESENTED (even if wrong) token on a required=False route is still
+    # fully decided by this seam alone — only a genuinely absent
+    # Authorization header falls through.
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/status", required=False)
+    req = _FakeRequest(
+        path="/api/status", headers={"authorization": "Bearer wrong"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 401
+
+
+def test_seam_unreachable_provider_still_503s_on_required_false_route():
+    register_provider(_UnreachableTokenProvider())
+    token_auth.register_token_route("/api/status", required=False)
+    req = _FakeRequest(
+        path="/api/status", headers={"authorization": "Bearer x"}
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 503
+
+
+def test_seam_no_token_still_401s_on_required_true_route():
+    # required=True (the default, drain's contract) is completely unchanged:
+    # no token still means an immediate 401, never a fallthrough.
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/gateway/drain")
+    req = _FakeRequest(path="/api/gateway/drain", headers={})
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 401
+
+
+def test_clear_token_routes_clears_required_flags():
+    token_auth.register_token_route("/api/status", required=False)
+    token_auth.clear_token_routes()
+    token_auth.register_token_route("/api/status")
+    # Post-clear re-registration must not inherit the old required=False —
+    # confirms clear_token_routes() actually drops the flag, not just the key.
+    assert token_auth.is_token_route_required("/api/status") is True
+
+
+# --------------------------------------------------------------------------
+# register_token_route(methods=...) — per-method restriction. The security
+# boundary that keeps a read-only registration from authenticating a mutating
+# verb sharing the same path (GET vs POST /api/skills, GET vs DELETE
+# /api/sessions/{id}, …). See token_auth.py's registry comment.
+# --------------------------------------------------------------------------
+
+
+def test_methods_default_none_allows_every_method():
+    token_auth.register_token_route("/api/gateway/drain")  # methods=None
+    for m in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        assert token_auth.is_token_route_method_allowed("/api/gateway/drain", m) is True
+
+
+def test_methods_restricted_exact_allows_only_listed():
+    token_auth.register_token_route("/api/skills", required=False, methods=("GET", "HEAD"))
+    assert token_auth.is_token_route_method_allowed("/api/skills", "GET") is True
+    assert token_auth.is_token_route_method_allowed("/api/skills", "HEAD") is True
+    assert token_auth.is_token_route_method_allowed("/api/skills", "POST") is False
+    assert token_auth.is_token_route_method_allowed("/api/skills", "PUT") is False
+    assert token_auth.is_token_route_method_allowed("/api/skills", "DELETE") is False
+
+
+def test_methods_are_case_insensitive_on_registration_and_query():
+    token_auth.register_token_route("/api/skills", required=False, methods=("get",))
+    assert token_auth.is_token_route_method_allowed("/api/skills", "GET") is True
+    assert token_auth.is_token_route_method_allowed("/api/skills", "get") is True
+    assert token_auth.is_token_route_method_allowed("/api/skills", "POST") is False
+
+
+def test_methods_restricted_regex_allows_only_listed():
+    token_auth.register_token_route(_SESSION_ID_PATTERN, match="regex", methods=("GET", "HEAD"))
+    sid = "/api/sessions/20260702_100000_aaaaaaaa"
+    assert token_auth.is_token_route_method_allowed(sid, "GET") is True
+    assert token_auth.is_token_route_method_allowed(sid, "DELETE") is False
+    assert token_auth.is_token_route_method_allowed(sid, "PATCH") is False
+
+
+def test_methods_union_across_repeat_registrations():
+    # A method is authable if ANY registration of the path permits it.
+    token_auth.register_token_route("/api/thing", methods=("GET",))
+    token_auth.register_token_route("/api/thing", methods=("POST",))
+    assert token_auth.is_token_route_method_allowed("/api/thing", "GET") is True
+    assert token_auth.is_token_route_method_allowed("/api/thing", "POST") is True
+    assert token_auth.is_token_route_method_allowed("/api/thing", "DELETE") is False
+
+
+def test_methods_none_registration_widens_restricted_one_to_all():
+    # None ("all") is the universal set: unioning it with a restricted set
+    # yields "all", matching the OR semantics of repeat registration.
+    token_auth.register_token_route("/api/thing", methods=("GET",))
+    token_auth.register_token_route("/api/thing")  # methods=None
+    assert token_auth.is_token_route_method_allowed("/api/thing", "DELETE") is True
+
+
+def test_methods_empty_set_is_treated_as_all_not_deny_all():
+    # A degenerate empty method set is almost certainly a caller bug; it must
+    # not silently deny every method (which would break the route). Treated
+    # as "all", the same as None.
+    token_auth.register_token_route("/api/thing", methods=())
+    assert token_auth.is_token_route_method_allowed("/api/thing", "GET") is True
+    assert token_auth.is_token_route_method_allowed("/api/thing", "POST") is True
+
+
+def test_seam_falls_through_on_disallowed_method_even_with_valid_token():
+    # The end-to-end security property at the unit level: a valid token on a
+    # DISALLOWED method must NOT be authenticated by the seam — it falls
+    # through (call_next) WITHOUT setting token_authenticated, so the
+    # downstream cookie gate decides. (required=False so a bare fallthrough
+    # is the expected no-op path; the point is that a *presented, valid*
+    # token still does not flip token_authenticated for a write verb.)
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/skills", required=False, methods=("GET", "HEAD"))
+    req = _FakeRequest(
+        path="/api/skills",
+        headers={"authorization": "Bearer good"},
+        method="POST",
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200  # _call_next_ok stands in for the downstream gate
+    assert getattr(req.state, "token_authenticated", False) is False
+    assert getattr(req.state, "token_principal", None) is None
+
+
+def test_seam_authenticates_valid_token_on_allowed_method():
+    # Contrast: the SAME token on an ALLOWED method (GET) is authenticated.
+    register_provider(_TokenProvider(secret="good"))
+    token_auth.register_token_route("/api/skills", required=False, methods=("GET", "HEAD"))
+    req = _FakeRequest(
+        path="/api/skills",
+        headers={"authorization": "Bearer good"},
+        method="GET",
+    )
+    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    assert resp.status_code == 200
+    assert req.state.token_authenticated is True
+
+
+def test_clear_token_routes_clears_method_restrictions():
+    token_auth.register_token_route("/api/skills", methods=("GET",))
+    token_auth.clear_token_routes()
+    token_auth.register_token_route("/api/skills")  # methods=None
+    assert token_auth.is_token_route_method_allowed("/api/skills", "POST") is True

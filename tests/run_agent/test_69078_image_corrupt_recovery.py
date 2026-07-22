@@ -276,3 +276,94 @@ class TestRunConversationRecoversFromCorruptImage400:
             and any(p.get("type") == "image_url" for p in m["content"])
             for m in second_msgs
         )
+
+    def test_unrelated_400_with_image_parts_does_not_strip_or_retry(self):
+        """Regression guard for the reverted generic fallback (P1).
+
+        Same setup as the positive test above — an image-bearing request —
+        but the 400 this time is completely unrelated to images (an
+        unsupported-parameter rejection). This must NOT be treated as
+        recoverable: no strip, no retry, exactly one provider call, and the
+        error surfaces to the caller.
+
+        If the generic "any non-retryable 400 with image parts strips and
+        retries" fallback were reintroduced, this test would catch it: the
+        (unrelated) error would still get "fixed" by erasing the image, the
+        loop would retry, and either the assertions on call count / the
+        surviving image_url part would fail, or (worse, silently) the
+        retried request would succeed and mask that vision history was
+        wrongly discarded for an error that had nothing to do with images.
+        """
+        history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what's in this screenshot?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": (
+                                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEA"
+                                "AAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQA"
+                                "AAAABJRU5ErkJggg=="
+                            )
+                        },
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "I see a browser window."},
+        ]
+
+        calls = []
+
+        def fake_api_call(api_kwargs):
+            # Same deepcopy-snapshot pattern as the positive test — the
+            # loop mutates api_kwargs["messages"] in place, so a bare
+            # reference would silently reflect any later mutation.
+            calls.append(copy.deepcopy(api_kwargs.get("messages")))
+            # Unrelated non-retryable 400 — no image wording at all. This
+            # is exactly the class of error the reverted generic fallback
+            # would have wrongly "fixed" by stripping images anyway.
+            raise _FakeApiError(
+                status_code=400,
+                message="Unknown parameter: 'foo'",
+            )
+
+        agent = _make_agent()
+        agent._api_max_retries = 3
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_model_supports_vision", return_value=True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation(
+                "did that look right?", conversation_history=history
+            )
+
+        # No recovery was attempted — the error surfaces as a failure.
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert "Unknown parameter" in result["error"]
+
+        # Exactly one provider call — no strip-and-retry loop.
+        assert len(calls) == 1
+
+        # REGRESSION GUARD: the single call still carries the image_url
+        # part. A reintroduced generic fallback would strip it before
+        # surfacing (or retrying) this unrelated error.
+        only_call_msgs = calls[0]
+        assert any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in only_call_msgs
+        ), (
+            "image_url part was stripped from an unrelated 400 — the "
+            "reverted generic fallback appears to have been reintroduced: "
+            f"{only_call_msgs!r}"
+        )

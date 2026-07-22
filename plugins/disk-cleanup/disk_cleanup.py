@@ -144,11 +144,15 @@ ALLOWED_CATEGORIES = {
     "chrome-profile", "cron-output", "other",
 }
 
+_DURABLE_OPERATOR_TOP_LEVEL = frozenset({
+    "profiles", "maintenance", "scripts", "backups", "lsp",
+})
+
 _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-    "hermes-agent", "backups", "profiles", ".worktrees",
-})
+    "hermes-agent", ".worktrees",
+}) | _DURABLE_OPERATOR_TOP_LEVEL
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv",
@@ -160,6 +164,26 @@ _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
 # regardless of what the stored category says.  This is a defense-in-depth
 # guard against stale tracked.json entries from before #34840.
 _PROTECTED_CRON_PATHS: set[str] = set()
+
+
+def _is_durable_operator_path(path: Path) -> bool:
+    """Return True for lexical or resolved paths in durable operator trees."""
+    hermes_home = get_hermes_home().resolve()
+    candidates = [path.expanduser().absolute()]
+    try:
+        candidates.append(path.resolve())
+    except OSError:
+        pass
+
+    for candidate in candidates:
+        try:
+            rel = candidate.relative_to(hermes_home)
+        except ValueError:
+            continue
+        top = rel.parts[0] if rel.parts else ""
+        if top in _DURABLE_OPERATOR_TOP_LEVEL:
+            return True
+    return False
 
 
 def _is_protected_cron_path(p: Path) -> bool:
@@ -206,7 +230,12 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
 
-    path = Path(path_str).resolve()
+    raw_path = Path(path_str).expanduser()
+    if _is_durable_operator_path(raw_path):
+        _log(f"REJECT: {raw_path} (durable operator tree)")
+        return False
+
+    path = raw_path.resolve()
 
     if not path.exists():
         _log(f"SKIP: {path} (does not exist)")
@@ -265,6 +294,8 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
         p = Path(item["path"])
         if not p.exists():
             continue
+        if _is_durable_operator_path(p):
+            continue
         age = (now - datetime.fromisoformat(item["timestamp"])).days
         cat = item["category"]
         size = item["size"]
@@ -316,6 +347,11 @@ def quick() -> Dict[str, Any]:
 
         if not p.exists():
             _log(f"STALE: {p} (removed from tracking)")
+            continue
+
+        # Drop stale entries created before durable trees were protected.
+        if _is_durable_operator_path(p):
+            _log(f"SKIP protected durable path: {p}")
             continue
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
@@ -552,6 +588,8 @@ def guess_category(path: Path) -> Optional[str]:
     Used by the ``post_tool_call`` hook to auto-track ephemeral files.
     """
     if not is_safe_path(path):
+        return None
+    if _is_durable_operator_path(path):
         return None
 
     # Skip the state dir itself, logs, memory files, sessions, config.

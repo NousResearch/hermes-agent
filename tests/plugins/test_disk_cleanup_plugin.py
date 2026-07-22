@@ -127,6 +127,28 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
+    def test_skips_durable_operator_trees(self, _isolate_env):
+        """Regression: durable profile/maintenance trees may contain real tests."""
+        dg = _load_lib()
+        for top in ("profiles", "maintenance", "scripts", "backups", "lsp"):
+            test_file = _isolate_env / top / "project" / "tests" / "test_real_source.py"
+            test_file.parent.mkdir(parents=True)
+            test_file.write_text("def test_real(): pass\n")
+            assert dg.guess_category(test_file) is None, top
+
+    def test_skips_symlinks_reached_through_durable_tree(self, _isolate_env):
+        dg = _load_lib()
+        target = _isolate_env / "cache" / "test_target.py"
+        target.parent.mkdir()
+        target.write_text("x")
+        link = _isolate_env / "profiles" / "project" / "test_link.py"
+        link.parent.mkdir(parents=True)
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        assert dg.guess_category(link) is None
+
     def test_cron_subtree_categorised(self, _isolate_env):
         dg = _load_lib()
         # Only files under ``cron/output/`` are disposable run artifacts.
@@ -357,6 +379,13 @@ class TestTrackForgetQuick:
         dg = _load_lib()
         assert dg.track(str(_isolate_env / "nope.txt"), "test", silent=True) is False
 
+    def test_track_rejects_durable_operator_tree(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "maintenance" / "test_release_gate.py"
+        p.parent.mkdir()
+        p.write_text("x")
+        assert dg.track(str(p), "test", silent=True) is False
+
     def test_forget_removes_entry(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "keep.tmp"
@@ -376,11 +405,38 @@ class TestTrackForgetQuick:
 
     def test_quick_preserves_protected_top_level_dirs(self, _isolate_env):
         dg = _load_lib()
-        for d in ("logs", "memories", "sessions", "cron", "cache"):
+        protected = (
+            "logs", "memories", "sessions", "cron", "cache",
+            "profiles", "maintenance", "scripts", "backups", "lsp",
+        )
+        for d in protected:
             (_isolate_env / d).mkdir()
         dg.quick()
-        for d in ("logs", "memories", "sessions", "cron", "cache"):
+        for d in protected:
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
+
+    def test_quick_drops_stale_durable_entry_without_deleting(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "profiles" / "project" / "test_history.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir()
+        tracked_file.write_text(json.dumps([{
+            "path": str(p),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": 1,
+        }]))
+
+        auto, prompt = dg.dry_run()
+        assert auto == []
+        assert prompt == []
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert p.exists()
+        assert json.loads(tracked_file.read_text()) == []
 
     def test_quick_does_not_descend_into_protected_top_level_dirs(
         self, _isolate_env, monkeypatch
@@ -504,6 +560,44 @@ class TestPostToolCallHook:
             task_id="t4", session_id="s4",
         )
         # read_file should never trigger tracking.
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
+    def test_attempt_track_is_best_effort_when_classifier_raises(self, _isolate_env, monkeypatch):
+        """Terminal output can mention unreadable paths from other services;
+        auto-tracking must not leak classifier/stat errors into the tool call."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_unreadable.py"
+        p.write_text("x")
+        monkeypatch.setattr(pi.dg, "guess_category", lambda _p: (_ for _ in ()).throw(PermissionError("boom")))
+
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={},
+            result=f"created {p}\n",
+            task_id="t5", session_id="s5",
+        )
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
+    def test_attempt_track_is_best_effort_when_track_raises(self, _isolate_env, monkeypatch):
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_unreadable.py"
+        p.write_text("x")
+        monkeypatch.setattr(
+            pi.dg,
+            "track",
+            lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("boom")),
+        )
+
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={},
+            result=f"created {p}\n",
+            task_id="t6", session_id="s6",
+        )
+
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 

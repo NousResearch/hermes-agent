@@ -45,7 +45,10 @@ Deletion rules (same as the original PR):
 - Windows mounts (`/mnt/c` etc.) are rejected
 - The state directory `$HERMES_HOME/disk-cleanup/` is itself excluded
 - `$HERMES_HOME/logs/`, `memories/`, `sessions/`, `skills/`, `plugins/`,
-  and config files are never tracked
+  `profiles/`, `maintenance/`, `scripts/`, `backups/`, `lsp/`, and config files
+  are never tracked
+- Auto-tracking is best-effort: unreadable or unclassifiable paths in tool
+  output are ignored rather than failing the original tool call
 - Backup/restore is scoped to `tracked.json` — the plugin never touches
   agent logs
 - Atomic writes: `.tmp` → backup → rename

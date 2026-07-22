@@ -306,7 +306,8 @@ function appendProfileParam(url: string, profile?: string): string {
 
 export const api = {
   buildWsUrl,
-  getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getStatus: (profile?: string) =>
+    fetchJSON<StatusResponse>(`/api/status${profileQuery(profile)}`),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -900,8 +901,11 @@ export const api = {
     ),
 
   // Gateway / update actions
-  restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  restartGateway: (profile?: string) =>
+    fetchJSON<ActionResponse>(
+      `/api/gateway/restart${profileQuery(profile)}`,
+      { method: "POST" },
+    ),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -1143,10 +1147,16 @@ export const api = {
     }),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
-  startGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
-  stopGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+  startGateway: (profile?: string) =>
+    fetchJSON<ActionResponse>(
+      `/api/gateway/start${profileQuery(profile)}`,
+      { method: "POST" },
+    ),
+  stopGateway: (profile?: string) =>
+    fetchJSON<ActionResponse>(
+      `/api/gateway/stop${profileQuery(profile)}`,
+      { method: "POST" },
+    ),
 
   // ── Admin: Operations ───────────────────────────────────────────────
   runDoctor: () =>

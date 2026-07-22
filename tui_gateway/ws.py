@@ -326,6 +326,9 @@ async def handle_ws(ws: Any) -> None:
                 },
             }
         )
+        if ready_ok:
+            # Live-apply skins Hermes activates mid-conversation.
+            server._ensure_skin_watcher()
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1

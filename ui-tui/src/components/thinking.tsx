@@ -454,7 +454,7 @@ function SubagentAccordion({
               color={t.color.text}
               content={
                 <>
-                  <Text color={t.color.accent}>● </Text>
+                  <Text color={t.color.tool}>● </Text>
                   {line}
                 </>
               }
@@ -640,22 +640,22 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.muted} key={index} wrap="wrap-trim">
+              <Text color={t.color.thinking} key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
-                  <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+                  <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
                 ) : null}
               </Text>
             ))
           ) : (
-            <Text color={t.color.muted} wrap="truncate-end">
+            <Text color={t.color.thinking} wrap="truncate-end">
               {preview}
-              <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+              <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.muted}>
-            <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+          <Text color={t.color.thinking}>
+            <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
           </Text>
         )}
       </Box>
@@ -855,7 +855,7 @@ export const ToolTrail = memo(function ToolTrail({
         : [],
       content: (
         <>
-          <Spinner color={t.color.accent} variant="tool" /> {label}
+          <Spinner color={t.color.tool} variant="tool" /> {label}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -1072,7 +1072,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.accent}>● </Text>
+                      <Text color={t.color.tool}>● </Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>

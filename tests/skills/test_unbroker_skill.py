@@ -493,6 +493,41 @@ def test_fanout_default_batch_size_is_five():
     assert len(g["batches"]) == 3  # 5 + 5 + 2
 
 
+def test_fanout_requires_parent_ledger_readback_after_worker_reports():
+    with temp_env():
+        sid = _run(["intake", "--full-name", "Jane Q. Public",
+                    "--email", "jane@example.com", "--consent"])["subject_id"]
+        out = _run(["fanout", sid, "--priority", "crucial", "--size", "2"])
+        brief = out["batches"][0]["brief"]
+        assert "exact intended state/evidence" in brief
+        assert f"pdd.py show {sid} <broker>" in out["instruction"]
+        assert "FROM THE PARENT PROCESS" in out["instruction"]
+
+
+def test_parent_readback_rejects_worker_write_to_different_data_dir():
+    with temp_env():
+        sid = _run(["intake", "--full-name", "Jane Q. Public",
+                    "--email", "jane@example.com", "--consent"])["subject_id"]
+
+        # Simulate a worker inheriting a different PDD_DATA_DIR. Its own
+        # transition/readback succeeds, but it has not updated the parent.
+        with temp_env():
+            worker_case = ledger.transition(
+                sid,
+                "spokeo",
+                "found",
+                found=True,
+                evidence={"listing_urls": ["https://example.test/profile"]},
+            )
+            assert worker_case["state"] == "found"
+            assert ledger.get_case(sid, "spokeo")["found"] is True
+
+        parent_case = _run(["show", sid, "spokeo"])
+        assert parent_case["state"] == "new"
+        assert parent_case["found"] is None
+        assert parent_case["evidence"] == {}
+
+
 # --- cdp (operator browser over the DevTools protocol) --------------------------------------
 
 def test_cdp_launch_command_has_debug_flags():

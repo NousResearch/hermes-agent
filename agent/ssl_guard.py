@@ -54,7 +54,16 @@ def _validate_bundle_path(label: str, value: str, *, require_substantial: bool =
         ctx = ssl.create_default_context(cafile=str(path))
     except Exception as exc:
         raise _ssl_err(f"{label} CA bundle at {value} cannot be loaded: {exc}") from exc
-    if not ctx.get_ca_certs():
+    # truststore (e.g. injected by pip-system-certs) replaces ssl.SSLContext
+    # with an implementation that routes trust to the OS keystore and leaves
+    # get_ca_certs() as NotImplementedError. That is a working TLS config, not
+    # a broken bundle, so treat the unsupported method as "cannot inspect" and
+    # skip the emptiness assertion rather than failing startup.
+    try:
+        loaded_certs = ctx.get_ca_certs()
+    except NotImplementedError:
+        return
+    if not loaded_certs:
         raise _ssl_err(f"{label} CA bundle at {value} did not load any certificates")
 
 

@@ -1512,6 +1512,10 @@ DEFAULT_CONFIG = {
                                       # Hermes' compression threshold triggers
                                       # thread/compact/start; off = never auto-trigger
                                       # (codex may still compact natively).
+        "git_ground_truth": False,    # When True, inject recent git commit history into
+                                      # compaction summaries and validate claims of
+                                      # completed work against the commit log (post-validation).
+                                      # Requires running inside a git repo. Opt-in only.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

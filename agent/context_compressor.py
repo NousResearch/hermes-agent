@@ -19,10 +19,14 @@ Improvements over v2:
 import hashlib
 import json
 import logging
-import sqlite3
+import os
 import re
+import sqlite3
+import subprocess
 import time
 from typing import Any, Dict, List, Optional
+
+from agent.redact import redact_sensitive_text
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine, sanitize_memory_context
@@ -938,6 +942,103 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+        # Git ground truth cache cleared on session boundary
+        self._git_log_cache = {}
+        self._git_log_fetched_at = 0.0
+
+    def _fetch_git_log(self) -> dict[str, str]:
+        """Fetch recent git commits, redact commit messages, cache with TTL."""
+        if not self._git_ground_truth_enabled or not self._session_workdir:
+            return {}
+
+        now = time.monotonic()
+        if now - self._git_log_fetched_at < self._GIT_LOG_TTL_SECONDS and self._git_log_cache:
+            return self._git_log_cache
+
+        workdir = self._session_workdir
+        try:
+            result = subprocess.run(
+                ["git", "log", "--oneline", "-10", "--no-decorate"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=workdir,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return {}
+
+            commits = {}
+            for line in result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2:
+                    commit_hash, message = parts
+                    # Redact secrets from commit messages
+                    redacted = redact_sensitive_text(message)
+                    commits[commit_hash] = redacted
+
+            self._git_log_cache = commits
+            self._git_log_fetched_at = now
+            return commits
+        except Exception:
+            return {}
+
+    def _validate_summary_against_git(self, summary: str) -> str:
+        """Post-validation: cross-reference summary claims against git log.
+
+        If summary claims work was 'committed'/'fixed'/'completed' but no matching
+        commit exists in recent log, append a GIT VALIDATION section flagging
+        UNVERIFIED claims. Returns the validated (potentially augmented) summary.
+        """
+        git_log = self._fetch_git_log()
+        if not git_log:
+            return summary
+
+        # Keywords that indicate a claim of completed work
+        claim_keywords = (
+            "committed", "fixed", "completed", "finished", "done",
+            "merged", "pushed", "resolved", "implemented"
+        )
+
+        # Find sentences in summary making claims
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', summary)
+        unverified_claims = []
+
+        for sent in sentences:
+            sent_lower = sent.lower()
+            if any(kw in sent_lower for kw in claim_keywords):
+                # Check if any commit message semantically matches
+                matched = False
+                for hash_, msg in git_log.items():
+                    # Simple heuristic: shared significant words
+                    sent_words = set(re.findall(r'\b\w{4,}\b', sent_lower))
+                    msg_words = set(re.findall(r'\b\w{4,}\b', msg.lower()))
+                    if sent_words & msg_words:
+                        matched = True
+                        break
+                if not matched:
+                    unverified_claims.append(sent.strip())
+
+        if not unverified_claims:
+            return summary
+
+        validation_section = (
+            "\n\n## Git Validation (Post-Compaction)\n"
+            "The following claims in this summary could not be matched to recent commits:\n"
+        )
+        for claim in unverified_claims:
+            validation_section += f"- UNVERIFIED: {claim}\n"
+
+        validation_section += (
+            "\nRecent commits (last 10):\n"
+        )
+        for hash_, msg in git_log.items():
+            validation_section += f"  {hash_} {msg}\n"
+
+        return summary + validation_section
+
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
         self._session_db = session_db
@@ -1319,6 +1420,8 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        session_workdir: str | None = None,
+        git_ground_truth_enabled: bool = False,
     ):
         self.model = model
         self.base_url = base_url
@@ -1342,6 +1445,15 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+
+        # Session workdir for git ground truth (resolved from TERMINAL_CWD)
+        self._session_workdir = session_workdir
+        # Git ground truth: opt-in via config + session workdir
+        self._git_ground_truth_enabled = git_ground_truth_enabled and session_workdir is not None
+        # Cached git log (commit hash -> commit message), refreshed per compaction cycle
+        self._git_log_cache: dict[str, str] = {}
+        self._git_log_fetched_at: float = 0.0
+        self._GIT_LOG_TTL_SECONDS = 300.0  # 5 min cache TTL
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,

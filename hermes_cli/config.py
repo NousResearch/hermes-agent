@@ -3216,6 +3216,23 @@ DEFAULT_CONFIG = {
         # GBs of disk on heavy users.  Opt in only if you have an external
         # tool that consumes the JSON files directly.
         "write_json_snapshots": False,
+        # Search-index (FTS) storage optimization — the compact v23 layout
+        # that drops duplicate content copies and stops trigram-indexing tool
+        # output (typically reclaims ~60%+ of state.db on heavy users). It is
+        # OPT-IN: existing databases keep their working legacy index until the
+        # user runs `hermes sessions optimize-storage`, because the rebuild is
+        # disk-heavy and long on large DBs (see that command's disk preflight).
+        #
+        #   "advise" (default): `hermes update` prints a one-line notice with
+        #     the reclaimable size and the command, when a legacy index is
+        #     detected. Nothing is changed automatically.
+        #   "require": the notice is shown as a REQUIRED upgrade (firmer copy),
+        #     and future tooling may gate on it. Flip this default in a future
+        #     release when we're ready to make the v23 layout mandatory — the
+        #     command, progress bar, and resumability are already in place, so
+        #     enforcement is a copy/gating change, not new migration code.
+        #   "off": suppress the notice entirely.
+        "fts_optimize_notice": "advise",
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).

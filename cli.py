@@ -13736,6 +13736,42 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             buf = event.app.current_buffer
             _recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
 
+        # Ctrl+R: fzf fuzzy search through past user inputs.
+        # Only active when fzf is installed; otherwise Ctrl+R falls through
+        # to prompt_toolkit's default reverse-i-search (or readline on Windows).
+        # eager=True ensures this binding takes priority over the default c-r binding.
+        _fzf_available = Condition(lambda: shutil.which('fzf') is not None)
+
+        @kb.add('c-r', filter=_normal_input & _fzf_available, eager=True)
+        async def handle_ctrl_r_history_search(event):
+            import threading
+            from tools.history_fzf import fzf_history_picker, parse_history, _history_file_path
+
+            items = parse_history(_history_file_path(), limit=2000)
+            if not items:
+                return
+
+            def _pick():
+                return fzf_history_picker(items)
+
+            in_main_thread = threading.current_thread() is threading.main_thread()
+
+            if self._app and in_main_thread:
+                from prompt_toolkit.application import run_in_terminal
+                was_visible = self._status_bar_visible
+                self._status_bar_visible = False
+                self._app.invalidate()
+                try:
+                    selected = await run_in_terminal(_pick)
+                finally:
+                    self._status_bar_visible = was_visible
+                    self._app.invalidate()
+            else:
+                selected = _pick()
+
+            if selected:
+                self._prefill_input_buffer(selected)
+
         @kb.add('c-l')
         def handle_ctrl_l(event):
             """Ctrl+L: force a clean full-screen repaint.

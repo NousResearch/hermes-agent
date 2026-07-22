@@ -4202,6 +4202,71 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_api_user_is_forwarded_to_chat_completions(self, agent):
+        self._setup_agent(agent)
+        agent._api_user = "caller-123"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="ok", finish_reason="stop"
+        )
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        assert agent.client.chat.completions.create.call_args.kwargs["user"] == "caller-123"
+
+    @pytest.mark.parametrize("api_mode", ["anthropic_messages", "codex_responses"])
+    def test_api_user_is_not_forwarded_to_unsupported_transports(self, agent, api_mode):
+        self._setup_agent(agent)
+        agent._api_user = "caller-123"
+        agent.api_mode = api_mode
+        agent._disable_streaming = True
+        captured = {}
+
+        if api_mode == "anthropic_messages":
+            api_kwargs = {"model": "claude-test", "messages": []}
+            response = SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="ok")],
+                stop_reason="end_turn",
+                usage=None,
+                model="claude-test",
+            )
+        else:
+            agent.provider = "openai-codex"
+            agent.model = "gpt-5"
+            api_kwargs = {"model": "gpt-5", "input": [], "instructions": "test"}
+            response = SimpleNamespace(
+                status="completed",
+                incomplete_details=None,
+                output=[SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="ok")],
+                )],
+                output_text="ok",
+                usage=None,
+                model="gpt-5",
+            )
+
+        def _fake_api_call(kwargs):
+            captured.update(kwargs)
+            return response
+
+        with (
+            patch.object(agent, "_build_api_kwargs", return_value=api_kwargs),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        assert "user" not in captured
+
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)
         agent.api_mode = "codex_responses"

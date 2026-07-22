@@ -356,6 +356,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    api_user: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -423,6 +424,7 @@ def init_agent(
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name
+    agent._api_user = api_user  # OpenAI 'user' field — forwarded to upstream LLM
     agent._chat_id = chat_id
     agent._chat_name = chat_name
     agent._chat_type = chat_type

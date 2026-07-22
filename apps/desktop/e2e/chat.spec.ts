@@ -91,6 +91,7 @@ test.describe('chat interaction with mock backend', () => {
     const composer = page.locator('[contenteditable="true"]').first()
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
     const queue = page.locator('[data-slot="composer-root"] button[aria-label="Queue message"]')
+    const dictation = page.locator('[data-slot="composer-root"] button[aria-label="Voice dictation"]')
 
     await composer.click()
     await composer.type(BLOCKING_CLARIFY_TRIGGER)
@@ -103,6 +104,7 @@ test.describe('chat interaction with mock backend', () => {
     await composer.click()
     await composer.type('please answer tersely')
     await expect(primary).toHaveAttribute('aria-label', /Steer/)
+    await expect(dictation).toBeVisible()
     await expect(queue).toBeVisible()
     await expect(queue.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })

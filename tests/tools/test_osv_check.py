@@ -114,6 +114,24 @@ class TestParsePackageFromArgs:
         assert name == "react"
         assert ver == "18.3.1"
 
+    def test_uvx_from_equals_form(self):
+        # `uvx --from=mcp[cli]==1.0 mcp` -> install target is the --from value,
+        # NOT the executed binary `mcp`. Without the fix, --from=... starts with
+        # '-' and gets skipped, leaving the binary as the checked package.
+        name, ver = _parse_package_from_args(
+            ["--from=mcp[cli]==1.0", "mcp"], "PyPI"
+        )
+        assert name == "mcp"
+        assert ver == "1.0"
+
+    def test_uvx_from_space_form_with_separate_binary(self):
+        # `uvx --from mcp[cli]==1.0 mcp` (space form) -> package is mcp[cli].
+        name, ver = _parse_package_from_args(
+            ["--from", "mcp[cli]==1.0", "mcp"], "PyPI"
+        )
+        assert name == "mcp"
+        assert ver == "1.0"
+
 
 class TestCheckPackageForMalware:
     def test_clean_package(self):

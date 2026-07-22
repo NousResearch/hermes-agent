@@ -28,6 +28,36 @@ from gateway.whatsapp_identity import (
 )
 
 
+def _auth_env(name: str, default: str = "") -> str:
+    """Read allowlist/auth env; prefer profile secret_scope under multiplex."""
+    if not name:
+        return default
+    try:
+        from agent.secret_scope import get_secret
+
+        val = get_secret(name)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    except Exception:
+        pass
+    return (os.getenv(name) or default).strip()
+
+
+def _coerce_allow_set(raw) -> set[str]:
+    """Parse allowlist values from config or env var into a set of strings.
+
+    Handles both list inputs (YAML sequences) and comma-separated string
+    inputs (env vars or scalar YAML values).  A scalar string is split on
+    commas so ``allow_from: "123,456"`` yields ``{"123", "456"}``, not
+    ``{"1", "2", "3", ",", ...}``.
+    """
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
@@ -342,6 +372,24 @@ class GatewayAuthorizationMixin:
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
 
+            # Fallback: also check adapter-level config (config.yaml)
+            # for platforms.<platform>.extra.group_allowed_chats.
+            # The Telegram observe-unmentioned mode strips user_id from
+            # triggered group messages (_apply_telegram_group_observe_attribution),
+            # so the env-var-only check above misses config.yaml-configured
+            # allowlists.  Read the live adapter's config.extra as a fallback.
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter is not None:
+                    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                    adapter_group_allowed = extra.get("group_allowed_chats")
+                    if adapter_group_allowed:
+                        allowed = _coerce_allow_set(adapter_group_allowed)
+                        if "*" in allowed or source.chat_id in allowed:
+                            return True
+            except Exception:
+                pass
+
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver
         # bot/automation traffic with no user_id at all -- e.g. Slack Workflow
@@ -425,7 +473,7 @@ class GatewayAuthorizationMixin:
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+        if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
             return True
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
@@ -456,13 +504,13 @@ class GatewayAuthorizationMixin:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_allowlist = _auth_env(platform_env_map.get(source.platform, ""))
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
-            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
-            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            group_user_allowlist = _auth_env(platform_group_user_env_map.get(source.platform, ""))
+            group_chat_allowlist = _auth_env(platform_group_chat_env_map.get(source.platform, ""))
+        global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No env allowlist configured. Adapters that own their own
@@ -510,8 +558,23 @@ class GatewayAuthorizationMixin:
                     )
                 if effective_policy == "allowlist":
                     return True
+            # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
+            # group_allow_from at intake but do not override enforces_own_access_policy.
+            # Check their allowlist here so config.yaml-configured allow_from works
+            # without requiring a separate {PLATFORM}_ALLOWED_USERS env var.
+            adapter = self._adapter_for_source(source)
+            if adapter is not None:
+                extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                if source.chat_type in {"group", "forum", "channel"}:
+                    adapter_allow = extra.get("group_allow_from")
+                else:
+                    adapter_allow = extra.get("allow_from")
+                if adapter_allow:
+                    allowed = _coerce_allow_set(adapter_allow)
+                    if user_id in allowed or "*" in allowed:
+                        return True
             # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            return _auth_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
         # Telegram can optionally authorize group traffic by chat ID.
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates

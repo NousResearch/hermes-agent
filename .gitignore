@@ -4,6 +4,8 @@
 /_pycache/
 *.pyc*
 __pycache__/
+act/
+.act-sandbox-agent.*
 .venv/
 .venv
 .vscode/
@@ -42,7 +44,10 @@ run_datagen_sonnet.sh
 source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
-node_modules/
+# No trailing slash: also matches node_modules SYMLINKS (worktrees often
+# symlink node_modules to the main checkout; the dir-only pattern let one
+# slip into a commit and break `npm ci` on CI with ENOTDIR).
+node_modules
 browser-use/
 agent-browser/
 # Private keys
@@ -54,6 +59,10 @@ __pycache__/
 hermes_agent.egg-info/
 wandb/
 testlogs
+playwright-report/
+test-results/
+# Playwright visual regression baselines — cached from main in CI, not committed
+*-snapshots/
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
@@ -66,8 +75,21 @@ environments/benchmarks/evals/
 
 # Web UI build output
 hermes_cli/web_dist/
+# Cross-process web UI build lock (flock target, always empty)
+.web_ui_build.lock
 apps/desktop/build/
 apps/desktop/dist/
+
+# tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
+# resolves the stale .js OVER the .tsx — never track these)
+apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/desktop/src/**/*.d.ts
+!apps/desktop/src/global.d.ts
+!apps/desktop/src/vite-env.d.ts
+apps/shared/src/**/*.js
+apps/shared/src/**/*.js.map
+apps/shared/src/**/*.d.ts
 apps/desktop/release/
 *.tsbuildinfo
 

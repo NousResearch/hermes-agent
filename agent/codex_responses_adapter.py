@@ -1118,6 +1118,22 @@ def _normalize_codex_response(
     differs from the one that minted the encrypted_content blob and drop
     the item instead of triggering HTTP 400 invalid_encrypted_content.
     """
+    response_status = getattr(response, "status", None)
+    if isinstance(response_status, str):
+        response_status = response_status.strip().lower()
+    else:
+        response_status = None
+
+    incomplete_details = getattr(response, "incomplete_details", None)
+    incomplete_reason = ""
+    if isinstance(incomplete_details, dict):
+        incomplete_reason = str(incomplete_details.get("reason") or "").strip().lower()
+    elif incomplete_details is not None:
+        incomplete_reason = str(getattr(incomplete_details, "reason", "") or "").strip().lower()
+    response_incomplete_content_filter = (
+        response_status == "incomplete" and incomplete_reason == "content_filter"
+    )
+
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
         # The Codex backend can return empty output when the answer was
@@ -1134,14 +1150,17 @@ def _normalize_codex_response(
                 content=[SimpleNamespace(type="output_text", text=out_text.strip())],
             )]
             response.output = output
+        elif response_incomplete_content_filter:
+            # This is a deterministic provider safety block, not a partial
+            # answer. Synthesize an empty message so finish_reason below becomes
+            # content_filter and the conversation loop can fallback/surface it
+            # instead of burning three continuation attempts.
+            output = [SimpleNamespace(
+                type="message", role="assistant", status="completed", content=[]
+            )]
+            response.output = output
         else:
             raise RuntimeError("Responses API returned no output items")
-
-    response_status = getattr(response, "status", None)
-    if isinstance(response_status, str):
-        response_status = response_status.strip().lower()
-    else:
-        response_status = None
 
     if response_status in {"failed", "cancelled"}:
         error_obj = getattr(response, "error", None)
@@ -1360,6 +1379,45 @@ def _normalize_codex_response(
         # so the model keeps its chain-of-thought on the retry.
         final_text = ""
 
+    # ── Reasoning-channel answer salvage (xAI grok) ──────────────
+    # grok-4.x on the xAI /v1/responses surface sometimes emits its final
+    # answer inside the reasoning item instead of as a ``message`` output
+    # item, marking where the answer starts with grok's internal
+    # ``<response>`` delimiter.  Without salvage, the reasoning-only rule
+    # below classifies the turn ``incomplete`` — and because reasoning
+    # items on this surface carry no ``encrypted_content``, the interim
+    # message replays as nothing, so every continuation request is
+    # byte-identical to the one that just failed.  The turn burns its 3
+    # retries and dies with "Codex response remained incomplete after 3
+    # continuation attempts" even though the answer was produced on the
+    # first attempt.  Observed live with grok-4.20 on xai-oauth
+    # (2026-07-13).  Promote the delimited tail to assistant content and
+    # keep the untagged prefix as thinking text.
+    if (
+        issuer_kind == "xai_responses"
+        and not final_text
+        and not tool_calls
+        and reasoning_parts
+    ):
+        joined_reasoning = "\n\n".join(reasoning_parts)
+        marker = joined_reasoning.rfind("<response>")
+        if marker != -1:
+            salvaged = joined_reasoning[marker + len("<response>"):]
+            closing = salvaged.find("</response>")
+            if closing != -1:
+                salvaged = salvaged[:closing]
+            salvaged = salvaged.strip()
+            if salvaged:
+                logger.warning(
+                    "xAI response delivered its final answer inside the "
+                    "reasoning channel (<response> delimiter); promoting "
+                    "%d chars to assistant content.",
+                    len(salvaged),
+                )
+                final_text = salvaged
+                reasoning_prefix = joined_reasoning[:marker].strip()
+                reasoning_parts = [reasoning_prefix] if reasoning_prefix else []
+
     assistant_message = SimpleNamespace(
         content=final_text,
         tool_calls=tool_calls,
@@ -1372,6 +1430,8 @@ def _normalize_codex_response(
 
     if tool_calls:
         finish_reason = "tool_calls"
+    elif response_incomplete_content_filter:
+        finish_reason = "content_filter"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
     elif saw_streaming_or_item_incomplete:

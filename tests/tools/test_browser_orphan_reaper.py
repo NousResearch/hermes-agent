@@ -2,7 +2,7 @@
 daemons whose Python parent exited without cleaning up."""
 
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -179,6 +179,170 @@ class TestReapOrphanedBrowserSessions:
 
         _reap_orphaned_browser_sessions()
         assert not d.exists()
+
+
+class TestOrphanedChromiumCleanup:
+    """Tests for _kill_orphaned_chromium_processes() — kills Chromium
+    processes left behind when the agent-browser daemon dies before cleanup.
+
+    When the daemon (Node process) crashes or is SIGKILLed, its Chromium
+    children are reparented to PID 1 and the normal tree-kill path (which
+    walks children of the daemon PID) never reaches them.  The reaper
+    discovers the dead daemon PID, removes the socket dir, and calls
+    _kill_orphaned_chromium_processes to scan for surviving orphaned
+    Chromium processes by matching PPID == 1 + the ``agent-browser-chrome-``
+    cmdline pattern.
+    """
+
+    def test_dead_daemon_triggers_chromium_scan(self, fake_tmpdir):
+        """When the daemon PID is dead, orphaned Chromium is scanned + killed."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_dead123456", pid=999999999)
+
+        chromium_killed = []
+
+        def mock_kill_chromium(session_name):
+            chromium_killed.append(session_name)
+            return 0
+
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.browser_tool._kill_orphaned_chromium_processes",
+                   side_effect=mock_kill_chromium):
+            _reap_orphaned_browser_sessions()
+
+        assert len(chromium_killed) == 1
+        assert chromium_killed[0] == "h_dead123456"
+        assert not d.exists()
+
+    def test_dead_daemons_trigger_chromium_scan_only_once(self, fake_tmpdir):
+        """Global Chromium scanning happens once per reaper invocation."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        first = _make_socket_dir(fake_tmpdir, "h_dead_first", pid=10001)
+        second = _make_socket_dir(fake_tmpdir, "h_dead_second", pid=10002)
+        chromium_scans = []
+
+        def mock_kill_chromium(session_name):
+            chromium_scans.append(session_name)
+            return 0
+
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("tools.browser_tool._kill_orphaned_chromium_processes",
+                   side_effect=mock_kill_chromium):
+            _reap_orphaned_browser_sessions()
+
+        assert len(chromium_scans) == 1
+        assert set(chromium_scans) <= {"h_dead_first", "h_dead_second"}
+        assert not first.exists()
+        assert not second.exists()
+
+    def test_alive_daemon_does_not_trigger_chromium_scan(self, fake_tmpdir):
+        """When the daemon PID is alive, Chromium scan is NOT triggered
+        (the tree-kill path handles it)."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_alive1234567", pid=12345)
+
+        chromium_killed = []
+
+        def mock_kill_chromium(session_name):
+            chromium_killed.append(session_name)
+            return 0
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid"), \
+             patch("tools.browser_tool._kill_orphaned_chromium_processes",
+                   side_effect=mock_kill_chromium):
+            _reap_orphaned_browser_sessions()
+
+        assert len(chromium_killed) == 0
+
+    def test_kill_orphaned_chromium_skips_non_orphan_active_session(self, fake_tmpdir):
+        """_kill_orphaned_chromium_processes only kills Chromium whose PPID
+        is 1 (reparented to init = true orphan).  It must NOT kill:
+
+        - Chromium whose parent is a still-running daemon (active session)
+        - Non-agent-browser Chromium (user-installed Chrome, even if PPID=1)
+        """
+        from tools.browser_tool import _kill_orphaned_chromium_processes
+
+        # 1. orphaned agent-browser Chromium (PPID=1) → should terminate
+        orphan_proc = MagicMock()
+        orphan_proc.info = {
+            "pid": 2001, "name": "chrome", "cmdline": [
+                "/usr/bin/chromium", "--headless",
+                "--user-data-dir=/tmp/agent-browser-chrome-aaaa1111",
+            ], "ppid": 1,
+        }
+        # 2. active session Chromium (PPID=daemon) → must NOT terminate
+        live_proc = MagicMock()
+        live_proc.info = {
+            "pid": 2002, "name": "chrome", "cmdline": [
+                "/usr/bin/chromium", "--headless",
+                "--user-data-dir=/tmp/agent-browser-chrome-bbbb2222",
+            ], "ppid": 99999,
+        }
+        # 3. user-installed Chrome (PPID=1 but no agent-browser pattern) → must NOT terminate
+        user_chrome = MagicMock()
+        user_chrome.info = {
+            "pid": 2003, "name": "chrome", "cmdline": [
+                "/usr/bin/google-chrome", "--user-data-dir=/home/user/.config/chrome",
+            ], "ppid": 1,
+        }
+
+        terminated_pids = []
+
+        def fake_terminate(pid):
+            terminated_pids.append(pid)
+
+        with patch("psutil.process_iter",
+                   return_value=[orphan_proc, live_proc, user_chrome]), \
+             patch(
+                 "tools.process_registry.ProcessRegistry._terminate_host_pid",
+                 side_effect=fake_terminate,
+             ):
+            result = _kill_orphaned_chromium_processes("h_test1234")
+
+        assert result == 1  # only the orphan root was selected
+        assert terminated_pids == [2001]
+        orphan_proc.terminate.assert_not_called()
+        live_proc.terminate.assert_not_called()
+        user_chrome.terminate.assert_not_called()
+
+    def test_kill_orphaned_chromium_uses_full_process_tree_termination(
+        self, fake_tmpdir
+    ):
+        """An orphan Chromium root is terminated together with its descendants.
+
+        The process registry owns the cross-platform tree-kill and escalation
+        behavior.  The browser orphan scanner must delegate to it rather than
+        terminating only the Chromium root object.
+        """
+        from tools.browser_tool import _kill_orphaned_chromium_processes
+
+        orphan_proc = MagicMock()
+        orphan_proc.info = {
+            "pid": 2001,
+            "name": "chrome",
+            "cmdline": [
+                "/usr/bin/chromium",
+                "--headless",
+                "--user-data-dir=/tmp/agent-browser-chrome-aaaa1111",
+            ],
+            "ppid": 1,
+        }
+
+        with patch("psutil.process_iter", return_value=[orphan_proc]), \
+             patch(
+                 "tools.process_registry.ProcessRegistry._terminate_host_pid"
+             ) as terminate_tree:
+            result = _kill_orphaned_chromium_processes("h_test1234")
+
+        assert result == 1
+        terminate_tree.assert_called_once_with(2001)
+        orphan_proc.terminate.assert_not_called()
 
 
 class TestOwnerPidCrossProcess:

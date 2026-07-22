@@ -1669,6 +1669,83 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     return True
 
 
+def _kill_orphaned_chromium_processes(session_name: str) -> int:
+    """Kill Chromium processes orphaned by a dead agent-browser daemon.
+
+    When the agent-browser daemon (a Node process) dies before its owner
+    cleans up, Chromium child processes it spawned are reparented to PID 1
+    and left running indefinitely — consuming CPU and memory with no one to
+    shut them down.  The daemon's ``.pid`` file points at the dead Node
+    process, so the reaper's normal tree-kill path (which walks children of
+    the *daemon* PID) never reaches them.
+
+    We cannot map Chromium's ``--user-data-dir`` UUID back to a specific
+    session's socket directory, so this function targets **all** orphaned
+    agent-browser Chromium processes (PPID == 1 + ``agent-browser-chrome-``
+    cmdline pattern), not just those from ``session_name``.  This is safe
+    because any agent-browser Chromium with PPID 1 is a true orphan whose
+    daemon is gone — leaving it running is the same resource leak this fix
+    addresses.  Active sessions are unaffected: their Chromium still has
+    the live daemon as parent (PPID != 1).
+
+    Security: the ``agent-browser-chrome-`` prefix is specific to
+    agent-browser-spawned Chromium and distinct from user-installed
+    Chrome/Chromium.  The PPID==1 check ensures we only kill true orphans,
+    not Chromium children of a still-running daemon.  Same-user only
+    (psutil can only signal same-user processes).
+
+    Args:
+        session_name: Used for logging context only; the actual kill
+            criteria are orphaned parent + agent-browser cmdline pattern.
+
+    Returns the number of orphaned Chromium roots handed to the process-tree
+    terminator.
+    """
+    try:
+        import psutil
+    except ImportError:
+        logger.warning(
+            "Cannot scan for orphaned Chromium (session %s): psutil unavailable",
+            session_name)
+        return 0
+
+    killed = 0
+    from tools.process_registry import ProcessRegistry
+
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "ppid"]):
+        try:
+            cmdline = " ".join(proc.info["cmdline"] or [])
+            # Match agent-browser-spawned Chromium by its user-data-dir pattern.
+            if "agent-browser-chrome-" not in cmdline:
+                continue
+            if "--user-data-dir=" not in cmdline:
+                continue
+            # Only kill true orphans: Chromium whose parent (the daemon)
+            # has died, causing reparenting to PID 1 (init).  Chromium
+            # belonging to a *live* daemon still has the daemon as its
+            # parent and must not be touched.
+            if proc.info["ppid"] != 1:
+                continue
+
+            # Chromium is a process tree.  Reuse the shared termination path
+            # so descendants (renderer, GPU, etc.) receive the same
+            # SIGTERM→SIGKILL escalation as the root instead of surviving as
+            # newly orphaned processes when the root is force-killed.
+            ProcessRegistry._terminate_host_pid(proc.info["pid"])
+            killed += 1
+            logger.info(
+                "Reaped orphaned Chromium process tree rooted at PID %d "
+                "(session %s, daemon gone)",
+                proc.info["pid"], session_name)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception as exc:
+            logger.debug("Error scanning process %d for orphaned Chromium: %s",
+                         getattr(proc, 'pid', -1), exc)
+
+    return killed
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1714,6 +1791,7 @@ def _reap_orphaned_browser_sessions():
         }
 
     reaped = 0
+    chromium_scan_done = False
     for socket_dir in socket_dirs:
         dir_name = os.path.basename(socket_dir)
         # dir_name is "agent-browser-{session_name}"
@@ -1757,10 +1835,19 @@ def _reap_orphaned_browser_sessions():
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
-        # Check if the daemon is still alive. ``os.kill(pid, 0)`` on Windows
+        # Check if the daemon is still alive.  ``os.kill(pid, 0)`` on Windows
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
+            # The daemon is gone, but it may have left behind Chromium children.
+            # Once the daemon dies unexpectedly, those Chromium processes are
+            # reparented to PID 1.  We cannot map Chromium's --user-data-dir UUID
+            # back to this socket directory, so only terminate agent-browser
+            # Chromium processes that are already orphaned.  Active sessions still
+            # have a live daemon parent and are skipped.
+            if not chromium_scan_done:
+                chromium_scan_done = True
+                _kill_orphaned_chromium_processes(session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 

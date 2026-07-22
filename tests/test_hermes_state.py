@@ -2425,6 +2425,46 @@ class TestCJKSearchFallback:
         results = db.search_messages("Agent通信")
         assert len(results) == 1
 
+    def test_pure_latin_word_embedded_in_cjk_is_found(self, db):
+        """Regression for #54242.
+
+        A pure-Latin query (no CJK chars) routes to the unicode61 ``messages_fts``
+        table, whose tokenizer fuses a Latin run onto the adjacent CJK characters
+        ("修改youer服务端" is indexed as a single token), so MATCH "youer" returns
+        nothing. The zero-result trigram fallback must recover the match.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="修改youer服务端的计划")
+        results = db.search_messages("youer")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_pure_latin_query_with_normal_match_is_unaffected(self, db):
+        """A normal space-delimited Latin query still resolves on the unicode61
+        path; the zero-result trigram fallback only fires when it misses."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="deploy the docker container")
+        results = db.search_messages("docker")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_pure_latin_query_absent_term_returns_empty(self, db):
+        """A Latin term that is genuinely absent must still return nothing,
+        even with the trigram fallback enabled."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="修改youer服务端的计划")
+        assert db.search_messages("kubernetes") == []
+
+    def test_pure_latin_embedded_fallback_preserves_source_filter(self, db):
+        """The embedded-Latin trigram fallback must honour source_filter."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="修改youer服务端cli")
+        db.append_message("s2", role="user", content="修改youer服务端telegram")
+        results = db.search_messages("youer", source_filter=["telegram"])
+        assert len(results) == 1
+        assert results[0]["source"] == "telegram"
+
     def test_cjk_partial_fts5_results_supplemented_by_like(self, db):
         """When FTS5 returns *some* CJK results, LIKE must still find all matches.
 

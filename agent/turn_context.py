@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
@@ -253,6 +254,40 @@ def _should_run_preflight_estimate(
     if len(messages) > protect_first_n + protect_last_n + 1:
         return True
     return estimate_messages_tokens_rough(messages) >= threshold_tokens
+
+
+def _should_idle_compact(
+    *,
+    enabled: bool,
+    idle_after_seconds: int,
+    idle_gap_seconds: float,
+    tokens: int,
+    floor_tokens: int,
+    cooldown_active: bool,
+) -> bool:
+    """Decide whether an idle-triggered compaction should run this turn.
+
+    Idle compaction is opt-in (``idle_after_seconds <= 0`` disables it). It
+    fires when a session resumes after a wall-clock gap of at least
+    ``idle_after_seconds`` since its last activity, so a long-lived thread
+    that is paused and later resumed compacts its accumulated history up
+    front instead of re-reading it on every subsequent turn.
+
+    It is orthogonal to the token-threshold trigger: it does NOT require the
+    context to exceed ``threshold_tokens``. It still skips work when the
+    context is at or below ``floor_tokens`` (the size compaction would reduce
+    *to*), so a small idle thread never pays for a summarisation that saves
+    nothing, and it defers to an active compression-failure cooldown.
+
+    Pure predicate so the policy is unit-testable without a live agent.
+    """
+    if not enabled or idle_after_seconds <= 0:
+        return False
+    if idle_gap_seconds < idle_after_seconds:
+        return False
+    if cooldown_active:
+        return False
+    return tokens > floor_tokens
 
 
 @dataclass
@@ -578,6 +613,77 @@ def build_turn_context(
         # fresh staged input.
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
+
+    # ── Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``) ──
+    # When a session resumes after a long idle gap, compact the accumulated
+    # history up front so the rest of the conversation does not keep re-reading
+    # a large stale context on every turn. This fires on elapsed wall-clock time
+    # rather than size, so it complements (does not replace) the token-threshold
+    # preflight below. ``_last_activity_ts`` is the last time this turn loop did
+    # work; nothing has touched it yet this turn, so it measures the gap since
+    # the previous turn finished. The cheap gap pre-check gates the (more
+    # expensive) token estimate, mirroring ``_should_run_preflight_estimate``.
+    _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
+    if agent.compression_enabled and _idle_after > 0 and messages:
+        _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
+        if _idle_gap >= _idle_after:
+            _compressor = agent.context_compressor
+            _idle_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=agent.tools or None,
+            )
+            # Post-compression target size: don't summarise a thread already
+            # below what compaction would reduce it to.
+            _idle_floor = int(
+                _compressor.threshold_tokens * _compressor.summary_target_ratio
+            )
+            _idle_cooldown = getattr(
+                _compressor, "get_active_compression_failure_cooldown", lambda: None
+            )()
+            if _should_idle_compact(
+                enabled=agent.compression_enabled,
+                idle_after_seconds=_idle_after,
+                idle_gap_seconds=_idle_gap,
+                tokens=_idle_tokens,
+                floor_tokens=_idle_floor,
+                cooldown_active=bool(_idle_cooldown),
+            ):
+                logger.info(
+                    "Idle compaction: %ss idle >= %ss, ~%s tokens > %s floor "
+                    "(session %s)",
+                    int(_idle_gap),
+                    _idle_after,
+                    f"{_idle_tokens:,}",
+                    f"{_idle_floor:,}",
+                    agent.session_id or "none",
+                )
+                agent._emit_status(
+                    f"💤 Resumed after {int(_idle_gap)}s idle — compacting "
+                    f"~{_idle_tokens:,} tokens before continuing."
+                )
+                _idle_input = messages
+                messages, active_system_prompt = agent._compress_context(
+                    messages, system_message, approx_tokens=_idle_tokens,
+                    task_id=effective_task_id,
+                )
+                # ``_compress_context`` returns the INPUT list object when it
+                # skips (per-session lock held by another path, failure
+                # cooldown, anti-thrash breaker, codex-native routing). Only
+                # re-baseline + re-anchor after a real compaction — a skip
+                # must leave the turn's flush baseline and user-message index
+                # untouched.
+                if messages is not _idle_input:
+                    conversation_history = conversation_history_after_compression(
+                        agent, messages
+                    )
+                    # Compaction rebuilt the list, so the index of this turn's
+                    # just-appended user message is stale — re-anchor it the
+                    # same way the preflight path does below.
+                    current_turn_user_idx = reanchor_current_turn_user_idx(
+                        messages, user_message
+                    )
+                    agent._persist_user_message_idx = current_turn_user_idx
 
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.

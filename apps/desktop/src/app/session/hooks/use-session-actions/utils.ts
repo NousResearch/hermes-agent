@@ -73,7 +73,7 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim'] as const
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
@@ -154,7 +154,10 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.pending !== b.pending ||
     a.error !== b.error ||
     a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
+    a.branchGroupId !== b.branchGroupId ||
+    // Interim gates the action footer, so flipping it must repaint (e.g. a
+    // previewed final settling onto a sealed interim bubble restores the bar).
+    (a.interim ?? false) !== (b.interim ?? false)
   ) {
     return false
   }

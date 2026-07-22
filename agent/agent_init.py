@@ -1869,6 +1869,12 @@ def init_agent(
             codex_app_server_auto_compaction,
         )
         codex_app_server_auto_compaction = "native"
+    # Opt-in idle compaction: compact a session up front when it resumes after
+    # this many seconds of inactivity (0 = disabled). Time-based, so it
+    # complements the size-based threshold above. Consumed by build_turn_context().
+    compression_idle_compact_after_seconds = max(
+        0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -2295,6 +2301,9 @@ def init_agent(
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.max_compression_attempts = compression_max_attempts
+    agent.compression_idle_compact_after_seconds = (
+        compression_idle_compact_after_seconds
+    )
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

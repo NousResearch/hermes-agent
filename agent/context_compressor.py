@@ -144,6 +144,37 @@ COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 _DB_PERSISTED_MARKER = "_db_persisted"
 
+# Metadata keys for harness scaffolding rather than durable conversation state.
+# Underscore-prefixed keys are stripped from provider payloads by the transport
+# sanitizers, so producers can opt out of compaction without text heuristics.
+SUMMARY_EXCLUDE_METADATA_KEY = "_exclude_from_context_summary"
+EPHEMERAL_SCAFFOLDING_FLAGS = frozenset({
+    "_empty_recovery_synthetic",
+    "_empty_terminal_sentinel",
+    "_thinking_prefill",
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+    "_kanban_stop_synthetic",
+})
+_SUMMARY_EXCLUDED_MESSAGE_FLAGS = frozenset({
+    SUMMARY_EXCLUDE_METADATA_KEY,
+    *EPHEMERAL_SCAFFOLDING_FLAGS,
+})
+
+
+def _is_summary_excluded_message(message: Any) -> bool:
+    """Return whether *message* is harness scaffolding, not task continuity."""
+    return isinstance(message, dict) and any(
+        message.get(flag) for flag in _SUMMARY_EXCLUDED_MESSAGE_FLAGS
+    )
+
+
+def _session_scoped_summary_turns(
+    turns: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep only durable current-session/subsession conversation turns."""
+    return [turn for turn in turns if not _is_summary_excluded_message(turn)]
+
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. "
@@ -2188,6 +2219,7 @@ class ContextCompressor(ContextEngine):
         structure so downstream prompts can recover gracefully after a provider
         outage or summary-model failure.
         """
+        turns_to_summarize = _session_scoped_summary_turns(turns_to_summarize)
         user_asks: list[str] = []
         assistant_actions: list[str] = []
         tool_actions: list[str] = []
@@ -2433,6 +2465,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         the middle turns without a summary rather than inject a useless
         placeholder.
         """
+        turns_to_summarize = _session_scoped_summary_turns(turns_to_summarize)
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
             logger.debug(
@@ -2564,7 +2597,10 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
         _summarizer_preamble = (
             "You are a summarization agent creating a context checkpoint. "
             "Treat the conversation turns below as source material for a "
-            "compact record of prior work. "
+            "compact record of prior work. Scope continuity to this session "
+            "and its visible compaction descendants only; do not preserve "
+            "general Hermes-wide status announcements, framework guidance, "
+            "or stale detached-session instructions as task state. "
             "Produce only the structured summary; do not add a greeting, "
             "preamble, or prefix. "
             + _language_and_provenance_rule +

@@ -13215,6 +13215,12 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
     return False
 
 
+# Upper bound (seconds) for query-mode MCP discovery.  Query mode waits for
+# all configured MCP servers, but caps the wait so a dead server can never
+# hang the process.  Overridable in tests.
+_QUERY_MODE_MCP_TIMEOUT: float = 30.0
+
+
 def _should_background_mcp_startup(args) -> bool:
     if _is_tui_chat_launch(args):
         return False
@@ -13260,6 +13266,28 @@ def _prepare_agent_startup(args) -> None:
     elif _command_has_dedicated_mcp_startup(args):
         # These entrypoints already do their own MCP startup later on the real
         # runtime path (gateway executor, ACP launcher, cron job runner).
+        _run_inline_mcp_discovery = False
+    elif getattr(args, "query", None):
+        # Query mode (chat -q "prompt"): kanban workers, cron jobs, scripted
+        # invocations.  No interactive prompt, so we can afford to wait for
+        # all MCP servers.  Use background discovery + bounded join so a
+        # dead server can't hang the process forever (30s cap).
+        try:
+            from hermes_cli.mcp_startup import (
+                start_background_mcp_discovery,
+                join_mcp_discovery,
+            )
+
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="cli-mcp-discovery",
+            )
+            join_mcp_discovery(timeout=_QUERY_MODE_MCP_TIMEOUT)
+        except Exception:
+            logger.debug(
+                "Query-mode MCP discovery failed at CLI startup",
+                exc_info=True,
+            )
         _run_inline_mcp_discovery = False
     elif _should_background_mcp_startup(args):
         try:

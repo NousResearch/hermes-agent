@@ -17,6 +17,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
+import { sessionContextDrift } from '../session-context-drift'
 
 import {
   _submitInFlight,
@@ -175,11 +176,28 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
-      const sessionContextDrifted = (): boolean =>
-        targetStartedInCurrentView &&
-        (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
+      // Reason string (or null) for why the session context genuinely drifted
+      // under this in-flight submit. sessionContextDrift ignores the churn a
+      // busy gateway produces (selection null-resets on a gateway/profile
+      // switch, search/hash-only route changes, background active-ref
+      // retargets) so a second-session send doesn't silently abort — it fires
+      // only on a real move to a DIFFERENT chat. Reads the live refs/route each
+      // call and measures against the (mutable) baseline, which is re-pinned to
+      // the created chat after createBackendSessionForSend. submitTargetStoredId
+      // is the stored session this submit targets, so a move ONTO it (the
+      // pipeline's own re-home) is never counted as drift.
+      const sessionDriftReason = (): string | null =>
+        targetStartedInCurrentView
+          ? sessionContextDrift({
+              startRouteToken: startingRouteToken,
+              nowRouteToken: getRouteToken(),
+              startSelectedStoredId: startingStoredSessionId,
+              nowSelectedStoredId: selectedStoredSessionIdRef.current,
+              submitTargetStoredId: startingStoredSessionId
+            })
+          : null
 
-      const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionContextDrifted()
+      const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionDriftReason()
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns. The
@@ -317,7 +335,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(null)
         }
 
-        if (sessionContextDrifted()) {
+        const routedResumeDrift = sessionDriftReason()
+
+        if (routedResumeDrift) {
+          console.warn('[submit-drift-abort]', routedResumeDrift, { phase: 'post-routed-resume' })
+
           return abortForSessionSwitch(null)
         }
 
@@ -351,7 +373,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             source: 'desktop'
           })
 
-          if (sessionContextDrifted()) {
+          const resumeDrift = sessionDriftReason()
+
+          if (resumeDrift) {
+            console.warn('[submit-drift-abort]', resumeDrift, { phase: 'post-resume' })
+
             return abortForSessionSwitch(sessionId)
           }
 
@@ -371,7 +397,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(null)
         }
 
-        if (sessionContextDrifted()) {
+        const resumeSettleDrift = sessionDriftReason()
+
+        if (resumeSettleDrift) {
+          console.warn('[submit-drift-abort]', resumeSettleDrift, { phase: 'post-resume-settle' })
+
           return abortForSessionSwitch(sessionId)
         }
 
@@ -400,7 +430,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // createBackendSessionForSend returns null when the user switched
           // sessions mid-create (it closes the orphaned session itself) —
           // abort silently. Anything else is a real failure worth a toast.
-          if (sessionContextDrifted()) {
+          const createNullDrift = sessionDriftReason()
+
+          if (createNullDrift) {
+            console.warn('[submit-drift-abort]', createNullDrift, { phase: 'post-create-null' })
+
             return abortForSessionSwitch(null)
           }
 
@@ -439,7 +473,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           updateComposerAttachments: usingComposerAttachments
         })
 
-        if (sessionContextDrifted()) {
+        const attachmentsDrift = sessionDriftReason()
+
+        if (attachmentsDrift) {
+          console.warn('[submit-drift-abort]', attachmentsDrift, { phase: 'post-attachments' })
+
           return abortForSessionSwitch(sessionId)
         }
 
@@ -473,7 +511,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               source: 'desktop'
             })
 
-            if (sessionContextDrifted()) {
+            const resumeRetryDrift = sessionDriftReason()
+
+            if (resumeRetryDrift) {
+              console.warn('[submit-drift-abort]', resumeRetryDrift, { phase: 'post-resume-retry' })
+
               return abortForSessionSwitch(sessionId)
             }
 

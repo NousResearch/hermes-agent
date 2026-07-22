@@ -3,13 +3,19 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
+import {
+  $sessions,
+  getRememberedRoute,
+  getRememberedSessionId,
+  setRememberedRoute,
+  setRememberedSessionId
+} from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -20,6 +26,20 @@ interface DesktopIntegrationsParams {
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
+}
+
+type RestorableSession = {
+  _lineage_root_id?: null | string
+  id: string
+  is_active?: boolean | null
+}
+
+function sessionExists(sessionId: string, sessions: readonly RestorableSession[]): boolean {
+  return sessions.some(session => session.id === sessionId || session._lineage_root_id === sessionId)
+}
+
+function pickFallbackSession(sessions: readonly RestorableSession[]): RestorableSession | null {
+  return sessions.find(session => session.is_active) ?? sessions[0] ?? null
 }
 
 /**
@@ -75,7 +95,9 @@ export function useDesktopIntegrations({
 
   // Restore once on cold start — only when the renderer booted at the default
   // route (a hidden-then-shown window keeps its own route). Prefer the full
-  // remembered route (covers pages); fall back to the last session id.
+  // remembered route (covers pages); fall back to the last session id. If the
+  // pinned session is stale, re-home to the engine's most recent live session
+  // instead of booting into an error screen for a chat the user never chose.
   useEffect(() => {
     if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
       restoredRef.current = true
@@ -84,10 +106,50 @@ export function useDesktopIntegrations({
     }
 
     restoredRef.current = true
+
+    const restoreSession = async (sessionId: string, routeToUse?: string) => {
+      try {
+        await refreshSessions()
+      } catch {
+        setRememberedSessionId(null)
+        navigate(NEW_CHAT_ROUTE, { replace: true })
+
+        return
+      }
+
+      const sessions = $sessions.get() as RestorableSession[]
+
+      if (sessionExists(sessionId, sessions)) {
+        navigate(routeToUse ?? sessionRoute(sessionId), { replace: true })
+
+        return
+      }
+
+      const fallback = pickFallbackSession(sessions)
+
+      if (fallback) {
+        setRememberedSessionId(fallback.id)
+        navigate(sessionRoute(fallback.id), { replace: true })
+
+        return
+      }
+
+      setRememberedSessionId(null)
+      navigate(NEW_CHAT_ROUTE, { replace: true })
+    }
+
     const route = getRememberedRoute()
 
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
-      navigate(route, { replace: true })
+      const rememberedSessionId = routeSessionId(route)
+
+      if (!rememberedSessionId) {
+        navigate(route, { replace: true })
+
+        return
+      }
+
+      void restoreSession(rememberedSessionId, route)
 
       return
     }
@@ -95,9 +157,9 @@ export function useDesktopIntegrations({
     const last = getRememberedSessionId()
 
     if (last) {
-      navigate(sessionRoute(last), { replace: true })
+      void restoreSession(last)
     }
-  }, [locationPathname, navigate])
+  }, [locationPathname, navigate, refreshSessions])
 
   useEffect(() => {
     if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {

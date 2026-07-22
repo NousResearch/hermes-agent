@@ -176,6 +176,32 @@ async def test_queue_preserves_reply_context():
 
 
 @pytest.mark.asyncio
+async def test_queue_allows_reply_context_without_prompt_text():
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+
+    event = MessageEvent(
+        text="/queue",
+        source=_make_source(),
+        message_id="q-reply-only",
+        reply_to_message_id="orig-7",
+        reply_to_text="the original message",
+        reply_to_author_id="a1",
+        reply_to_author_name="alice",
+    )
+    result = await runner._handle_message(event)
+
+    assert result is not None and "queued" in result.lower()
+    queued = adapter._pending_messages[sk]
+    assert queued.text == ""
+    assert queued.message_type == MessageType.TEXT
+    assert queued.reply_to_message_id == "orig-7"
+    assert queued.reply_to_text == "the original message"
+    assert queued.reply_to_author_id == "a1"
+    assert queued.reply_to_author_name == "alice"
+
+
+@pytest.mark.asyncio
 async def test_queue_no_text_no_media_returns_usage():
     runner, adapter = _make_runner(_session_entry())
     _running(runner)

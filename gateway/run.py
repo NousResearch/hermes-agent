@@ -10462,7 +10462,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (e.g. "/queue" as the caption of an image). Dropping these
                 # fields silently lost the attachment when the queued turn ran.
                 has_media = bool(getattr(event, "media_urls", None))
-                if not queued_text and not has_media:
+                has_reply = bool(
+                    getattr(event, "reply_to_message_id", None)
+                    or getattr(event, "reply_to_text", None)
+                )
+                if not queued_text and not has_media and not has_reply:
                     return "Usage: /queue <prompt>"
                 adapter = self._adapter_for_source(source)
                 if adapter:

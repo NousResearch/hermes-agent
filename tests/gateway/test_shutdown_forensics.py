@@ -185,6 +185,30 @@ class TestSpawnAsyncDiagnostic:
         assert result is None
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_uses_python_timeout_wrapper_without_coreutils(self, tmp_path, monkeypatch):
+        """The launcher must not depend on GNU `timeout`, which macOS lacks."""
+        calls = []
+
+        class FakeProcess:
+            pid = 12345
+
+        def fake_popen(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return FakeProcess()
+
+        monkeypatch.setattr(sf.subprocess, "Popen", fake_popen)
+        pid = sf.spawn_async_diagnostic(
+            tmp_path / "diag.log", "SIGTERM", timeout_seconds=2.5
+        )
+
+        assert pid == 12345
+        argv = calls[0][0]
+        assert argv[0] == sys.executable
+        assert argv[1] == "-c"
+        assert "subprocess.TimeoutExpired" in argv[2]
+        assert argv[-1] == "2.5"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
     def test_handles_unwritable_log_path_gracefully(self, tmp_path):
         # Point at a nonexistent parent that we can't create
         log_path = Path("/proc/cant-write-here/diag.log")

@@ -2935,6 +2935,11 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         """Process a media message event (image, audio, video, file)."""
         body = source_content.get("body", "") or ""
+        # MSC2530: a top-level "filename" field is the authoritative transport
+        # filename; body then carries the user caption whenever it differs.
+        # Legacy clients never send "filename" and put the filename in body.
+        declared_filename = str(source_content.get("filename") or "").strip()
+        transport_filename = declared_filename or body
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
             logger.warning(
@@ -3072,7 +3077,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
                                 Path(
-                                    body
+                                    transport_filename
                                     or (
                                         "voice.ogg" if is_voice_message else "audio.ogg"
                                     )
@@ -3081,7 +3086,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
                             cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
                         else:
-                            filename = body or (
+                            filename = transport_filename or (
                                 "video.mp4"
                                 if msg_type == MessageType.VIDEO
                                 else "document"
@@ -3104,7 +3109,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
-        if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
+        # MSC2530: the declared filename (resolved above) is authoritative — even a
+        # caption that *looks* like a filename (e.g. "screenshot.png") is kept when
+        # the sender declared a different real filename. The old suffix heuristic
+        # remains only for legacy clients that never send "filename".
+        if declared_filename:
+            if body.strip() == declared_filename:
+                body = ""
+        elif msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
         allow_http_fallback = bool(http_url) and not is_encrypted_media

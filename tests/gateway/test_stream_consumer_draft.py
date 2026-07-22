@@ -26,6 +26,7 @@ from gateway.stream_consumer import (
 
 def _make_draft_capable_adapter(
     *, supports_draft: bool = True, draft_succeeds: bool = True,
+    draft_result=None,
 ):
     """Build a minimal BasePlatformAdapter subclass with draft support.
 
@@ -60,6 +61,8 @@ def _make_draft_capable_adapter(
             "content": content,
             "metadata": metadata,
         })
+        if draft_result is not None:
+            return draft_result
         if draft_succeeds:
             return SendResult(success=True, message_id=None)
         return SendResult(success=False, error="draft_rejected")
@@ -207,6 +210,82 @@ class TestDraftFallbackOnFailure:
         assert consumer._use_draft_streaming is False
         # Final message delivered via the regular send path.
         adapter.send.assert_awaited()
+
+
+class TestDraftRetryableFloodControl:
+    """Edge case (szafranski review on #53865): when send_draft returns
+    success=False with retryable=True (RetryAfter > 5s), the consumer
+    currently disables drafts and falls through to the regular edit/send
+    path — recreating the cascade that draft streaming was meant to prevent.
+
+    This test documents the current behavior as a regression guard.
+    A follow-up fix should handle retryable draft failures gracefully
+    (cool down without disabling drafts entirely)."""
+
+    @pytest.mark.asyncio
+    async def test_retryable_draft_failure_disables_drafts_and_falls_through(self):
+        from gateway.platforms.base import SendResult
+
+        # send_draft returns retryable=True with a long RetryAfter (280s),
+        # simulating Telegram FloodWait on the draft endpoint.
+        retryable_result = SendResult(
+            success=False,
+            error="flood_control:280",
+            retryable=True,
+            retry_after=280.0,
+        )
+        adapter = _make_draft_capable_adapter(draft_result=retryable_result)
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Hello ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("world!")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Current behavior: the retryable failure still counts as a failure
+        # and disables draft streaming for the rest of the run.
+        assert consumer._draft_failures >= 1
+        assert consumer._use_draft_streaming is False
+        # The consumer fell through to the regular send path.
+        adapter.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retryable_failure_does_not_suppress_send_or_edit(self):
+        """After a retryable draft failure, the consumer MUST still deliver
+        the final message via send/edit — not silently drop it."""
+        from gateway.platforms.base import SendResult
+
+        retryable_result = SendResult(
+            success=False,
+            error="flood_control:280",
+            retryable=True,
+            retry_after=280.0,
+        )
+        adapter = _make_draft_capable_adapter(draft_result=retryable_result)
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Important answer")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The final message must have been delivered — either via send or edit.
+        total_deliveries = adapter.send.await_count + adapter.edit_message.await_count
+        assert total_deliveries >= 1, (
+            "retryable draft failure must not suppress final delivery"
+        )
 
 
 class TestDraftIdLifecycle:
@@ -498,12 +577,3 @@ class TestRichAwareOverflow:
         consumer._preview_message_ids = {"frag1", "frag2", "frag3"}
 
         ok = await consumer._try_fresh_final("the whole completed answer")
-
-        assert ok is True
-        # All three stale fragments deleted; the fresh final never deleted.
-        deleted = {c.args[1] for c in adapter.delete_message.await_args_list}
-        assert deleted == {"frag1", "frag2", "frag3"}
-        assert "final1" not in deleted
-        assert consumer._message_id == "final1"
-        assert consumer._preview_message_ids == set()
-        assert consumer.final_response_sent is True

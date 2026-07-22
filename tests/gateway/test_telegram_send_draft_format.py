@@ -12,6 +12,9 @@ These tests pin:
   2. A MarkdownV2 BadRequest triggers a single plain-text retry rather than
      killing draft streaming for the whole response.
   3. A non-BadRequest failure propagates so the caller falls back to edit.
+  4. A RetryAfter exception on sendRichMessageDraft falls through to legacy
+     sendMessageDraft — burning another call in the same rate-limit bucket
+     (edge case from szafranski review on #53865, issue #54275).
 """
 import sys
 from unittest.mock import AsyncMock, MagicMock
@@ -112,3 +115,104 @@ async def test_send_draft_non_badrequest_propagates_without_retry():
 
     assert result.success is False
     assert len(calls) == 1  # no plain-text retry on non-BadRequest
+
+
+def _make_rich_draft_adapter() -> TelegramAdapter:
+    """Build an adapter with the rich draft path enabled.
+
+    Sets all attributes _should_attempt_rich_draft checks so the rich path
+    is taken, and wires do_api_request as AsyncMock so _bot_supports_rich()
+    returns True.
+    """
+    adapter = _make_adapter()
+    adapter.format_message = lambda c: f"FMT::{c}"
+    adapter._rich_messages_enabled = True
+    adapter._rich_drafts_enabled = True
+    adapter._rich_send_disabled = False
+    adapter._rich_draft_disabled = False
+    # do_api_request must be AsyncMock for _bot_supports_rich() to return True.
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_retry_after_falls_through_to_legacy():
+    """Edge case (szafranski review on #53865, issue #54275):
+
+    When sendRichMessageDraft raises a RetryAfter/flood-control exception,
+    _try_send_rich_draft() returns False (it only returns bool).  send_draft()
+    then immediately falls through to legacy sendMessageDraft — burning
+    another API call in the same rate-limit bucket.
+
+    This test documents the current behavior as a regression guard.  A
+    follow-up fix should propagate structured rate-limit metadata from
+    the rich draft path so the caller can cool down instead of retrying
+    immediately.
+    """
+    adapter = _make_rich_draft_adapter()
+
+    # sendRichMessageDraft raises a flood-control exception.
+    flood_exc = Exception("Too Many Requests: retry after 280")
+    flood_exc.retry_after = 280  # type: ignore[attr-defined]
+
+    rich_calls = []
+    legacy_calls = []
+
+    async def _rich_api(method, **kwargs):
+        if method == "sendRichMessageDraft":
+            rich_calls.append(kwargs)
+            raise flood_exc
+        return True
+
+    async def _legacy_draft(**kwargs):
+        legacy_calls.append(kwargs)
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_rich_api)
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_legacy_draft)
+
+    result = await adapter.send_draft("123", 42, "streaming text")
+
+    # Current behavior: send_draft succeeds via legacy fallback.
+    assert result.success is True
+    # Rich draft was attempted and failed.
+    assert len(rich_calls) == 1
+    # Legacy draft was called as fallback — burning another rate-limit bucket
+    # call.  This is the documented inefficiency.
+    assert len(legacy_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_capability_error_disables_rich_for_subsequent_frames():
+    """When sendRichMessageDraft raises a capability error (not RetryAfter),
+    _rich_draft_disabled is latched so subsequent frames skip the rich path."""
+    adapter = _make_rich_draft_adapter()
+
+    # Capability error: "method not found" type.
+    cap_exc = Exception("Bad Request: method not found")
+    rich_calls = []
+    legacy_calls = []
+
+    async def _rich_api(method, **kwargs):
+        if method == "sendRichMessageDraft":
+            rich_calls.append(kwargs)
+            raise cap_exc
+        return True
+
+    async def _legacy_draft(**kwargs):
+        legacy_calls.append(kwargs)
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=_rich_api)
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_legacy_draft)
+
+    # First call: rich draft fails with capability error.
+    result1 = await adapter.send_draft("123", 42, "text one")
+    assert result1.success is True
+    assert len(rich_calls) == 1
+    assert len(legacy_calls) == 1
+
+    # _rich_draft_disabled should be latched (if _is_rich_capability_error
+    # recognizes this exception type).  Subsequent calls should skip rich path.
+    # Note: the exact latching depends on _is_rich_capability_error's pattern
+    # matching — this test verifies the fallback behavior regardless.

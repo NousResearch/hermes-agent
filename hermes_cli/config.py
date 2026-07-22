@@ -8986,6 +8986,22 @@ def set_config_value(key: str, value: str, force: bool = False):
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
 
+    # Setting display.skin is an explicit "apply this skin NOW" — bump the skin
+    # file's mtime so the gateway's skin watcher sees a signature move even when
+    # the NAME is unchanged. Without this, re-affirming the already-configured
+    # skin (`hermes config set display.skin X` while display.skin is already X —
+    # the recovery path when a surface missed the original activation) is
+    # invisible to the watcher: its signature is (name, skin-file mtime) and
+    # neither part moved. Built-ins have no file; a name switch already moves
+    # the signature for them.
+    if key == "display.skin" and isinstance(value, str) and value:
+        try:
+            _skin_file = get_hermes_home() / "skins" / f"{value}.yaml"
+            if _skin_file.exists():
+                _skin_file.touch()
+        except Exception:
+            pass  # best-effort: the write above already succeeded
+
     # Mask the echoed value when the (possibly nested) key is credential-shaped
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
     # (lowercase, so it misses the .env api_keys list above) and would otherwise

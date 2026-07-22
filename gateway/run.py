@@ -10003,7 +10003,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+        """Public entry: wraps _handle_message_impl so kanban-react can
+        track turn boundaries. mark_turn_done is invoked in finally so
+        a crashing turn still releases the in_flight flag."""
+        _react_sk: Optional[str] = None
+        try:
+            _react_sk = self._session_key_for_source(event.source)
+        except Exception:
+            _react_sk = None
+            
+        try:
+            return await self._handle_message_impl(event)
+        finally:
+            if _react_sk:
+                try:
+                    await getattr(self, "_kanban_react").mark_turn_done(_react_sk)
+                except Exception as _kr_exc:
+                    logger.debug(
+                        "kanban-react: mark_turn_done failed (non-fatal): %s",
+                        _kr_exc,
+                    )
+
+    async def _handle_message_impl(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
         
@@ -10034,6 +10057,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_session_vars()
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
+
+        # LOCAL CARRY (6e18a9025): Kanban auto-react piggyback. If this is a
+        # real user turn and the debouncer has events buffered for this
+        # session_key, prepend them as a preamble and cancel the pending
+        # synthetic flush. Runs AFTER the leak guard above (session key is
+        # derived from `source`, not ContextVars, so ordering is safe).
+        is_internal = getattr(event, "internal", False)
+        if not is_internal:
+            try:
+                _react_sk = self._session_key_for_source(source)
+                _drained = await getattr(self, "_kanban_react").consume_for_user_turn(_react_sk)
+                if _drained:
+                    from gateway.kanban_react import render_events_preamble
+                    _preamble = render_events_preamble(_drained)
+                    event.text = (
+                        f"{_preamble}\n\n[User message follows]\n"
+                        f"{event.text or ''}"
+                    )
+            except Exception as _kr_exc:
+                logger.debug(
+                    "kanban-react: piggyback failed (non-fatal): %s",
+                    _kr_exc,
+                )
 
         if (
             getattr(self, "_startup_restore_in_progress", False)

@@ -65,6 +65,10 @@ export const AssistantMessage: FC<{
   const isRunning = messageStatus === 'running'
   const isPlaceholder = useAuiState(s => s.message.status?.type === 'running' && s.message.content.length === 0)
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
+  // Sealed mid-turn commentary keeps its text but not the footer, so a
+  // tool-heavy turn doesn't grow a copy/refresh bar per paragraph (see
+  // ChatMessage.interim).
+  const isInterim = useAuiState(s => s.message.metadata?.custom?.interim === true)
 
   // Preview targets only materialize once the turn completes — while running
   // the selector returns '' (stable), so per-token flushes skip the regex
@@ -130,7 +134,7 @@ export const AssistantMessage: FC<{
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {hasVisibleText && (
+      {hasVisibleText && !isInterim && (
         <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>

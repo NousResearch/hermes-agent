@@ -397,7 +397,11 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     """
     global _executor, _executor_max_workers
     with _executor_lock:
-        if _executor is None or max_workers > _executor_max_workers:
+        if (
+            _executor is None
+            or max_workers > _executor_max_workers
+            or getattr(_executor, "_shutdown", False)
+        ):
             # Daemon threads: thread_name_prefix aids debugging in stack dumps.
             _executor = _DaemonThreadPoolExecutor(
                 max_workers=max_workers,

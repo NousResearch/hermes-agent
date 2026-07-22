@@ -37,6 +37,8 @@ import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
+export const statusModel = (usageModel?: string, infoModel?: string) => usageModel?.trim() || infoModel || ''
+
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
 const PET_BOTTOM = 3 // rows the pet floats above the screen bottom (over the composer)
@@ -490,11 +492,12 @@ const StatusRulePane = memo(function StatusRulePane({
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
         cols={composer.cols}
+        credentialLabel={ui.usage.credential_label}
         cwdLabel={status.cwdLabel}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
-        model={ui.info?.model ?? ''}
+        model={statusModel(ui.usage.model, ui.info?.model)}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
         notice={ui.notice}

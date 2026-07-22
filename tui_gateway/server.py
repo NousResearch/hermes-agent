@@ -3711,6 +3711,39 @@ def _sync_session_key_after_compress(
             pass
 
 
+def _active_credential_label(agent) -> str:
+    """Return the label for the pooled credential installed on ``agent``.
+
+    Pool ``current()`` is process-global and may reflect a subagent lease, so
+    identify the entry by the live key on this agent instead. Single-entry
+    pools are intentionally omitted to keep ordinary status chrome uncluttered.
+    """
+    try:
+        pool = getattr(agent, "_credential_pool", None)
+        entries = list(pool.entries()) if pool is not None else []
+        if len(entries) < 2:
+            return ""
+
+        live_key = getattr(agent, "api_key", None)
+        if not live_key or callable(live_key):
+            return ""
+
+        for entry in entries:
+            entry_key = (
+                getattr(entry, "runtime_api_key", None)
+                or getattr(entry, "access_token", None)
+            )
+            if entry_key == live_key:
+                raw_label = str(getattr(entry, "label", "") or "")
+                printable = "".join(
+                    char if char.isprintable() else " " for char in raw_label
+                )
+                return " ".join(printable.split())
+    except Exception:
+        pass
+    return ""
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -3723,6 +3756,9 @@ def _get_usage(agent) -> dict:
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
+    # The TUI merges usage snapshots, so always include the field. An empty
+    # value clears stale identity chrome after a model/provider switch.
+    usage["credential_label"] = _active_credential_label(agent)
     comp = getattr(agent, "context_compressor", None)
     if comp:
         # context_used is the *current-window* occupancy. Do NOT fall back to

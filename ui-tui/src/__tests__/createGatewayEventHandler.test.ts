@@ -66,6 +66,27 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('merges fallback model and credential identity from one completion snapshot', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        text: 'fallback answer',
+        usage: {
+          calls: 1,
+          credential_label: 'work',
+          input: 10,
+          model: 'claude-sonnet',
+          output: 5,
+          total: 15
+        }
+      },
+      type: 'message.complete'
+    } as any)
+
+    expect(getUiState().usage).toMatchObject({ credential_label: 'work', model: 'claude-sonnet' })
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

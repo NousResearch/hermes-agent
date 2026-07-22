@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -8723,6 +8724,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     started = threading.Event()
     release = threading.Event()
     done = threading.Event()
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
 
     class _Agent:
         model = "model-live"
@@ -8795,9 +8797,15 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             {"role": "user", "text": "write a long answer"},
             {"role": "assistant", "text": "partial answer complete"},
         ]
+        run_thread = server._sessions["sid-live"]["_run_thread"]
+        run_thread.join(2)
+        assert not run_thread.is_alive(), "prompt worker outlived test monkeypatches"
     finally:
         release.set()
-        done.wait(2)
+        run_thread = server._sessions.get("sid-live", {}).get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(2)
+            assert not run_thread.is_alive(), "prompt worker survived test cleanup"
         server._sessions.pop("sid-live", None)
 
 
@@ -9331,15 +9339,22 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         return _Resp()
 
     import urllib.request
+    import webbrowser
+
+    def _forbid_browser_side_effect(*_args, **_kwargs):
+        raise AssertionError("browser launch side effect escaped test isolation")
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(subprocess, "Popen", _forbid_browser_side_effect)
+    monkeypatch.setattr("builtins.open", _forbid_browser_side_effect)
+    monkeypatch.setattr(webbrowser, "open", _forbid_browser_side_effect)
     launched = ChromeDebugLaunch(launched=True)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with (
             patch(
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=launched,
-            ),
+            ) as launch_chrome_debug,
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
         ):
             resp = server.handle_request(
@@ -9353,6 +9368,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
         "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+    launch_chrome_debug.assert_called_once_with(9222, platform.system())
 
 
 def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
@@ -11299,6 +11315,63 @@ def test_get_usage_safe_when_active_count_raises(monkeypatch):
     # Field omitted, but the rest of the payload is intact.
     assert "active_subagents" not in usage
     assert usage["model"] == "x"
+
+
+def test_get_usage_reports_the_agents_active_credential_label():
+    """Report the entry actually installed on this agent, not pool current()."""
+    entries = [
+        types.SimpleNamespace(label="personal", runtime_api_key="personal-token", access_token=""),
+        types.SimpleNamespace(label="work", runtime_api_key="work-token", access_token=""),
+    ]
+    pool = types.SimpleNamespace(
+        entries=lambda: entries,
+        # A shared pool may point at a subagent's lease instead.
+        current=lambda: entries[1],
+    )
+    agent = types.SimpleNamespace(
+        model="x",
+        api_key="personal-token",
+        _credential_pool=pool,
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["credential_label"] == "personal"
+
+
+def test_get_usage_clears_credential_label_for_single_entry_pool():
+    entry = types.SimpleNamespace(label="personal", runtime_api_key="token", access_token="")
+    agent = types.SimpleNamespace(
+        model="x",
+        api_key="token",
+        _credential_pool=types.SimpleNamespace(entries=lambda: [entry]),
+    )
+
+    usage = server._get_usage(agent)
+
+    # Usage snapshots are merged by the TUI, so an explicit empty value clears
+    # identity left by a previous provider/model.
+    assert usage["credential_label"] == ""
+
+
+def test_get_usage_sanitizes_credential_label_for_single_line_status_chrome():
+    entries = [
+        types.SimpleNamespace(
+            label="personal\naccount\x1b",
+            runtime_api_key="personal-token",
+            access_token="",
+        ),
+        types.SimpleNamespace(label="work", runtime_api_key="work-token", access_token=""),
+    ]
+    agent = types.SimpleNamespace(
+        model="x",
+        api_key="personal-token",
+        _credential_pool=types.SimpleNamespace(entries=lambda: entries),
+    )
+
+    usage = server._get_usage(agent)
+
+    assert usage["credential_label"] == "personal account"
 
 
 def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):

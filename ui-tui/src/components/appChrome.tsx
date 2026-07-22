@@ -404,8 +404,32 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const CREDENTIAL_LABEL_MAX_WIDTH = 20
+const credentialSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+export function credentialStatusLabel(label: string, maxWidth = CREDENTIAL_LABEL_MAX_WIDTH) {
+  if (stringWidth(label) <= maxWidth) {
+    return label
+  }
+
+  let value = ''
+
+  for (const { segment } of credentialSegmenter.segment(label)) {
+    if (stringWidth(`${value}${segment}…`) > maxWidth) {
+      break
+    }
+
+    value += segment
+  }
+
+  return `${value}…`
+}
+
+const modelLabel = (model: string, effort?: string, fast?: boolean, credentialLabel?: string) => {
+  const modelText = [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+
+  return credentialLabel ? `${modelText} · ${credentialStatusLabel(credentialLabel)}` : modelText
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -435,6 +459,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 export function StatusRule({
   battery,
   cwdLabel,
+  credentialLabel,
   cols,
   busy,
   status,
@@ -469,7 +494,7 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, segs.compactCtx ? undefined : credentialLabel)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null
@@ -816,6 +841,7 @@ interface StatusRuleProps {
   liveSessionCount: number
   busy: boolean
   cols: number
+  credentialLabel?: string
   cwdLabel: string
   model: string
   modelFast?: boolean

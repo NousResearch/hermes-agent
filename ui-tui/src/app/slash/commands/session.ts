@@ -656,9 +656,8 @@ export const sessionCommands: SlashCommand[] = [
         const sys = ctx.transcript.sys
 
         if (r) {
-          patchUiState({
-            usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
-          })
+          const { credits_lines: _creditsLines, ...usage } = r
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
         }
 
         // Nous balance block is agent-independent (a portal fetch), so it shows

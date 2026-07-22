@@ -530,6 +530,25 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
+    # Propagate daemon-side embedding config. The embedded Hindsight API runs
+    # in a separate process and only sees its profile .env; keeping these only
+    # in Hermes' JSON config makes the daemon silently fall back to local BGE.
+    env_key_map = {
+        "embeddings_provider": "HINDSIGHT_API_EMBEDDINGS_PROVIDER",
+        "embeddings_local_model": "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL",
+        "embeddings_local_force_cpu": "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU",
+        "embeddings_local_trust_remote_code": "HINDSIGHT_API_EMBEDDINGS_LOCAL_TRUST_REMOTE_CODE",
+        "embeddings_tei_url": "HINDSIGHT_API_EMBEDDINGS_TEI_URL",
+        "embeddings_openai_api_key": "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+        "embeddings_openai_model": "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
+        "embeddings_openai_base_url": "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
+        "embeddings_openai_batch_size": "HINDSIGHT_API_EMBEDDINGS_OPENAI_BATCH_SIZE",
+    }
+    for config_key, env_key in env_key_map.items():
+        value = config.get(config_key)
+        if value is not None and value != "":
+            env_values[env_key] = str(value)
+
     idle_timeout = (
         config.get("idle_timeout")
         if config.get("idle_timeout") is not None

@@ -43,6 +43,7 @@ def _make_adapter():
     adapter._set_status_indicator = AsyncMock()
     adapter._release_platform_lock = lambda: None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
+    adapter._text_batch_split_delay_seconds = 0.1
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
@@ -50,11 +51,25 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    *,
+    reply_to_message_id: str | None = None,
+    reply_to_text: str | None = None,
+    reply_to_author_id: str | None = None,
+    reply_to_author_name: str | None = None,
+    reply_to_is_own_message: bool = False,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        reply_to_message_id=reply_to_message_id,
+        reply_to_text=reply_to_text,
+        reply_to_author_id=reply_to_author_id,
+        reply_to_author_name=reply_to_author_name,
+        reply_to_is_own_message=reply_to_is_own_message,
     )
 
 
@@ -326,3 +341,126 @@ class TestTextBatching:
         assert adapter._media_group_events == {}
         assert adapter._media_group_tasks == {}
         assert adapter._polling_error_task is None
+
+    @pytest.mark.asyncio
+    async def test_same_reply_target_batches_with_full_context(self):
+        adapter = _make_adapter()
+        reply_context = {
+            "reply_to_message_id": "reply-42",
+            "reply_to_text": "quoted text",
+            "reply_to_author_id": "author-a",
+            "reply_to_author_name": "Author A",
+            "reply_to_is_own_message": True,
+        }
+
+        adapter._enqueue_text_event(_make_event("first", **reply_context))
+        adapter._enqueue_text_event(_make_event("second", **reply_context))
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_awaited_once()
+        dispatched = adapter.handle_message.await_args.args[0]
+        assert dispatched.text == "first\nsecond"
+        assert adapter._text_batch_reply_context(dispatched) == (
+            "reply-42",
+            "quoted text",
+            "author-a",
+            "Author A",
+            True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_different_reply_targets_flush_separate_batches(self):
+        adapter = _make_adapter()
+        adapter._enqueue_text_event(
+            _make_event("first", reply_to_message_id="reply-1")
+        )
+        adapter._enqueue_text_event(
+            _make_event("second", reply_to_message_id="reply-2")
+        )
+
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.await_args.args[0].reply_to_message_id == "reply-1"
+
+        await asyncio.sleep(0.2)
+        assert adapter.handle_message.await_count == 2
+        dispatched = [call.args[0] for call in adapter.handle_message.await_args_list]
+        assert [event.text for event in dispatched] == ["first", "second"]
+        assert [event.reply_to_message_id for event in dispatched] == [
+            "reply-1",
+            "reply-2",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reply_first", [False, True])
+    async def test_reply_and_non_reply_flush_separate_batches(self, reply_first):
+        adapter = _make_adapter()
+        reply = _make_event("reply", reply_to_message_id="reply-42")
+        plain = _make_event("plain")
+        first, second = (reply, plain) if reply_first else (plain, reply)
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        await asyncio.sleep(0.2)
+
+        assert adapter.handle_message.await_count == 2
+        dispatched = [call.args[0] for call in adapter.handle_message.await_args_list]
+        assert [event.text for event in dispatched] == [first.text, second.text]
+        assert [event.reply_to_message_id for event in dispatched] == [
+            first.reply_to_message_id,
+            second.reply_to_message_id,
+        ]
+
+    @pytest.mark.parametrize(
+        ("field", "different_value"),
+        [
+            ("reply_to_text", "different quote"),
+            ("reply_to_author_id", "author-b"),
+            ("reply_to_author_name", "Author B"),
+            ("reply_to_is_own_message", True),
+        ],
+    )
+    def test_each_reply_context_field_participates_in_batch_identity(
+        self,
+        field,
+        different_value,
+    ):
+        adapter = _make_adapter()
+        common = {
+            "reply_to_message_id": "reply-42",
+            "reply_to_text": "quoted text",
+            "reply_to_author_id": "author-a",
+            "reply_to_author_name": "Author A",
+        }
+        existing = _make_event("first", **common)
+        incoming = _make_event("second", **{**common, field: different_value})
+
+        assert not adapter._text_batch_context_compatible(existing, incoming)
+
+    @pytest.mark.asyncio
+    async def test_long_continuation_inherits_reply_context(self):
+        adapter = _make_adapter()
+        first_chunk = "x" * adapter._SPLIT_THRESHOLD
+        adapter._enqueue_text_event(
+            _make_event(
+                first_chunk,
+                reply_to_message_id="reply-42",
+                reply_to_text="quoted text",
+                reply_to_author_id="author-a",
+                reply_to_author_name="Author A",
+                reply_to_is_own_message=True,
+            )
+        )
+        adapter._enqueue_text_event(_make_event("continuation"))
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_awaited_once()
+        dispatched = adapter.handle_message.await_args.args[0]
+        assert dispatched.text == f"{first_chunk}\ncontinuation"
+        assert adapter._text_batch_reply_context(dispatched) == (
+            "reply-42",
+            "quoted text",
+            "author-a",
+            "Author A",
+            True,
+        )

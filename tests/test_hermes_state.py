@@ -1809,6 +1809,65 @@ class TestTimestampPreservation:
         assert child_raw == timestamps
         assert parent_raw == child_raw
 
+    def test_branch_copy_roundtrip_preserves_timestamps(self, db):
+        """End-to-end branch copy: load the parent transcript via
+        get_messages_as_conversation (the dict shape the CLI/gateway/TUI
+        branch loops iterate) and re-append into a child forwarding
+        ``msg.get("timestamp")`` — the copies must keep the originals
+        instead of being restamped with time.time() (#28841).
+        """
+        timestamps = [1_600_000_000.0, 1_600_000_060.0, 1_600_000_120.0]
+        db.create_session(session_id="parent", source="cli")
+        for i, ts in enumerate(timestamps):
+            db.append_message(
+                "parent",
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg-{i}",
+                timestamp=ts,
+            )
+
+        history = db.get_messages_as_conversation("parent")
+        assert [m.get("timestamp") for m in history] == timestamps
+
+        db.create_session(session_id="child", source="cli",
+                          parent_session_id="parent")
+        # Mirrors the branch copy loops in gateway/slash_commands.py,
+        # hermes_cli/cli_commands_mixin.py and tui_gateway/server.py.
+        for msg in history:
+            db.append_message(
+                "child",
+                role=msg.get("role", "user"),
+                content=msg.get("content"),
+                timestamp=msg.get("timestamp"),
+            )
+
+        assert self._raw_timestamps(db, "child") == timestamps
+
+    def test_compression_replace_roundtrip_preserves_timestamps(self, db):
+        """Compression-style rewrite: replace_messages with dicts loaded from
+        get_messages_as_conversation must keep the surviving messages'
+        original timestamps (#28841)."""
+        timestamps = [1_500_000_000.0, 1_500_000_100.0, 1_500_000_200.0]
+        db.create_session(session_id="s1", source="cli")
+        for i, ts in enumerate(timestamps):
+            db.append_message(
+                "s1",
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg-{i}",
+                timestamp=ts,
+            )
+
+        history = db.get_messages_as_conversation("s1")
+        # Simulate a compression that keeps the last two turns verbatim and
+        # prepends a fresh summary message (no timestamp — falls back to now).
+        compressed = [{"role": "user", "content": "[summary]"}] + history[-2:]
+        db.replace_messages("s1", compressed)
+
+        raw = self._raw_timestamps(db, "s1")
+        assert len(raw) == 3
+        assert raw[1:] == timestamps[-2:]
+        assert raw[0] > timestamps[-1]  # summary stamped with a current time
+
 
 # =========================================================================
 # FTS5 search

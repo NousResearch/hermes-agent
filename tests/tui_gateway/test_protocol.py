@@ -1289,6 +1289,101 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["model_config"] == {"_branched_from": parent_key}
 
 
+def test_session_branch_forwards_original_timestamps(server, monkeypatch):
+    """TUI /branch must copy the parent's messages WITH their original
+    timestamps — append_message otherwise stamps time.time() at INSERT and
+    the branch's whole history silently appears authored "now" (#28841).
+    """
+    append_calls = []
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            return new_key
+
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+
+    original_ts = [1_700_000_000.0, 1_700_000_020.0]
+    parent_sid = "parent02"
+    server._sessions[parent_sid] = {
+        "session_key": "20260101_000000_parent",
+        "history": [
+            {"role": "user", "content": "hello", "timestamp": original_ts[0]},
+            {"role": "assistant", "content": "hi!", "timestamp": original_ts[1]},
+        ],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {"id": "b2", "method": "session.branch", "params": {"session_id": parent_sid}}
+    )
+
+    assert "error" not in resp, resp
+    assert len(append_calls) == 2
+    assert [c.get("timestamp") for c in append_calls] == original_ts
+
+
+def test_persist_branch_seed_forwards_original_timestamps(server, monkeypatch):
+    """First-turn branch seed persist must carry each copied message's
+    original timestamp through to append_message (#28841)."""
+    import contextlib
+
+    append_calls = []
+
+    class _DB:
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield _DB()
+
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+
+    original_ts = [100.0, 200.0]
+    session = {
+        "session_key": "20260101_000002_seed00",
+        "parent_session_id": "20260101_000000_parent",
+        "history": [
+            {"role": "user", "content": "a", "timestamp": original_ts[0]},
+            {"role": "assistant", "content": "b", "timestamp": original_ts[1]},
+        ],
+        "history_lock": threading.Lock(),
+    }
+
+    server._persist_branch_seed(session)
+
+    assert session.get("_branch_seed_persisted") is True
+    assert [c.get("timestamp") for c in append_calls] == original_ts
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 

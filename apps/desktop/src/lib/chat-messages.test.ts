@@ -789,17 +789,89 @@ describe('upsertToolPart', () => {
 })
 
 describe('mergeFinalAssistantText', () => {
-  it('removes all text parts and appends the final text', () => {
+  it('removes open-segment text parts and appends the final text', () => {
     const parts = [
       { type: 'text' as const, text: 'streamed delta 1' },
-      { type: 'text' as const, text: 'streamed delta 2' },
-      { type: 'tool-call' as const, toolCallId: 'tc1', toolName: 'terminal', args: {} as never, argsText: '{}' }
+      { type: 'text' as const, text: 'streamed delta 2' }
     ]
 
     const result = mergeFinalAssistantText(parts, 'final answer')
 
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
     expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+  })
+
+  it('preserves pre-tool narration when final text is only the last segment (#46606)', () => {
+    // Live multi-step turn without a reliable message.interim seal: text → tool
+    // → text lives in one bubble. message.complete carries only the last model
+    // reply. Replacing every text part erased the first half until restart.
+    const parts = [
+      { type: 'text' as const, text: 'Planning the approach before I touch any files.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'read_file',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'streamed trailing answer' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Here is the fix after reading the file.')
+
+    expect(result.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+    expect(result[0]).toMatchObject({ text: 'Planning the approach before I touch any files.' })
+    expect(result[2]).toMatchObject({ text: 'Here is the fix after reading the file.' })
+  })
+
+  it('preserves multiple sealed segments across several tool calls (#46606)', () => {
+    const parts = [
+      { type: 'text' as const, text: 'First I will search.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'search_files',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'Now reading the hit.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc2',
+        toolName: 'read_file',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'partial final' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'All done.')
+
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts: result })).toBe(
+      'First I will search.Now reading the hit.All done.'
+    )
+    expect(result.filter(p => p.type === 'tool-call')).toHaveLength(2)
+  })
+
+  it('does not duplicate sealed narration when final already includes it', () => {
+    const parts = [
+      { type: 'text' as const, text: 'Let me check the files.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'terminal',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Let me check the files. Everything looks good.')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({
+      text: 'Let me check the files. Everything looks good.'
+    })
     expect(result.some(p => p.type === 'tool-call')).toBe(true)
   })
 
@@ -847,5 +919,24 @@ describe('mergeFinalAssistantText', () => {
 
     expect(result.filter(p => p.type === 'text')).toHaveLength(0)
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
+  it('keeps sealed pre-tool text when final text is empty', () => {
+    const parts = [
+      { type: 'text' as const, text: 'I will run the check now.' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'terminal',
+        args: {} as never,
+        argsText: '{}'
+      },
+      { type: 'text' as const, text: 'streamed incomplete' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, '')
+
+    expect(result.map(p => p.type)).toEqual(['text', 'tool-call'])
+    expect(result[0]).toMatchObject({ text: 'I will run the check now.' })
   })
 })

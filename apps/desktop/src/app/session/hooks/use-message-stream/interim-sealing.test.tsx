@@ -218,6 +218,36 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial streamed answer continued')
   })
 
+  it('preserves pre-tool narration when tools arrive without message.interim (#46606)', async () => {
+    // Some runs never emit message.interim before tool.start. Text + tools then
+    // share one streaming bubble; message.complete only carries the last reply.
+    // Completing must not erase the sealed pre-tool half of the bubble.
+    await mountStream()
+    await start()
+
+    await delta('Planning the approach before I touch any files.')
+    await act(() =>
+      handleEvent!({
+        payload: { name: 'read_file', tool_id: 'tc-1', arguments: '{}' },
+        session_id: SID,
+        type: 'tool.start'
+      })
+    )
+    await act(() =>
+      handleEvent!({
+        payload: { name: 'read_file', tool_id: 'tc-1', result: '{"ok":true}' },
+        session_id: SID,
+        type: 'tool.complete'
+      })
+    )
+    await delta('Here is the fix after reading the file.')
+    await complete('Here is the fix after reading the file.')
+
+    const texts = assistantMessages()
+    expect(texts.some(t => t.includes('Planning the approach before I touch any files.'))).toBe(true)
+    expect(texts.some(t => t.includes('Here is the fix after reading the file.'))).toBe(true)
+  })
+
   it('ignores malformed message.interim payload', async () => {
     await mountStream()
     await start()

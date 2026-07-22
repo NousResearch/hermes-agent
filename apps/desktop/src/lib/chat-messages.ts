@@ -142,41 +142,98 @@ export function chatMessageText(message: ChatMessage): string {
 const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 /**
+ * True for parts that bound streaming segments (tool calls, images, …).
+ * Text/reasoning accumulate within a segment; a boundary seals earlier
+ * narration so `message.complete` cannot wipe it (#46606).
+ */
+function isStreamSegmentBoundary(part: ChatMessagePart): boolean {
+  return part.type !== 'text' && part.type !== 'reasoning'
+}
+
+function sealedPrefixText(parts: readonly ChatMessagePart[]): string {
+  return normalizeWs(
+    parts
+      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+      .map(part => part.text)
+      .join('')
+  )
+}
+
+/**
  * Merge the final assistant text into a message's parts.
  *
- * - Removes all existing `text` parts (they were streamed deltas, now superseded
- *   by the authoritative final response).
+ * Streaming parts are segmented by non-text boundaries (tool-call, image, …):
+ *
+ * - Only the **last** open segment's streamed `text` is superseded by the
+ *   authoritative final response (the current LLM completion).
+ * - Text that appears **before** a boundary is sealed. Gateway
+ *   `message.complete` payloads are typically just the last model reply, not
+ *   the full multi-step transcript. Replacing every text part therefore
+ *   erased pre-tool narration on turn completion while the same content still
+ *   lived in `state.db` and reappeared after restart (#46606).
+ * - If the final text already restates the sealed prefix (full-transcript
+ *   complete / previewed reuse), fall back to replacing all text so we do not
+ *   duplicate narration.
  * - Keeps `reasoning` parts, but drops one that the final text fully covers
  *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
  *   NOT swallow a longer reasoning block that merely starts with it (#61447).
  * - Keeps all other part types (tool-call, image, etc.).
- * - Appends the final text as a new text part.
+ * - Appends the final text as a new text part on the open segment.
  */
 export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
   const dedupeReference = normalizeWs(finalText)
 
-  const kept = parts.filter(part => {
-    if (part.type === 'text') {
-      // Sealed text parts were already finalized into their own bubbles —
-      // this filter only runs on the LAST streaming bubble, so there are no
-      // sealed parts here. All text parts are streamed deltas that get
-      // replaced by the authoritative final text.
-      return false
+  const replaceOpenSegment = (segment: ChatMessagePart[]): ChatMessagePart[] => {
+    const kept = segment.filter(part => {
+      if (part.type === 'text') {
+        // Open-segment text is streamed deltas superseded by finalText.
+        return false
+      }
+
+      if (part.type !== 'reasoning' || !dedupeReference) {
+        return true
+      }
+
+      // Reasoning is a restatement only when the final FULLY covers it.
+      // The reverse direction is not considered — a short final must not
+      // swallow a longer reasoning block (#61447).
+      const r = normalizeWs(part.text)
+
+      return !(r && dedupeReference.startsWith(r))
+    })
+
+    return finalText ? [...kept, assistantTextPart(finalText)] : kept
+  }
+
+  let lastBoundary = -1
+
+  for (let index = 0; index < parts.length; index += 1) {
+    if (isStreamSegmentBoundary(parts[index])) {
+      lastBoundary = index
     }
+  }
 
-    if (part.type !== 'reasoning' || !dedupeReference) {
-      return true
-    }
+  // Single open segment (no tools/images yet) — legacy full replace.
+  if (lastBoundary < 0) {
+    return replaceOpenSegment(parts)
+  }
 
-    // Reasoning is a restatement only when the final FULLY covers it.
-    // The reverse direction is not considered — a short final must not
-    // swallow a longer reasoning block (#61447).
-    const r = normalizeWs(part.text)
+  const prefix = parts.slice(0, lastBoundary + 1)
+  const suffix = parts.slice(lastBoundary + 1)
+  const sealedText = sealedPrefixText(prefix)
 
-    return !(r && dedupeReference.startsWith(r))
-  })
+  // Final already restates sealed narration → avoid "Planning." + "Planning. Done."
+  if (
+    sealedText &&
+    dedupeReference &&
+    (dedupeReference === sealedText ||
+      dedupeReference.startsWith(sealedText) ||
+      dedupeReference.includes(sealedText))
+  ) {
+    return replaceOpenSegment(parts)
+  }
 
-  return finalText ? [...kept, assistantTextPart(finalText)] : kept
+  return [...prefix, ...replaceOpenSegment(suffix)]
 }
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/

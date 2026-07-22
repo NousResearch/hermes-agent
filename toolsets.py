@@ -580,6 +580,13 @@ TOOLSETS = {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+    },
+
+    # Local customization: advisor toolset (consult_advisor)
+    "advisor": {
+        "description": "Consult a stronger model for strategic guidance on uncertain decisions",
+        "tools": ["consult_advisor"],
+        "includes": []
     }
 }
 

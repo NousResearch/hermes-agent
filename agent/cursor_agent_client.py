@@ -87,9 +87,9 @@ def _format_messages_as_prompt(
 
 def _import_cursor_sdk():
     try:
-        from cursor_sdk import Agent, LocalAgentOptions  # type: ignore
+        from cursor_sdk import Agent, AgentOptions, LocalAgentOptions  # type: ignore
 
-        return Agent, LocalAgentOptions
+        return Agent, AgentOptions, LocalAgentOptions
     except ImportError as exc:
         raise RuntimeError(
             "Cursor provider requires the `cursor-sdk` package. "
@@ -207,16 +207,16 @@ class CursorAgentClient:
         )
 
     def _run_prompt(self, prompt: str, *, model_id: str) -> str:
-        Agent, LocalAgentOptions = _import_cursor_sdk()
+        Agent, AgentOptions, LocalAgentOptions = _import_cursor_sdk()
+        options = AgentOptions(
+            api_key=self.api_key,
+            model=model_id,
+            local=LocalAgentOptions(cwd=self._cwd),
+        )
         with self._lock:
             # Prefer Agent.prompt one-shot when available; fall back to create+send.
             if hasattr(Agent, "prompt"):
-                result = Agent.prompt(
-                    prompt,
-                    api_key=self.api_key,
-                    model=model_id,
-                    local=LocalAgentOptions(cwd=self._cwd),
-                )
+                result = Agent.prompt(prompt, options)
                 status = getattr(result, "status", None)
                 text = (
                     getattr(result, "result", None)
@@ -228,11 +228,7 @@ class CursorAgentClient:
                     raise RuntimeError(f"Cursor agent run failed: {text or status}")
                 return str(text or "")
 
-            with Agent.create(
-                api_key=self.api_key,
-                model=model_id,
-                local=LocalAgentOptions(cwd=self._cwd),
-            ) as agent:
+            with Agent.create(options) as agent:
                 run = agent.send(prompt)
                 wait = getattr(run, "wait", None)
                 if callable(wait):

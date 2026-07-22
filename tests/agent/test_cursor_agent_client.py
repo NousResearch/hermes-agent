@@ -45,8 +45,9 @@ class CursorAgentClientTests(unittest.TestCase):
         with patch("agent.cursor_agent_client._import_cursor_sdk") as mock_import:
             Agent = MagicMock()
             Agent.prompt = MagicMock(return_value=fake_result)
+            AgentOptions = MagicMock(return_value=SimpleNamespace())
             LocalAgentOptions = MagicMock(return_value=SimpleNamespace(cwd="/tmp"))
-            mock_import.return_value = (Agent, LocalAgentOptions)
+            mock_import.return_value = (Agent, AgentOptions, LocalAgentOptions)
 
             response = client._create_chat_completion(
                 model="auto",
@@ -57,9 +58,13 @@ class CursorAgentClientTests(unittest.TestCase):
         self.assertEqual(response.choices[0].finish_reason, "stop")
         self.assertGreater(response.usage.total_tokens, 0)
         Agent.prompt.assert_called_once()
-        kwargs = Agent.prompt.call_args.kwargs
-        self.assertEqual(kwargs["api_key"], "test-key")
-        self.assertEqual(kwargs["model"], "auto")
+        args, _kwargs = Agent.prompt.call_args
+        self.assertEqual(len(args), 2)  # prompt text + AgentOptions
+        self.assertIn("hi", str(args[0]))
+        AgentOptions.assert_called_once()
+        opt_kwargs = AgentOptions.call_args.kwargs
+        self.assertEqual(opt_kwargs["api_key"], "test-key")
+        self.assertEqual(opt_kwargs["model"], "auto")
 
 
 if __name__ == "__main__":

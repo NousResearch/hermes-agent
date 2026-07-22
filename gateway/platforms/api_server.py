@@ -4817,7 +4817,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
+        # Track field *presence* separately from an empty resolved list so
+        # that an explicit "conversation_history": [] is honoured (and not
+        # overwritten by SessionDB fallback). See issue #62732 review.
         conversation_history: List[Dict[str, str]] = []
+        conversation_history_provided = "conversation_history" in body
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -4860,7 +4864,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
+        client_session_id = body.get("session_id")
+        session_id = client_session_id or stored_session_id or run_id
+        # If no conversation_history was resolved from any of the explicit
+        # sources (body.conversation_history, previous_response_id, or multi-
+        # message input), but the client provided a session_id, restore the
+        # conversation history from SessionDB — mirroring the behaviour of
+        # /api/sessions/{session_id}/chat/stream (see #62732).
+        #
+        # Only fall back when the field was *omitted* entirely; an explicit
+        # "conversation_history": [] means "start fresh" and must not be
+        # overwritten by SessionDB history.
+        if not conversation_history_provided and not conversation_history and client_session_id:
+            conversation_history = self._conversation_history_for_session(client_session_id)
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple

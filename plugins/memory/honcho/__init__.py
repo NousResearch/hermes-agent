@@ -15,6 +15,7 @@ Config: Uses the existing Honcho config chain:
 
 from __future__ import annotations
 
+from collections import deque
 import json
 import logging
 import re
@@ -237,6 +238,9 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    _PENDING_TURN_MAX = 32
+    _PENDING_TURN_CHARS_MAX = 1_000_000
+
     def backup_paths(self) -> List[str]:
         """Honcho keeps its peer/session config under ~/.honcho when no
         profile-local honcho.json exists (see client.resolve_config_path)."""
@@ -291,6 +295,11 @@ class HonchoMemoryProvider(MemoryProvider):
         self._init_thread: Optional[threading.Thread] = None
         self._init_lock = threading.Lock()
         self._init_error = ""
+
+        self._pending_turns = deque()
+        self._pending_turn_chars = 0
+        self._pending_turns_lock = threading.Lock()
+        self._pending_turns_closing = False
 
         # Cron and flush contexts disable the plugin entirely.
         self._cron_skipped = False
@@ -450,10 +459,12 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._lazy_init_kwargs = None
                     self._lazy_init_session_id = None
                     self._init_error = ""
+                    self._flush_pending_turns()
                 except Exception as e:
                     self._init_error = str(e)
                     self._manager = None
                     logger.warning("Honcho background session init failed: %s", e)
+                    self._drop_pending_turns("initialization failed")
 
             self._init_thread = threading.Thread(
                 target=_run,
@@ -1329,37 +1340,95 @@ class HonchoMemoryProvider(MemoryProvider):
         """Record the conversation turn in Honcho (non-blocking).
 
         Messages exceeding the Honcho API limit (default 25k chars) are
-        split into multiple messages with continuation markers.
+        split into multiple messages with continuation markers. While hybrid
+        startup is still creating the remote session, completed turns are kept
+        in a bounded FIFO and flushed by one writer after initialization.
         """
         if self._cron_skipped:
             return
         if self._recall_mode == "tools" and not self._session_ready():
             return
+        clean_user_content = sanitize_context(user_content or "").strip()
+        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        if not self._buffer_pending_turn(clean_user_content, clean_assistant_content):
+            return
         if not self._session_ready():
             self._start_session_init_background()
             return
+        self._flush_pending_turns()
 
+    def _buffer_pending_turn(self, user_content: str, assistant_content: str) -> bool:
+        """Append one completed turn to the bounded FIFO without logging content."""
+        turn_chars = len(user_content) + len(assistant_content)
+        with self._pending_turns_lock:
+            if self._pending_turns_closing:
+                logger.warning("Honcho pending turn dropped: provider is shutting down")
+                return False
+            if (
+                len(self._pending_turns) >= self._PENDING_TURN_MAX
+                or self._pending_turn_chars + turn_chars > self._PENDING_TURN_CHARS_MAX
+            ):
+                logger.warning(
+                    "Honcho pending turn dropped: buffer full (turns=%d chars=%d)",
+                    len(self._pending_turns), self._pending_turn_chars,
+                )
+                return False
+            self._pending_turns.append((user_content, assistant_content, turn_chars))
+            self._pending_turn_chars += turn_chars
+            logger.debug(
+                "Honcho pending turn buffered (turns=%d chars=%d)",
+                len(self._pending_turns), self._pending_turn_chars,
+            )
+            return True
+
+    def _flush_pending_turns(self) -> None:
+        """Start the sole FIFO writer after a ready session becomes available."""
+        if not self._session_ready():
+            return
+        with self._pending_turns_lock:
+            if not self._pending_turns:
+                return
+            if self._sync_thread and self._sync_thread.is_alive():
+                return
+            self._sync_thread = threading.Thread(
+                target=self._drain_pending_turns,
+                daemon=True,
+                name="honcho-sync",
+            )
+            self._sync_thread.start()
+
+    def _drain_pending_turns(self) -> None:
+        """Flush buffered turns in FIFO order; only this thread writes turns."""
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
-
-        def _sync():
+        while True:
+            with self._pending_turns_lock:
+                if not self._pending_turns:
+                    self._sync_thread = None
+                    return
+                user_content, assistant_content, turn_chars = self._pending_turns.popleft()
+                self._pending_turn_chars -= turn_chars
             try:
                 session = self._manager.get_or_create(self._session_key)
-                for chunk in self._chunk_message(clean_user_content, msg_limit):
+                for chunk in self._chunk_message(user_content, msg_limit):
                     session.add_message("user", chunk)
-                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
+                for chunk in self._chunk_message(assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
                 self._manager._flush_session(session)
             except Exception as e:
-                logger.debug("Honcho sync_turn failed: %s", e)
+                logger.debug("Honcho pending turn flush failed: %s", e)
 
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="honcho-sync"
-        )
-        self._sync_thread.start()
+    def _drop_pending_turns(self, reason: str) -> None:
+        """Discard buffered turns only on terminal teardown/init failure."""
+        with self._pending_turns_lock:
+            count = len(self._pending_turns)
+            chars = self._pending_turn_chars
+            self._pending_turns.clear()
+            self._pending_turn_chars = 0
+        if count:
+            logger.warning(
+                "Honcho pending turns dropped: %s (turns=%d chars=%d)",
+                reason, count, chars,
+            )
 
     def on_memory_write(
         self,
@@ -1398,13 +1467,14 @@ class HonchoMemoryProvider(MemoryProvider):
         """Flush all pending messages to Honcho on session end."""
         if self._cron_skipped:
             return
-        if not self._manager:
-            return
         if not self._session_initialized and self._init_thread and self._init_thread.is_alive():
-            return
+            self._init_thread.join(timeout=5.0)
+        self._flush_pending_turns()
         # Wait for pending sync
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
+        if not self._manager:
+            return
         try:
             self._manager.flush_all()
         except Exception as e:
@@ -1537,9 +1607,16 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        with self._pending_turns_lock:
+            self._pending_turns_closing = True
+        if self._init_thread and self._init_thread.is_alive():
+            self._init_thread.join(timeout=5.0)
+        self._flush_pending_turns()
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
+        if not self._session_ready():
+            self._drop_pending_turns("shutdown before initialization completed")
         # Flush any remaining messages
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:

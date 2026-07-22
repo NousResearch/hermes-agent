@@ -60,7 +60,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -778,8 +778,9 @@ export function useSessionActions({
         setMessages([])
       }
 
+      // A history load is not a live turn. Toggling busy here and again in the
+      // finally block re-renders the thread viewport after it has loaded.
       busyRef.current = true
-      setBusy(true)
       setAwaitingResponse(false)
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
@@ -805,7 +806,6 @@ export function useSessionActions({
           : $messages.get()
 
         let prefetchApplied = false
-        let prefetchedMessageCount = 0
         let prefetchedStoredSessionId: string | null = null
 
         // REST transcript prefetch and the gateway resume RPC are independent
@@ -832,24 +832,14 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
+        // Keep both requests concurrent, but do not paint the REST result until
+        // the runtime resume has also settled. An eager prefetch paint followed
+        // by the runtime projection rebuilds large transcripts during resume.
+        let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
+
         try {
           if (prefetchPromise) {
-            const storedMessages = await prefetchPromise
-
-            if (isCurrentResume()) {
-              const previousMessages = resumedSameSelectedSession
-                ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-                : $messages.get()
-
-              localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
-              prefetchApplied = true
-              prefetchedMessageCount = storedMessages.messages.length
-              prefetchedStoredSessionId = storedMessages.session_id || storedSessionId
-
-              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
-                setMessages(localSnapshot)
-              }
-            }
+            prefetchedResult = await prefetchPromise
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
@@ -859,6 +849,16 @@ export function useSessionActions({
 
         if (!isCurrentResume()) {
           return
+        }
+
+        if (prefetchedResult) {
+          const previousMessages = resumedSameSelectedSession
+            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+            : $messages.get()
+
+          localSnapshot = reconcileAuthoritativeMessages(prefetchedResult.messages, previousMessages)
+          prefetchApplied = true
+          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
 
         const currentMessages = $messages.get()
@@ -878,8 +878,7 @@ export function useSessionActions({
         const preferredMessages =
           prefetchApplied &&
           prefetchMatchesResumedSession &&
-          !hasLiveProjection &&
-          resumed.messages.length <= prefetchedMessageCount
+          !hasLiveProjection
             ? localSnapshot
             : (() => {
                 const previousMessages = resumedSameSelectedSession
@@ -927,6 +926,14 @@ export function useSessionActions({
           }),
           storedSessionId
         )
+
+        // updateSessionState stages its view sync through requestAnimationFrame.
+        // Commit the final, already-reconciled transcript now so resume has one
+        // additive DOM build instead of an eager prefetch build plus a later
+        // runtime projection build.
+        if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
+          setMessages(messagesForView)
+        }
       } catch (err) {
         if (!isCurrentResume()) {
           return

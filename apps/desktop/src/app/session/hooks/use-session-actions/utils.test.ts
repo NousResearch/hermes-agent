@@ -354,6 +354,32 @@ describe('appendLiveSessionProjection', () => {
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
   })
 
+  it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {
+    const stored = [
+      msg('stored-user-1', 'user', 'canceled prompt one'),
+      msg('stored-user-2', 'user', 'canceled prompt two'),
+      msg('stored-user-3', 'user', 'current running prompt')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'user', 'user', 'assistant'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'canceled prompt one',
+      'canceled prompt two',
+      'current running prompt',
+      'partial answer'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
   it('preserves the original array when no live projection exists', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 

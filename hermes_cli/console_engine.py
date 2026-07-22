@@ -14,6 +14,7 @@ import functools
 import importlib
 import io
 import json
+import re
 import shlex
 import sys
 from dataclasses import dataclass, replace
@@ -115,13 +116,21 @@ def _split_line(line: str) -> list[str]:
         raise ConsoleCommandError(f"Could not parse command: {exc}") from exc
 
 
+_QUOTED_SPAN_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
 def _contains_shell_syntax(line: str, tokens: Sequence[str]) -> bool:
-    if "$(" in line or "`" in line:
+    # Real operators are caught by the token-level check below, because shlex splits a
+    # space-delimited operator into its own token. The raw-line scans (for $(, backtick,
+    # and the metacharacters) must ignore quoted spans, or an ordinary message argument
+    # like send --to x "is 5 > 3?" is wrongly rejected as shell syntax.
+    unquoted = _QUOTED_SPAN_RE.sub("", line)
+    if "$(" in unquoted or "`" in unquoted:
         return True
     shell_tokens = {"|", "||", "&", "&&", ";", ">", ">>", "<", "<<", "2>", "2>>"}
     if any(token in shell_tokens for token in tokens):
         return True
-    return any(ch in line for ch in "|<>;")
+    return any(ch in unquoted for ch in "|<>;")
 
 
 def _format_sessions(sessions: Sequence[dict]) -> str:

@@ -383,6 +383,35 @@ def test_console_rejects_destructive_and_shell_like_commands(line):
     assert result.output
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        'send --to telegram "Is 5 > 3?"',
+        'sessions rename abc123 "Meeting; notes"',
+        'kanban comment 5 "fixed a<b bug"',
+        'send --to slack "use a|b pipes"',
+        'send --to slack "run `id` first"',
+        'send --to slack "cost is $(price)"',
+    ],
+)
+def test_console_allows_shell_metachars_inside_quoted_args(line):
+    result = HermesConsoleEngine().execute(line)
+
+    # Shell metacharacters inside a quoted argument are ordinary message text; the console
+    # dispatches an in-process argparse tree, so there is no shell to protect against here.
+    assert not (result.status == "error" and "shell syntax" in result.output)
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["logs | cat", "config show > out.txt", "logs|cat", "echo `id`", "run $(whoami)"],
+)
+def test_console_still_rejects_unquoted_shell_operators(line):
+    result = HermesConsoleEngine().execute(line)
+
+    assert result.status == "error"
+
+
 @pytest.mark.parametrize("line", MUTATING_CONFIRMATION_SMOKE_COMMANDS)
 def test_mutating_console_commands_require_confirmation(line):
     result = HermesConsoleEngine().execute(line)

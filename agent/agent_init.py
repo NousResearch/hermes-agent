@@ -1462,6 +1462,38 @@ def init_agent(
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
+            # Honcho auto-migration: if the user did not explicitly set
+            # memory.provider in their raw config.yaml but the Honcho plugin
+            # shows enabled+credentialed, activate Honcho.  We check the RAW
+            # config (before DEFAULT_CONFIG merge) because load_config()
+            # deep-merges DEFAULT_CONFIG which always supplies
+            # memory.provider: "" — so the merged mem_config cannot
+            # distinguish "user omitted the key" from "user set it blank".
+            # An explicitly blank provider means the user opted out — do not
+            # auto-migrate over their choice.
+            # Detection is read-only; persistence is deferred until
+            # is_available() succeeds below so a broken setup can't
+            # leave a stale "memory.provider: honcho" entry. (#12743)
+            _user_provider_is_explicit = False
+            try:
+                from hermes_cli.config import read_raw_config as _read_raw
+                _raw_mem = (_read_raw() or {}).get("memory") or {}
+                if isinstance(_raw_mem, dict) and "provider" in _raw_mem:
+                    _user_provider_is_explicit = True
+            except Exception:
+                pass
+
+            _auto_migrated_to_honcho = False
+            if (
+                not (_mem_provider_name and _mem_provider_name.strip())
+                and not _user_provider_is_explicit
+            ):
+                from agent.honcho_auto_migrate import detect_honcho_auto_migrate
+                _detected = detect_honcho_auto_migrate()
+                if _detected:
+                    _mem_provider_name = _detected
+                    _auto_migrated_to_honcho = True
+
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
@@ -1469,6 +1501,20 @@ def init_agent(
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
+                    # Persist the auto-migrated choice exactly once, AFTER
+                    # is_available() confirmed the provider works.  A broken
+                    # Honcho setup never reaches this point. (#12743)
+                    if _auto_migrated_to_honcho:
+                        try:
+                            from hermes_cli.config import load_config as _lc, save_config as _sc
+                            _cfg = _lc()
+                            _cfg.setdefault("memory", {})["provider"] = "honcho"
+                            _sc(_cfg)
+                        except Exception:
+                            pass
+                        if not getattr(agent, "quiet_mode", False):
+                            print("  ✓ Auto-migrated Honcho to memory provider plugin.")
+                            print("    Your config and data are preserved.\n")
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,

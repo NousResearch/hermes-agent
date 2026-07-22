@@ -2078,7 +2078,9 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
         )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        adapter._fetch_message_context = AsyncMock(
+            return_value=("父消息内容", [], [])
+        )
         message = SimpleNamespace(
             chat_id="oc_chat",
             thread_id=None,
@@ -2103,6 +2105,99 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
+        self.assertEqual(event.reply_media_urls, [])
+        self.assertEqual(event.reply_media_types, [])
+
+    def test_process_inbound_bare_reply_to_attachment_not_dropped(self):
+        """A bare "@Bot" reply to an attachment should hydrate parent media
+        and NOT be dropped by the empty-text guard."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_context = AsyncMock(
+            return_value=("父消息附件描述", ["/tmp/img.jpg"], ["image/jpeg"])
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id="om_img",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"@Hermes "}',
+            message_id="om_bare_reply",
+            mentions=[SimpleNamespace(key="Hermes", name="Hermes", id=SimpleNamespace(open_id="bot_ou"))],
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_bare_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_img")
+        # Main text is stripped to empty after mention removal,
+        # but _build_mention_hint injects a mention marker.
+        self.assertIn("[Mentioned:", event.text)
+        self.assertEqual(event.reply_media_urls, ["/tmp/img.jpg"])
+        self.assertEqual(event.reply_media_types, ["image/jpeg"])
+
+    def test_process_inbound_reply_to_media_populates_reply_fields(self):
+        """Replying to an image message should carry parent media in the event."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "李四", "user_id_alt": None}
+        )
+        adapter._fetch_message_context = AsyncMock(
+            return_value=("图片描述", ["/tmp/photo.jpg"], ["image/jpeg"])
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id="om_img2",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"这张图不错"}',
+            message_id="om_reply_img",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user2", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_reply_img",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.reply_to_message_id, "om_img2")
+        self.assertEqual(event.reply_to_text, "图片描述")
+        self.assertEqual(event.reply_media_urls, ["/tmp/photo.jpg"])
+        self.assertEqual(event.reply_media_types, ["image/jpeg"])
+        self.assertEqual(event.text, "这张图不错")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):

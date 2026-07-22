@@ -140,6 +140,7 @@ import {
   SshConnection
 } from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
+import { readCommitLogRange, readOfficialSshCommitLog } from './update-commit-log'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
@@ -2246,7 +2247,8 @@ async function checkUpdates() {
   const originUrl = await getOriginUrl(updateRoot)
 
   if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    const run = args => runGit(args, { cwd: updateRoot })
+    const git = args => run(args).then(r => r.stdout.trim())
 
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
@@ -2268,14 +2270,24 @@ async function checkUpdates() {
       }
     }
 
+    const behind = currentSha && currentSha === targetSha ? 0 : 1
+
+    // Populate the real changelog over anonymous HTTPS (never `git fetch origin`,
+    // which would prompt for the SSH passkey touch). Empty on an up-to-date
+    // checkout or if the HTTPS fetch fails — the overlay then shows its generic
+    // summary instead of a wrong/empty one (#69081).
+    const commits = behind > 0
+      ? await readOfficialSshCommitLog(run, OFFICIAL_REPO_HTTPS_URL, branch, targetSha)
+      : []
+
     return {
       supported: true,
       branch,
       currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      behind,
       currentSha,
       targetSha,
-      commits: [],
+      commits,
       dirty: dirtyStr.length > 0,
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
@@ -2344,23 +2356,7 @@ async function checkUpdates() {
 }
 
 async function readCommitLog(cwd, branch) {
-  const SEP = '\x1f'
-  const REC = '\x1e'
-
-  const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
-    { cwd }
-  )
-
-  return stdout
-    .split(REC)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => {
-      const [sha, summary, author, at] = line.split(SEP)
-
-      return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
-    })
+  return readCommitLogRange(args => runGit(args, { cwd }), `HEAD..origin/${branch}`)
 }
 
 let updateInFlight = false

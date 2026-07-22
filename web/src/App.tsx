@@ -62,8 +62,10 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { DashboardOfflineBanner } from "@/components/DashboardOfflineBanner";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
+import type { SidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
@@ -100,7 +102,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
-import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+import type { UpdateCheckResponse } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -538,6 +540,12 @@ export default function App() {
 
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
+      {sidebarStatus.status.kind === "unreachable" && (
+        <DashboardOfflineBanner
+          status={sidebarStatus.status}
+          retry={sidebarStatus.retry}
+        />
+      )}
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -664,7 +672,7 @@ export default function App() {
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}
               onNavigate={closeMobile}
-              status={sidebarStatus}
+              status={sidebarStatus.status}
               tooltipWarmRef={tooltipWarmRef}
             />
 
@@ -711,7 +719,7 @@ export default function App() {
               )}
             >
               <AuthWidget />
-              <SidebarFooter status={sidebarStatus} />
+              <SidebarFooter status={sidebarStatus.status} />
             </div>
           </aside>
 
@@ -901,7 +909,13 @@ function SidebarSystemActions({
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
-  const canUpdateHermes = status?.can_update_hermes === true;
+  const lastData =
+    status.kind === "live"
+      ? status.data
+      : status.kind === "unreachable"
+        ? status.lastData
+        : null;
+  const canUpdateHermes = lastData?.can_update_hermes === true;
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
   const [updateConfirmInfo, setUpdateConfirmInfo] =
@@ -1210,11 +1224,18 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   let color: string;
   let label: string;
 
-  if (!status) {
+  // Tri-state matching SidebarStatusStrip. When the hook has crossed the
+  // unreachable threshold the dot must turn destructive-red regardless of
+  // what the last good response said — that's the user-visible fix for
+  // #50270 (no more "green dot, dashboard is dead").
+  if (status.kind === "loading") {
     color = "bg-midground/20";
     label = t.status.gateway;
+  } else if (status.kind === "unreachable") {
+    color = "bg-destructive";
+    label = `${t.status.gateway} ${t.app.statusUnreachable ?? t.app.gatewayStrip.failed}`;
   } else {
-    const gw = gatewayLine(status, t);
+    const gw = gatewayLine(status.data, t);
     color = toneToColor[gw.tone] ?? "bg-muted-foreground";
     label = `${t.status.gateway} ${gw.label}`;
   }
@@ -1298,7 +1319,7 @@ type TooltipWarmRef = React.RefObject<number>;
 
 interface GatewayDotProps {
   collapsed: boolean;
-  status: StatusResponse | null;
+  status: SidebarStatus;
   tooltipWarmRef: TooltipWarmRef;
 }
 
@@ -1327,7 +1348,7 @@ interface SidebarNavLinkProps {
 interface SidebarSystemActionsProps {
   collapsed: boolean;
   onNavigate: () => void;
-  status: StatusResponse | null;
+  status: SidebarStatus;
   tooltipWarmRef: TooltipWarmRef;
 }
 

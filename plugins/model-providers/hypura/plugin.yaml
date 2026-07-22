@@ -1,0 +1,5 @@
+name: hypura-provider
+kind: model-provider
+version: 1.0.0
+description: Hypura - storage-tier-aware LLM inference scheduler
+author: Nous Research

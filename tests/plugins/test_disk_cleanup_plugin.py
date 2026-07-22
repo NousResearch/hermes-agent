@@ -783,6 +783,49 @@ class TestTrackForgetQuick:
         assert summary["artifacts"] == 1
         assert not stale.exists()
 
+    def test_quick_discovers_name_bound_v2_hook_output(self, _isolate_env):
+        dg = _load_lib()
+        session_name = f"s-{'a' * 24}-3"
+        session_dir = _isolate_env / "hook_outputs" / session_name
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text(
+            f"hook_outputs:v2:{session_name}\n"
+        )
+        stale = session_dir / "old.txt"
+        stale.write_text("stale")
+        old = time.time() - (15 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 1
+        assert not stale.exists()
+
+    @pytest.mark.parametrize(
+        ("directory_name", "marker_value"),
+        [
+            (f"s-{'b' * 24}", f"hook_outputs:v2:s-{'c' * 24}"),
+            ("human-session", "hook_outputs:v2:human-session"),
+            (f"s-{'d' * 24}-32", f"hook_outputs:v2:s-{'d' * 24}-32"),
+        ],
+    )
+    def test_quick_preserves_non_bound_or_malformed_v2_hook_output(
+        self, _isolate_env, directory_name, marker_value
+    ):
+        dg = _load_lib()
+        session_dir = _isolate_env / "hook_outputs" / directory_name
+        session_dir.mkdir(parents=True)
+        (session_dir / ".hermes-managed").write_text(f"{marker_value}\n")
+        stale = session_dir / "old.txt"
+        stale.write_text("keep")
+        old = time.time() - (30 * 24 * 60 * 60)
+        os.utime(stale, (old, old))
+
+        summary = dg.quick()
+
+        assert summary["artifacts"] == 0
+        assert stale.read_text() == "keep"
+
     def test_retention_preserves_replacement_after_selection(
         self, _isolate_env, monkeypatch
     ):

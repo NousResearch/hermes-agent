@@ -2561,7 +2561,7 @@ def test_completion_artifact_post_close_replacement_is_preserved(
             nonlocal destination_lstats
             if path == destination:
                 destination_lstats += 1
-                if destination_lstats == 2:
+                if destination_lstats == 3:
                     destination.unlink()
                     destination.write_text("human replacement", encoding="utf-8")
             return real_lstat(path)
@@ -2576,6 +2576,65 @@ def test_completion_artifact_post_close_replacement_is_preserved(
         assert kb.get_task(conn, task_id).status == "ready"
 
     assert destination.read_text(encoding="utf-8") == "human replacement"
+
+
+def test_completion_artifact_junction_open_restore_writes_no_external_bytes(
+    kanban_home, monkeypatch
+):
+    """Scratch preservation binds its create before copying the source."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="redirected artifact destination")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "result.txt"
+        artifact.write_text("agent result", encoding="utf-8")
+
+        intended = kb.task_attachments_dir(task_id) / artifact.name
+        external_dir = kanban_home / "external"
+        external_dir.mkdir()
+        external = external_dir / artifact.name
+        real_open = kb.os.open
+        real_actual_path = kb._opened_file_actual_path
+        real_remove = kb._atomic_remove_expected_file
+        external_before_cleanup = []
+
+        def junction_open(path, flags, *args, **kwargs):
+            if Path(path) == intended and flags & kb.os.O_EXCL:
+                fd = real_open(external, flags, *args, **kwargs)
+                # Model the attachment parent being restored after the open.
+                intended.write_bytes(b"human replacement")
+                return fd
+            return real_open(path, flags, *args, **kwargs)
+
+        def actual_path(fd, path):
+            if Path(path) == intended:
+                return external
+            return real_actual_path(fd, path)
+
+        def observe_remove(path, expected):
+            if Path(path) == external:
+                external_before_cleanup.append(external.read_bytes())
+            return real_remove(path, expected)
+
+        monkeypatch.setattr(kb.os, "open", junction_open)
+        monkeypatch.setattr(kb, "_opened_file_actual_path", actual_path)
+        monkeypatch.setattr(kb, "_atomic_remove_expected_file", observe_remove)
+
+        with pytest.raises(
+            kb.ArtifactPreservationError, match="destination path changed"
+        ):
+            kb.complete_task(
+                conn,
+                task_id,
+                metadata={"artifacts": [str(artifact)]},
+            )
+        assert kb.get_task(conn, task_id).status == "ready"
+
+    assert external_before_cleanup == [b""]
+    assert not external.exists()
+    assert intended.read_bytes() == b"human replacement"
+    assert artifact.read_text(encoding="utf-8") == "agent result"
 
 
 def test_completion_artifact_prefix_collision_is_not_registered(kanban_home):
@@ -2760,7 +2819,7 @@ def test_artifact_copy_interrupt_removes_only_partial_destination(
     kanban_home, monkeypatch
 ):
     """An interrupt inside destination.write cannot strand the partial copy."""
-    original_open = Path.open
+    original_fdopen = kb.os.fdopen
 
     class InterruptingWriter:
         def __init__(self, stream):
@@ -2780,11 +2839,11 @@ def test_artifact_copy_interrupt_removes_only_partial_destination(
             self.stream.write(data[:1])
             raise KeyboardInterrupt()
 
-    def interrupt_destination(path, mode="r", *args, **kwargs):
-        stream = original_open(path, mode, *args, **kwargs)
-        return InterruptingWriter(stream) if mode == "xb" else stream
+    def interrupt_destination(fd, mode="r", *args, **kwargs):
+        stream = original_fdopen(fd, mode, *args, **kwargs)
+        return InterruptingWriter(stream) if mode == "wb" else stream
 
-    monkeypatch.setattr(Path, "open", interrupt_destination)
+    monkeypatch.setattr(kb.os, "fdopen", interrupt_destination)
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="copy interrupt")
         task = kb.get_task(conn, task_id)

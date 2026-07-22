@@ -489,7 +489,7 @@ def test_attachment_post_close_replacement_is_preserved(kanban_home, monkeypatch
         nonlocal target_lstats
         if path == target:
             target_lstats += 1
-            if target_lstats == 2:
+            if target_lstats == 3:
                 target.unlink()
                 target.write_bytes(b"human replacement")
         return real_lstat(path)
@@ -560,6 +560,51 @@ def test_store_attachment_bytes_preserves_race_winner(kanban_home, monkeypatch):
         assert Path(attachment.stored_path).read_bytes() == b"agent bytes"
     finally:
         conn.close()
+
+
+def test_attachment_junction_open_restore_writes_no_external_bytes(
+    kanban_home, monkeypatch
+):
+    """A redirected exclusive open is rejected before bytes reach its target."""
+    destination = kanban_home / "destination"
+    destination.mkdir()
+    intended = destination / "report.txt"
+    external_dir = kanban_home / "external"
+    external_dir.mkdir()
+    external = external_dir / intended.name
+    real_open = kb.os.open
+    real_actual_path = kb._opened_file_actual_path
+    real_remove = kb._atomic_remove_expected_file
+    external_before_cleanup = []
+
+    def junction_open(path, flags, *args, **kwargs):
+        if Path(path) == intended and flags & kb.os.O_EXCL:
+            fd = real_open(external, flags, *args, **kwargs)
+            # Model the attacker restoring the original path after the open.
+            intended.write_bytes(b"human replacement")
+            return fd
+        return real_open(path, flags, *args, **kwargs)
+
+    def actual_path(fd, path):
+        if Path(path) == intended:
+            return external
+        return real_actual_path(fd, path)
+
+    def observe_remove(path, expected):
+        if Path(path) == external:
+            external_before_cleanup.append(external.read_bytes())
+        return real_remove(path, expected)
+
+    monkeypatch.setattr(kb.os, "open", junction_open)
+    monkeypatch.setattr(kb, "_opened_file_actual_path", actual_path)
+    monkeypatch.setattr(kb, "_atomic_remove_expected_file", observe_remove)
+
+    with pytest.raises(ValueError, match="destination path changed"):
+        kb._exclusive_attachment_path(destination, intended.name, b"agent bytes")
+
+    assert external_before_cleanup == [b""]
+    assert not external.exists()
+    assert intended.read_bytes() == b"human replacement"
 
 
 def test_store_attachment_bytes_unknown_task_leaves_no_blob(kanban_home):

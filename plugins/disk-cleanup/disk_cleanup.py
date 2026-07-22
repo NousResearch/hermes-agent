@@ -622,6 +622,25 @@ def _managed_marker_matches(path: Path, expected: str) -> bool:
         if not marker.is_file() or _is_link_like(marker):
             return False
         value = marker.read_text(encoding="utf-8").strip()
+        if expected == "hook_outputs":
+            if value == expected:
+                return True
+            prefix = "hook_outputs:v2:"
+            bound_name = value.removeprefix(prefix)
+            if not value.startswith(prefix) or bound_name != path.name:
+                return False
+            parts = bound_name.split("-")
+            if len(parts) not in (2, 3) or parts[0] != "s":
+                return False
+            digest = parts[1]
+            if len(digest) != 24 or any(
+                char not in "0123456789abcdef" for char in digest
+            ):
+                return False
+            if len(parts) == 2:
+                return True
+            suffix = parts[2]
+            return suffix == str(int(suffix)) and 1 <= int(suffix) <= 31
         if expected != "spawn-trees":
             return value == expected
         prefix = "spawn-trees:"

@@ -11456,6 +11456,17 @@ def test_get_usage_clamps_post_compression_sentinel():
     assert "context_percent" not in usage
 
 
+def _create_windows_junction(link: Path, target: Path) -> None:
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {result.stderr.strip()}")
+
+
 def test_spawn_tree_save_marks_session_and_does_not_overwrite_same_second(tmp_path):
     """Generated spawn snapshots are owned and collision-resistant."""
     token = set_hermes_home_override(tmp_path / ".hermes")
@@ -11483,6 +11494,102 @@ def test_spawn_tree_save_marks_session_and_does_not_overwrite_same_second(tmp_pa
         assert json.loads(first_path.read_text())["subagents"][0]["id"] == "a"
         assert json.loads(second_path.read_text())["subagents"][0]["id"] == "b"
     finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_spawn_tree_index_rejects_replaced_session_junction(tmp_path):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    parked = tmp_path / "owned-session"
+    junction_created = False
+    try:
+        session_dir = server._spawn_tree_session_dir("session-1")
+        evidence = server._capture_spawn_tree_dir_evidence(
+            session_dir, session_id="session-1"
+        )
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_index = outside / server._SPAWN_TREE_INDEX
+        outside_index.write_text("human\n", encoding="utf-8")
+
+        session_dir.rename(parked)
+        _create_windows_junction(session_dir, outside)
+        junction_created = True
+        server._append_spawn_tree_index(
+            session_dir, {"path": "hostile"}, evidence=evidence
+        )
+
+        assert outside_index.read_text(encoding="utf-8") == "human\n"
+    finally:
+        if junction_created and os.path.lexists(session_dir):
+            os.rmdir(session_dir)
+        if parked.exists() and not session_dir.exists():
+            parked.rename(session_dir)
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+@pytest.mark.parametrize(
+    ("filename", "append", "outside_contents"),
+    [
+        (".snapshot.tmp", False, None),
+        (server._SPAWN_TREE_INDEX, True, "human\n"),
+    ],
+)
+def test_spawn_tree_output_rejects_open_routed_through_restored_junction(
+    tmp_path, monkeypatch, filename, append, outside_contents
+):
+    home = tmp_path / ".hermes"
+    token = set_hermes_home_override(home)
+    parked = tmp_path / "owned-session"
+    try:
+        session_dir = server._spawn_tree_session_dir("session-1")
+        evidence = server._capture_spawn_tree_dir_evidence(
+            session_dir, session_id="session-1"
+        )
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_output = outside / filename
+        if outside_contents is not None:
+            outside_output.write_text(outside_contents, encoding="utf-8")
+        original_open = server.os.open
+        routed = False
+
+        def route_open_through_junction(path, flags, *args, **kwargs):
+            nonlocal routed
+            if Path(path) == session_dir / filename and not routed:
+                routed = True
+                session_dir.rename(parked)
+                junction_created = False
+                try:
+                    _create_windows_junction(session_dir, outside)
+                    junction_created = True
+                    return original_open(path, flags, *args, **kwargs)
+                finally:
+                    if junction_created and os.path.lexists(session_dir):
+                        os.rmdir(session_dir)
+                    if parked.exists() and not session_dir.exists():
+                        parked.rename(session_dir)
+            return original_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(server.os, "open", route_open_through_junction)
+        with pytest.raises(OSError, match="outside its bound directory"):
+            with server._open_owned_spawn_tree_output(
+                evidence, filename, append=append
+            ) as output:
+                output.write("must not be written")
+
+        assert routed is True
+        if outside_contents is None:
+            assert not outside_output.exists()
+        else:
+            assert outside_output.read_text(encoding="utf-8") == outside_contents
+    finally:
+        if parked.exists():
+            if os.path.lexists(session_dir):
+                os.rmdir(session_dir)
+            parked.rename(session_dir)
         reset_hermes_home_override(token)
 
 

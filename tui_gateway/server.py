@@ -9530,30 +9530,300 @@ _SPAWN_TREE_SNAPSHOT_RE = re.compile(
 )
 
 
-def _open_owned_spawn_tree_index(session_dir: Path, *, append: bool):
-    """Open the fixed index without following a replacement symlink."""
-    index_path = session_dir / _SPAWN_TREE_INDEX
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT if append else os.O_RDONLY
+class _SpawnTreeDirEvidence(NamedTuple):
+    path: Path
+    directory_stat: os.stat_result
+    marker_stat: os.stat_result
+    marker_value: str
+    resolved_path: Path
+
+
+def _spawn_tree_regular_file_stat(value: os.stat_result) -> bool:
+    return (
+        stat_module.S_ISREG(value.st_mode)
+        and value.st_nlink == 1
+        and not int(getattr(value, "st_file_attributes", 0)) & 0x400
+    )
+
+
+def _capture_spawn_tree_dir_evidence(
+    session_dir: Path, *, session_id: str | None = None
+) -> _SpawnTreeDirEvidence:
+    """Bind a writable session path to its directory and marker identities."""
+    marker = session_dir / ".hermes-managed"
+    directory_stat = session_dir.lstat()
+    marker_stat = marker.lstat()
+    marker_value = _read_spawn_tree_marker(marker)
+    resolved_path = session_dir.resolve(strict=True)
+    current_directory = session_dir.lstat()
+    current_marker = marker.lstat()
+    if (
+        not _is_owned_spawn_tree_dir(session_dir, session_id=session_id)
+        or not os.path.samestat(directory_stat, current_directory)
+        or not os.path.samestat(marker_stat, current_marker)
+        or not _spawn_tree_regular_file_stat(marker_stat)
+        or marker_value is None
+        or _read_spawn_tree_marker(marker) != marker_value
+        or session_dir.resolve(strict=True) != resolved_path
+    ):
+        raise OSError("spawn-tree directory ownership changed while binding")
+    return _SpawnTreeDirEvidence(
+        session_dir,
+        directory_stat,
+        marker_stat,
+        marker_value,
+        resolved_path,
+    )
+
+
+def _spawn_tree_dir_evidence_matches(evidence: _SpawnTreeDirEvidence) -> bool:
+    try:
+        marker = evidence.path / ".hermes-managed"
+        directory_stat = evidence.path.lstat()
+        marker_stat = marker.lstat()
+        return (
+            _is_owned_spawn_tree_dir(evidence.path)
+            and os.path.samestat(evidence.directory_stat, directory_stat)
+            and os.path.samestat(evidence.marker_stat, marker_stat)
+            and _spawn_tree_regular_file_stat(marker_stat)
+            and _read_spawn_tree_marker(marker) == evidence.marker_value
+            and evidence.path.resolve(strict=True) == evidence.resolved_path
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def _verify_spawn_tree_dir_fd(
+    directory_fd: int, evidence: _SpawnTreeDirEvidence
+) -> None:
+    """Verify the marker through the same POSIX directory handle as output."""
+    if not os.path.samestat(evidence.directory_stat, os.fstat(directory_fd)):
+        raise OSError("spawn-tree directory identity changed")
+    flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(index_path, flags, 0o600)
+    marker_fd = os.open(".hermes-managed", flags, dir_fd=directory_fd)
+    try:
+        marker_stat = os.fstat(marker_fd)
+        marker_bytes = os.read(marker_fd, 129)
+        if (
+            not os.path.samestat(evidence.marker_stat, marker_stat)
+            or not _spawn_tree_regular_file_stat(marker_stat)
+            or len(marker_bytes) > 128
+            or marker_bytes.decode("utf-8").strip() != evidence.marker_value
+        ):
+            raise OSError("spawn-tree ownership marker identity changed")
+    except UnicodeError as exc:
+        raise OSError("spawn-tree ownership marker is invalid") from exc
+    finally:
+        os.close(marker_fd)
+
+
+def _windows_opened_file_path(fd: int) -> Path:
+    """Return the kernel-resolved DOS path for an already-open Windows file."""
+    if os.name != "nt":
+        raise OSError("Windows handle paths are unavailable on this platform")
+    import ctypes
+    import msvcrt
+
+    get_path = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    get_path.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+    ]
+    get_path.restype = ctypes.c_uint32
+    handle = msvcrt.get_osfhandle(fd)
+    size = 512
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        length = get_path(handle, buffer, size, 0)
+        if length == 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if length < size:
+            value = buffer.value
+            break
+        size = length + 1
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
+
+
+def _normalized_spawn_tree_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
+def _cleanup_empty_spawn_tree_output(
+    *,
+    filename: str,
+    directory_fd: int | None,
+    actual_path: Path,
+    expected: os.stat_result,
+) -> None:
+    """Remove only an exact, newly-created output that is still empty."""
+    if expected.st_size != 0 or not _spawn_tree_regular_file_stat(expected):
+        return
+    if directory_fd is not None:
+        try:
+            current = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                current.st_size == 0
+                and _spawn_tree_regular_file_stat(current)
+                and os.path.samestat(expected, current)
+            ):
+                os.unlink(filename, dir_fd=directory_fd)
+        except OSError:
+            pass
+        return
+    _remove_exact_spawn_tree_file(actual_path, expected)
+
+
+@contextlib.contextmanager
+def _open_owned_spawn_tree_output(
+    evidence: _SpawnTreeDirEvidence,
+    filename: str,
+    *,
+    append: bool,
+):
+    """Open an output only after proving its file and parent identities."""
+    if filename in {"", ".", ".."} or Path(filename).name != filename:
+        raise OSError("spawn-tree output name is not a basename")
+    if not _spawn_tree_dir_evidence_matches(evidence):
+        raise OSError("spawn-tree directory identity changed before opening")
+
+    directory_fd = None
+    fd = -1
+    stream = None
+    created = False
+    opened_stat = None
+    actual_path = evidence.resolved_path / filename
+    try:
+        if os.name != "nt":
+            directory_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                directory_flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                directory_flags |= os.O_NOFOLLOW
+            directory_fd = os.open(evidence.path, directory_flags)
+            _verify_spawn_tree_dir_fd(directory_fd, evidence)
+
+        base_flags = os.O_WRONLY | (os.O_APPEND if append else 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            base_flags |= os.O_NOFOLLOW
+        open_path: str | Path = filename if directory_fd is not None else (
+            evidence.path / filename
+        )
+        open_kwargs = {"dir_fd": directory_fd} if directory_fd is not None else {}
+
+        if append:
+            try:
+                fd = os.open(open_path, base_flags, **open_kwargs)
+            except FileNotFoundError:
+                fd = os.open(
+                    open_path,
+                    base_flags | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    **open_kwargs,
+                )
+                created = True
+        else:
+            fd = os.open(
+                open_path,
+                base_flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                **open_kwargs,
+            )
+            created = True
+
+        opened_stat = os.fstat(fd)
+        if directory_fd is not None:
+            _verify_spawn_tree_dir_fd(directory_fd, evidence)
+            path_stat = os.stat(
+                filename, dir_fd=directory_fd, follow_symlinks=False
+            )
+        else:
+            actual_path = _windows_opened_file_path(fd)
+            expected_path = evidence.resolved_path / filename
+            if _normalized_spawn_tree_path(actual_path) != _normalized_spawn_tree_path(
+                expected_path
+            ):
+                raise OSError("spawn-tree output opened outside its bound directory")
+            path_stat = (evidence.path / filename).lstat()
+        if (
+            not _spawn_tree_regular_file_stat(opened_stat)
+            or not _spawn_tree_regular_file_stat(path_stat)
+            or not os.path.samestat(opened_stat, path_stat)
+            or not _spawn_tree_dir_evidence_matches(evidence)
+        ):
+            raise OSError("spawn-tree output identity changed while opening")
+
+        stream = os.fdopen(fd, "a" if append else "w", encoding="utf-8")
+        fd = -1
+        yield stream
+    finally:
+        if stream is not None:
+            stream.close()
+        elif fd >= 0:
+            if os.name == "nt":
+                with contextlib.suppress(OSError):
+                    actual_path = _windows_opened_file_path(fd)
+            if opened_stat is None:
+                with contextlib.suppress(OSError):
+                    opened_stat = os.fstat(fd)
+            os.close(fd)
+        if created and opened_stat is not None:
+            _cleanup_empty_spawn_tree_output(
+                filename=filename,
+                directory_fd=directory_fd,
+                actual_path=actual_path,
+                expected=opened_stat,
+            )
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+@contextlib.contextmanager
+def _open_owned_spawn_tree_index(
+    session_dir: Path,
+    *,
+    append: bool,
+    evidence: _SpawnTreeDirEvidence | None = None,
+):
+    """Open the fixed index without following replacement paths."""
+    if append:
+        bound = evidence or _capture_spawn_tree_dir_evidence(session_dir)
+        with _open_owned_spawn_tree_output(
+            bound, _SPAWN_TREE_INDEX, append=True
+        ) as stream:
+            yield stream
+        return
+
+    index_path = session_dir / _SPAWN_TREE_INDEX
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(index_path, flags)
+    stream = None
     try:
         path_stat = index_path.lstat()
         fd_stat = os.fstat(fd)
         if (
-            index_path.is_symlink()
-            or int(getattr(path_stat, "st_file_attributes", 0)) & 0x400
-            or not stat_module.S_ISREG(path_stat.st_mode)
-            or not stat_module.S_ISREG(fd_stat.st_mode)
-            or path_stat.st_nlink != 1
-            or fd_stat.st_nlink != 1
+            not _spawn_tree_regular_file_stat(path_stat)
+            or not _spawn_tree_regular_file_stat(fd_stat)
             or not os.path.samestat(path_stat, fd_stat)
         ):
             raise OSError("spawn-tree index is not an owned regular file")
-        return os.fdopen(fd, "a" if append else "r", encoding="utf-8")
-    except BaseException:
-        os.close(fd)
-        raise
+        stream = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1
+        yield stream
+    finally:
+        if stream is not None:
+            stream.close()
+        elif fd >= 0:
+            os.close(fd)
 
 
 def _owned_spawn_tree_snapshot(path: Path, session_dir: Path) -> Path | None:
@@ -9670,9 +9940,16 @@ def _publish_spawn_tree_temp(source: Path, destination: Path) -> bool:
     return False
 
 
-def _append_spawn_tree_index(session_dir, entry: dict) -> None:
+def _append_spawn_tree_index(
+    session_dir: Path,
+    entry: dict,
+    *,
+    evidence: _SpawnTreeDirEvidence | None = None,
+) -> None:
     try:
-        with _open_owned_spawn_tree_index(session_dir, append=True) as f:
+        with _open_owned_spawn_tree_index(
+            session_dir, append=True, evidence=evidence
+        ) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as exc:
         # Index is a cache — losing a line just means list() falls back
@@ -9730,6 +10007,9 @@ def _(rid, params: dict) -> dict:
     published_path = None
     try:
         d = _spawn_tree_session_dir(session_id or "default")
+        directory_evidence = _capture_spawn_tree_dir_evidence(
+            d, session_id=session_id or "default"
+        )
         path = d / fname
         temp_path = d / f".{fname}.{uuid.uuid4().hex}.tmp"
         payload = {
@@ -9739,7 +10019,9 @@ def _(rid, params: dict) -> dict:
             "label": label,
             "subagents": subagents,
         }
-        with temp_path.open("x", encoding="utf-8") as temp_file:
+        with _open_owned_spawn_tree_output(
+            directory_evidence, temp_path.name, append=False
+        ) as temp_file:
             temp_identity = os.fstat(temp_file.fileno())
             temp_file.write(json.dumps(payload, ensure_ascii=False))
             temp_file.flush()
@@ -9796,6 +10078,7 @@ def _(rid, params: dict) -> dict:
             "label": label,
             "count": len(subagents),
         },
+        evidence=directory_evidence,
     )
 
     return _ok(rid, {"path": str(path), "session_id": session_id})

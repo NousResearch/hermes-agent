@@ -39,15 +39,71 @@ from tools.environments.base import _file_mtime_key
 logger = logging.getLogger(__name__)
 
 
+def _opened_lock_path(fd: int) -> Path | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        handle = msvcrt.get_osfhandle(fd)
+        get_final_path = ctypes.windll.kernel32.GetFinalPathNameByHandleW
+        get_final_path.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        )
+        get_final_path.restype = ctypes.c_uint32
+        needed = get_final_path(handle, None, 0, 0)
+        if not needed:
+            return None
+        buffer = ctypes.create_unicode_buffer(needed + 1)
+        written = get_final_path(handle, buffer, len(buffer), 0)
+        if not written or written >= len(buffer):
+            return None
+        actual = buffer.value
+        if actual.startswith("\\\\?\\UNC\\"):
+            actual = "\\\\" + actual[8:]
+        elif actual.startswith("\\\\?\\"):
+            actual = actual[4:]
+        return Path(actual)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _opened_lock_matches_path(actual: Path | None, expected: Path) -> bool:
+    return bool(
+        actual is not None
+        and os.path.normcase(os.path.normpath(os.fspath(actual)))
+        == os.path.normcase(os.path.normpath(os.fspath(expected)))
+    )
+
+
 def _remove_created_sync_lock(path: Path, expected: os.stat_result) -> None:
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
     try:
         current = path.lstat()
-        if not os.path.samestat(expected, current):
+        if (
+            not stat.S_ISREG(expected.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or int(getattr(expected, "st_file_attributes", 0)) & 0x400
+            or int(getattr(current, "st_file_attributes", 0)) & 0x400
+            or expected.st_nlink != 1
+            or current.st_nlink != 1
+            or expected.st_size != 0
+            or current.st_size != 0
+            or not os.path.samestat(expected, current)
+        ):
             return
         os.replace(path, quarantine)
         moved = quarantine.lstat()
-        if os.path.samestat(expected, moved):
+        if (
+            stat.S_ISREG(moved.st_mode)
+            and not (int(getattr(moved, "st_file_attributes", 0)) & 0x400)
+            and moved.st_nlink == 1
+            and moved.st_size == 0
+            and os.path.samestat(expected, moved)
+        ):
             quarantine.unlink()
     except OSError:
         return
@@ -62,45 +118,90 @@ def _open_owned_sync_lock(lock_path: Path):
         or int(getattr(parent_identity, "st_file_attributes", 0)) & 0x400
     ):
         raise OSError(f"sync lock parent is not a regular directory: {lock_path.parent}")
+    parent_resolved = lock_path.parent.resolve(strict=True)
+    if not os.path.samestat(parent_identity, parent_resolved.lstat()):
+        raise OSError(f"sync lock parent changed during resolution: {lock_path.parent}")
     flags = os.O_RDWR
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     created = False
+    fd: int | None = None
+    opened: os.stat_result | None = None
+    actual_path: Path | None = None
+    selected: os.stat_result | None = None
     try:
-        fd = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
-        created = True
-    except FileExistsError:
-        selected = lock_path.lstat()
-        fd = os.open(lock_path, flags)
+        try:
+            fd = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            selected = lock_path.lstat()
+            fd = os.open(lock_path, flags)
+
         opened = os.fstat(fd)
-        current = lock_path.lstat()
-        if (
-            not stat.S_ISREG(selected.st_mode)
-            or int(getattr(selected, "st_file_attributes", 0)) & 0x400
-            or selected.st_nlink != 1
-            or opened.st_nlink != 1
-            or not os.path.samestat(selected, opened)
-            or not os.path.samestat(opened, current)
-        ):
-            os.close(fd)
+        actual_path = _opened_lock_path(fd)
+        if actual_path is None and os.name != "nt":
+            actual_path = parent_resolved / lock_path.name
+        try:
+            current_parent = lock_path.parent.lstat()
+            current = lock_path.lstat()
+            valid = bool(
+                stat.S_ISREG(opened.st_mode)
+                and not (int(getattr(opened, "st_file_attributes", 0)) & 0x400)
+                and stat.S_ISREG(current.st_mode)
+                and not (int(getattr(current, "st_file_attributes", 0)) & 0x400)
+                and opened.st_nlink == 1
+                and current.st_nlink == 1
+                and os.path.samestat(opened, current)
+                and stat.S_ISDIR(current_parent.st_mode)
+                and not (
+                    int(getattr(current_parent, "st_file_attributes", 0)) & 0x400
+                )
+                and os.path.samestat(parent_identity, current_parent)
+                and _opened_lock_matches_path(
+                    actual_path, parent_resolved / lock_path.name
+                )
+                and (
+                    selected is None
+                    or (
+                        stat.S_ISREG(selected.st_mode)
+                        and not (
+                            int(getattr(selected, "st_file_attributes", 0)) & 0x400
+                        )
+                        and selected.st_nlink == 1
+                        and os.path.samestat(selected, opened)
+                    )
+                )
+            )
+        except OSError:
+            valid = False
+        if not valid:
+            if created:
+                raise OSError("sync lock provenance changed")
             raise OSError(f"sync lock is not exclusively owned: {lock_path}")
-    opened = os.fstat(fd)
-    current_parent = lock_path.parent.lstat()
-    current = lock_path.lstat()
-    if (
-        not stat.S_ISREG(opened.st_mode)
-        or int(getattr(opened, "st_file_attributes", 0)) & 0x400
-        or opened.st_nlink != 1
-        or not os.path.samestat(opened, current)
-        or not os.path.samestat(parent_identity, current_parent)
-    ):
-        os.close(fd)
-        if created:
-            _remove_created_sync_lock(lock_path, opened)
-        raise OSError("sync lock provenance changed")
-    return os.fdopen(fd, "r+b", closefd=True)
+
+        stream = os.fdopen(fd, "r+b", closefd=True)
+        fd = None  # Ownership transferred to ``stream``.
+        return stream
+    except BaseException:
+        if fd is not None:
+            try:
+                if opened is None:
+                    opened = os.fstat(fd)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if created and opened is not None:
+            # On Windows, never reconstruct this from ``lock_path``: a restored
+            # parent may now name an unrelated race winner.  Without the
+            # handle's final path, preserving the empty create is fail-closed.
+            if actual_path is not None:
+                _remove_created_sync_lock(actual_path, opened)
+        raise
 
 # Keep retry sleeps patchable without mutating the shared stdlib ``time``
 # module. Patching ``tools.environments.file_sync.time.sleep`` replaces

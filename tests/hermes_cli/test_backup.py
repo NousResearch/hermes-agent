@@ -8,6 +8,7 @@ import subprocess
 import time
 import zipfile
 from argparse import Namespace
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1871,6 +1872,248 @@ class TestQuickSnapshot:
         rows = conn.execute("SELECT * FROM sessions").fetchall()
         conn.close()
         assert len(rows) == 1
+
+    def test_restore_rejects_owned_non_object_manifest(self, hermes_home):
+        import hermes_cli.backup as backup_mod
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        manifest = hermes_home / "state-snapshots" / snap_id / "manifest.json"
+        manifest.write_text("[]", encoding="utf-8")
+        original = b"operator-current\n"
+        (hermes_home / "config.yaml").write_bytes(original)
+
+        assert not backup_mod.restore_quick_snapshot(
+            snap_id, hermes_home=hermes_home
+        )
+        assert (hermes_home / "config.yaml").read_bytes() == original
+
+    def test_restore_rejects_corrupted_member_before_overwriting_live_state(
+        self, hermes_home
+    ):
+        import hermes_cli.backup as backup_mod
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snapshot_config = (
+            hermes_home / "state-snapshots" / snap_id / "config.yaml"
+        )
+        payload = snapshot_config.read_bytes()
+        snapshot_config.write_bytes(b"X" * len(payload))
+        original = b"operator-current\n"
+        (hermes_home / "config.yaml").write_bytes(original)
+
+        assert not backup_mod.restore_quick_snapshot(
+            snap_id, hermes_home=hermes_home
+        )
+        assert (hermes_home / "config.yaml").read_bytes() == original
+
+    def test_restore_rejects_staged_member_changed_after_source_validation(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        original = b"operator-current\n"
+        (hermes_home / "config.yaml").write_bytes(original)
+        real_writer = backup_mod._write_exclusive_snapshot_file
+
+        def corrupt_restore_stage(*args, **kwargs):
+            result = real_writer(*args, **kwargs)
+            relative_name = args[2]
+            if ".config.yaml.snap-restore-" in relative_name:
+                stage = result[0]
+                payload = stage.read_bytes()
+                stage.write_bytes(b"X" * len(payload))
+            return result
+
+        monkeypatch.setattr(
+            backup_mod, "_write_exclusive_snapshot_file", corrupt_restore_stage
+        )
+
+        backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        assert (hermes_home / "config.yaml").read_bytes() == original
+        assert not list(hermes_home.glob(".*.snap-restore-*.tmp"))
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX dirfd regression")
+    def test_restore_publication_binds_nested_parent(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        parent = hermes_home / "platforms" / "pairing"
+        parent.mkdir(parents=True)
+        target = parent / "telegram-approved.json"
+        snapshot_payload = b'{"snapshot": true}'
+        target.write_bytes(snapshot_payload)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        target.write_bytes(b'{"current": true}')
+
+        displaced = parent.with_name("pairing-displaced")
+        injected = False
+        replacement_succeeded = False
+        replacement_payload = b'{"foreign": true}'
+
+        def install_replacement():
+            nonlocal injected, replacement_succeeded
+            injected = True
+            try:
+                parent.rename(displaced)
+                parent.mkdir()
+                (parent / target.name).write_bytes(replacement_payload)
+                replacement_succeeded = True
+            except OSError:
+                replacement_succeeded = False
+
+        real_replace = backup_mod.os.replace
+
+        def replace_while_publishing(source, destination, *args, **kwargs):
+            if Path(destination).name == target.name and not injected:
+                install_replacement()
+            return real_replace(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(
+            backup_mod.os, "replace", replace_while_publishing
+        )
+
+        backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        assert injected
+        assert replacement_succeeded
+        assert target.read_bytes() == replacement_payload
+        assert (displaced / target.name).read_bytes() == snapshot_payload
+        assert not list(displaced.glob(".*.snap-restore-*.tmp"))
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows handle regression")
+    def test_windows_handle_relative_publication_ignores_parent_path_replacement(
+        self, tmp_path
+    ):
+        import ctypes
+        import hermes_cli.backup as backup_mod
+
+        parent = tmp_path / "restore-parent"
+        parent.mkdir()
+        stage = parent / ".state.snap-restore-test.tmp"
+        stage_payload = b"snapshot payload"
+        stage.write_bytes(stage_payload)
+        stage_identity = stage.lstat()
+        parent_handle = backup_mod._open_bound_snapshot_directory(parent)
+        displaced = tmp_path / "restore-parent-displaced"
+        foreign = parent / "state.db"
+        parent.rename(displaced)
+        parent.mkdir()
+        foreign.write_bytes(b"operator payload")
+        try:
+            published = backup_mod._replace_windows_snapshot_member_by_handle(
+                parent_handle,
+                displaced / stage.name,
+                "state.db",
+                stage_identity,
+            )
+        finally:
+            ctypes.windll.kernel32.CloseHandle(parent_handle)
+
+        assert backup_mod._same_snapshot_object(stage_identity, published)
+        assert foreign.read_bytes() == b"operator payload"
+        assert (displaced / "state.db").read_bytes() == stage_payload
+        assert not (displaced / stage.name).exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows handle regression")
+    def test_restore_fails_closed_when_parent_path_changes_before_stage_handle_open(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        parent = hermes_home / "platforms" / "pairing"
+        parent.mkdir(parents=True)
+        target = parent / "telegram-approved.json"
+        target.write_bytes(b'{"snapshot": true}')
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        current_payload = b'{"current": true}'
+        target.write_bytes(current_payload)
+
+        displaced = parent.with_name("pairing-displaced-before-stage-open")
+        foreign_payload = b'{"foreign": true}'
+        real_replace = backup_mod._replace_windows_snapshot_member_by_handle
+        injected = False
+
+        def replace_after_stage_close(parent_fd, source, destination_name, expected):
+            nonlocal injected
+            if destination_name == target.name and not injected:
+                injected = True
+                parent.rename(displaced)
+                parent.mkdir()
+                (parent / destination_name).write_bytes(foreign_payload)
+                Path(source).write_bytes(b"attacker staging object")
+            return real_replace(parent_fd, source, destination_name, expected)
+
+        monkeypatch.setattr(
+            backup_mod,
+            "_replace_windows_snapshot_member_by_handle",
+            replace_after_stage_close,
+        )
+
+        backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert injected
+        assert target.read_bytes() == foreign_payload
+        assert (displaced / target.name).read_bytes() == current_payload
+        assert list(displaced.glob(".*.snap-restore-*.tmp"))
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+    def test_restore_rejects_nested_parent_replaced_by_junction_before_binding(
+        self, hermes_home, tmp_path, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        parent = hermes_home / "platforms" / "pairing"
+        parent.mkdir(parents=True)
+        target = parent / "telegram-approved.json"
+        target.write_text('{"snapshot": true}', encoding="utf-8")
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        target.write_text('{"current": true}', encoding="utf-8")
+
+        foreign = tmp_path / "operator-pairing"
+        foreign.mkdir()
+        foreign_target = foreign / target.name
+        foreign_target.write_text('{"foreign": true}', encoding="utf-8")
+        displaced = parent.with_name("pairing-before-junction")
+        real_hold = backup_mod._hold_snapshot_parent_chain
+        injected = False
+
+        @contextmanager
+        def replace_then_hold(chain):
+            nonlocal injected
+            if chain[-1][0] == parent and not injected:
+                injected = True
+                parent.rename(displaced)
+                created = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(parent), str(foreign)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if created.returncode:
+                    pytest.skip(
+                        f"junction creation unavailable: {created.stderr.strip()}"
+                    )
+            with real_hold(chain) as parent_fd:
+                yield parent_fd
+
+        monkeypatch.setattr(
+            backup_mod, "_hold_snapshot_parent_chain", replace_then_hold
+        )
+
+        backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        assert injected
+        assert foreign_target.read_text(encoding="utf-8") == '{"foreign": true}'
+        assert not list(foreign.glob(".*.snap-restore-*.tmp"))
+        assert target.resolve().is_relative_to(foreign.resolve())
 
     def test_restore_nonexistent(self, hermes_home):
         from hermes_cli.backup import restore_quick_snapshot

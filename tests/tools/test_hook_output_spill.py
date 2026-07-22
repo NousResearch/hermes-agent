@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import types
 import unittest
@@ -11,6 +12,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools import hook_output_spill as hos
+
+
+def _make_directory_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 class GetSpillConfigTests(unittest.TestCase):
@@ -519,6 +532,98 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertFalse(session.exists())
         self.assertTrue(hos._prepare_owned_spill_dir(session))
         self.assertTrue(hos._is_owned_spill_dir(session))
+
+    def test_publication_rejects_regular_directory_replacement_before_write(self):
+        session = Path(self.tmpdir) / "replace-before-write"
+        displaced = Path(self.tmpdir) / "owned-displaced"
+        real_open = hos.os.open
+        injected = False
+
+        def replace_on_spill_open(path, flags, *args, **kwargs):
+            nonlocal injected
+            selected = Path(path)
+            if flags & os.O_CREAT and selected.suffix == ".txt" and not injected:
+                injected = True
+                session.rename(displaced)
+                session.mkdir()
+                (session / ".hermes-managed").write_text("hook_outputs\n")
+                (session / "human.txt").write_text("keep")
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(hos.os, "open", side_effect=replace_on_spill_open):
+            result = hos.spill_if_oversized(
+                "secret" * 100,
+                session_id=session.name,
+                config=self._cfg(max_chars=10),
+            )
+
+        self.assertIn("spill write failed", result)
+        self.assertEqual((session / "human.txt").read_text(), "keep")
+        self.assertEqual(list(session.glob("*.txt")), [session / "human.txt"])
+        self.assertTrue(hos._is_owned_spill_dir(displaced))
+
+    def test_publication_rejects_directory_junction_before_write(self):
+        session = Path(self.tmpdir) / "junction-before-write"
+        displaced = Path(self.tmpdir) / "junction-owned-displaced"
+        foreign = Path(self.tmpdir) / "foreign-target"
+        foreign.mkdir()
+        (foreign / ".hermes-managed").write_text("hook_outputs\n")
+        (foreign / "human.txt").write_text("keep")
+        probe = Path(self.tmpdir) / "directory-link-probe"
+        try:
+            _make_directory_link(probe, foreign)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            self.skipTest(f"directory link unavailable on this host: {exc}")
+        if probe.is_symlink():
+            probe.unlink()
+        else:
+            probe.rmdir()
+        real_open = hos.os.open
+        injected = False
+
+        def replace_with_link_on_spill_open(path, flags, *args, **kwargs):
+            nonlocal injected
+            selected = Path(path)
+            if flags & os.O_CREAT and selected.suffix == ".txt" and not injected:
+                injected = True
+                session.rename(displaced)
+                _make_directory_link(session, foreign)
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(hos.os, "open", side_effect=replace_with_link_on_spill_open):
+            result = hos.spill_if_oversized(
+                "secret" * 100,
+                session_id=session.name,
+                config=self._cfg(max_chars=10),
+            )
+
+        self.assertIn("spill write failed", result)
+        self.assertEqual((foreign / "human.txt").read_text(), "keep")
+        self.assertEqual(list(foreign.glob("*.txt")), [foreign / "human.txt"])
+        self.assertTrue(hos._is_owned_spill_dir(displaced))
+
+    def test_exclusive_publication_preserves_filename_race_winner(self):
+        session = Path(self.tmpdir) / "collision"
+        self.assertTrue(hos._prepare_owned_spill_dir(session))
+        winner = session / f"{'a' * 32}.txt"
+        winner.write_text("winner")
+        uuids = [
+            types.SimpleNamespace(hex="a" * 32),
+            types.SimpleNamespace(hex="b" * 32),
+        ]
+
+        with patch.object(hos.uuid, "uuid4", side_effect=uuids):
+            result = hos.spill_if_oversized(
+                "payload" * 100,
+                session_id=session.name,
+                config=self._cfg(max_chars=10),
+            )
+
+        published = session / f"{'b' * 32}.txt"
+        self.assertNotIn("spill write failed", result)
+        self.assertEqual(winner.read_text(), "winner")
+        self.assertTrue(published.exists())
+        self.assertIn(str(published), result)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ import os
 import stat
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
@@ -66,6 +67,34 @@ _OWNERSHIP_MARKER = ".hermes-managed"
 _OWNERSHIP_VALUE = "hook_outputs"
 _OWNERSHIP_V2_PREFIX = "hook_outputs:v2:"
 _DELETE_QUARANTINE_TOKEN = ".hermes-delete-"
+_SPILL_PUBLICATION_ATTEMPTS = 32
+
+
+@dataclass(frozen=True)
+class _OwnedSpillDirectory:
+    """Identity-bound proof for one writable spill namespace."""
+
+    path: Path
+    directory_identity: os.stat_result
+    marker_identity: os.stat_result
+    marker_value: str
+
+
+def _remove_exact_empty_directory(path: Path, expected: os.stat_result) -> bool:
+    """Quarantine then remove only the exact empty directory we created."""
+    quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
+    try:
+        if not _same_owned_directory(path, expected):
+            return False
+        os.replace(path, quarantine)
+        moved = quarantine.lstat()
+        if not os.path.samestat(expected, moved):
+            # A race winner was moved, but is preserved rather than deleted.
+            return False
+        quarantine.rmdir()
+        return True
+    except OSError:
+        return False
 
 
 def _path_is_link_like(path: Path) -> bool:
@@ -208,8 +237,10 @@ def _build_preview(
     return "\n".join(parts)
 
 
-def _is_owned_spill_dir(path: Path, *, expected_marker: Optional[str] = None) -> bool:
-    """Return whether a session directory has exact, non-symlink ownership."""
+def _owned_spill_dir_evidence(
+    path: Path, *, expected_marker: Optional[str] = None
+) -> Optional[_OwnedSpillDirectory]:
+    """Capture exact directory and marker evidence for a spill namespace."""
     marker = path / _OWNERSHIP_MARKER
     fd: Optional[int] = None
     try:
@@ -225,7 +256,7 @@ def _is_owned_spill_dir(path: Path, *, expected_marker: Optional[str] = None) ->
             or marker.is_symlink()
             or marker_attrs & 0x400
         ):
-            return False
+            return None
         flags = os.O_RDONLY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -235,12 +266,12 @@ def _is_owned_spill_dir(path: Path, *, expected_marker: Optional[str] = None) ->
             not stat.S_ISREG(opened_marker.st_mode)
             or not os.path.samestat(marker_stat, opened_marker)
         ):
-            return False
+            return None
         with os.fdopen(fd, "r", encoding="utf-8") as marker_file:
             fd = None
             value = marker_file.read(129)
         if len(value) > 128:
-            return False
+            return None
         value = value.strip()
         marker_matches = (
             value == expected_marker
@@ -251,52 +282,158 @@ def _is_owned_spill_dir(path: Path, *, expected_marker: Optional[str] = None) ->
                 and value == f"{_OWNERSHIP_V2_PREFIX}{path.name}"
             )
         )
-        return (
-            marker_matches
-            and os.path.samestat(path_stat, path.lstat())
-            and os.path.samestat(marker_stat, marker.lstat())
-        )
+        if (
+            not marker_matches
+            or not os.path.samestat(path_stat, path.lstat())
+            or not os.path.samestat(marker_stat, marker.lstat())
+        ):
+            return None
+        return _OwnedSpillDirectory(path, path_stat, marker_stat, value)
     except (OSError, UnicodeError):
-        return False
+        return None
     finally:
         if fd is not None:
             os.close(fd)
 
 
-def _prepare_owned_spill_dir(
+def _owned_spill_dir_evidence_is_current(evidence: _OwnedSpillDirectory) -> bool:
+    """Revalidate that both names still select the captured owned objects."""
+    current = _owned_spill_dir_evidence(
+        evidence.path, expected_marker=evidence.marker_value
+    )
+    return bool(
+        current is not None
+        and os.path.samestat(
+            evidence.directory_identity, current.directory_identity
+        )
+        and os.path.samestat(evidence.marker_identity, current.marker_identity)
+    )
+
+
+def _is_owned_spill_dir(path: Path, *, expected_marker: Optional[str] = None) -> bool:
+    """Return whether a session directory has exact, non-symlink ownership."""
+    return _owned_spill_dir_evidence(path, expected_marker=expected_marker) is not None
+
+
+def _prepare_owned_spill_dir_evidence(
     path: Path, *, marker_value: str = _OWNERSHIP_VALUE
-) -> bool:
-    """Create and mark a new session dir, or verify an existing owned one."""
+) -> Optional[_OwnedSpillDirectory]:
+    """Create and bind a session directory, or bind an existing owned one."""
+    created_identity: Optional[os.stat_result] = None
     try:
         path.mkdir(parents=True, exist_ok=False)
+        created_identity = path.lstat()
     except FileExistsError:
         # Never adopt a pre-existing directory by stamping a marker into it.
-        return _is_owned_spill_dir(path, expected_marker=marker_value)
+        return _owned_spill_dir_evidence(path, expected_marker=marker_value)
     except OSError:
-        return False
+        return None
 
     marker = path / _OWNERSHIP_MARKER
     try:
         with marker.open("x", encoding="utf-8") as marker_file:
             marker_file.write(f"{marker_value}\n")
     except (FileExistsError, OSError):
+        if created_identity is not None:
+            _remove_exact_empty_directory(path, created_identity)
+        return None
+
+    evidence = _owned_spill_dir_evidence(path, expected_marker=marker_value)
+    if (
+        evidence is not None
+        and created_identity is not None
+        and os.path.samestat(created_identity, evidence.directory_identity)
+    ):
+        return evidence
+    return None
+
+
+def _publish_spill_file(
+    evidence: _OwnedSpillDirectory, text: str
+) -> Optional[Path]:
+    """Exclusively publish one spill inside the exact captured namespace.
+
+    The file is opened empty first. Directory and marker identities are then
+    revalidated before any hook output is written, so a regular-directory or
+    Windows-junction replacement can receive at most an empty file. Failed
+    empty creations are removed only through exact file identity checks.
+    """
+    payload = (text if text.endswith("\n") else text + "\n").encode("utf-8")
+    for _ in range(_SPILL_PUBLICATION_ATTEMPTS):
+        if not _owned_spill_dir_evidence_is_current(evidence):
+            return None
+        destination = evidence.path / f"{uuid.uuid4().hex}.txt"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd: Optional[int] = None
+        opened: Optional[os.stat_result] = None
+        published = False
+        clean_empty = False
         try:
-            path.rmdir()
+            fd = os.open(destination, flags, 0o600)
+            opened = os.fstat(fd)
+            selected = destination.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_size != 0
+                or not os.path.samestat(opened, selected)
+                or not _owned_spill_dir_evidence_is_current(evidence)
+            ):
+                clean_empty = opened.st_size == 0
+                raise OSError("spill namespace changed before publication")
+
+            view = memoryview(payload)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short write while publishing hook output spill")
+                view = view[written:]
+            os.fsync(fd)
+
+            after = os.fstat(fd)
+            selected_after = destination.lstat()
+            if (
+                not os.path.samestat(opened, after)
+                or not os.path.samestat(after, selected_after)
+                or after.st_size != len(payload)
+                or not _owned_spill_dir_evidence_is_current(evidence)
+            ):
+                raise OSError("spill namespace changed during publication")
+            published = True
+            return destination
+        except FileExistsError:
+            # Preserve the race winner and retry with another bounded nonce.
+            continue
         except OSError:
-            pass
-        return False
-    if _is_owned_spill_dir(path, expected_marker=marker_value):
-        return True
-    try:
-        path.rmdir()
-    except OSError:
-        pass
-    return False
+            return None
+        finally:
+            if fd is not None:
+                if opened is not None and not published:
+                    try:
+                        clean_empty = clean_empty or os.fstat(fd).st_size == 0
+                    except OSError:
+                        pass
+                os.close(fd)
+            if clean_empty and opened is not None:
+                _atomic_unlink_spill(destination, opened, require_empty=True)
+    return None
+
+
+def _prepare_owned_spill_dir(
+    path: Path, *, marker_value: str = _OWNERSHIP_VALUE
+) -> bool:
+    """Create and mark a new session dir, or verify an existing owned one."""
+    return _prepare_owned_spill_dir_evidence(
+        path, marker_value=marker_value
+    ) is not None
 
 
 def _resolve_writable_spill_dir(
     directory_override: Optional[str], session_id: Optional[str]
-) -> Optional[Path]:
+) -> Optional[_OwnedSpillDirectory]:
     """Return an owned write directory without adopting legacy state.
 
     Pre-marker Hermes releases created ``<base>/<session_id>`` directories.
@@ -306,17 +443,23 @@ def _resolve_writable_spill_dir(
     by foreign state.
     """
     legacy_path = _resolve_spill_dir(directory_override, session_id)
-    if _prepare_owned_spill_dir(legacy_path):
-        return legacy_path
+    evidence = _prepare_owned_spill_dir_evidence(legacy_path)
+    if evidence is not None:
+        return evidence
 
     for candidate in _spill_v2_candidates(legacy_path.parent, session_id):
         marker_value = f"{_OWNERSHIP_V2_PREFIX}{candidate.name}"
-        if _prepare_owned_spill_dir(candidate, marker_value=marker_value):
-            return candidate
+        evidence = _prepare_owned_spill_dir_evidence(
+            candidate, marker_value=marker_value
+        )
+        if evidence is not None:
+            return evidence
     return None
 
 
-def _atomic_unlink_spill(path: Path, expected: os.stat_result) -> bool:
+def _atomic_unlink_spill(
+    path: Path, expected: os.stat_result, *, require_empty: bool = False
+) -> bool:
     """Unlink the exact opened spill object, never a pathname replacement."""
     fd: Optional[int] = None
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
@@ -372,6 +515,7 @@ def _atomic_unlink_spill(path: Path, expected: os.stat_result) -> bool:
         current_attributes = int(getattr(current, "st_file_attributes", 0))
         if (
             not stat.S_ISREG(opened.st_mode)
+            or (require_empty and opened.st_size != 0)
             or not stat.S_ISREG(current.st_mode)
             or path.is_symlink()
             or current_attributes & 0x400
@@ -380,7 +524,11 @@ def _atomic_unlink_spill(path: Path, expected: os.stat_result) -> bool:
         ):
             return False
         os.replace(path, quarantine)
-        if not os.path.samestat(opened, quarantine.lstat()):
+        moved = quarantine.lstat()
+        if (
+            not os.path.samestat(opened, moved)
+            or (require_empty and os.fstat(fd).st_size != 0)
+        ):
             # The pathname no longer carries safe restoration authority. A
             # concurrent writer may recreate it at any instant, so preserve
             # the quarantined object instead of risking an overwrite.
@@ -551,11 +699,9 @@ def spill_if_oversized(
                 f"no exclusively Hermes-owned spill directory under "
                 f"{legacy_spill_dir.parent}"
             )
-        filename = f"{uuid.uuid4().hex}.txt"
-        spill_path = spill_dir / filename
-        # Write the raw text plus a trailing newline so tail readers
-        # (``tail -f``, editors) don't report "missing newline".
-        spill_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        spill_path = _publish_spill_file(spill_dir, text)
+        if spill_path is None:
+            raise OSError("spill namespace changed during exclusive publication")
         saved_path = str(spill_path)
     except Exception as exc:
         logger.warning("hook output spill failed: %s", exc)

@@ -52,6 +52,107 @@ _BACKUP_LOCKS_GUARD = threading.Lock()
 _BACKUP_LOCK_FILENAME = ".maintenance.lock"
 
 
+def _opened_windows_handle_path(handle: int) -> Optional[Path]:
+    """Return the kernel-resolved path for an opened Windows handle."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        get_final_path = ctypes.windll.kernel32.GetFinalPathNameByHandleW
+        get_final_path.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        )
+        get_final_path.restype = ctypes.c_uint32
+        needed = get_final_path(handle, None, 0, 0)
+        if not needed:
+            return None
+        buffer = ctypes.create_unicode_buffer(needed + 1)
+        written = get_final_path(handle, buffer, len(buffer), 0)
+        if not written or written >= len(buffer):
+            return None
+        actual = buffer.value
+        if actual.startswith("\\\\?\\UNC\\"):
+            actual = "\\\\" + actual[8:]
+        elif actual.startswith("\\\\?\\"):
+            actual = actual[4:]
+        return Path(actual)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _opened_fd_path(fd: int) -> Optional[Path]:
+    """Return the kernel-resolved Windows path for an opened descriptor."""
+    if os.name != "nt":
+        return None
+    try:
+        return _opened_windows_handle_path(msvcrt.get_osfhandle(fd))
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _opened_fd_matches_path(fd: int, expected_path: Path) -> bool:
+    """On Windows, prove the handle did not traverse a swapped junction."""
+    if os.name != "nt":
+        return True
+    actual = _opened_fd_path(fd)
+    if actual is None:
+        return False
+    expected = os.path.abspath(os.fspath(expected_path))
+    return os.path.normcase(os.path.normpath(os.fspath(actual))) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+
+
+def _windows_handle_matches_stat(handle: int, expected: os.stat_result) -> bool:
+    """Compare a raw Windows handle without weakening its rename guard."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        class _FileTime(ctypes.Structure):
+            _fields_ = [
+                ("low", ctypes.c_uint32),
+                ("high", ctypes.c_uint32),
+            ]
+
+        class _ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("attributes", ctypes.c_uint32),
+                ("creation_time", _FileTime),
+                ("access_time", _FileTime),
+                ("write_time", _FileTime),
+                ("volume_serial", ctypes.c_uint32),
+                ("size_high", ctypes.c_uint32),
+                ("size_low", ctypes.c_uint32),
+                ("links", ctypes.c_uint32),
+                ("index_high", ctypes.c_uint32),
+                ("index_low", ctypes.c_uint32),
+            ]
+
+        information = _ByHandleFileInformation()
+        get_information = ctypes.windll.kernel32.GetFileInformationByHandle
+        get_information.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(_ByHandleFileInformation),
+        )
+        get_information.restype = ctypes.c_int
+        if not get_information(handle, ctypes.byref(information)):
+            return False
+        file_index = (information.index_high << 32) | information.index_low
+        return bool(
+            information.volume_serial == expected.st_dev
+            and file_index == expected.st_ino
+            and not (information.attributes & 0x400)
+        )
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 @contextmanager
 def _backup_maintenance_lock(root: Path) -> Iterator[None]:
     """Serialize backup publication and family-specific pruning.
@@ -102,16 +203,19 @@ def _backup_maintenance_lock(root: Path) -> Iterator[None]:
         locked = False
         provenance_valid = False
         opened_lock: Optional[os.stat_result] = None
+        opened_lock_path: Optional[Path] = None
         try:
             current_root = root.lstat()
             current_lock = lock_path.lstat()
             opened_lock = os.fstat(lock_file.fileno())
+            opened_lock_path = _opened_fd_path(lock_file.fileno())
             if (
                 not os.path.samestat(root_identity, current_root)
                 or not stat.S_ISREG(opened_lock.st_mode)
                 or int(getattr(opened_lock, "st_file_attributes", 0)) & 0x400
                 or opened_lock.st_nlink != 1
                 or not os.path.samestat(opened_lock, current_lock)
+                or not _opened_fd_matches_path(lock_file.fileno(), lock_path)
             ):
                 raise OSError("backup maintenance lock provenance changed")
             provenance_valid = True
@@ -139,9 +243,10 @@ def _backup_maintenance_lock(root: Path) -> Iterator[None]:
                 lock_file.close()
             if created_lock and not provenance_valid and opened_lock is not None:
                 try:
-                    current_created = lock_path.lstat()
+                    cleanup_path = opened_lock_path or lock_path
+                    current_created = cleanup_path.lstat()
                     if os.path.samestat(opened_lock, current_created):
-                        _remove_owned_snapshot_file(lock_path, current_created)
+                        _remove_owned_snapshot_file(cleanup_path, current_created)
                 except OSError:
                     pass
 
@@ -423,6 +528,20 @@ def _safe_copy_db(
             expected_dst_identity = os.fstat(owner_fd)
             cleanup_identity = expected_dst_identity
             created_here = True
+            if not _opened_fd_matches_path(owner_fd, dst):
+                actual_created = _opened_fd_path(owner_fd)
+                os.close(owner_fd)
+                owner_fd = None
+                if actual_created is not None:
+                    try:
+                        actual_identity = actual_created.lstat()
+                        if os.path.samestat(expected_dst_identity, actual_identity):
+                            _remove_owned_snapshot_file(
+                                actual_created, actual_identity
+                            )
+                    except OSError:
+                        pass
+                raise OSError(f"SQLite destination escaped its parent: {dst}")
         else:
             selected = dst.lstat()
             if (
@@ -439,7 +558,10 @@ def _safe_copy_db(
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             owner_fd = os.open(dst, flags)
-            if not _same_snapshot_object(os.fstat(owner_fd), expected_dst_identity):
+            if (
+                not _same_snapshot_object(os.fstat(owner_fd), expected_dst_identity)
+                or not _opened_fd_matches_path(owner_fd, dst)
+            ):
                 logger.warning(
                     "SQLite safe copy refused replaced destination %s", dst
                 )
@@ -478,6 +600,7 @@ def _safe_copy_db(
             not stat.S_ISREG(source_selected.st_mode)
             or int(getattr(source_selected, "st_file_attributes", 0)) & 0x400
             or not os.path.samestat(source_selected, os.fstat(source_fd))
+            or not _opened_fd_matches_path(source_fd, src)
         ):
             raise OSError(f"SQLite source changed before backup: {src}")
 
@@ -905,9 +1028,12 @@ def run_backup(args) -> None:
             ):
                 raise OSError("published backup identity changed")
             if published_via_link:
-                _remove_owned_snapshot_file(temp_path, temp_identity)
-            temp_path = None
-            temp_identity = None
+                if _remove_owned_snapshot_file(temp_path, temp_identity):
+                    temp_path = None
+                    temp_identity = None
+            else:
+                temp_path = None
+                temp_identity = None
             out_path = candidate
             break
         else:
@@ -1521,6 +1647,345 @@ def _snapshot_parent_is_bound(
     return _snapshot_directory_is_bound(snapshot_dir, expected)
 
 
+def _snapshot_parent_chain(
+    snapshot_dir: Path,
+    expected: os.stat_result,
+    relative_parent: PurePosixPath,
+) -> Optional[list[tuple[Path, os.stat_result]]]:
+    if not _snapshot_directory_is_bound(snapshot_dir, expected):
+        return None
+    chain: list[tuple[Path, os.stat_result]] = [(snapshot_dir, expected)]
+    current = snapshot_dir
+    for part in relative_parent.parts:
+        if part in ("", ".", ".."):
+            return None
+        current = current / part
+        try:
+            selected = current.lstat()
+        except OSError:
+            return None
+        if (
+            not stat.S_ISDIR(selected.st_mode)
+            or int(getattr(selected, "st_file_attributes", 0)) & 0x400
+        ):
+            return None
+        chain.append((current, selected))
+    return chain
+
+
+def _snapshot_parent_chain_is_bound(
+    chain: list[tuple[Path, os.stat_result]],
+) -> bool:
+    try:
+        for current, expected in chain:
+            selected = current.lstat()
+            if (
+                not stat.S_ISDIR(selected.st_mode)
+                or int(getattr(selected, "st_file_attributes", 0)) & 0x400
+                or not _same_snapshot_object(expected, selected)
+            ):
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _open_bound_snapshot_directory(path: Path) -> int:
+    """Open a non-reparse directory, denying replacement on Windows."""
+    if os.name != "nt":
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        return os.open(path, flags)
+
+    import ctypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path),
+        0x00000080,  # FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError()
+    # Keep this as a raw handle. It remains bound to the selected directory
+    # even when another process renames that directory and replaces its path.
+    return handle
+
+
+@contextmanager
+def _hold_snapshot_parent_chain(
+    chain: list[tuple[Path, os.stat_result]],
+) -> Iterator[int]:
+    """Hold the exact restore parent chain through atomic publication."""
+    opened: list[int] = []
+    try:
+        for path, expected in chain:
+            fd = _open_bound_snapshot_directory(path)
+            opened.append(fd)
+            selected = path.lstat()
+            if os.name == "nt":
+                if (
+                    int(getattr(selected, "st_file_attributes", 0)) & 0x400
+                    or not stat.S_ISDIR(selected.st_mode)
+                    or not _same_snapshot_object(expected, selected)
+                    or not _windows_handle_matches_stat(fd, expected)
+                ):
+                    raise OSError(
+                        "snapshot parent changed while binding publication"
+                    )
+            else:
+                actual = os.fstat(fd)
+                if (
+                    not stat.S_ISDIR(actual.st_mode)
+                    or not _same_snapshot_object(expected, selected)
+                    or not _same_snapshot_object(expected, actual)
+                ):
+                    raise OSError(
+                        "snapshot parent changed while binding publication"
+                    )
+        if not opened or not _snapshot_parent_chain_is_bound(chain):
+            raise OSError("snapshot parent changed after binding publication")
+        yield opened[-1]
+    finally:
+        if os.name == "nt":
+            import ctypes
+
+            for handle in reversed(opened):
+                ctypes.windll.kernel32.CloseHandle(handle)
+        else:
+            for fd in reversed(opened):
+                os.close(fd)
+
+
+def _bound_parent_stat(parent_fd: int, parent: Path, name: str) -> os.stat_result:
+    if os.name == "nt":
+        return (parent / name).lstat()
+    return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+
+
+def _remove_bound_snapshot_member(
+    parent_fd: int,
+    parent: Path,
+    name: str,
+    expected: os.stat_result,
+) -> bool:
+    """Remove only the exact staged member from an already-bound parent."""
+    if os.name == "nt":
+        return _remove_owned_snapshot_file(parent / name, expected)
+    quarantine = f".{name}.hermes-delete-{uuid.uuid4().hex}"
+    try:
+        current = _bound_parent_stat(parent_fd, parent, name)
+        if not _same_snapshot_object(expected, current):
+            return False
+        os.replace(
+            name,
+            quarantine,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        moved = _bound_parent_stat(parent_fd, parent, quarantine)
+        if not _same_snapshot_object(expected, moved):
+            return False
+        os.unlink(quarantine, dir_fd=parent_fd)
+        return True
+    except OSError:
+        return False
+
+
+def _bound_snapshot_member_sha256(
+    parent_fd: int,
+    parent: Path,
+    name: str,
+    expected: os.stat_result,
+) -> str:
+    """Hash one exact staged member through its already-bound parent."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if os.name == "nt":
+        fd = os.open(parent / name, flags)
+    else:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        opened = os.fstat(fd)
+        selected = _bound_parent_stat(parent_fd, parent, name)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not _same_snapshot_object(expected, opened)
+            or not _same_snapshot_object(opened, selected)
+            or not _opened_fd_matches_path(fd, parent / name)
+        ):
+            raise OSError("restore staging changed before verification")
+        digest = hashlib.sha256()
+        copied = 0
+        while chunk := os.read(fd, 1024 * 1024):
+            copied += len(chunk)
+            digest.update(chunk)
+        after = os.fstat(fd)
+        selected_after = _bound_parent_stat(parent_fd, parent, name)
+        if (
+            copied != opened.st_size
+            or after.st_size != opened.st_size
+            or after.st_mtime_ns != opened.st_mtime_ns
+            or after.st_ctime_ns != opened.st_ctime_ns
+            or not _same_snapshot_object(opened, selected_after)
+        ):
+            raise OSError("restore staging changed during verification")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _nt_replace_windows_file(
+    source_handle: int,
+    parent_handle: int,
+    destination_name: str,
+) -> None:
+    """Rename an opened file relative to an opened directory handle."""
+    import ctypes
+
+    class _FileRenameInformation(ctypes.Structure):
+        _fields_ = [
+            ("flags", ctypes.c_uint32),
+            ("root_directory", ctypes.c_void_p),
+            ("file_name_length", ctypes.c_uint32),
+            ("file_name", ctypes.c_wchar * len(destination_name)),
+        ]
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [
+            ("status_or_pointer", ctypes.c_void_p),
+            ("information", ctypes.c_size_t),
+        ]
+
+    rename = _FileRenameInformation()
+    rename.flags = 1  # ReplaceIfExists
+    rename.root_directory = parent_handle
+    rename.file_name_length = len(destination_name.encode("utf-16-le"))
+    rename.file_name = destination_name
+    io_status = _IoStatusBlock()
+    set_information = ctypes.windll.ntdll.NtSetInformationFile
+    set_information.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_int,
+    )
+    set_information.restype = ctypes.c_long
+    status = set_information(
+        source_handle,
+        ctypes.byref(io_status),
+        ctypes.byref(rename),
+        ctypes.sizeof(rename),
+        10,  # FileRenameInformation
+    )
+    if status < 0:
+        raise OSError(
+            f"handle-relative restore rename failed with NTSTATUS "
+            f"0x{status & 0xFFFFFFFF:08x}"
+        )
+
+
+def _replace_windows_snapshot_member_by_handle(
+    parent_fd: int,
+    source: Path,
+    destination_name: str,
+    expected: os.stat_result,
+) -> os.stat_result:
+    """Rename an exact opened stage relative to the exact parent handle."""
+    import ctypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    source_handle = create_file(
+        str(source),
+        0x00010000 | 0x00000080,  # DELETE | FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,  # OPEN_EXISTING
+        0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT
+        None,
+    )
+    if source_handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError()
+    try:
+        if not _windows_handle_matches_stat(source_handle, expected):
+            raise OSError("restore staging changed before handle-relative rename")
+        _nt_replace_windows_file(source_handle, parent_fd, destination_name)
+        if not _windows_handle_matches_stat(source_handle, expected):
+            raise OSError("restore staging changed during handle-relative rename")
+        return expected
+    finally:
+        ctypes.windll.kernel32.CloseHandle(source_handle)
+
+
+def _replace_bound_snapshot_member(
+    parent_fd: int,
+    parent: Path,
+    stage_name: str,
+    destination_name: str,
+    stage_identity: os.stat_result,
+    parent_chain: list[tuple[Path, os.stat_result]],
+) -> os.stat_result:
+    """Publish a staged restore without resolving a replaceable parent path."""
+    selected = _bound_parent_stat(parent_fd, parent, stage_name)
+    if (
+        not _same_snapshot_object(stage_identity, selected)
+        or not _snapshot_parent_chain_is_bound(parent_chain)
+    ):
+        raise OSError("restore staging or destination parent changed")
+    if os.name == "nt":
+        published = _replace_windows_snapshot_member_by_handle(
+            parent_fd,
+            parent / stage_name,
+            destination_name,
+            stage_identity,
+        )
+    else:
+        os.replace(
+            stage_name,
+            destination_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        published = _bound_parent_stat(parent_fd, parent, destination_name)
+    if (
+        not _same_snapshot_object(stage_identity, published)
+        or not _snapshot_parent_chain_is_bound(parent_chain)
+    ):
+        raise OSError("restored destination identity changed")
+    return published
+
+
 def _ensure_snapshot_parent(
     snapshot_dir: Path,
     expected: os.stat_result,
@@ -1556,6 +2021,8 @@ def _write_exclusive_snapshot_file(
     snapshot_identity: os.stat_result,
     relative_name: str,
     chunks: Iterator[bytes],
+    *,
+    bound_parent_fd: Optional[int] = None,
 ) -> tuple[Path, os.stat_result, int]:
     """Write a new snapshot member without trusting a replaceable directory."""
     relative = PurePosixPath(relative_name)
@@ -1564,25 +2031,39 @@ def _write_exclusive_snapshot_file(
     parent_rel = relative.parent
     if not _ensure_snapshot_parent(snapshot_dir, snapshot_identity, parent_rel):
         raise OSError("snapshot directory changed before member creation")
+    parent_chain = _snapshot_parent_chain(
+        snapshot_dir, snapshot_identity, parent_rel
+    )
+    if parent_chain is None:
+        raise OSError("snapshot parent changed before member creation")
     destination = snapshot_dir.joinpath(*relative.parts)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(destination, flags, 0o600)
+    use_bound_parent = bound_parent_fd is not None and os.name != "nt"
+    if use_bound_parent:
+        fd = os.open(relative.name, flags, 0o600, dir_fd=bound_parent_fd)
+    else:
+        fd = os.open(destination, flags, 0o600)
     opened: Optional[os.stat_result] = None
+    opened_actual_path: Optional[Path] = None
     success = False
     copied = 0
     try:
         opened = os.fstat(fd)
-        path_opened = destination.lstat()
+        opened_actual_path = _opened_fd_path(fd)
+        path_opened = (
+            _bound_parent_stat(bound_parent_fd, destination.parent, relative.name)
+            if use_bound_parent
+            else destination.lstat()
+        )
         if (
             not stat.S_ISREG(opened.st_mode)
             or not os.path.samestat(opened, path_opened)
-            or not _snapshot_parent_is_bound(
-                snapshot_dir, snapshot_identity, parent_rel
-            )
+            or not _opened_fd_matches_path(fd, destination)
+            or not _snapshot_parent_chain_is_bound(parent_chain)
         ):
             raise OSError("snapshot directory changed during member creation")
         for chunk in chunks:
@@ -1597,13 +2078,16 @@ def _write_exclusive_snapshot_file(
                 view = view[written:]
         os.fsync(fd)
         after = os.fstat(fd)
-        path_after = destination.lstat()
+        path_after = (
+            _bound_parent_stat(bound_parent_fd, destination.parent, relative.name)
+            if use_bound_parent
+            else destination.lstat()
+        )
         if (
             not os.path.samestat(opened, after)
             or not os.path.samestat(after, path_after)
-            or not _snapshot_parent_is_bound(
-                snapshot_dir, snapshot_identity, parent_rel
-            )
+            or not _opened_fd_matches_path(fd, destination)
+            or not _snapshot_parent_chain_is_bound(parent_chain)
         ):
             raise OSError("snapshot member changed during write")
         success = True
@@ -1611,16 +2095,29 @@ def _write_exclusive_snapshot_file(
         os.close(fd)
         if not success and opened is not None:
             try:
-                current = destination.lstat()
-                if os.path.samestat(opened, current):
-                    _remove_owned_snapshot_file(destination, current)
+                if use_bound_parent:
+                    _remove_bound_snapshot_member(
+                        bound_parent_fd,
+                        destination.parent,
+                        relative.name,
+                        opened,
+                    )
+                else:
+                    cleanup_path = opened_actual_path or destination
+                    current = cleanup_path.lstat()
+                    if os.path.samestat(opened, current):
+                        _remove_owned_snapshot_file(cleanup_path, current)
             except OSError:
                 pass
-    final = destination.lstat()
+    final = (
+        _bound_parent_stat(bound_parent_fd, destination.parent, relative.name)
+        if use_bound_parent
+        else destination.lstat()
+    )
     if (
         opened is None
         or not os.path.samestat(opened, final)
-        or not _snapshot_parent_is_bound(snapshot_dir, snapshot_identity, parent_rel)
+        or not _snapshot_parent_chain_is_bound(parent_chain)
     ):
         raise OSError("snapshot member changed after close")
     return destination, final, copied
@@ -1639,6 +2136,7 @@ def _opened_file_chunks(path: Path, expected: os.stat_result) -> Iterator[bytes]
             not stat.S_ISREG(opened.st_mode)
             or not _same_snapshot_object(expected, path.lstat())
             or not os.path.samestat(expected, opened)
+            or not _opened_fd_matches_path(fd, path)
         ):
             raise OSError(f"snapshot source changed before read: {path}")
         copied = 0
@@ -1656,6 +2154,13 @@ def _opened_file_chunks(path: Path, expected: os.stat_result) -> Iterator[bytes]
             raise OSError(f"snapshot source changed during read: {path}")
     finally:
         os.close(fd)
+
+
+def _opened_file_sha256(path: Path, expected: os.stat_result) -> str:
+    digest = hashlib.sha256()
+    for chunk in _opened_file_chunks(path, expected):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def create_quick_snapshot(
@@ -1711,6 +2216,7 @@ def create_quick_snapshot(
     safe_label = _quick_snapshot_label_segment(label)
     base_id = f"{ts}-{safe_label}" if safe_label else ts
     with _backup_maintenance_lock(root):
+        snapshot_root_identity = root.lstat()
         snap_id = base_id
         suffix = 1
         while True:
@@ -1747,8 +2253,9 @@ def create_quick_snapshot(
         )
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
+    manifest_hashes: Dict[str, str] = {}
 
-    def _capture_member(source: Path, relative_name: str) -> int:
+    def _capture_member(source: Path, relative_name: str) -> tuple[int, str]:
         selected = source.lstat()
         if (
             not stat.S_ISREG(selected.st_mode)
@@ -1756,19 +2263,33 @@ def create_quick_snapshot(
         ):
             raise OSError(f"snapshot source is not a regular file: {source}")
         if source.suffix != ".db":
-            _, _, copied = _write_exclusive_snapshot_file(
+            stored, stored_identity, copied = _write_exclusive_snapshot_file(
                 snap_dir,
                 snapshot_identity,
                 relative_name,
                 _opened_file_chunks(source, selected),
             )
-            return copied
+            return copied, _opened_file_sha256(stored, stored_identity)
 
         temp_db: Optional[Path] = None
         temp_identity: Optional[os.stat_result] = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(
+                suffix=".db", delete=False, dir=str(root)
+            ) as temp_file:
                 temp_db = Path(temp_file.name)
+                temp_opened = os.fstat(temp_file.fileno())
+                if (
+                    not _same_snapshot_object(
+                        snapshot_root_identity, root.lstat()
+                    )
+                    or not _opened_fd_matches_path(temp_file.fileno(), temp_db)
+                ):
+                    actual_temp = _opened_fd_path(temp_file.fileno())
+                    if actual_temp is not None:
+                        temp_db = actual_temp
+                    temp_identity = temp_opened
+                    raise OSError("SQLite staging path escaped snapshot root")
             temp_identity = temp_db.lstat()
             final_identity: list[os.stat_result] = []
             if not _safe_copy_db(
@@ -1781,13 +2302,13 @@ def create_quick_snapshot(
                 raise OSError(f"SQLite snapshot failed for {source}")
             if final_identity:
                 temp_identity = final_identity[0]
-            _, _, copied = _write_exclusive_snapshot_file(
+            stored, stored_identity, copied = _write_exclusive_snapshot_file(
                 snap_dir,
                 snapshot_identity,
                 relative_name,
                 _opened_file_chunks(temp_db, temp_identity),
             )
-            return copied
+            return copied, _opened_file_sha256(stored, stored_identity)
         finally:
             if temp_db is not None and temp_identity is not None:
                 _remove_owned_snapshot_file(temp_db, temp_identity)
@@ -1850,7 +2371,9 @@ def create_quick_snapshot(
                     if _too_large(sub, sub_rel):
                         continue
                     try:
-                        manifest[sub_rel] = _capture_member(sub, sub_rel)
+                        member_size, member_hash = _capture_member(sub, sub_rel)
+                        manifest[sub_rel] = member_size
+                        manifest_hashes[sub_rel] = member_hash
                     except (OSError, PermissionError) as exc:
                         logger.warning("Could not snapshot %s: %s", sub_rel, exc)
             continue
@@ -1864,7 +2387,9 @@ def create_quick_snapshot(
             continue
 
         try:
-            manifest[rel] = _capture_member(src, rel)
+            member_size, member_hash = _capture_member(src, rel)
+            manifest[rel] = member_size
+            manifest_hashes[rel] = member_hash
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
 
@@ -1888,6 +2413,7 @@ def create_quick_snapshot(
         "file_count": len(manifest),
         "total_size": sum(manifest.values()),
         "files": manifest,
+        "sha256": manifest_hashes,
     }
     try:
         _write_exclusive_snapshot_file(
@@ -2112,27 +2638,71 @@ def restore_quick_snapshot(
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
 
-    restored = 0
-    for rel in meta.get("files", {}):
-        # Security: reject absolute paths and traversals in manifest entries
-        relative = PurePosixPath(str(rel))
-        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-            logger.error("Manifest path traversal blocked: %s", rel)
-            continue
+    if not isinstance(meta, dict):
+        return False
+    files = meta.get("files")
+    hashes = meta.get("sha256", {})
+    if not isinstance(files, dict) or not files or not isinstance(hashes, dict):
+        return False
+    allowed_roots = tuple(PurePosixPath(item) for item in _QUICK_STATE_FILES)
+    total_size = 0
+    members: list[
+        tuple[str, PurePosixPath, Path, os.stat_result, Optional[str]]
+    ] = []
+    for rel, declared_size in files.items():
+        if (
+            not isinstance(rel, str)
+            or not isinstance(declared_size, int)
+            or isinstance(declared_size, bool)
+            or declared_size < 0
+        ):
+            return False
+        relative = PurePosixPath(rel)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or ".." in relative.parts
+            or not any(
+                relative == allowed or allowed in relative.parents
+                for allowed in allowed_roots
+            )
+        ):
+            return False
+        declared_hash = hashes.get(rel)
+        if declared_hash is not None and (
+            not isinstance(declared_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", declared_hash) is None
+        ):
+            return False
         src = snap_dir.joinpath(*relative.parts)
-
-        dst = home.joinpath(*relative.parts)
-
         try:
             source_identity = src.lstat()
-            if (
-                not stat.S_ISREG(source_identity.st_mode)
-                or int(getattr(source_identity, "st_file_attributes", 0)) & 0x400
-                or not _snapshot_directory_is_bound(snap_dir, snapshot_identity)
-            ):
-                continue
         except OSError:
-            continue
+            return False
+        if (
+            not stat.S_ISREG(source_identity.st_mode)
+            or int(getattr(source_identity, "st_file_attributes", 0)) & 0x400
+            or source_identity.st_size != declared_size
+            or not _snapshot_directory_is_bound(snap_dir, snapshot_identity)
+        ):
+            return False
+        if declared_hash is not None and _opened_file_sha256(
+            src, source_identity
+        ) != declared_hash:
+            return False
+        members.append(
+            (rel, relative, src, source_identity, declared_hash)
+        )
+        total_size += declared_size
+    if (
+        meta.get("file_count") != len(files)
+        or meta.get("total_size") != total_size
+    ):
+        return False
+
+    restored = 0
+    for rel, relative, src, source_identity, declared_hash in members:
+        dst = home.joinpath(*relative.parts)
 
         stage_rel = relative.parent / (
             f".{relative.name}.snap-restore-{uuid.uuid4().hex}.tmp"
@@ -2140,39 +2710,87 @@ def restore_quick_snapshot(
         stage: Optional[Path] = None
         stage_identity: Optional[os.stat_result] = None
         try:
-            stage, stage_identity, _ = _write_exclusive_snapshot_file(
-                home,
-                home_identity,
-                stage_rel.as_posix(),
-                _opened_file_chunks(src, source_identity),
-            )
-            if (
-                not _snapshot_directory_is_bound(snap_dir, snapshot_identity)
-                or not _snapshot_parent_is_bound(
-                    home, home_identity, relative.parent
-                )
+            if not _ensure_snapshot_parent(
+                home, home_identity, relative.parent
             ):
-                raise OSError("snapshot or restore destination changed")
-            try:
-                os.chmod(stage, stat.S_IMODE(source_identity.st_mode))
-            except OSError:
-                pass
-            current_stage = stage.lstat()
-            if not os.path.samestat(stage_identity, current_stage):
-                raise OSError("restore staging identity changed")
-            stage_identity = current_stage
-            os.replace(stage, dst)
-            published = dst.lstat()
-            if not os.path.samestat(stage_identity, published):
-                raise OSError("restored destination identity changed")
-            stage = None
-            stage_identity = None
-            restored += 1
+                raise OSError("restore destination parent is unavailable")
+            restore_parent_chain = _snapshot_parent_chain(
+                home, home_identity, relative.parent
+            )
+            if restore_parent_chain is None:
+                raise OSError("restore destination parent changed")
+            with _hold_snapshot_parent_chain(restore_parent_chain) as parent_fd:
+                try:
+                    stage, stage_identity, _ = _write_exclusive_snapshot_file(
+                        home,
+                        home_identity,
+                        stage_rel.as_posix(),
+                        _opened_file_chunks(src, source_identity),
+                        bound_parent_fd=parent_fd,
+                    )
+                    if (
+                        not _snapshot_directory_is_bound(
+                            snap_dir, snapshot_identity
+                        )
+                        or not _snapshot_parent_chain_is_bound(
+                            restore_parent_chain
+                        )
+                    ):
+                        raise OSError("snapshot or restore destination changed")
+                    try:
+                        if os.name == "nt":
+                            os.chmod(
+                                stage, stat.S_IMODE(source_identity.st_mode)
+                            )
+                        else:
+                            os.chmod(
+                                stage.name,
+                                stat.S_IMODE(source_identity.st_mode),
+                                dir_fd=parent_fd,
+                                follow_symlinks=False,
+                            )
+                    except OSError:
+                        pass
+                    current_stage = _bound_parent_stat(
+                        parent_fd, dst.parent, stage.name
+                    )
+                    if not _same_snapshot_object(
+                        stage_identity, current_stage
+                    ):
+                        raise OSError("restore staging identity changed")
+                    stage_identity = current_stage
+                    if (
+                        declared_hash is not None
+                        and _bound_snapshot_member_sha256(
+                            parent_fd,
+                            dst.parent,
+                            stage.name,
+                            stage_identity,
+                        )
+                        != declared_hash
+                    ):
+                        raise OSError("restore staging hash changed")
+                    _replace_bound_snapshot_member(
+                        parent_fd,
+                        dst.parent,
+                        stage.name,
+                        dst.name,
+                        stage_identity,
+                        restore_parent_chain,
+                    )
+                    stage = None
+                    stage_identity = None
+                    restored += 1
+                finally:
+                    if stage is not None and stage_identity is not None:
+                        _remove_bound_snapshot_member(
+                            parent_fd,
+                            dst.parent,
+                            stage.name,
+                            stage_identity,
+                        )
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
-        finally:
-            if stage is not None and stage_identity is not None:
-                _remove_owned_snapshot_file(stage, stage_identity)
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0
@@ -2443,6 +3061,7 @@ def _write_bound_file_to_zip(
         if (
             not stat.S_ISREG(opened.st_mode)
             or not os.path.samestat(selected, opened)
+            or not _opened_fd_matches_path(fd, source)
         ):
             raise OSError(f"backup source changed before open: {source}")
 
@@ -2660,9 +3279,12 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 return None
 
             if published_via_link:
-                _remove_owned_snapshot_file(temp_path, temp_identity)
-            temp_path = None
-            temp_identity = None
+                if _remove_owned_snapshot_file(temp_path, temp_identity):
+                    temp_path = None
+                    temp_identity = None
+            else:
+                temp_path = None
+                temp_identity = None
             return candidate
 
         logger.warning("Full-zip backup: destination kept colliding: %s", out_path)

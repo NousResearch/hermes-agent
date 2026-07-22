@@ -3423,6 +3423,110 @@ def _stat_is_reparse(st: os.stat_result) -> bool:
     return bool(int(getattr(st, "st_file_attributes", 0)) & 0x400)
 
 
+def _opened_file_actual_path(fd: int, intended_path: Path) -> Path:
+    """Return the filesystem path bound to an open destination handle.
+
+    On Windows, resolving the pathname again is insufficient: an attacker can
+    replace a parent with a junction between the exclusive open and the first
+    write.  The kernel's final path for the already-open handle exposes the
+    directory the create actually traversed.  Other platforms still resolve
+    the created pathname so callers can use one binding check and cleanup path.
+    """
+    if os.name != "nt":
+        return intended_path.resolve(strict=True)
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    handle = msvcrt.get_osfhandle(fd)
+    if handle == -1:
+        raise OSError("could not obtain destination OS handle")
+    get_final_path = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    get_final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    get_final_path.restype = wintypes.DWORD
+
+    capacity = 512
+    while True:
+        buffer = ctypes.create_unicode_buffer(capacity)
+        length = get_final_path(handle, buffer, capacity, 0)
+        if length == 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if length < capacity:
+            raw_path = buffer.value
+            break
+        capacity = length + 1
+
+    if raw_path.startswith("\\\\?\\UNC\\"):
+        raw_path = "\\\\" + raw_path[8:]
+    elif raw_path.startswith("\\\\?\\"):
+        raw_path = raw_path[4:]
+    return Path(raw_path)
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    """Compare already-resolved paths with Windows' case semantics."""
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
+        os.path.normpath(str(right))
+    )
+
+
+def _validate_opened_destination(
+    fd: int,
+    intended_path: Path,
+    actual_path: Path,
+    destination_dir: Path,
+    destination_dir_identity: os.stat_result,
+    destination_dir_resolved: Path,
+) -> os.stat_result:
+    """Bind an exclusive create to its exact file and directory before writes."""
+    opened = os.fstat(fd)
+    current_path = intended_path.lstat()
+    current_dir = destination_dir.lstat()
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(current_path.st_mode)
+        or _stat_is_reparse(current_path)
+        or not os.path.samestat(opened, current_path)
+        or not stat.S_ISDIR(current_dir.st_mode)
+        or _stat_is_reparse(current_dir)
+        or not os.path.samestat(destination_dir_identity, current_dir)
+        or not _same_resolved_path(
+            actual_path, destination_dir_resolved / intended_path.name
+        )
+    ):
+        raise ValueError("destination path changed during exclusive creation")
+    return opened
+
+
+def _cleanup_opened_destination(
+    actual_path: Optional[Path],
+    opened: Optional[os.stat_result],
+    *,
+    require_empty: bool,
+) -> None:
+    """Remove only the exact object created through the open handle."""
+    if actual_path is None or opened is None:
+        return
+    try:
+        current = actual_path.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or _stat_is_reparse(current)
+            or not os.path.samestat(opened, current)
+            or (require_empty and current.st_size != 0)
+        ):
+            return
+        _atomic_remove_expected_file(actual_path, _filesystem_identity(current))
+    except OSError:
+        pass
+
+
 def _exclusive_attachment_path(
     dest_dir: Path,
     safe_name: str,
@@ -3435,6 +3539,9 @@ def _exclusive_attachment_path(
         or _stat_is_reparse(directory_identity)
     ):
         raise ValueError(f"attachment directory is not a regular directory: {dest_dir}")
+    directory_resolved = dest_dir.resolve(strict=True)
+    if not os.path.samestat(directory_identity, directory_resolved.lstat()):
+        raise ValueError("attachment directory changed during resolution")
 
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
@@ -3452,9 +3559,21 @@ def _exclusive_attachment_path(
             continue
 
         created_stat: Optional[os.stat_result] = None
-        cleanup_created = False
+        actual_path: Optional[Path] = None
+        creation_failed = False
+        destination_touched = False
         try:
+            actual_path = _opened_file_actual_path(fd, dest_path)
+            created_stat = _validate_opened_destination(
+                fd,
+                dest_path,
+                actual_path,
+                dest_dir,
+                directory_identity,
+                directory_resolved,
+            )
             with os.fdopen(fd, "wb", closefd=False) as stream:
+                destination_touched = True
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -3471,35 +3590,24 @@ def _exclusive_attachment_path(
             ):
                 raise ValueError("attachment path changed during creation")
         except BaseException:
-            try:
-                opened = os.fstat(fd)
-                current = dest_path.lstat()
-                if stat.S_ISREG(current.st_mode) and os.path.samestat(opened, current):
-                    created_stat = opened
-                    cleanup_created = True
-            except OSError:
-                pass
+            creation_failed = True
+            if created_stat is None:
+                try:
+                    created_stat = os.fstat(fd)
+                except OSError:
+                    pass
             raise
         finally:
             try:
                 os.close(fd)
             except OSError:
                 pass
-            if cleanup_created and created_stat is not None:
-                try:
-                    final_created = dest_path.lstat()
-                    final_dir = dest_dir.lstat()
-                    if (
-                        stat.S_ISREG(final_created.st_mode)
-                        and not _stat_is_reparse(final_created)
-                        and os.path.samestat(created_stat, final_created)
-                        and os.path.samestat(directory_identity, final_dir)
-                    ):
-                        _atomic_remove_expected_file(
-                            dest_path, _filesystem_identity(final_created)
-                        )
-                except OSError:
-                    pass
+            if creation_failed:
+                _cleanup_opened_destination(
+                    actual_path,
+                    created_stat,
+                    require_empty=not destination_touched,
+                )
 
         try:
             # Capture deletion provenance only after CloseHandle/close has
@@ -5059,6 +5167,9 @@ def _persist_scratch_completion_artifacts(
         dest: Optional[Path] = None
         dest_identity: Optional[_FilesystemIdentity] = None
         dest_opened: Optional[os.stat_result] = None
+        destination_actual: Optional[Path] = None
+        destination_bound = False
+        destination_touched = False
         attachment_dir_identity: Optional[os.stat_result] = None
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
@@ -5070,17 +5181,45 @@ def _persist_scratch_completion_artifacts(
                 raise ArtifactPreservationError(
                     f"attachment destination is not a regular directory: {attachment_dir}"
                 )
+            attachment_dir_resolved = attachment_dir.resolve(strict=True)
+            if not os.path.samestat(
+                attachment_dir_identity, attachment_dir_resolved.lstat()
+            ):
+                raise ArtifactPreservationError(
+                    f"attachment destination changed during resolution: {attachment_dir}"
+                )
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
             source_flags = os.O_RDONLY
             if hasattr(os, "O_BINARY"):
                 source_flags |= os.O_BINARY
             if hasattr(os, "O_NOFOLLOW"):
                 source_flags |= os.O_NOFOLLOW
-            source_fd = os.open(resolved_src, source_flags)
-            with os.fdopen(source_fd, "rb") as source_file, dest.open(
-                "xb"
-            ) as destination_file:
+            destination_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_BINARY"):
+                destination_flags |= os.O_BINARY
+            if hasattr(os, "O_NOFOLLOW"):
+                destination_flags |= os.O_NOFOLLOW
+            with contextlib.ExitStack() as stack:
+                source_fd = os.open(resolved_src, source_flags)
+                source_file = stack.enter_context(os.fdopen(source_fd, "rb"))
+                destination_fd = os.open(dest, destination_flags, 0o600)
+                destination_file = stack.enter_context(
+                    os.fdopen(destination_fd, "wb")
+                )
                 try:
+                    destination_actual = _opened_file_actual_path(destination_fd, dest)
+                    # Retain an identity even if the binding validation rejects,
+                    # so the exact still-empty create can be removed after close.
+                    dest_opened = os.fstat(destination_fd)
+                    dest_opened = _validate_opened_destination(
+                        destination_fd,
+                        dest,
+                        destination_actual,
+                        attachment_dir,
+                        attachment_dir_identity,
+                        attachment_dir_resolved,
+                    )
+                    destination_bound = True
                     source_before = os.fstat(source_file.fileno())
                     source_path_open = resolved_src.lstat()
                     if (
@@ -5099,6 +5238,7 @@ def _persist_scratch_completion_artifacts(
                             raise ArtifactPreservationError(
                                 f"declared scratch artifact grew beyond the size limit: {artifact}"
                             )
+                        destination_touched = True
                         destination_file.write(chunk)
                     source_after = os.fstat(source_file.fileno())
                     source_path_after = resolved_src.lstat()
@@ -5116,26 +5256,27 @@ def _persist_scratch_completion_artifacts(
                         destination_file.flush()
                         os.fsync(destination_file.fileno())
                     finally:
-                        try:
-                            dest_opened = os.fstat(destination_file.fileno())
-                            dest_path_open = dest.lstat()
-                            destination_dir_open = attachment_dir.lstat()
-                            if (
-                                not stat.S_ISREG(dest_opened.st_mode)
-                                or not stat.S_ISREG(dest_path_open.st_mode)
-                                or _stat_is_reparse(dest_path_open)
-                                or not os.path.samestat(dest_opened, dest_path_open)
-                                or attachment_dir_identity is None
-                                or not os.path.samestat(
-                                    attachment_dir_identity, destination_dir_open
-                                )
-                            ):
-                                raise ArtifactPreservationError(
-                                    "preserved artifact path changed during copy: "
-                                    f"{artifact}"
-                                )
-                        except OSError:
-                            dest_opened = None
+                        if destination_bound:
+                            try:
+                                dest_opened = os.fstat(destination_file.fileno())
+                                dest_path_open = dest.lstat()
+                                destination_dir_open = attachment_dir.lstat()
+                                if (
+                                    not stat.S_ISREG(dest_opened.st_mode)
+                                    or not stat.S_ISREG(dest_path_open.st_mode)
+                                    or _stat_is_reparse(dest_path_open)
+                                    or not os.path.samestat(dest_opened, dest_path_open)
+                                    or attachment_dir_identity is None
+                                    or not os.path.samestat(
+                                        attachment_dir_identity, destination_dir_open
+                                    )
+                                ):
+                                    raise ArtifactPreservationError(
+                                        "preserved artifact path changed during copy: "
+                                        f"{artifact}"
+                                    )
+                            except OSError:
+                                dest_opened = None
             if dest_opened is None:
                 raise ArtifactPreservationError(
                     f"could not bind preserved artifact identity: {artifact}"
@@ -5160,23 +5301,11 @@ def _persist_scratch_completion_artifacts(
                 )
             dest_identity = _filesystem_identity(dest_final)
         except BaseException as exc:
-            if dest is not None:
-                try:
-                    current_dest = dest.lstat()
-                    current_destination_dir = attachment_dir.lstat()
-                    if (
-                        dest_opened is not None
-                        and attachment_dir_identity is not None
-                        and os.path.samestat(dest_opened, current_dest)
-                        and os.path.samestat(
-                            attachment_dir_identity, current_destination_dir
-                        )
-                    ):
-                        _atomic_remove_expected_file(
-                            dest, _filesystem_identity(current_dest)
-                        )
-                except OSError:
-                    pass
+            _cleanup_opened_destination(
+                destination_actual,
+                dest_opened,
+                require_empty=not destination_touched,
+            )
             _discard_copies()
             if isinstance(exc, ArtifactPreservationError):
                 raise

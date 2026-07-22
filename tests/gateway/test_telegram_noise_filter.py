@@ -30,6 +30,10 @@ CHAT_PLATFORMS = [
 
 NOISY_STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
+    (
+        "📦 Pre-API compression: ~123,456 tokens near the context/output limit. "
+        "Compacting before the next model call."
+    ),
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
     "💤 Resumed after 3600s idle — compacting ~120,000 tokens before continuing.",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
@@ -67,6 +71,12 @@ def test_programmatic_surfaces_keep_raw_status():
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
         )
+
+
+@pytest.mark.parametrize("message", ["still on it", "⏳ Working — 3 min"])
+def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
+    """The compression filter must not swallow user-facing work heartbeats."""
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

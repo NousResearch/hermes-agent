@@ -1,0 +1,7 @@
+name: alibaba
+version: 1.0.0
+description: "Alibaba Cloud DashScope image generation backend (Wan 2.7). Text-to-image (4K) and image editing with up to 9 reference images."
+author: Magnus Hedemark
+kind: backend
+requires_env:
+  - DASHSCOPE_API_KEY

@@ -553,6 +553,13 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    # Preserve existing HINDSIGHT_API_EMBEDDINGS_* vars (from manual edits) so they survive restarts
+    if profile_env.exists():
+        for line in profile_env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("HINDSIGHT_API_EMBEDDINGS_"):
+                key, _, value = line.partition("=")
+                if key not in env_values:
+                    env_values[key] = value
     profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
         encoding="utf-8",

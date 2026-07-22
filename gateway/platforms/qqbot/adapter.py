@@ -72,6 +72,14 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 
+try:
+    import redis
+    import redis as redis_lib
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    redis_lib = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -260,6 +268,54 @@ class QQAdapter(BasePlatformAdapter):
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
+
+        # Redis client for sender identity lookup (lazy init)
+        self._redis_client: Optional[Any] = None
+        self._redis_url = "redis://redis-hermes:6379"
+        self._identity_skill_path = Path("/opt/data/skills/liumei/core/identity-graph/qqbot-member-identity.json")
+
+    def _get_redis(self) -> Optional[Any]:
+        """Lazily initialize and return the Redis client."""
+        if not REDIS_AVAILABLE:
+            return None
+        if self._redis_client is None:
+            try:
+                self._redis_client = redis_lib.from_url(self._redis_url)
+            except Exception as exc:
+                logger.warning("[%s] Redis connection failed: %s", self._log_tag, exc)
+                return None
+        return self._redis_client
+
+    async def _get_sender_identity(self, group_openid: str, member_openid: str) -> str:
+        """Look up sender identity: Redis → qqbot-member-identity.json → raw openid fallback."""
+        redis_key = f"qq:members:{group_openid}:{member_openid}"
+
+        # 1. Try Redis first
+        client = self._get_redis()
+        if client:
+            try:
+                result = await asyncio.to_thread(client.get, redis_key)
+                if result:
+                    return result.decode("utf-8")
+            except Exception as exc:
+                logger.warning("[%s] Redis lookup failed for %s: %s", self._log_tag, redis_key, exc)
+
+        # 2. Try JSON skill file
+        skill_path = self._identity_skill_path
+        if skill_path.exists():
+            try:
+                content = await asyncio.to_thread(skill_path.read_text, encoding="utf-8")
+                data = json.loads(content)
+                groups = data.get("qq_groups", {})
+                members = groups.get(group_openid, {}).get("members", {})
+                identity = members.get(member_openid)
+                if identity:
+                    return identity
+            except Exception as exc:
+                logger.warning("[%s] JSON skill read failed: %s", self._log_tag, exc)
+
+        # 3. Fallback: return raw member_openid
+        return member_openid
 
     # ------------------------------------------------------------------
     # Properties
@@ -1100,15 +1156,26 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"c2c", "dm"}:  # c2c/dm 都是私聊
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:
             event_chat = str(event.group_openid or event.guild_id or "").strip()
             if not event_chat or event_chat != chat_id:
                 return False
-            session_user = str(parsed.get("user_id", "")).strip()
-            return bool(session_user) and operator == session_user
+            import json as _json
+            identity_path = self._identity_skill_path
+            if identity_path.exists():
+                with open(identity_path, encoding="utf-8") as f:
+                    data = _json.load(f)
+                identity = (
+                    data.get("qq_groups", {})
+                    .get(event_chat, {})
+                    .get("members", {})
+                    .get(operator)
+                )
+                return identity == "BOY"
+            return False
 
         return False
 
@@ -1324,6 +1391,11 @@ class QQAdapter(BasePlatformAdapter):
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
+        # Prefix with sender identity so LLM can distinguish BOY from third parties
+        member_openid = str(author.get("member_openid", ""))
+        if member_openid:
+            sender_label = await self._get_sender_identity(group_openid, member_openid)
+            text = f"{sender_label}: {text}"
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]

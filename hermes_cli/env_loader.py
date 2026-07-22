@@ -396,13 +396,19 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
         return
-    _APPLIED_HOMES.add(home_key)
 
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
+        # Deliberately NOT marked applied: a malformed config.yaml would
+        # otherwise permanently disable secret loading for this process
+        # even after the user fixes the file (#40597).
         return
     if not cfg:
+        # No secrets section (or everything disabled at parse level).  Not
+        # marked applied either — the re-parse is a cheap fast_safe_load and
+        # leaving the home unmarked lets a process pick up a config change
+        # on its next load_hermes_dotenv() call instead of never.
         return
 
     try:
@@ -414,6 +420,19 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         report = apply_all(cfg, home_path)
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
+
+    if not report.sources:
+        # Config parsed but no source is enabled: keep retrying cheaply
+        # (no fetch happens for disabled sources) so flipping a source on
+        # mid-process takes effect on the next call.
+        return
+
+    # A real fetch attempt happened (success OR error).  Mark the home now
+    # so the 3-5 import-time load_hermes_dotenv() calls per startup don't
+    # re-fetch / re-print — error retries within one process are opt-in via
+    # reset_secret_source_cache().  Marking AFTER the attempt (not before,
+    # see #40597) is what lets the earlier failure paths stay retryable.
+    _APPLIED_HOMES.add(home_key)
 
     if report.applied_any:
         # Re-run the ASCII sanitization pass: vault values are

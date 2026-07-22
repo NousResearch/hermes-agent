@@ -876,6 +876,36 @@ try:
 except Exception:
     pass
 
+
+def _install_cli_asyncio_exception_filter() -> None:
+    """Install the CLI's benign-error filter on the active event loop.
+
+    This must run from prompt_toolkit's ``pre_run`` callback.  Before
+    ``Application.run()`` starts there is no running event loop, so attempting
+    to install the handler from the surrounding synchronous ``run()`` method
+    silently does nothing.
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def _filter(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+            return  # suppress benign httpx/httpcore shutdown race
+        if isinstance(exc, KeyError) and "is not registered" in str(exc):
+            return  # suppress selector registration failures (#6393)
+        if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
+            return  # suppress I/O errors from broken stdout on interrupt (#13710)
+        if previous_handler is not None:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_filter)
+
+
 from rich import box as rich_box
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -15405,24 +15435,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass  # Signal handlers may fail in restricted environments
         
-        # Install a custom asyncio exception handler that suppresses the
-        # "Event loop is closed" RuntimeError from httpx transport cleanup
-        # and the "0 is not registered" KeyError from broken stdin (#6393).
-        # The RuntimeError fix is defense-in-depth — the primary fix is
-        # neuter_async_httpx_del which disables __del__ entirely.  The
-        # KeyError fix handles macOS + uv-managed Python environments where
-        # fd 0 is not reliably available to the asyncio selector.
-        def _suppress_closed_loop_errors(loop, context):
-            exc = context.get("exception")
-            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-                return  # silently suppress
-            if isinstance(exc, KeyError) and "is not registered" in str(exc):
-                return  # suppress selector registration failures (#6393)
-            if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
-                return  # suppress I/O errors from broken stdout on interrupt (#13710)
-            # Fall back to default handler for everything else
-            loop.default_exception_handler(context)
-
         # Validate stdin before launching prompt_toolkit — on macOS with
         # uv-managed Python, fd 0 can be invalid or unregisterable with the
         # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).
@@ -15465,23 +15477,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
-                # Set the custom handler on prompt_toolkit's event loop
-                try:
-                    import asyncio as _aio
-                    # Use get_running_loop() to avoid DeprecationWarning on
-                    # Python 3.10+ when called outside an async context.
-                    _loop = _aio.get_running_loop()
-                    _loop.set_exception_handler(_suppress_closed_loop_errors)
-                except RuntimeError:
-                    pass  # No running loop -- nothing to patch
-                except Exception:
-                    pass
                 # The app enables focus reporting + mouse tracking; record that
                 # so _run_cleanup resets them on exit (#36823).
                 _mark_tui_input_modes_active()
                 # Drive the petdex mascot animation (no-op when no pet enabled).
                 self._pet_start_anim()
-                app.run()
+                # prompt_toolkit creates/starts the asyncio loop inside run().
+                # Install our filter from pre_run, where get_running_loop()
+                # returns that live loop instead of failing silently.
+                app.run(pre_run=_install_cli_asyncio_exception_filter)
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:

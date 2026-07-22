@@ -166,6 +166,41 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _is_complete_agent_result(result: Any) -> bool:
+    """Require an explicit, internally consistent successful turn result."""
+    if not isinstance(result, dict):
+        return False
+    final_response = result.get("final_response")
+    messages = result.get("messages")
+    return (
+        isinstance(final_response, str)
+        and bool(final_response.strip())
+        and isinstance(messages, list)
+        and all(
+            isinstance(message, dict)
+            and message.get("role") != "tool"
+            and not message.get("tool_calls")
+            for message in messages
+        )
+        and result.get("completed") is True
+        and result.get("failed") is False
+        and result.get("partial") is False
+        and result.get("interrupted") is False
+    )
+
+
+def _resolve_agent_toolsets(
+    user_config: Dict[str, Any], tool_choice: Optional[str]
+) -> List[str]:
+    """Resolve API-server toolsets, with a strict request-level deny mode."""
+    if tool_choice == "none":
+        return []
+
+    from hermes_cli.tools_config import _get_platform_tools
+
+    return sorted(_get_platform_tools(user_config, "api_server"))
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -424,8 +459,10 @@ class ResponseStore:
             except Exception:
                 db_path = ":memory:"
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
+        self._is_durable = False
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._is_durable = self._db_path is not None
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
@@ -455,6 +492,11 @@ class ResponseStore:
         # rather than after every commit — chmod-on-every-write is wasted
         # syscalls on a hot path.
         self._tighten_file_permissions()
+
+    @property
+    def is_durable(self) -> bool:
+        """Whether this store is file-backed and shareable across API processes."""
+        return self._is_durable
 
     def _tighten_file_permissions(self) -> None:
         """Force owner-only permissions on the DB and SQLite sidecars."""
@@ -501,8 +543,8 @@ class ResponseStore:
             self._conn.commit()
             return None
 
-    def put(self, response_id: str, data: Dict[str, Any]) -> None:
-        """Store a response, evicting the oldest if at capacity."""
+    def _put_uncommitted(self, response_id: str, data: Dict[str, Any]) -> None:
+        """Store one response and apply LRU eviction inside the caller's transaction."""
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
@@ -530,7 +572,39 @@ class ResponseStore:
                     f"DELETE FROM responses WHERE response_id IN ({placeholders})",
                     evict_ids,
                 )
+
+    def put(self, response_id: str, data: Dict[str, Any]) -> None:
+        """Store a response, evicting the oldest if at capacity."""
+        self._put_uncommitted(response_id, data)
         self._conn.commit()
+
+    def put_conversation_if_current(
+        self,
+        name: str,
+        expected_response_id: Optional[str],
+        response_id: str,
+        data: Dict[str, Any],
+    ) -> bool:
+        """Atomically store and advance a conversation if its head is unchanged."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT response_id FROM conversations WHERE name = ?", (name,)
+            ).fetchone()
+            current_response_id = row[0] if row else None
+            if current_response_id != expected_response_id:
+                self._conn.rollback()
+                return False
+            self._put_uncommitted(response_id, data)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
+                (name, response_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
@@ -1762,6 +1836,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        tool_choice: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1792,7 +1867,6 @@ class APIServerAdapter(BasePlatformAdapter):
             _load_gateway_config,
             GatewayRunner,
         )
-        from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
@@ -1856,7 +1930,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = _resolve_agent_toolsets(user_config, tool_choice)
 
         max_iterations = _current_max_iterations()
 
@@ -2040,6 +2114,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
+                "strict_tool_choice_none": True,
+                "durable_conversation_cas": self._response_store.is_durable,
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
@@ -3823,14 +3899,37 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+        tool_choice = body.get("tool_choice")
+        if tool_choice == "none" and _coerce_request_bool(
+            body.get("stream"), default=False
+        ):
+            return web.json_response(
+                _openai_error(
+                    "tool_choice 'none' is currently supported only for non-streaming responses",
+                    code="unsupported_tool_choice",
+                ),
+                status=400,
+            )
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
 
-        # Resolve conversation name to latest response_id
+        if conversation and store and not self._response_store.is_durable:
+            return web.json_response(
+                _openai_error(
+                    "Named stored conversations require durable shared response storage",
+                    code="durable_conversation_store_required",
+                ),
+                status=503,
+            )
+
+        # Resolve conversation name to latest response_id. The observed head is
+        # compared again atomically when the completed turn is stored.
+        conversation_head = None
         if conversation:
             previous_response_id = self._response_store.get_conversation(conversation)
+            conversation_head = previous_response_id
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
@@ -3996,13 +4095,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                tool_choice=tool_choice,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=[
+                    "input",
+                    "instructions",
+                    "previous_response_id",
+                    "conversation",
+                    "model",
+                    "tools",
+                    "tool_choice",
+                ],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -4021,6 +4129,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
+
+        if tool_choice == "none" and not _is_complete_agent_result(result):
+            logger.warning("Refusing incomplete strict-none Responses turn")
+            return web.json_response(
+                _openai_error(
+                    "Strict tool-free agent run did not complete successfully",
+                    code="strict_none_run_incomplete",
+                ),
+                status=502,
+            )
 
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final_response:
@@ -4062,18 +4180,35 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
+        capability_receipt = result.get("_hermes_capabilities")
+        if capability_receipt is not None:
+            response_data["capabilities"] = capability_receipt
+
         # Store the complete response object for future chaining / GET retrieval
         if store:
-            self._response_store.put(response_id, {
+            stored_response = {
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
                 "session_id": session_id,
-            })
-            # Update conversation mapping so the next request with the same
-            # conversation name automatically chains to this response
+            }
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                advanced = self._response_store.put_conversation_if_current(
+                    conversation,
+                    conversation_head,
+                    response_id,
+                    stored_response,
+                )
+                if not advanced:
+                    return web.json_response(
+                        _openai_error(
+                            "Conversation advanced while this response was running; retry the turn",
+                            code="conversation_conflict",
+                        ),
+                        status=409,
+                    )
+            else:
+                self._response_store.put(response_id, stored_response)
 
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
@@ -4645,6 +4780,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        tool_choice: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4686,7 +4822,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        tool_choice=tool_choice,
                     )
+                    if tool_choice == "none":
+                        resolved_tools = getattr(agent, "tools", None) or []
+                        if resolved_tools:
+                            raise RuntimeError(
+                                "tool_choice 'none' resolved a non-empty tool surface"
+                            )
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
@@ -4695,6 +4838,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         conversation_history=conversation_history,
                         task_id=effective_task_id,
                     )
+                    if tool_choice == "none" and _is_complete_agent_result(result):
+                        result["_hermes_capabilities"] = {
+                            "tool_choice": "none",
+                            "resolved_tools": [],
+                        }
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

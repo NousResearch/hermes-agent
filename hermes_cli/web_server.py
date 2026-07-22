@@ -4902,7 +4902,10 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                 if root in seen or len(seen) >= safe_limit:
                     return
                 payload = dict(payload)
-                payload["session_id"] = lineage_tip(root)
+                tip = lineage_tip(root)
+                payload["session_id"] = tip
+                tip_session = db.get_session(tip)
+                payload["cwd"] = tip_session.get("cwd") if tip_session else None
                 payload["lineage_root"] = root
                 seen[root] = payload
 
@@ -4921,6 +4924,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                         "role": None,
                         "source": row.get("source"),
                         "model": row.get("model"),
+                        "cwd": row.get("cwd"),
                         "session_started": row.get("started_at"),
                     },
                 )
@@ -4951,6 +4955,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                         "role": m.get("role"),
                         "source": m.get("source"),
                         "model": m.get("model"),
+                        "cwd": m.get("cwd"),
                         "session_started": m.get("session_started"),
                     },
                 )

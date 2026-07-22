@@ -23,6 +23,7 @@ class _FakeSessionDB:
                 "preview": "ID match preview",
                 "source": "cli",
                 "model": "claude",
+                "cwd": "/workspaces/exact",
                 "started_at": 100,
             }
         ]
@@ -36,6 +37,7 @@ class _FakeSessionDB:
                 "role": "user",
                 "source": "cli",
                 "model": "claude",
+                "cwd": "/workspaces/exact",
                 "session_started": 100,
             },
             {
@@ -44,13 +46,18 @@ class _FakeSessionDB:
                 "role": "assistant",
                 "source": "desktop",
                 "model": "gpt",
+                "cwd": "/workspaces/content",
                 "session_started": 200,
             },
         ]
 
     def get_session(self, session_id):
         # No compression chains in this fixture — every session is its own root.
-        return {"id": session_id, "parent_session_id": None}
+        cwds = {
+            "20260603_090200_exact": "/workspaces/exact",
+            "content_session": "/workspaces/content",
+        }
+        return {"id": session_id, "parent_session_id": None, "cwd": cwds[session_id]}
 
     def get_compression_tip(self, session_id):
         return session_id
@@ -75,6 +82,7 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "role": None,
                 "source": "cli",
                 "model": "claude",
+                "cwd": "/workspaces/exact",
                 "session_started": 100,
             },
             {
@@ -84,7 +92,53 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "role": "assistant",
                 "source": "desktop",
                 "model": "gpt",
+                "cwd": "/workspaces/content",
                 "session_started": 200,
             },
         ]
     }
+
+
+def test_desktop_session_search_preserves_stored_cwd(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    try:
+        db.create_session("cwd-content-hit", source="cli", cwd="/workspaces/original")
+        db.append_message("cwd-content-hit", role="user", content="originalcwdneedle")
+    finally:
+        db.close()
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda *args, **kwargs: SessionDB(db_path))
+
+    response = asyncio.run(web_server.search_sessions(q="originalcwdneedle", limit=1))
+
+    assert response["results"][0]["session_id"] == "cwd-content-hit"
+    assert response["results"][0]["cwd"] == "/workspaces/original"
+
+
+def test_desktop_session_search_uses_compression_tip_cwd(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    try:
+        db.create_session("root", source="cli", cwd="/workspaces/root")
+        db.append_message("root", role="user", content="compressedcwdneedle")
+        db.end_session("root", end_reason="compression")
+        db.create_session(
+            "tip",
+            source="cli",
+            parent_session_id="root",
+            cwd="/workspaces/tip",
+        )
+    finally:
+        db.close()
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda *args, **kwargs: SessionDB(db_path))
+
+    response = asyncio.run(web_server.search_sessions(q="compressedcwdneedle", limit=1))
+
+    assert response["results"][0]["session_id"] == "tip"
+    assert response["results"][0]["cwd"] == "/workspaces/tip"

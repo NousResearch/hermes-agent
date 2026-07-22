@@ -27,7 +27,7 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
-import { sessionMatchesSearch } from '@/lib/session-search'
+import { sessionFromSearchResult, sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
@@ -194,32 +194,6 @@ const HEADER_ACTION_BTN =
 // a hover-revealed action.
 const HEADER_NAV_BTN =
   'text-(--ui-text-tertiary) opacity-70 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100'
-
-// FTS results cover sessions that aren't in the loaded page; synthesize a
-// minimal SessionInfo so they render in the same row component (resume works
-// by id; the snippet stands in for the preview).
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
-
-  return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: result.snippet?.trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: null,
-    tool_call_count: 0
-  }
-}
 
 interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
@@ -487,7 +461,7 @@ export function ChatSidebar({
       }
 
       const loaded = sessionByAnyId.get(match.session_id)
-      out.set(match.session_id, loaded ?? searchResultToSession(match))
+      out.set(match.session_id, loaded ?? sessionFromSearchResult(match))
     }
 
     return [...out.values()]

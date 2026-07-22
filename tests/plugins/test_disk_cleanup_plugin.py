@@ -738,11 +738,13 @@ class TestPostToolCallHook:
     def test_write_file_test_pattern_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_created.py"
-        p.write_text("x")
+        from tools.file_tools import write_file_tool
+
+        result = write_file_tool(str(p), "x", task_id="t1")
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
-            result=_write_file_creation_result(pi, p),
+            result=result,
             task_id="t1", session_id="s1",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
@@ -753,8 +755,10 @@ class TestPostToolCallHook:
     def test_replacement_before_hook_is_not_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_replaced_before_hook.py"
-        p.write_text("agent scratch")
-        result = _write_file_creation_result(pi, p)
+        from tools.file_tools import write_file_tool
+
+        result = write_file_tool(str(p), "agent scratch", task_id="race-task")
+        assert p.read_text() == "agent scratch"
         p.unlink()
         p.write_text("human replacement")
 

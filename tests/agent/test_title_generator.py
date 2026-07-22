@@ -385,8 +385,10 @@ class TestChooseTopicIcon:
 
         assert result == "🚀"
         prompt = llm.call_args.kwargs["messages"][0]["content"]
-        assert "exactly one emoji" in prompt
+        assert "ranked" in prompt
+        assert "specific, playful visual metaphors" in prompt
         assert "📊" in prompt and "🚀" in prompt and "🛠️" in prompt
+        assert llm.call_args.kwargs["temperature"] == 0.7
 
     def test_extracts_single_allowed_emoji_from_wrapped_response(self):
         mock_response = MagicMock()
@@ -404,13 +406,74 @@ class TestChooseTopicIcon:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert choose_topic_icon("ProjectBolt", "fast analysis", ["⚡️", "💡"]) == "⚡️"
 
-    def test_rejects_unavailable_or_ambiguous_choice(self):
+    def test_prefers_ranked_candidate_that_was_not_used_recently(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "🚀 or 📊"
+        mock_response.choices[0].message.content = "🚀 📊 🧪"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            assert choose_topic_icon(
+                "Launch",
+                "compare metrics",
+                ["🚀", "📊", "🧪"],
+                recent_emojis=["🚀"],
+            ) == "📊"
+
+        prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "used recently" in prompt
+        assert "🚀" in prompt
+
+    def test_excludes_recent_icons_from_large_candidate_pool(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "💻"
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
-            assert choose_topic_icon("Launch", "compare metrics", ["🚀", "📊"]) is None
+            assert choose_topic_icon(
+                "Developer Tools",
+                "debug the agent",
+                ["💻", "🎨", "🧪", "🔭", "🛠️"],
+                recent_emojis=["💻"],
+            ) is None
+
+    def test_compound_emoji_wins_over_overlapping_component(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "👮‍♂️ ⚡"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon(
+                "Safety",
+                "police safety workflow",
+                ["👮", "👮‍♂️", "♂️", "⚡️"],
+            ) == "👮‍♂️"
+            assert choose_topic_icon(
+                "Safety",
+                "police safety workflow",
+                ["👮", "👮‍♂️", "♂️", "⚡️"],
+                recent_emojis=["👮‍♂️"],
+            ) == "⚡️"
+
+    def test_falls_back_to_top_ranked_candidate_when_all_were_recent(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "💻 🤖"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon(
+                "Developer Tools",
+                "debug the agent",
+                ["💻", "🤖"],
+                recent_emojis=["💻", "🤖"],
+            ) == "💻"
+
+    def test_rejects_response_without_an_allowed_candidate(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "🛸"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert choose_topic_icon("Launch", "ship it", ["🚀", "📊"]) is None
 
     def test_skips_without_allowed_icons(self):
         with patch("agent.title_generator.call_llm") as llm:

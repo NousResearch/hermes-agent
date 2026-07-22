@@ -80,6 +80,70 @@ class TestMentionStrippedCommandDispatch:
         assert "/new" in response
 
 
+class TestHandoffThreadContinuation:
+    async def _create_handoff_thread(self, adapter):
+        thread = make_fake_thread(thread_id=90002, name="Daily brief")
+        seed = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+        parent = thread.parent
+        parent.send = AsyncMock(return_value=seed)
+        parent.create_thread = AsyncMock()
+        adapter._client = SimpleNamespace(
+            user=adapter._client.user,
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread(str(parent.id), "Daily brief")
+
+        assert thread_id == str(thread.id)
+        return thread
+
+    async def test_mentionless_followup_reaches_normal_handling(
+        self, discord_adapter, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+        monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        discord_adapter._fetch_channel_context = AsyncMock(return_value="")
+        discord_adapter._text_batch_delay_seconds = 0
+        discord_adapter.handle_message = AsyncMock()
+        thread = await self._create_handoff_thread(discord_adapter)
+        msg = make_discord_message(
+            content="How should we shape this newsletter?",
+            channel=thread,
+            mentions=[],
+        )
+
+        await dispatch(discord_adapter, msg)
+
+        discord_adapter.handle_message.assert_awaited_once()
+        await_args = discord_adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.text == "How should we shape this newsletter?"
+        assert event.source.thread_id == str(thread.id)
+
+    async def test_thread_require_mention_still_gates_mentionless_followup(
+        self, discord_adapter, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+        monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        discord_adapter.handle_message = AsyncMock()
+        thread = await self._create_handoff_thread(discord_adapter)
+        msg = make_discord_message(
+            content="How should we shape this newsletter?",
+            channel=thread,
+            mentions=[],
+        )
+
+        await dispatch(discord_adapter, msg)
+
+        discord_adapter.handle_message.assert_not_awaited()
+
+
 class TestAutoThreadingPreservesCommand:
     async def test_command_detected_after_auto_thread(self, discord_adapter, bot_user, monkeypatch):
         """@mention /help in channel with auto-thread → thread created AND command dispatched."""

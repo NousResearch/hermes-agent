@@ -6339,11 +6339,12 @@ class DiscordAdapter(BasePlatformAdapter):
         parent_chat_id: str,
         name: str,
     ) -> Optional[str]:
-        """Create a Discord thread under a text channel for a handoff.
+        """Create a discoverable Discord thread under a text channel.
 
-        Falls back to a seed-message + ``message.create_thread`` path if
-        ``parent.create_thread`` is rejected (some channel types or
-        permission setups). Returns the new thread id as a string, or
+        Posts a visible parent-channel anchor and creates the thread from that
+        message so Discord clients expose the thread in the parent timeline.
+        Falls back to direct channel-level creation when sending or threading
+        the anchor is rejected. Returns the new thread id as a string, or
         ``None`` on failure or when the parent isn't a text channel
         (DMs, voice channels, threads themselves can't host threads).
         """
@@ -6377,38 +6378,71 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
 
-        # First try: create a thread directly on the channel.
+        def _track_created_thread(thread: Any) -> str:
+            thread_id = str(thread.id)
+            try:
+                self._threads.mark(thread_id)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Handoff thread %s created but participation tracking failed: %s",
+                    self.name, thread_id, exc,
+                )
+            return thread_id
+
+        seed_error: Exception | None = None
+        seed_msg: Any = None
+
+        # Preferred path: create the thread from a visible parent message. A
+        # message-anchored public thread is discoverable in Discord's parent
+        # timeline; the actual handoff/cron brief is sent separately to the
+        # returned thread by the caller.
         try:
-            create = getattr(parent, "create_thread", None)
-            if create is not None:
-                thread = await create(
+            send = getattr(parent, "send", None)
+            if send is not None:
+                seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
+                thread = await seed_msg.create_thread(
                     name=thread_name,
                     auto_archive_duration=1440,
                     reason=reason,
                 )
-                return str(thread.id)
-        except Exception as direct_error:
+                return _track_created_thread(thread)
+        except Exception as exc:
+            seed_error = exc
             logger.debug(
-                "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
-                self.name, direct_error,
+                "[%s] Handoff thread: seed-message create failed (%s); "
+                "trying direct channel fallback",
+                self.name, exc,
             )
 
-        # Fallback: post a seed message and create the thread from it.
+        # Fallback: direct channel-level creation preserves delivery when the
+        # bot can create threads but cannot send or thread the visible anchor.
         try:
-            send = getattr(parent, "send", None)
-            if send is None:
+            create = getattr(parent, "create_thread", None)
+            if create is None:
                 return None
-            seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
-            thread = await seed_msg.create_thread(
+            thread = await create(
                 name=thread_name,
                 auto_archive_duration=1440,
                 reason=reason,
             )
-            return str(thread.id)
-        except Exception as fallback_error:
+            thread_id = _track_created_thread(thread)
+            if seed_msg is not None:
+                delete = getattr(seed_msg, "delete", None)
+                if delete is not None:
+                    try:
+                        await delete()
+                    except Exception as cleanup_error:
+                        logger.debug(
+                            "[%s] Handoff thread %s created via direct fallback, "
+                            "but stale seed cleanup failed: %s",
+                            self.name, thread_id, cleanup_error,
+                        )
+            return thread_id
+        except Exception as direct_error:
             logger.warning(
-                "[%s] Handoff thread: both create paths failed for parent %s: %s",
-                self.name, parent_chat_id, fallback_error,
+                "[%s] Handoff thread: seed and direct create failed for "
+                "parent %s (seed error: %s; direct error: %s)",
+                self.name, parent_chat_id, seed_error, direct_error,
             )
             return None
 

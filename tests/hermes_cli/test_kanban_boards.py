@@ -247,7 +247,14 @@ class TestBoardCRUD:
         res = kb.remove_board("toremove")
         assert res["action"] == "archived"
         assert Path(res["new_path"]).exists()
-        assert "toremove" not in [b["slug"] for b in kb.list_boards()]
+        assert "toremove" not in [
+            b["slug"] for b in kb.list_boards(include_archived=False)
+        ]
+        # A lightweight tombstone remains at the original slug so stale
+        # dashboard tabs cannot recreate an empty visible board after archive.
+        meta = kb.read_board_metadata("toremove")
+        assert meta["archived"] is True
+        assert "toremove" in [b["slug"] for b in kb.list_boards(include_archived=True)]
 
     def test_remove_hard_delete(self, fresh_home):
         kb.create_board("nuke")

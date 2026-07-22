@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -62,6 +63,16 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
+
+try:  # pragma: no cover - platform dependent
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+try:  # pragma: no cover - platform dependent
+    import msvcrt
+except ImportError:  # pragma: no cover - Unix
+    msvcrt = None
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +160,67 @@ _MAX_FILES = 50_000
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
+
+# Git protects a repository from concurrent ``git gc`` processes, but the
+# checkpoint manager used to start maintenance after every snapshot without
+# coordinating sibling Hermes processes.  Paperclip can run several Hermes
+# agents against the same HERMES_HOME, so those processes repeatedly collided
+# in the shared checkpoint store and emitted fatal-looking ``gc is already
+# running`` errors.  Keep the critical maintenance pass single-owner while
+# allowing the checkpoint itself to succeed when another process is pruning.
+_checkpoint_maintenance_thread_lock = threading.Lock()
+_CHECKPOINT_MAINTENANCE_LOCK = ".maintenance.lock"
+
+
+def _try_checkpoint_maintenance_lock(store: Path):
+    """Acquire the shared checkpoint-maintenance lock without waiting.
+
+    Returns an open lock file on success and ``None`` when another thread or
+    process is already pruning.  Maintenance is opportunistic, so skipping a
+    pass is preferable to blocking an agent or launching a competing git gc.
+    """
+    if not _checkpoint_maintenance_thread_lock.acquire(blocking=False):
+        return None
+
+    lock_fd = None
+    try:
+        lock_path = store.parent / _CHECKPOINT_MAINTENANCE_LOCK
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "a+", encoding="utf-8")
+        if fcntl is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt is not None:
+            lock_fd.seek(0)
+            if lock_fd.read(1) == "":
+                lock_fd.write("0")
+                lock_fd.flush()
+            lock_fd.seek(0)
+            getattr(msvcrt, "locking")(
+                lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+            )
+        return lock_fd
+    except (OSError, IOError):
+        if lock_fd is not None:
+            lock_fd.close()
+        _checkpoint_maintenance_thread_lock.release()
+        return None
+
+
+def _release_checkpoint_maintenance_lock(lock_fd) -> None:
+    """Release a lock returned by :func:`_try_checkpoint_maintenance_lock`."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            lock_fd.seek(0)
+            getattr(msvcrt, "locking")(
+                lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+            )
+    except (OSError, IOError):
+        pass
+    finally:
+        lock_fd.close()
+        _checkpoint_maintenance_thread_lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -996,11 +1068,22 @@ class CheckpointManager:
 
         logger.debug("Checkpoint taken in %s: %s (%s)", working_dir, reason, new_sha[:8])
 
-        # Real pruning — drop old commits beyond max_snapshots.
-        self._prune(store, working_dir, ref)
-
-        # Enforce global size cap.
-        self._enforce_size_cap(store)
+        # Real pruning and git gc are shared-store maintenance.  Paperclip can
+        # run multiple Hermes processes concurrently, so only one process may
+        # maintain the store at a time.  A contending process skips this
+        # opportunistic pass instead of producing ``gc is already running``.
+        maintenance_lock = _try_checkpoint_maintenance_lock(store)
+        if maintenance_lock is None:
+            logger.debug(
+                "Checkpoint maintenance skipped — another Hermes process "
+                "holds the shared-store lock"
+            )
+        else:
+            try:
+                self._prune(store, working_dir, ref)
+                self._enforce_size_cap(store)
+            finally:
+                _release_checkpoint_maintenance_lock(maintenance_lock)
 
         return True
 

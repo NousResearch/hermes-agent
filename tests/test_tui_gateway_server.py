@@ -6418,6 +6418,30 @@ def test_commands_catalog_includes_tui_mouse_command():
     assert "/mouse" in tui_pairs
 
 
+def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
+    """No command may be advertised twice, and no advertised command may
+    shadow an alias of a different command (e.g. the historical /compact
+    collision where the registry aliased compact -> compress while the TUI
+    also registered its own /compact display toggle; see #57133)."""
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    names = [name for name, _ in resp["result"]["pairs"]]
+    dupes = {n for n in names if names.count(n) > 1}
+    assert not dupes, f"duplicate commands advertised in catalog: {sorted(dupes)}"
+
+    canon = resp["result"]["canon"]
+    colliding = {
+        name
+        for name in names
+        if canon.get(name.lower(), name) != name
+    }
+    assert not colliding, (
+        f"catalog commands shadow aliases of other commands: {sorted(colliding)}"
+    )
+
+
 def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

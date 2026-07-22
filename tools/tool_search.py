@@ -677,13 +677,24 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     return frozenset(names)
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(
+    args: Dict[str, Any],
+    allowed_names: Optional[frozenset] = None,
+) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
     * the dispatcher in ``model_tools.handle_function_call``,
     * the display layer (so the activity feed shows the underlying tool),
     * the trajectory recorder.
+
+    ``allowed_names`` is the caller's validated provider-tool scope (e.g. the
+    session's ``_tool_search_scoped_names``). Names in that set are admitted
+    even when they are not registry-registered — this is how provider-injected
+    tools (``fact_store``/``fact_feedback``, ``lcm_*``) reach the unwrap path,
+    since ``is_deferrable_tool_name`` returns False for them (no registry
+    entry). The caller still enforces its own scope gate after resolution, so
+    the #5544 toolset gates are preserved; this only stops a premature reject.
 
     On parse error, returns ``(None, {}, error_message)``.
     """
@@ -703,6 +714,12 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
     if not is_deferrable_tool_name(name):
+        # Provider-injected tools have no registry entry, so
+        # ``is_deferrable_tool_name`` reports False for them. Admit them only
+        # when the caller vouches for them via ``allowed_names`` (its
+        # validated provider-tool scope); the caller re-checks scope after.
+        if allowed_names is not None and name in allowed_names:
+            return name, raw_args, None
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."

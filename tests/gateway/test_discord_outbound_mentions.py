@@ -1,33 +1,15 @@
 """Unit tests for the Discord adapter's opt-in outbound mention resolution.
 
-The method is AST-extracted and executed in isolation so the test needs no live
-Discord client or the adapter's heavier imports.
+Exercises the real method on an init-bypassed adapter instance so the test
+rides the module's real import path (it would fail if adapter.py stopped
+importing re/os), without reading or exec'ing the adapter source.
 """
-import ast
 import asyncio
 import os
-import re
 
 import pytest
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_root = _HERE
-for _ in range(6):
-    if os.path.isdir(os.path.join(_root, "plugins", "platforms", "discord")):
-        break
-    _root = os.path.dirname(_root)
-_ADAPTER = os.path.join(_root, "plugins", "platforms", "discord", "adapter.py")
-
-
-def _load_resolver():
-    fn = next(
-        n for n in ast.walk(ast.parse(open(_ADAPTER).read()))
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_resolve_outbound_mentions"
-    )
-    mod = ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
-    ns = {"os": os, "re": re, "Any": object}
-    exec(compile(mod, _ADAPTER, "exec"), ns)
-    return ns["_resolve_outbound_mentions"]
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class _Member:
@@ -49,7 +31,9 @@ class _Channel:
 
 
 def _run(content, flag="true"):
-    resolve = _load_resolver()
+    # Bypass the heavy __init__ (needs a live client); the method under test
+    # reads no instance state, only the env flag and channel.guild.members.
+    adapter = object.__new__(DiscordAdapter)
     guild = _Guild([
         _Member(200, display_name="Support Bot", name="supportbot"),
         _Member(300, display_name="Alice", name="alice"),
@@ -60,7 +44,7 @@ def _run(content, flag="true"):
         os.environ.pop("DISCORD_RESOLVE_MENTIONS", None)
     else:
         os.environ["DISCORD_RESOLVE_MENTIONS"] = flag
-    return asyncio.run(resolve(object(), content, ch))
+    return asyncio.run(adapter._resolve_outbound_mentions(content, ch))
 
 
 @pytest.mark.parametrize("content,expected", [

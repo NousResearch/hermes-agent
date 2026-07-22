@@ -44,6 +44,10 @@ export const SKIN_COLOR_TOKENS = [
   'diff_removed',
   'diff_added_word',
   'diff_removed_word',
+  'syntax_string',
+  'syntax_number',
+  'syntax_keyword',
+  'syntax_comment',
   // CLI / TUI chrome.
   'prompt',
   'input_rule',

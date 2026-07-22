@@ -34,7 +34,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import windows_batch_command, windows_hide_flags
 from hermes_constants import find_node_executable
 
 logger = logging.getLogger("agent.lsp.install")
@@ -304,14 +304,39 @@ def _install_npm(
             staging,
             " ".join(install_targets),
         )
+        command = [
+            npm,
+            "install",
+            "--prefix",
+            str(staging),
+            "--silent",
+            "--no-fund",
+            "--no-audit",
+            *install_targets,
+        ]
+        run_env = None
+        run_shell = False
+        run_command = command
+        if _is_windows() and npm.lower().endswith((".cmd", ".bat")):
+            # Batch launchers are reparsed by cmd.exe. Keep metacharacters in
+            # HERMES_HOME and package arguments inside quoted placeholders.
+            run_env = dict(os.environ)
+            run_command = windows_batch_command(
+                command,
+                run_env,
+                prefix="HERMES_LSP_INSTALL",
+            )
+            run_shell = True
         proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
+            run_command,
             check=False,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             timeout=300,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
+            env=run_env,
+            shell=run_shell,
         )
         if proc.returncode != 0:
             logger.warning(

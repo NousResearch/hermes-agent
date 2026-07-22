@@ -987,6 +987,186 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     return serve
 
 
+# ---------------------------------------------------------------------------
+# inherited_from — profile config inheritance helpers
+# ---------------------------------------------------------------------------
+
+def _load_profile_yaml(profile_dir: Path) -> dict:
+    """Load a profile's config.yaml as a plain dict, or {} if absent."""
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            from utils import fast_safe_load
+            return fast_safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _deep_merge_with_conflicts(
+    base: dict, overlay: dict, prefix: str = ""
+) -> Tuple[dict, List[str]]:
+    """Deep-merge *overlay* into *base* and report conflicting keys.
+
+    Returns ``(merged, conflicts)`` where *conflicts* is a list of
+    human-readable conflict descriptions like ``"display.compact: true (base)
+    vs false (overlay)"``.
+
+    Scalar values conflict when they differ.  Dicts are recursed into.
+    Lists are NOT merged — the overlay's list replaces the base's list
+    (treated as a scalar).
+    """
+    merged = dict(base)
+    conflicts: List[str] = []
+
+    for key, overlay_val in overlay.items():
+        fq = f"{prefix}.{key}" if prefix else key
+        if key not in merged:
+            merged[key] = overlay_val
+        elif isinstance(merged[key], dict) and isinstance(overlay_val, dict):
+            sub_merged, sub_conflicts = _deep_merge_with_conflicts(
+                merged[key], overlay_val, prefix=fq
+            )
+            merged[key] = sub_merged
+            conflicts.extend(sub_conflicts)
+        elif merged[key] != overlay_val:
+            conflicts.append(
+                f"{fq}: {merged[key]!r} (base) vs {overlay_val!r} (overlay)"
+            )
+            # Keep the base value; caller is responsible for resolving.
+    return merged, conflicts
+
+
+def _resolve_inherited_config(
+    profile_name: str,
+    visited: Optional[set] = None,
+) -> Tuple[dict, List[str]]:
+    """Walk ``inherited_from`` chain and return the fully merged config.
+
+    Returns ``(merged_config, warnings)``.
+
+    *merged_config* is the deep-merged result of all ancestors, with the
+    named profile's own config applied on top (highest priority).
+
+    *warnings* contains human-readable messages about:
+    - Conflicting keys that were resolved by picking the first ancestor's
+      value (runtime warning, non-fatal).
+    - Circular references (fatal: raises ``ValueError`` instead).
+    - Missing ancestor profiles (fatal: raises ``FileNotFoundError``).
+    """
+    if visited is None:
+        visited = set()
+
+    canon = normalize_profile_name(profile_name)
+    if canon in visited:
+        visited_list = " → ".join(sorted(visited) + [canon])
+        raise ValueError(
+            f"Circular inherited_from detected in profile '{canon}': {visited_list}"
+        )
+    visited.add(canon)
+
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist at {profile_dir}")
+
+    raw = _load_profile_yaml(profile_dir)
+    parents = raw.pop("inherited_from", None)
+
+    # Normalise parents to a list of profile names
+    if parents is None:
+        parent_names: List[str] = []
+    elif isinstance(parents, str):
+        parent_names = [parents]
+    elif isinstance(parents, list):
+        parent_names = parents
+    else:
+        raise ValueError(
+            f"inherited_from in profile '{canon}' must be a string or list, "
+            f"got {type(parents).__name__}"
+        )
+
+    # Recursively resolve each parent
+    ancestor_configs: List[dict] = []
+    all_warnings: List[str] = []
+    for pname in parent_names:
+        anc_cfg, anc_warnings = _resolve_inherited_config(pname, visited=set(visited))
+        ancestor_configs.append(anc_cfg)
+        all_warnings.extend(anc_warnings)
+
+    # Merge ancestors in order: first ancestor is lowest priority,
+    # last ancestor is highest (among ancestors).  Conflicts between
+    # ancestors are surfaced as warnings.
+    merged_ancestors: dict = {}
+    for anc_cfg in ancestor_configs:
+        merged_ancestors, conflicts = _deep_merge_with_conflicts(
+            merged_ancestors, anc_cfg
+        )
+        for c in conflicts:
+            all_warnings.append(f"[inherited_from] {c} (using first ancestor's value)")
+
+    # Apply the profile's own config on top (highest priority).
+    # Swap args so child (raw) is the base — its values win on conflict.
+    merged, _ = _deep_merge_with_conflicts(raw, merged_ancestors)
+
+    return merged, all_warnings
+
+
+def _collect_inherited_from_union(
+    profile_names: List[str],
+) -> List[str]:
+    """Return the union of ``inherited_from`` across all sources.
+
+    For clone: the target inherits the union of its sources' ancestors,
+    NOT the sources themselves (they are independent copies).
+    """
+    union: List[str] = []
+    seen: set = set()
+    for name in profile_names:
+        canon = normalize_profile_name(name)
+        profile_dir = get_profile_dir(canon)
+        raw = _load_profile_yaml(profile_dir)
+        parents = raw.get("inherited_from", None)
+        if parents is None:
+            continue
+        if isinstance(parents, str):
+            parents = [parents]
+        for p in parents:
+            if p not in seen:
+                seen.add(p)
+                union.append(p)
+    return union
+
+
+def _merge_and_flatten_configs(
+    source_names: List[str],
+) -> Tuple[dict, List[str]]:
+    """Merge effective configs from multiple source profiles.
+
+    Returns ``(merged, warnings)``.
+
+    Each source's effective config is resolved through its own
+    ``inherited_from`` chain.  Conflicts between sources produce warnings
+    and keep the first source's value.
+    """
+    merged: dict = {}
+    all_warnings: List[str] = []
+
+    for name in source_names:
+        src_cfg, src_warnings = _resolve_inherited_config(name)
+        all_warnings.extend(src_warnings)
+        merged, conflicts = _deep_merge_with_conflicts(merged, src_cfg)
+        for c in conflicts:
+            all_warnings.append(
+                f"[clone merge] {c} (keeping value from earlier source)"
+            )
+
+    return merged, all_warnings
+
+
+# ---------------------------------------------------------------------------
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1036,25 +1216,46 @@ def create_profile(
             "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
         )
 
+    # Parse clone_from early — need to check for self-clone before
+    # directory existence (self-clone raises ValueError, not FileExistsError).
+    _clone_sources: List[str] = []
+    if clone_from is not None:
+        for s in clone_from.split(","):
+            s = s.strip()
+            if not s:
+                continue
+            canon_s = normalize_profile_name(s)
+            validate_profile_name(canon_s)
+            if canon_s == canon:
+                raise ValueError(
+                    f"Cannot clone a profile onto itself: source '{canon_s}' "
+                    f"matches target '{canon}'"
+                )
+            src_dir = get_profile_dir(canon_s)
+            if not src_dir.is_dir():
+                raise FileNotFoundError(
+                    f"Source profile '{canon_s}' does not exist at {src_dir}"
+                )
+            _clone_sources.append(canon_s)
+
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
 
-    # Resolve clone source
+    # Resolve clone source directory (single-source only for clone_all)
     source_dir = None
-    if clone_from is not None or clone_all or clone_config:
-        if clone_from is None:
-            # Default: clone from active profile
-            from hermes_constants import get_hermes_home
-            source_dir = get_hermes_home()
-        else:
-            clone_from = normalize_profile_name(clone_from)
-            validate_profile_name(clone_from)
-            source_dir = get_profile_dir(clone_from)
-        if not source_dir.is_dir():
-            raise FileNotFoundError(
-                f"Source profile '{clone_from or 'active'}' does not exist at {source_dir}"
+    if _clone_sources:
+        # For clone_all, only single source is supported
+        if clone_all and len(_clone_sources) > 1:
+            raise ValueError(
+                "--clone-all does not support multiple sources. "
+                "Use --clone (default) for multi-source merge."
             )
+        source_dir = get_profile_dir(_clone_sources[0])
+    elif clone_all or clone_config:
+        # Default: clone from active profile
+        from hermes_constants import get_hermes_home
+        source_dir = get_hermes_home()
 
     if clone_all and source_dir:
         # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
@@ -1105,6 +1306,24 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+    # Multi-source clone: merge effective configs from all sources,
+    # write a flat config.yaml, and collect inherited_from from ancestors.
+    _clone_warnings: List[str] = []
+    if len(_clone_sources) > 1 and not clone_all:
+        merged_cfg, _clone_warnings = _merge_and_flatten_configs(_clone_sources)
+        inherited_union = _collect_inherited_from_union(_clone_sources)
+
+        # Write the flat merged config
+        import yaml as _yaml
+        config_path = profile_dir / "config.yaml"
+        merged_cfg.pop("inherited_from", None)
+        if inherited_union:
+            merged_cfg["inherited_from"] = inherited_union
+
+        with open(config_path, "w", encoding="utf-8") as _f:
+            _yaml.dump(merged_cfg, _f, default_flow_style=False, allow_unicode=True,
+                       sort_keys=False)
 
     # Seed an empty .env so the profile has its own credentials file from
     # day one. Without it, profile-scoped env writes (dashboard Channels /
@@ -1176,6 +1395,133 @@ def create_profile(
     # / launchd / windows) this is a no-op — the existing per-profile
     # unit-generation paths handle gateway lifecycle.
     _maybe_register_gateway_service(canon)
+
+    return profile_dir
+
+
+def inherit_profile(
+    source_names: List[str],
+    target_name: str,
+    *,
+    no_alias: bool = False,
+    no_skills: bool = False,
+    description: Optional[str] = None,
+) -> Path:
+    """Create a profile that inherits from one or more parent profiles.
+
+    The new profile's ``config.yaml`` will contain an ``inherited_from``
+    key pointing to the parent profiles.  Its own config overrides any
+    conflicting keys from parents (highest priority).
+
+    Conflicts *between* parents are surfaced during creation so the user
+    can pick a winner.
+    """
+    if not source_names:
+        raise ValueError("inherit requires at least one source profile")
+
+    canon = normalize_profile_name(target_name)
+    validate_profile_name(canon)
+
+    if canon == "default":
+        raise ValueError(
+            "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
+        )
+
+    profile_dir = get_profile_dir(canon)
+    if profile_dir.exists():
+        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+
+    for src in source_names:
+        src_canon = normalize_profile_name(src)
+        if src_canon == canon:
+            raise ValueError(
+                f"Cannot inherit from self: source '{src_canon}' matches target '{canon}'"
+            )
+        src_dir = get_profile_dir(src_canon)
+        if not src_dir.is_dir():
+            raise FileNotFoundError(
+                f"Source profile '{src_canon}' does not exist at {src_dir}"
+            )
+
+    # Bootstrap directory structure
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    for subdir in _PROFILE_DIRS:
+        (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    # Build inherited config: merge ancestors, detect inter-ancestor conflicts
+    merged_ancestors: dict = {}
+    all_warnings: List[str] = []
+    for src in source_names:
+        src_cfg, src_warnings = _resolve_inherited_config(src)
+        all_warnings.extend(src_warnings)
+        merged_ancestors, conflicts = _deep_merge_with_conflicts(
+            merged_ancestors, src_cfg
+        )
+        for c in conflicts:
+            all_warnings.append(
+                f"[inherit merge] {c} (using first parent's value)"
+            )
+
+    # Write config.yaml with inherited_from
+    import yaml as _yaml
+    child_config: dict = {"inherited_from": list(source_names)}
+    # Carry over any keys the child wants to set explicitly.
+    # For now, the child starts empty; the user can edit config.yaml
+    # to set overrides.
+    config_path = profile_dir / "config.yaml"
+    with open(config_path, "w", encoding="utf-8") as _f:
+        _yaml.dump(child_config, _f, default_flow_style=False, allow_unicode=True,
+                   sort_keys=False)
+
+    # Seed .env
+    env_path = profile_dir / ".env"
+    try:
+        env_path.write_text(
+            "# Per-profile secrets for this Hermes profile.\n"
+            "# API keys and tokens set here override the shell environment.\n"
+            "# Behavioral settings belong in config.yaml, not here.\n",
+            encoding="utf-8",
+        )
+        os.chmod(str(env_path), 0o600)
+    except OSError:
+        pass
+
+    # Seed SOUL.md
+    soul_path = profile_dir / "SOUL.md"
+    try:
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+        soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    except Exception:
+        pass
+
+    if no_skills:
+        try:
+            (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
+                "This profile opted out of bundled-skill seeding "
+                "(`hermes profile inherit --no-skills`).\n"
+                "Delete this file to re-enable sync on the next `hermes update`.\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    _migrate_profile_config_if_outdated(profile_dir)
+
+    if description and description.strip():
+        try:
+            write_profile_meta(
+                profile_dir,
+                description=description.strip(),
+                description_auto=False,
+            )
+        except Exception:
+            pass
+
+    _maybe_register_gateway_service(canon)
+
+    # Print conflict warnings (non-interactive for now)
+    for w in all_warnings:
+        print(f"⚠  {w}", file=sys.stderr)
 
     return profile_dir
 

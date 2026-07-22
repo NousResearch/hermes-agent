@@ -12508,6 +12508,7 @@ def cmd_profile(args):
     from hermes_cli.profiles import (
         list_profiles,
         create_profile,
+        inherit_profile,
         delete_profile,
         seed_profile_skills,
         set_active_profile,
@@ -12621,13 +12622,21 @@ def cmd_profile(args):
             print(f"\nProfile '{name}' created at {profile_dir}")
 
             if clone_config or clone_all:
-                source_label = (
-                    getattr(args, "clone_from", None) or get_active_profile_name()
-                )
+                clone_from_val = getattr(args, "clone_from", None)
+                if clone_from_val:
+                    source_label = clone_from_val
+                    is_multi = "," in clone_from_val
+                else:
+                    source_label = get_active_profile_name()
+                    is_multi = False
                 if clone_all:
                     print(
                         f"Full copy from {source_label} "
                         "(excluding session history, backups, and snapshots)."
+                    )
+                elif is_multi:
+                    print(
+                        f"Merged config from {source_label}."
                     )
                 else:
                     print(
@@ -12704,6 +12713,68 @@ def cmd_profile(args):
                 )
                 print("    or it will inherit keys from your shell environment.")
                 print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
+            print()
+
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "inherit":
+        sources_str = args.sources
+        target = args.target
+        no_alias = getattr(args, "no_alias", False)
+        no_skills = getattr(args, "no_skills", False)
+
+        try:
+            source_names = [s.strip() for s in sources_str.split(",") if s.strip()]
+            profile_dir = inherit_profile(
+                source_names=source_names,
+                target_name=target,
+                no_alias=no_alias,
+                no_skills=no_skills,
+                description=getattr(args, "description", None),
+            )
+            print(f"\nProfile '{target}' created at {profile_dir}")
+            print(
+                f"Inherits from: {', '.join(source_names)}"
+            )
+
+            if not (no_alias or no_skills):
+                result = seed_profile_skills(profile_dir)
+                if result and result.get("skipped_opt_out"):
+                    print("No bundled skills seeded (--no-skills).")
+                elif result:
+                    copied = len(result.get("copied", []))
+                    print(f"{copied} bundled skills synced.")
+                else:
+                    print(
+                        "⚠ Skills could not be seeded. Run `{} update` to retry.".format(
+                            target
+                        )
+                    )
+
+            if not no_alias:
+                collision = check_alias_collision(target)
+                if collision:
+                    print(f"\n⚠ Cannot create alias '{target}' — {collision}")
+                else:
+                    wrapper_path = create_wrapper_script(target)
+                    if wrapper_path:
+                        print(f"Wrapper created: {wrapper_path}")
+                        if not _is_wrapper_dir_in_path():
+                            print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
+
+            try:
+                profile_dir_display = "~/" + str(
+                    profile_dir.relative_to(Path.home())
+                )
+            except ValueError:
+                profile_dir_display = str(profile_dir)
+
+            print("\nNext steps:")
+            print(f"  {target} setup              Configure API keys and model")
+            print(f"  {target} chat               Start chatting")
+            print(f"  Edit {profile_dir_display}/config.yaml to override inherited settings")
             print()
 
         except (ValueError, FileExistsError, FileNotFoundError) as e:

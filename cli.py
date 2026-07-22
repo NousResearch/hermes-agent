@@ -558,6 +558,7 @@ def load_cli_config() -> Dict[str, Any]:
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
     _file_has_terminal_config = False
+    file_config: dict = {}
 
     # Load from file if exists
     if config_path.exists():
@@ -566,8 +567,63 @@ def load_cli_config() -> Dict[str, Any]:
                 from hermes_cli.config import _normalize_root_model_keys
 
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
-            
+
             _file_has_terminal_config = "terminal" in file_config
+
+            # Resolve inherited_from chain BEFORE merging file_config.
+            # This ensures: profile config > ancestors > built-in defaults.
+            if "inherited_from" in file_config:
+                try:
+                    from hermes_cli.profiles import _resolve_inherited_config
+
+                    # Infer profile name from HERMES_HOME path
+                    _profile_name = None
+                    _hp = Path(str(_hermes_home))
+                    if _hp.parent.name == "profiles":
+                        _profile_name = _hp.name
+
+                    if _profile_name:
+                        _resolved_ancestors, _inherit_warnings = (
+                            _resolve_inherited_config(_profile_name)
+                        )
+                        for _w in _inherit_warnings:
+                            logger.warning("%s", _w)
+
+                        # Merge resolved ancestor config into defaults
+                        # (ancestor keys that don't exist in defaults
+                        # are carried over; existing keys are deep-merged).
+                        for _key in _resolved_ancestors:
+                            if _key == "model":
+                                if isinstance(_resolved_ancestors["model"], str):
+                                    defaults["model"]["default"] = (
+                                        _resolved_ancestors["model"]
+                                    )
+                                elif isinstance(_resolved_ancestors["model"], dict):
+                                    defaults["model"].update(
+                                        _resolved_ancestors["model"]
+                                    )
+                                    if ("model" in _resolved_ancestors["model"]
+                                            and "default" not in _resolved_ancestors["model"]):
+                                        defaults["model"]["default"] = (
+                                            _resolved_ancestors["model"]["model"]
+                                        )
+                            elif _key in defaults:
+                                if (isinstance(defaults[_key], dict)
+                                        and _resolved_ancestors[_key] is None):
+                                    continue
+                                if (isinstance(defaults[_key], dict)
+                                        and isinstance(_resolved_ancestors[_key], dict)):
+                                    defaults[_key].update(
+                                        _resolved_ancestors[_key]
+                                    )
+                                else:
+                                    defaults[_key] = _resolved_ancestors[_key]
+                            else:
+                                defaults[_key] = _resolved_ancestors[_key]
+                except Exception as _e:
+                    logger.warning(
+                        "Failed to resolve inherited_from config: %s", _e
+                    )
 
             # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:

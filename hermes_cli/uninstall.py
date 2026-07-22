@@ -564,14 +564,60 @@ def run_gui_uninstall(args):
     print()
 
 
+def _require_venv() -> None:
+    """Refuse to run uninstall when not inside an isolated virtualenv.
+
+    Uninstall removes the entire source checkout and — on a full uninstall —
+    the ``$HERMES_HOME`` directory tree.  When Hermes was installed into a
+    shared Python environment (system Python, conda base, pipx-managed, etc.)
+    rather than an isolated venv, rmtree can destroy unrelated packages and
+    files.  This check gates the destructive path so it only runs from the
+    venv the installer created for Hermes itself.
+    """
+    if sys.prefix == sys.base_prefix and "VIRTUAL_ENV" not in os.environ:
+        print()
+        print(
+            color(
+                "✖ Refusing to uninstall: not running inside a virtualenv.",
+                Colors.RED,
+                Colors.BOLD,
+            )
+        )
+        print()
+        print(
+            "  Hermes should be uninstalled from within the virtualenv the"
+        )
+        print(
+            "  installer created.  Running uninstall from a shared Python"
+        )
+        print(
+            "  environment (system Python, conda base, pipx, etc.) can"
+        )
+        print(
+            "  accidentally delete unrelated packages and files."
+        )
+        print()
+        print(
+            color(
+                "  Activate your Hermes venv first, then re-run:\n"
+                "    source ~/.hermes/hermes-agent/venv/bin/activate\n"
+                "    hermes uninstall",
+                Colors.CYAN,
+            )
+        )
+        print()
+        sys.exit(1)
+
+
 def run_uninstall(args):
     """
     Run the uninstall process.
-    
+
     Options:
     - Full uninstall: removes code + ~/.hermes/ (configs, data, logs)
     - Keep data: removes code but keeps ~/.hermes/ for future reinstall
     """
+    _require_venv()
     project_root = get_project_root()
     hermes_home = get_hermes_home()
 

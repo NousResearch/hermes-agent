@@ -723,6 +723,40 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('picks the polarity-matching paired palette from gateway.ready skins', async () => {
+    const appended: Msg[] = []
+
+    const skin = {
+      colors: { banner_title: '#00FF88', banner_text: '#FFF8DC' },
+      light_colors: { banner_title: '#8B0000', banner_text: '#22201C' }
+    }
+
+    // Dark terminal (clean env): the dark-authored `colors` block wins.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '')
+    createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
+    expect(getUiState().theme.color.primary).toBe('#00FF88')
+
+    // Light terminal: the hand-tuned light_colors block wins over adaptation.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
+    createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
+    expect(getUiState().theme.color.primary).toBe('#8B0000')
+    vi.unstubAllEnvs()
+  })
+
+  it('infers polarity from the OSC-10 foreground only when the answer is decisive', async () => {
+    const { polarityBackgroundFromForeground } = await import('../app/createGatewayEventHandler.js')
+
+    // Bright foreground = dark theme; dark foreground = light theme.
+    expect(polarityBackgroundFromForeground('#cccccc')).toBe('#1e1e1e')
+    expect(polarityBackgroundFromForeground('#333333')).toBe('#ffffff')
+
+    // Unset-default fingerprints and ambiguous mid-grays commit nothing.
+    expect(polarityBackgroundFromForeground('#000000')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('#ffffff')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('#808080')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('not-a-color')).toBeUndefined()
+  })
+
   it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
@@ -1681,6 +1715,83 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('message.interim', () => {
+    it('finalizes an interim segment without settling the turn', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'streaming text' }, type: 'message.delta' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'streaming text' }, type: 'message.interim' } as any)
+
+      // Turn is still active — busy stays true, no completion messages appended
+      expect(getUiState().busy).toBe(true)
+      expect(appended).toHaveLength(0)
+    })
+
+    it('keeps identical interim and terminal replies as separate messages without response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' } as any)
+      onEvent({ payload: { text: 'same reply' }, type: 'message.complete' } as any)
+
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(2)
+    })
+
+    it('settles identical terminal reply onto interim when response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' } as any)
+      onEvent({ payload: { response_previewed: true, text: 'same reply' }, type: 'message.complete' } as any)
+
+      // With response_previewed, the terminal reply is the same model
+      // response that was published provisionally — settle onto the
+      // interim instead of duplicating. (#65919 review)
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(1)
+      expect(assistantMsgs[0]?.text).toBe('same reply')
+    })
+
+    it('deduplicates flushed chunks within the terminal message after an interim boundary', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // Interim seals the first segment
+      onEvent({ payload: { already_streamed: true, text: 'interim answer' }, type: 'message.interim' } as any)
+      // Post-interim deltas that match the final text — these get deduped
+      onEvent({ payload: { text: 'final answer' }, type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+      const texts = appended.filter(m => m.role === 'assistant' && m.text).map(m => m.text)
+      // interim + final, no duplication of the final
+      expect(texts).toContain('interim answer')
+      expect(texts.filter(t => t === 'final answer')).toHaveLength(1)
+    })
+
+    it('ignores malformed message.interim payload', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // No payload at all
+      onEvent({ type: 'message.interim' } as any)
+      // Empty text
+      onEvent({ payload: { text: '' }, type: 'message.interim' } as any)
+      // Undefined text
+      onEvent({ payload: { text: undefined }, type: 'message.interim' } as any)
+
+      // Turn continues without finalizing or throwing
+      expect(getUiState().busy).toBe(true)
+      expect(appended).toHaveLength(0)
     })
   })
 })

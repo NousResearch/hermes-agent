@@ -20,6 +20,7 @@ import {
   nativeTheme,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -38,6 +39,7 @@ import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
+import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -46,16 +48,25 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  hostLabelFromBaseUrl,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  profileHasRemoteConnection,
   profileRemoteOverride,
+  profileSshOverride,
   resolveAuthMode,
   resolveTestWsUrl,
+  savedProfileSsh,
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -66,6 +77,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
+import { createEventDeduper } from './event-dedupe'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
@@ -105,15 +117,28 @@ import {
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import * as remoteLifecycle from './remote-lifecycle'
+import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  instanceWindowBounds,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
+import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
+import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
+import {
+  buildInteractiveSshArgs,
+  createSshProbeConnection,
+  pickLocalPort,
+  redactSecrets,
+  SshConnection
+} from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -144,6 +169,12 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
+import {
+  buildWindowsInteractiveCommand,
+  connectWindowsRemote,
+  detectRemotePlatform,
+  helper
+} from './windows-remote-lifecycle'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -500,6 +531,7 @@ const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstr
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
+const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -542,6 +574,7 @@ const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
+const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -930,6 +963,8 @@ function registerMediaProtocol() {
 
 let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
+const remoteLiveness = new RemoteLivenessTracker()
+const remoteRevalidation = new RemoteRevalidationCoordinator()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -4580,18 +4615,36 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token) {
+async function waitForHermes(baseUrl, token, signal?) {
   const deadline = Date.now() + 45_000
   let lastError = null
 
   while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      const error: any = new Error('SSH bootstrap was superseded by newer connection settings.')
+      error.kind = 'superseded'
+      throw error
+    }
+
     try {
       await fetchJson(`${baseUrl}/api/status`, token)
 
       return
     } catch (error) {
       lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 500)
+        signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer)
+            const aborted: any = new Error('SSH bootstrap was superseded by newer connection settings.')
+            aborted.kind = 'superseded'
+            reject(aborted)
+          },
+          { once: true }
+        )
+      })
     }
   }
 
@@ -4610,9 +4663,9 @@ function getNativeOverlayWidth() {
   return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
-function getWindowState() {
+function getWindowState(win = mainWindow) {
   return {
-    isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
+    isFullscreen: Boolean(win?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition()
   }
@@ -4713,18 +4766,21 @@ function sendOpenUpdatesRequested() {
   mainWindow.focus()
 }
 
-function sendWindowStateChanged(nextIsFullscreen?: boolean) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
+// Push titlebar/fullscreen chrome state to a window's renderer. Defaults to the
+// primary, but any full chat window (primary or a secondary "instance" peer)
+// passes itself so its own fullscreen toggle drives its own traffic-light inset.
+function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow) {
+  if (!target || target.isDestroyed()) {
     return
   }
 
-  const { webContents } = mainWindow
+  const { webContents } = target
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
 
-  const state = getWindowState()
+  const state = getWindowState(target)
 
   if (typeof nextIsFullscreen === 'boolean') {
     state.isFullscreen = nextIsFullscreen
@@ -4762,6 +4818,11 @@ function buildApplicationMenu() {
   template.push({
     label: 'File',
     submenu: [
+      // No accelerator: ⌘⇧N is a rebindable renderer keybind (session.newWindow);
+      // a menu accelerator would fight the rebind panel and (on macOS) be
+      // swallowed before the renderer sees it. Here purely for discoverability.
+      { click: () => createInstanceWindow(), label: 'New Window' },
+      { type: 'separator' },
       IS_MAC
         ? {
             // NO accelerator: on macOS a registered ⌘W is consumed by the OS
@@ -4918,7 +4979,9 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // downgrade or JSON read failure still finds a sane value).
   window.webContents
     .executeJavaScript(
-      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
+      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {
+      void 0
+    }`
     )
     .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
 }
@@ -5212,6 +5275,50 @@ function getOauthSession() {
   return oauthSession
 }
 
+// Cold-start cookie-jar warm-up. A `persist:` partition materialized via
+// session.fromPartition() loads its on-disk cookie store LAZILY: the very first
+// cookies.get() on a fresh cold start can resolve BEFORE the jar has finished
+// hydrating from disk and return an empty array — even though the user is
+// signed in. That false-negative used to make hasLiveOauthSession() report
+// "not signed in", which on the initial boot path (startHermes → the renderer's
+// single-shot boot() with no retry) surfaced as the "Hermes couldn't start"
+// OAuth overlay that vanishes the instant the user clicks Retry.
+//
+// We force the store to hydrate once, up front: flushStorageData() then a
+// throwaway cookies.get(). The promise is memoized so every caller awaits the
+// same single warm-up. Best-effort — any error resolves so we fall back to the
+// live read (which then does its own bounded re-check).
+let oauthCookieWarmup: Promise<void> | null = null
+
+function warmOauthCookieStore() {
+  if (oauthCookieWarmup) {
+    return oauthCookieWarmup
+  }
+
+  oauthCookieWarmup = (async () => {
+    const sess = getOauthSession()
+
+    if (!sess) {
+      // App not ready yet — don't memoize a no-op; let a later call retry.
+      oauthCookieWarmup = null
+
+      return
+    }
+
+    try {
+      // flushStorageData() forces Chromium to reconcile the in-memory cookie
+      // monster with the on-disk SQLite store; the subsequent get() then reads
+      // a populated jar rather than racing the lazy first-access load.
+      sess.flushStorageData?.()
+      await sess.cookies.get({})
+    } catch {
+      // Best effort; the real read below re-checks with bounded retries.
+    }
+  })()
+
+  return oauthCookieWarmup
+}
+
 // Bare + prefixed variants of the session cookies live in
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
@@ -5258,19 +5365,45 @@ async function hasLiveOauthSession(baseUrl) {
 
   const parsed = new URL(baseUrl)
 
-  try {
-    const cookies = await sess.cookies.get({ url: baseUrl })
-
-    return cookiesHaveLiveSession(cookies)
-  } catch {
+  const readLive = async () => {
     try {
-      const cookies = await sess.cookies.get({ domain: parsed.hostname })
+      const cookies = await sess.cookies.get({ url: baseUrl })
 
       return cookiesHaveLiveSession(cookies)
     } catch {
-      return false
+      try {
+        const cookies = await sess.cookies.get({ domain: parsed.hostname })
+
+        return cookiesHaveLiveSession(cookies)
+      } catch {
+        return false
+      }
     }
   }
+
+  // First read against the (possibly still-hydrating) jar.
+  if (await readLive()) {
+    return true
+  }
+
+  // Cold-start false-negative guard. A `persist:` partition's cookie store
+  // loads lazily, so the FIRST read on a fresh boot can come back empty even
+  // for a signed-in user — the exact race that produced the transient "Hermes
+  // couldn't start / not signed in" overlay that Retry always cleared. Before
+  // trusting a negative, force the store to hydrate and re-read a couple of
+  // times with a short backoff. A genuinely signed-out user still resolves
+  // false quickly (≤ ~180ms); a signed-in user racing the load now wins.
+  await warmOauthCookieStore()
+
+  for (const delayMs of [30, 60, 90]) {
+    if (await readLive()) {
+      return true
+    }
+
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+
+  return readLive()
 }
 
 async function clearOauthSession(baseUrl) {
@@ -5954,14 +6087,37 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       continue
     }
 
+    if (entry.mode === 'ssh') {
+      const ssh = normalizeSshConfig(entry)
+
+      if (ssh) {
+        if (entry.token && typeof entry.token === 'object') {
+          ssh.token = entry.token
+        }
+
+        out[name] = ssh
+      }
+
+      continue
+    }
+
     const cleaned: {
       mode: 'remote' | 'local' | 'cloud'
       url?: string
       authMode?: string
       token?: object
       org?: string
+      savedSsh?: object
     } = {
       mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
+    }
+
+    if (cleaned.mode === 'local') {
+      const savedSsh = normalizeSshConfig(entry.savedSsh)
+
+      if (savedSsh) {
+        cleaned.savedSsh = savedSsh
+      }
     }
 
     const url = String(entry.url || '').trim()
@@ -6021,7 +6177,7 @@ function readDesktopConnectionConfig() {
       // backward compatibility with configs written before OAuth support.
       remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
       config = {
-        mode: modeIsRemoteLike(parsed.mode) ? parsed.mode : 'local',
+        mode: parsed.mode === 'ssh' ? 'ssh' : modeIsRemoteLike(parsed.mode) ? parsed.mode : 'local',
         remote,
         // Per-profile remote overrides: each profile may point at its own
         // backend (local spawn or its own remote URL). Preserved verbatim so
@@ -6088,15 +6244,15 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const block = key ? scoped || {} : config.remote || {}
 
   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+  const savedMode = key ? scoped?.mode : config.mode
+  const ssh = savedMode === 'ssh' ? normalizeSshConfig(block) : null
+
+  const savedSsh = savedMode === 'local' ? (key ? savedProfileSsh(config, key) : normalizeSshConfig(block)) : null
 
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
-  // The env override forces a plain remote connection. Otherwise reflect the
-  // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI
-  // reopens into the cloud picker; any non-remote-like value collapses to local.
-  const savedMode = key ? scoped?.mode : config.mode
-  const mode = envOverride ? 'remote' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
+  const mode = envOverride ? 'remote' : savedMode === 'ssh' ? 'ssh' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
   let remoteOauthConnected = false
 
@@ -6124,6 +6280,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
+    sshHost: (ssh || savedSsh)?.host || '',
+    sshUser: (ssh || savedSsh)?.user || '',
+    sshPort: (ssh || savedSsh)?.port || null,
+    sshKeyPath: (ssh || savedSsh)?.keyPath || '',
+    sshRemoteHermesPath: (ssh || savedSsh)?.remoteHermesPath || '',
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
     envOverride
@@ -6162,7 +6323,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // 'cloud' and 'remote' both persist a remote-shaped block; 'cloud' is
   // remembered as its own provenance (Q6) and resolves to remote downstream.
   // Anything else collapses to local.
-  const mode = modeIsRemoteLike(input.mode) ? input.mode : 'local'
+  const mode = input.mode === 'ssh' ? 'ssh' : modeIsRemoteLike(input.mode) ? input.mode : 'local'
   const remoteLike = modeIsRemoteLike(mode)
 
   // The block being edited: a per-profile entry or the global remote block.
@@ -6175,7 +6336,8 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // block. (remote↔local toggles still preserve a real remote URL as before.)
   const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
   const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
-  const existingBlock = leavingCloud ? {} : rawExistingBlock
+  const leavingSsh = rawExistingBlock.mode === 'ssh' && mode !== 'ssh' && mode !== 'local'
+  const existingBlock = leavingCloud || leavingSsh ? {} : rawExistingBlock
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
@@ -6191,6 +6353,22 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
       : { encoding: 'plain', value: incomingToken }
     : existingBlock.token
 
+  if (mode === 'ssh') {
+    const sshBlock = buildSshBlock(input, savedProfileSsh(existing, key) || rawExistingBlock)
+
+    if (key) {
+      const profiles = { ...(existing.profiles || {}), [key]: sshBlock }
+
+      return {
+        mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
+        remote: existing.remote || {},
+        profiles
+      }
+    }
+
+    return { mode: 'ssh', remote: sshBlock, profiles: existing.profiles || {} }
+  }
+
   if (key) {
     // Per-profile scope: a remote/cloud entry pins this profile to its own
     // backend; a local entry clears the override so the profile inherits the
@@ -6200,11 +6378,17 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg) }
     } else {
-      delete profiles[key]
+      const localEntry = localProfileEntry(rawExistingBlock)
+
+      if (localEntry) {
+        profiles[key] = localEntry
+      } else {
+        delete profiles[key]
+      }
     }
 
     return {
-      mode: modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
+      mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
       remote: existing.remote || {},
       profiles
     }
@@ -6212,10 +6396,41 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 
   const nextRemote = remoteLike
     ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg)
-    : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+    : existingMode === 'ssh'
+      ? rawExistingBlock
+      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
+}
+
+// Build an SSH connection block from a save payload, preserving an
+// already-adopted dashboard token from the existing block (the token is minted
+// + reconciled at bootstrap, never user-entered). `mode: 'ssh'` is stamped so
+// normalizeSshConfig/profileSshOverride recognize it.
+function buildSshBlock(input: any, existingBlock: any = {}) {
+  // `??` (not `||`) so an explicit '' (user CLEARED the field) wins over the
+  // saved value; only a truly absent (undefined) field inherits.
+  const merged = normalizeSshConfig({
+    mode: 'ssh',
+    host: input.sshHost ?? existingBlock.host,
+    user: input.sshUser ?? existingBlock.user,
+    port: input.sshPort ?? existingBlock.port,
+    keyPath: input.sshKeyPath ?? existingBlock.keyPath,
+    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath
+  })
+
+  if (!merged) {
+    throw new Error('SSH host is required.')
+  }
+
+  // Carry forward an already-adopted dashboard token unless the host changed
+  // (a different host invalidates the old dashboard's token).
+  if (existingBlock.token && existingBlock.host === merged.host) {
+    merged.token = existingBlock.token
+  }
+
+  return merged
 }
 
 // Build a remote backend connection descriptor from an already-resolved remote
@@ -6223,8 +6438,20 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source) {
+async function buildRemoteConnection(
+  rawUrl,
+  authMode,
+  token,
+  source,
+  remoteHost?,
+  remoteKind = 'url',
+  remoteIdentity?
+) {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // For token/oauth remotes the meaningful host is the real backend URL; for
+  // SSH remotes the caller passes the entered/resolved host explicitly (the
+  // baseUrl is a 127.0.0.1 tunnel and would be useless in the pill).
+  const host = remoteHost || hostLabelFromBaseUrl(baseUrl)
 
   if (authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookies in the OAuth
@@ -6250,13 +6477,11 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
-      ) as any
-
-      err.needsOauthLogin = true
-      err.cause = error
-      throw err
+      throw gatewayTicketFailure(
+        error,
+        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
+        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+      )
     }
 
     return {
@@ -6264,6 +6489,9 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
       mode: 'remote',
       source,
       authMode: 'oauth',
+      remoteHost: host || undefined,
+      remoteIdentity,
+      remoteKind,
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
       wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -6282,8 +6510,285 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     mode: 'remote',
     source,
     authMode: 'token',
+    remoteHost: host || undefined,
+    remoteIdentity,
+    remoteKind,
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
+  }
+}
+
+const sshConnections = new Map<string, any>()
+const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
+
+const sshBootstrapCoordinator = createBootstrapCoordinator()
+
+let sshQuitTeardownDone = false
+
+function sshScopeKey(profile) {
+  return connectionScopeKey(profile) || ''
+}
+
+function sshOwnershipKey(profile) {
+  return sshOwnershipId(desktopInstallationId, sshScopeKey(profile))
+}
+
+function sshRememberLog(chunk) {
+  rememberLog(redactSecrets(String(chunk == null ? '' : chunk)))
+}
+
+async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
+  try {
+    const proof: any = await fetchJson(`${baseUrl}/api/ssh/ownership`, token)
+
+    return proof?.ok === true && proof.sshOwnerNonce === spawnNonce && proof.protocolVersion === 1
+      ? 'authenticated-ok'
+      : 'authenticated-stale'
+  } catch (error: any) {
+    if (/^(401|403|404):/.test(String(error?.message || ''))) {
+      return 'authenticated-stale'
+    }
+
+    throw error
+  }
+}
+
+async function teardownSshConnection(profile) {
+  const scope = sshScopeKey(profile)
+  const state = sshConnections.get(scope)
+
+  if (!state) {
+    return
+  }
+
+  sshConnections.delete(scope)
+
+  for (const [id, info] of [...terminalSessions.entries()]) {
+    if (info.sshScope === scope) {
+      disposeTerminalSession(id)
+    }
+  }
+
+  try {
+    if (state.localPort && state.remotePort) {
+      await state.ssh.cancelForward(state.localPort, state.remotePort)
+    }
+  } catch {
+    // best effort
+  }
+
+  try {
+    await state.ssh.close()
+  } catch {
+    // best effort
+  }
+}
+
+// CRITICAL: this must mirror resolveRemoteBackend's precedence, not just return
+// any cached SSH state. A per-profile token/OAuth override wins over a global
+// SSH connection — so if the active profile resolves to a NON-SSH backend, the
+// terminal must NOT fall through to a global SSH host.
+function activeSshTerminalTarget() {
+  const profile = primaryProfileKey()
+  const config = readDesktopConnectionConfig()
+
+  if (profileSshOverride(config, profile)) {
+    const scope = sshScopeKey(profile)
+    const state = sshConnections.get(scope)
+
+    return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
+  }
+
+  if (profileRemoteOverride(config, profile)) {
+    return null
+  }
+
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+    return null
+  }
+
+  if (config.mode === 'ssh') {
+    const state = sshConnections.get('')
+
+    return state && state.ssh ? { ssh: state.ssh, scope: '' } : 'pending'
+  }
+
+  return null
+}
+
+function effectiveSshConfigFingerprint(sshConfig) {
+  const ssh =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+      : 'ssh'
+
+  const args = ['-G']
+
+  if (sshConfig.port) {
+    args.push('-p', String(sshConfig.port))
+  }
+
+  if (sshConfig.keyPath) {
+    args.push('-i', sshConfig.keyPath)
+  }
+
+  args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
+  const output = execFileSync(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+
+  return crypto.createHash('sha256').update(output).digest('hex')
+}
+
+async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
+  const scope = sshScopeKey(profile)
+  const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
+  const resolvedConfig = { ...sshConfig, effectiveConfigFingerprint }
+  const fingerprint = sshConfigFingerprint(scope, resolvedConfig)
+
+  return sshBootstrapCoordinator.start(scope, fingerprint, lease =>
+    bootstrapSshConnectionInner(profile, resolvedConfig, reuseToken, source, fingerprint, lease)
+  )
+}
+
+async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, source, fingerprint, lease) {
+  const scope = sshScopeKey(profile)
+  const hostLabel = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
+  const existing = sshConnections.get(scope)
+
+  if (existing && existing.fingerprint !== fingerprint) {
+    await teardownSshConnection(profile)
+  }
+
+  let ssh = sshConnections.get(scope)?.ssh
+
+  if (ssh && !(await ssh.isAlive())) {
+    try {
+      await ssh.close()
+    } catch {
+      void 0
+    }
+
+    ssh = null
+    sshConnections.delete(scope)
+  }
+
+  const created = !ssh
+
+  let removeForceCleanup = () => {}
+
+  if (created) {
+    ssh = new SshConnection(
+      { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
+      {
+        rememberLog: sshRememberLog,
+        ownershipId: sshOwnershipKey(profile),
+        scope,
+        effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint
+      }
+    )
+    removeForceCleanup = lease.onForceCleanup(() => ssh.close())
+    await ssh.open()
+  }
+
+  let result
+
+  try {
+    const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+    const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
+    result = await lifecycle({
+      ssh,
+      profile: connectionScopeKey(profile) || '',
+      remoteHermesPath: sshConfig.remoteHermesPath || '',
+      ownershipId: sshOwnershipKey(profile),
+      reuseToken: reuseToken || '',
+      forward: (localPort, remotePort) => ssh.forward(localPort, remotePort),
+      cancelForward: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
+      pickLocalPort,
+      waitForHermes: (baseUrl, token) => waitForHermes(baseUrl, token, lease.signal),
+      probeReuseProof: sshProbeReuseProof,
+      adoptServedToken: adoptServedDashboardToken,
+      rememberLog: sshRememberLog,
+      signal: lease.signal
+    })
+  } catch (error: any) {
+    if (created) {
+      try {
+        await ssh.close()
+      } catch {
+        void 0
+      }
+    }
+
+    const err = new Error(error.message) as any
+    err.sshError = error.kind || 'unknown'
+    err.isSshBootstrap = true
+    throw err
+  }
+
+  try {
+    lease.assertCurrent()
+  } catch (error) {
+    try {
+      await ssh.cancelForward(result.localPort, result.remotePort)
+      await ssh.close()
+    } catch {
+      void 0
+    }
+
+    throw error
+  }
+
+  persistSshConnectionToken(profile, source, result.token)
+
+  removeForceCleanup()
+  sshConnections.set(scope, {
+    ssh,
+    fingerprint,
+    localPort: result.localPort,
+    remotePort: result.remotePort,
+    pid: result.pid,
+    host: sshConfig.host,
+    hostLabel,
+    hermesVersion: result.hermesVersion || '',
+    remotePlatform: result.platform?.os || '',
+    reused: result.reused
+  })
+
+  sshRememberLog(
+    `[ssh] connection ${result.reused ? 'REUSED' : 'spawned'} dashboard: ` +
+      `${result.hermesVersion || 'hermes (version unknown)'} at ${result.hermesPath || '?'}`
+  )
+
+  const connection = await buildRemoteConnection(
+    result.baseUrl,
+    'token',
+    result.token,
+    source,
+    hostLabel,
+    'ssh',
+    result.ownershipId
+  )
+
+  return { ...connection, remoteHermesVersion: result.hermesVersion || '' }
+}
+
+function persistSshConnectionToken(profile, source, token) {
+  try {
+    const config = readDesktopConnectionConfig()
+    const encrypted = encryptDesktopSecret(token)
+
+    if (source === 'profile') {
+      const key = connectionScopeKey(profile)
+
+      if (key && config.profiles?.[key]?.mode === 'ssh') {
+        config.profiles[key].token = encrypted
+        writeDesktopConnectionConfig(config)
+      }
+    } else if (config.mode === 'ssh' && config.remote) {
+      config.remote.token = encrypted
+      writeDesktopConnectionConfig(config)
+    }
+  } catch (error: any) {
+    sshRememberLog(`[ssh] could not persist served token: ${error.message}`)
   }
 }
 
@@ -6300,12 +6805,27 @@ async function resolveRemoteBackend(profile) {
   // 1. Per-profile override — "a profile with its own remote host". Wins even
   //    over the env override so an explicitly-configured profile always
   //    reaches its intended backend.
+  const sshOverride = profileSshOverride(config, profile)
+
+  if (sshOverride) {
+    const reuseToken = decryptDesktopSecret(config.profiles?.[connectionScopeKey(profile)]?.token)
+
+    return bootstrapSshConnection(profile, sshOverride, reuseToken, 'profile')
+  }
+
   const override = profileRemoteOverride(config, profile)
 
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
 
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(
+      override.url,
+      override.authMode,
+      token,
+      'profile',
+      undefined,
+      config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
+    )
   }
 
   // 2. Env override (global, token-auth only).
@@ -6323,7 +6843,20 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
   }
 
-  // 3. Global remote (or cloud — cloud resolves to a remote backend, Q6).
+  // 3. Global remote.
+  if (config.mode === 'ssh') {
+    const ssh = normalizeSshConfig({ mode: 'ssh', ...(config.remote || {}) })
+
+    if (!ssh) {
+      throw new Error('SSH remote mode is selected but no host is configured.')
+    }
+
+    const reuseToken = decryptDesktopSecret(config.remote?.token)
+
+    return bootstrapSshConnection(null, ssh, reuseToken, 'settings')
+  }
+
+  // Cloud resolves through the existing URL/OAuth path.
   if (!modeIsRemoteLike(config.mode)) {
     return null
   }
@@ -6331,7 +6864,14 @@ async function resolveRemoteBackend(profile) {
   const authMode = normAuthMode(config.remote?.authMode)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
 
-  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+  return buildRemoteConnection(
+    config.remote?.url,
+    authMode,
+    token,
+    'settings',
+    undefined,
+    config.mode === 'cloud' ? 'cloud' : 'url'
+  )
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local
@@ -6339,13 +6879,13 @@ async function resolveRemoteBackend(profile) {
 // not the local-disk fast path. These three helpers drive that (see
 // interceptSessionReadForRemote).
 function profileHasRemoteOverride(profile) {
-  return Boolean(profileRemoteOverride(readDesktopConnectionConfig(), profile))
+  return profileHasRemoteConnection(readDesktopConnectionConfig(), profile)
 }
 
 function configuredRemoteProfileNames() {
   const config = readDesktopConnectionConfig()
 
-  return Object.keys(config.profiles || {}).filter(name => profileRemoteOverride(config, name))
+  return Object.keys(config.profiles || {}).filter(name => profileHasRemoteConnection(config, name))
 }
 
 // True when the app is in app-global remote mode (Settings → "All profiles" →
@@ -6357,7 +6897,9 @@ function globalRemoteActive() {
     return true
   }
 
-  return modeIsRemoteLike(readDesktopConnectionConfig().mode)
+  const mode = readDesktopConnectionConfig().mode
+
+  return modeIsRemoteLike(mode) || mode === 'ssh'
 }
 
 // True when the PRIMARY profile's backend resolves to a remote/cloud host —
@@ -6452,6 +6994,90 @@ async function probeRemoteAuthMode(rawUrl) {
 }
 
 async function testDesktopConnectionConfig(input: any = {}) {
+  if (input.mode === 'ssh') {
+    const sshConfig = normalizeSshConfig({
+      mode: 'ssh',
+      host: input.sshHost,
+      user: input.sshUser,
+      port: input.sshPort,
+      keyPath: input.sshKeyPath,
+      remoteHermesPath: input.sshRemoteHermesPath
+    })
+
+    if (!sshConfig) {
+      return { reachable: false, sshError: 'unreachable', error: 'SSH host is required.' }
+    }
+
+    const ssh = createSshProbeConnection(
+      { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
+      { rememberLog: sshRememberLog }
+    )
+
+    try {
+      // One bounded retry on TIMEOUT only: a cold Windows backend's first
+      // PowerShell exec can exceed the budget (observed live), and a timeout is
+      // indeterminate — unlike auth/host-key/unreachable, which are verdicts.
+      let attempt = 0
+
+      for (;;) {
+        try {
+          await ssh.open()
+          const platform: any = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+          let hermesPath
+          let hermesVersion
+          let supported
+
+          if (platform.os === 'Windows') {
+            const runtime = platform
+            hermesPath = runtime.hermesPath
+            const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
+            hermesVersion = inspection.version
+            supported = inspection.supported
+          } else {
+            hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
+            hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
+            supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath)
+          }
+
+          if (!supported) {
+            return {
+              reachable: false,
+              sshError: 'update-required',
+              error: 'Update Hermes on the remote host before connecting with Desktop SSH.'
+            }
+          }
+
+          return {
+            reachable: true,
+            sshError: null,
+            error: null,
+            remotePlatform: `${platform.os}/${platform.arch}`,
+            remoteHermesPath: hermesPath,
+            remoteHermesVersion: hermesVersion,
+            host: sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
+          }
+        } catch (error: any) {
+          if (error?.kind === 'timeout' && attempt === 0) {
+            attempt += 1
+            sshRememberLog('[ssh] test probe timed out once; retrying')
+
+            continue
+          }
+
+          throw error
+        }
+      }
+    } catch (error: any) {
+      return { reachable: false, sshError: error.kind || 'unknown', error: error.message }
+    } finally {
+      try {
+        await ssh.close()
+      } catch {
+        void 0
+      }
+    }
+  }
+
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
   const key = connectionScopeKey(input.profile)
   // The block under test: a per-profile entry or the global remote. Coerce has
@@ -6538,6 +7164,7 @@ function stopBackendChild(child) {
 // switch / crash recovery), which still resets boot progress + reloads.
 function resetHermesConnection({ soft = false } = {}) {
   backendStartFailure = null
+  remoteLiveness.clear()
   const hermesProcess = backendConnectionState.invalidate()
   stopBackendChild(hermesProcess)
 
@@ -6929,6 +7556,16 @@ async function startHermes() {
     throw backendStartFailure
   }
 
+  // E2E: simulate a boot failure without breaking the real backend. The boot
+  // progresses a few steps, then fails with the given error message.
+  if (BOOT_FAKE_ERROR) {
+    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    const error = new Error(BOOT_FAKE_ERROR) as any
+    error.isBootstrapFailure = true
+    bootstrapFailure = error
+    throw error
+  }
+
   const existingConnectionPromise = backendConnectionState.getPromise()
 
   if (existingConnectionPromise) {
@@ -6966,6 +7603,9 @@ async function startHermes() {
         mode: 'remote',
         source: remote.source,
         authMode: remote.authMode || 'token',
+        remoteHost: remote.remoteHost,
+        remoteKind: remote.remoteKind,
+        remoteHermesVersion: remote.remoteHermesVersion,
         token: remote.token,
         wsUrl: remote.wsUrl,
         logs: hermesLog.slice(-80),
@@ -7246,11 +7886,7 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({
-  sessionId,
-  watch,
-  newSession
-}: { sessionId?: string; watch?: boolean; newSession?: boolean } = {}) {
+function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -7295,8 +7931,7 @@ function spawnSecondaryWindow({
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
-      watch,
-      newSession
+      watch
     })
   )
 
@@ -7308,11 +7943,82 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
   return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
 }
 
-// Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
-// like ⌘N in a browser, every press opens a new window — and a draft window that
-// later converts to a real session must not get refocused as if it were blank.
-function createNewSessionWindow() {
-  return spawnSecondaryWindow({ newSession: true })
+// Additional full "instance" windows — peers of the primary that render the
+// COMPLETE app (sidebar, routing, its own draft) against the shared backend, so
+// a user can run multiple GUI windows at once (⌘⇧N / the "New Window" palette
+// command). Unlike the compact session windows they carry no `?win` flag. The
+// primary mainWindow stays the notification / deep-link / pet-overlay anchor and
+// is NOT tracked here. The set holds a strong reference so an open peer isn't
+// garbage-collected, and drops it on close.
+const instanceWindows = new Set<any>()
+
+// Cascade a new instance off whichever window spawned it so it doesn't land
+// exactly on top of its source. Falls back to the persisted primary geometry
+// when there's no live source window (e.g. all windows closed on macOS). The
+// pure cascade math lives in session-windows.ts (instanceWindowBounds).
+function nextInstanceBounds() {
+  const source = BrowserWindow.getFocusedWindow() || mainWindow
+  const fallback = computeWindowOptions(readWindowState(), screen.getAllDisplays())
+  const base = source && !source.isDestroyed() ? source.getBounds() : null
+
+  return instanceWindowBounds(base, fallback)
+}
+
+// Open a new full-chrome instance window. Mirrors createWindow()'s window
+// options (shared chatWindowWebPreferences keeps backgroundThrottling:false so a
+// streamed answer never stalls in the background) but is a peer, not the
+// primary: it never overwrites the mainWindow global, doesn't start the backend
+// (the renderer's getConnection() joins the already-running one), and loads the
+// plain renderer URL so the full app renders.
+function createInstanceWindow() {
+  const icon = getAppIconPath()
+
+  const win = new BrowserWindow({
+    ...nextInstanceBounds(),
+    minWidth: WINDOW_MIN_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
+    title: 'Hermes',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    opacity: windowOpacity(),
+    icon,
+    show: false,
+    backgroundColor: getWindowBackgroundColor(),
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  instanceWindows.add(win)
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) {
+      win.show()
+    }
+  })
+
+  // Per-window fullscreen chrome: send this window its own titlebar inset so its
+  // traffic lights hide/show independently of the primary.
+  win.on('enter-full-screen', () => sendWindowStateChanged(true, win))
+  win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
+
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+
+  win.on('closed', () => {
+    instanceWindows.delete(win)
+  })
+
+  if (DEV_SERVER) {
+    win.loadURL(DEV_SERVER)
+  } else {
+    win.loadURL(pathToFileURL(resolveRendererIndex()).toString())
+  }
+
+  return win
 }
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -7500,7 +8206,9 @@ function createWindow() {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
-        applyTitleBarOverlay(mainWindow)
+        for (const win of BrowserWindow.getAllWindows()) {
+          applyTitleBarOverlay(win)
+        }
       })
     }
   }
@@ -7537,6 +8245,14 @@ function createWindow() {
       }
     }
   })
+
+  // Under Playright testing, instantly show the window.
+  // `ready-to-show` doesn't fire in some testing envs.
+  if (process.env.TEST_WORKER_INDEX !== undefined) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
+  }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -7688,42 +8404,43 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
     return { ok: true, rebuilt: false }
   }
 
-  let conn = null
+  // Main and every session pop-out have their own renderer reconnect loop but
+  // share this primary connection. Coalesce simultaneous requests so one outage
+  // produces one failure observation rather than exhausting the whole streak.
+  return remoteRevalidation.run(connectionPromise, async () => {
+    const result = await revalidateRemoteConnection({
+      connectionPromise,
+      currentConnectionPromise: () => backendConnectionState.getPromise(),
+      log: rememberLog,
+      probe: fetchPublicJson,
+      resetConnection: resetHermesConnection,
+      tracker: remoteLiveness
+    })
 
-  try {
-    conn = await connectionPromise
-  } catch {
-    // The cached boot already rejected (its own catch clears the promise);
-    // nothing to revalidate — the next getConnection() builds fresh.
-    return { ok: true, rebuilt: false }
-  }
+    // A rebuilt SSH connection must also tear down its tunnel/master before the
+    // renderer re-dials (which only happens after this handler resolves), so the
+    // fresh bootstrap can't reattach to a dying transport.
+    if (result.rebuilt) {
+      const conn = await connectionPromise.catch(() => null)
 
-  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
-    return { ok: true, rebuilt: false }
-  }
+      if (conn?.remoteKind === 'ssh') {
+        const profile = primaryProfileKey()
+        await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile))
+        await teardownSshConnection(profile)
+      }
+    }
 
-  const base = conn.baseUrl.replace(/\/+$/, '')
-
-  try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
-
-    return { ok: true, rebuilt: false }
-  } catch {
-    // Unreachable remote: drop the stale cache so the renderer's next reconnect
-    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
-    // clears the connection promise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
-    resetHermesConnection()
-
-    return { ok: true, rebuilt: true }
-  }
+    return result
+  })
 })
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
 
   return { ok: true }
 })
-ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
+ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
+  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
+})
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
@@ -7733,8 +8450,8 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openNewSession', async () => {
-  createNewSessionWindow()
+ipcMain.handle('hermes:window:openInstance', async () => {
+  createInstanceWindow()
 
   return { ok: true }
 })
@@ -7944,6 +8661,50 @@ ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
+ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
+ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
+  const value = String(host || '').trim()
+
+  if (!value) {
+    throw new Error('SSH host is required.')
+  }
+
+  const ssh =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+      : 'ssh'
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(ssh, ['-G', '--', value], hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
+    let stdout = ''
+    let stderr = ''
+
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error('SSH config resolution timed out.'))
+    }, 10_000)
+
+    child.stdout.on('data', chunk => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', chunk => {
+      stderr += String(chunk)
+    })
+    child.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', code => {
+      clearTimeout(timer)
+
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || 'Could not resolve SSH host.'))
+      } else {
+        resolve(parseSshGOutput(stdout))
+      }
+    })
+  })
+})
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
@@ -8005,19 +8766,17 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   writeDesktopConnectionConfig(config)
 
   const key = connectionScopeKey(payload?.profile)
+  const scope = key || ''
 
-  if (key && key !== primaryProfileKey()) {
-    // Editing a NON-primary profile's connection: don't disturb the window's
-    // primary backend. Drop the profile's pooled backend so the next switch
-    // re-resolves against the new remote/local target.
-    stopPoolBackend(key)
-  } else {
-    // Global / primary connection: soft re-home. Tear down the window backend
-    // without resetting boot UI or reloading — the shell stays, the renderer
-    // wipes session lists (skeletons) and re-dials on hermes:connection:applied.
-    await teardownPrimaryBackendAndWait({ soft: true })
-    sendConnectionApplied()
-  }
+  await applyConnectionChange({
+    cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
+    isPrimary: !key || key === primaryProfileKey(),
+    scope,
+    sendApplied: sendConnectionApplied,
+    stopPool: stopPoolBackend,
+    teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+    teardownSsh: value => teardownSshConnection(value || null)
+  })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
@@ -8348,9 +9107,26 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   })
 })
 
+// One deduper per cross-window cue — the choke point every window shares. Main
+// handles IPC serially, so the first window to claim a key wins with no race.
+const isDuplicateNotification = createEventDeduper()
+const claimedAmbientCue = createEventDeduper()
+
+// A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
+// The first caller within the window gets true; peers get false and stay quiet.
+ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
+
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {
     return false
+  }
+
+  // Multiple full windows each run their own renderer throttle, so the same
+  // kind+session can arrive here twice. Collapse it at this single choke point.
+  // Return true (not false): a notification for the event IS being shown by the
+  // first caller, so the settings "send test" success probe stays honest.
+  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? ''}`)) {
+    return true
   }
 
   // Action buttons render only on signed macOS builds; elsewhere they're dropped
@@ -8522,7 +9298,13 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     background: payload.background,
     foreground: payload.foreground
   }
-  applyTitleBarOverlay(mainWindow)
+
+  // Repaint the native (Windows/Linux) titlebar overlay on every open chat
+  // window, not just the primary — instance peers and session windows share the
+  // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
+  for (const win of BrowserWindow.getAllWindows()) {
+    applyTitleBarOverlay(win)
+  }
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
@@ -8551,6 +9333,33 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
 
   for (const win of BrowserWindow.getAllWindows()) {
     applyWindowTranslucency(win)
+  }
+})
+
+// Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
+// blocker and its persisted state so a cold launch restores it (applied on
+// ready — powerSaveBlocker needs the app ready). The renderer toggles it from
+// Settings → Advanced over IPC. See store/keep-awake.
+const KEEP_AWAKE_CONFIG_PATH = path.join(app.getPath('userData'), 'keep-awake.json')
+const keepAwake = createKeepAwake(powerSaveBlocker)
+
+function readPersistedKeepAwake() {
+  try {
+    return JSON.parse(fs.readFileSync(KEEP_AWAKE_CONFIG_PATH, 'utf8')).on === true
+  } catch {
+    return false
+  }
+}
+
+ipcMain.on('hermes:keep-awake', (_event, on) => {
+  const enabled = Boolean(on)
+  keepAwake.set(enabled)
+
+  try {
+    fs.mkdirSync(path.dirname(KEEP_AWAKE_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ on: enabled }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[keep-awake] write failed: ${error.message}`)
   }
 })
 
@@ -9045,15 +9854,30 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
   const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-  const ptyProcess = nodePty.spawn(command, args, {
-    cols,
-    cwd,
-    env: terminalShellEnv(),
-    name: 'xterm-256color',
-    rows
-  })
+  const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, () => ensureBackend(primaryProfileKey()))
+  const remote = Boolean(sshTarget)
+  const remoteState = remote ? sshConnections.get(sshTarget.scope) : null
 
-  terminalSessions.set(id, { pty: ptyProcess, webContentsId: event.sender.id })
+  const remoteCommand =
+    remoteState?.remotePlatform === 'Windows'
+      ? buildWindowsInteractiveCommand(String(payload?.cwd || '').trim())
+      : undefined
+
+  const ptyProcess = remote
+    ? nodePty.spawn(
+        process.platform === 'win32'
+          ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+          : 'ssh',
+        buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
+        { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
+      )
+    : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
+
+  terminalSessions.set(id, {
+    pty: ptyProcess,
+    webContentsId: event.sender.id,
+    ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
+  })
 
   const send = (suffix, payload) => {
     if (event.sender.isDestroyed()) {
@@ -9070,7 +9894,7 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   })
   event.sender.once('destroyed', () => disposeTerminalSession(id))
 
-  return { cwd, id, shell: name }
+  return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
 })
 
 ipcMain.handle('hermes:terminal:write', (_event, id, data) => {
@@ -9106,7 +9930,7 @@ ipcMain.handle('hermes:terminal:cwd', async (_event, id) => {
     return null
   }
 
-  return readProcessCwd(sessionInfo.pty.pid)
+  return sessionInfo.sshScope !== undefined ? null : readProcessCwd(sessionInfo.pty.pid)
 })
 
 ipcMain.handle('hermes:terminal:dispose', (_event, id) => disposeTerminalSession(String(id || '')))
@@ -9554,6 +10378,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  keepAwake.set(readPersistedKeepAwake())
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -9598,7 +10423,24 @@ function configureSpellChecker() {
   }
 }
 
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
+    event.preventDefault()
+    sshBootstrapCoordinator.cancelAll()
+    const scopes = [...sshConnections.keys()]
+
+    const pending = Promise.allSettled([
+      ...scopes.map(scope => teardownSshConnection(scope || null)),
+      ...sshBootstrapCoordinator.promises()
+    ])
+
+    void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 4_000))]).then(async () => {
+      await sshBootstrapCoordinator.forceCleanupAll()
+      sshQuitTeardownDone = true
+      app.quit()
+    })
+  }
+
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
   // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
   // Keyed on sticky (not active): a manual --no-sandbox run still records a

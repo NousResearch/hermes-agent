@@ -2449,6 +2449,12 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        # Cross-HERMES_HOME token takeover is armed by GatewayRunner only for
+        # an adapter's initial connect during an explicit ``gateway run
+        # --replace`` startup.  Ordinary starts and every reconnect fail safe
+        # through the existing retryable conflict path.
+        self._platform_lock_takeover_allowed = False
+        self._platform_lock_takeover_attempted = False
         
         # Track active message handlers per session for interrupt support.
         # _active_sessions stores the per-session interrupt Event; _session_tasks
@@ -2848,8 +2854,18 @@ class BasePlatformAdapter(ABC):
             await result
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
-        """Acquire a scoped lock for this adapter. Returns True on success."""
-        from gateway.status import acquire_scoped_lock
+        """Acquire a scoped lock for this adapter. Returns True on success.
+
+        A live cross-HERMES_HOME holder may be replaced only when the runner
+        explicitly arms this adapter for its initial ``--replace`` connect.
+        The status module validates PID/start-time/home ownership, places the
+        marker in the target's home, and performs the bounded termination.
+        """
+        from gateway.status import (
+            acquire_scoped_lock,
+            take_over_scoped_lock_holder,
+        )
+
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
         acquired, existing = acquire_scoped_lock(
@@ -2857,6 +2873,42 @@ class BasePlatformAdapter(ABC):
         )
         if acquired:
             return True
+
+        takeover_allowed = bool(
+            getattr(self, "_platform_lock_takeover_allowed", False)
+        )
+        takeover_attempted = bool(
+            getattr(self, "_platform_lock_takeover_attempted", False)
+        )
+        if takeover_allowed and not takeover_attempted and isinstance(existing, dict):
+            # Consume the authority before doing any I/O: one adapter connect
+            # gets at most one termination attempt, even if lock re-acquire or
+            # later initialization fails.
+            self._platform_lock_takeover_allowed = False
+            self._platform_lock_takeover_attempted = True
+            owner_pid = take_over_scoped_lock_holder(existing)
+            if owner_pid is not None:
+                logger.warning(
+                    "[%s] %s was held by gateway PID %d — explicit --replace "
+                    "handoff completed",
+                    self.name,
+                    resource_desc,
+                    owner_pid,
+                )
+                acquired, existing = acquire_scoped_lock(
+                    scope,
+                    identity,
+                    metadata={"platform": self.platform.value},
+                )
+                if acquired:
+                    logger.info(
+                        "[%s] Acquired %s after taking over PID %d",
+                        self.name,
+                        resource_desc,
+                        owner_pid,
+                    )
+                    return True
+
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
         message = (
             f'{resource_desc} already in use'
@@ -5191,6 +5243,47 @@ class BasePlatformAdapter(ABC):
                         event.source.chat_id,
                     )
                     _reply_anchor = _reply_anchor_for_event(event)
+                    # Delivery-obligation ledger: durably record the final
+                    # response BEFORE the send attempt so a gateway crash
+                    # between finalize and platform ACK can redeliver it on
+                    # the next boot instead of silently losing the turn's
+                    # output (#58818). Best-effort at every step — ledger
+                    # trouble must never block or delay the actual send.
+                    # Slash-command and ephemeral replies are cheap to
+                    # regenerate and are not recorded.
+                    _obligation_id = None
+                    if not is_ephemeral_response and not str(
+                        event.text or ""
+                    ).lstrip().startswith(("/", self.typed_command_prefix or "!")):
+                        try:
+                            from gateway.delivery_ledger import (
+                                compute_obligation_id,
+                                ledger_enabled,
+                                mark_attempting,
+                                record_obligation,
+                            )
+
+                            if ledger_enabled():
+                                _obligation_id = compute_obligation_id(
+                                    session_key,
+                                    str(getattr(event, "message_id", "") or ""),
+                                    text_content,
+                                )
+                                record_obligation(
+                                    obligation_id=_obligation_id,
+                                    session_key=session_key,
+                                    platform=str(
+                                        getattr(event.source.platform, "value",
+                                                event.source.platform)
+                                    ),
+                                    chat_id=event.source.chat_id,
+                                    thread_id=getattr(event.source, "thread_id", None),
+                                    content=text_content,
+                                )
+                                mark_attempting(_obligation_id)
+                        except Exception:
+                            logger.debug("delivery ledger record failed", exc_info=True)
+                            _obligation_id = None
                     result = await delivery_adapter._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -5198,6 +5291,24 @@ class BasePlatformAdapter(ABC):
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
+                    if _obligation_id is not None:
+                        try:
+                            from gateway.delivery_ledger import (
+                                mark_delivered,
+                                mark_failed,
+                            )
+
+                            if getattr(result, "success", False):
+                                mark_delivered(_obligation_id)
+                            else:
+                                mark_failed(
+                                    _obligation_id,
+                                    str(getattr(result, "error", "") or ""),
+                                )
+                        except Exception:
+                            logger.debug(
+                                "delivery ledger update failed", exc_info=True
+                            )
 
                     # Schedule auto-deletion on the adapter that owns the new
                     # message ID, which may be the reconnect replacement.

@@ -8,13 +8,14 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { clearQueuedPrompts } from '@/store/composer-queue'
+import { migrateSessionDraft } from '@/store/composer'
+import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
-  $activeSessionStoredId,
+  $activeSessionStoredIdRotation,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -25,8 +26,10 @@ import {
   $sessions,
   $yoloActive,
   type NewChatWorkspaceTarget,
+  resolveComposerSessionKey,
   sessionPinId,
   setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
   setCurrentBranch,
@@ -86,6 +89,7 @@ interface SessionActionsOptions {
   creatingSessionRef: MutableRefObject<boolean>
   ensureSessionState: (sessionId: string, storedSessionId?: string | null) => ClientSessionState
   getRouteToken: () => string
+  getRoutedStoredSessionId: () => null | string
   navigate: NavigateFunction
   onFreshDraftRouteIntent?: () => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -145,25 +149,35 @@ function reconcileAuthoritativeMessages(
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
 async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
+  // Treat Send as the linearization point for the visible selector state. The
+  // profile handshake below can yield long enough for background config/model
+  // refreshes to finish; reading atoms afterward would silently create the
+  // session with a different selection than the one the user submitted.
+  const selection = {
+    effort: $currentReasoningEffort.get().trim(),
+    fast: $currentFastMode.get(),
+    model: $currentModel.get().trim(),
+    provider: $currentProvider.get().trim()
+  }
+
   const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
   await ensureGatewayProfile(profile)
-
-  const model = $currentModel.get().trim()
-  const provider = $currentProvider.get().trim()
-  const effort = $currentReasoningEffort.get().trim()
 
   return {
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile } : {}),
-    ...(model ? { model, ...(provider ? { provider } : {}) } : {}),
-    ...(effort ? { reasoning_effort: effort } : {}),
-    ...($currentFastMode.get() ? { fast: true } : {})
+    ...(selection.model
+      ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
+      : {}),
+    ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+    fast: selection.fast
   }
 }
 
 interface FreshSessionDraftOptions {
+  preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
@@ -179,6 +193,7 @@ export function useSessionActions({
   creatingSessionRef,
   ensureSessionState,
   getRouteToken,
+  getRoutedStoredSessionId,
   navigate,
   onFreshDraftRouteIntent,
   requestGateway,
@@ -194,36 +209,69 @@ export function useSessionActions({
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
 
-  // Follow auto-compression's stored-id rotation. When the active session's
-  // stored id changes (compression ends the SessionDB session and forks a
-  // continuation), re-anchor the URL route + selection to the new id so the
-  // next send doesn't hit a stale stored→runtime mapping and trigger a full
-  // thread reload. replace: true — it's the same conversation, not a new
-  // history entry.
-  const rotatedStoredId = useStore($activeSessionStoredId)
+  // Follow auto-compression's stored-id rotation only while the exact runtime,
+  // selection, and route intent still belong to the rotating conversation.
+  // The previous implementation carried only the next stored id and navigated
+  // unconditionally; a fast A → B → C switch could therefore be overwritten
+  // by A's delayed session.info event and visibly jump back to A.
+  const storedIdRotation = useStore($activeSessionStoredIdRotation)
 
   useEffect(() => {
-    if (!rotatedStoredId || rotatedStoredId === selectedStoredSessionIdRef.current) {
+    if (!storedIdRotation) {
       return
     }
 
-    const oldStoredId = selectedStoredSessionIdRef.current
+    // Consume the event even when it is stale. Rotation is an edge, not durable
+    // state; replaying it after a later remount/selection would steal focus.
+    setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
 
-    setSelectedStoredSessionId(rotatedStoredId)
-    selectedStoredSessionIdRef.current = rotatedStoredId
-    navigate(sessionRoute(rotatedStoredId), { replace: true })
+    const selectedStoredSessionId = selectedStoredSessionIdRef.current
+    const routedStoredSessionId = getRoutedStoredSessionId()
 
-    // Clean up the stale stored→runtime mapping so getRuntimeIdForStoredSession
-    // can't resolve the old id to this runtime (it would fail the storedSessionId
-    // check and return null, but leaving the stale key is sloppy).
-    if (oldStoredId) {
-      runtimeIdByStoredSessionIdRef.current.delete(oldStoredId)
+    if (
+      activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
+      selectedStoredSessionId !== storedIdRotation.previousStoredSessionId ||
+      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId)
+    ) {
+      return
     }
-  }, [rotatedStoredId, navigate, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef])
+
+    // Park unsent draft/queue on the durable lineage key (not the new tip).
+    // ChatBar scopes composer state on resolveComposerSessionKey(); migrating
+    // onto the tip while the composer is still bound to the root can lose newer
+    // live editor text on a brief remount. If the new tip row is not in
+    // $sessions yet, resolveComposerSessionKey falls back to the tip id — prefer
+    // the previous id (usually the lineage root) in that gap.
+    const previousId = storedIdRotation.previousStoredSessionId
+    const nextId = storedIdRotation.nextStoredSessionId
+    const sessions = $sessions.get()
+    const resolvedNext = resolveComposerSessionKey(nextId, sessions)
+
+    const durableKey =
+      resolvedNext && resolvedNext !== nextId
+        ? resolvedNext
+        : (resolveComposerSessionKey(previousId, sessions) ?? previousId)
+
+    migrateSessionDraft(previousId, durableKey)
+    migrateSessionDraft(nextId, durableKey)
+    migrateQueuedPrompts(previousId, durableKey)
+    migrateQueuedPrompts(nextId, durableKey)
+
+    setSelectedStoredSessionId(nextId)
+    selectedStoredSessionIdRef.current = nextId
+
+    // A route overlay/page has no routed session id, but the underlying selected
+    // chat still needs to follow the continuation. Update that selection in
+    // place without navigating out of the surface the user deliberately opened.
+    if (routedStoredSessionId === previousId) {
+      navigate(sessionRoute(nextId), { replace: true })
+    }
+  }, [activeSessionIdRef, getRoutedStoredSessionId, navigate, selectedStoredSessionIdRef, storedIdRotation])
 
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
+      const preserveRoute = draftOptions.preserveRoute ?? false
       const replaceRoute = draftOptions.replaceRoute ?? false
 
       const hasWorkspaceTarget =
@@ -244,7 +292,11 @@ export function useSessionActions({
       // rebind race, so leaving the old id here could revive it on a very fast
       // New Chat -> Enter sequence.
       onFreshDraftRouteIntent?.()
-      navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
+
+      if (!preserveRoute) {
+        navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
+      }
+
       setActiveSessionId(null)
       activeSessionIdRef.current = null
       setSelectedStoredSessionId(null)

@@ -9,8 +9,11 @@ export const PANE_TAB_STRIP_LINE = 'shadow-[inset_0_-1px_0_var(--ui-stroke-terti
 export const PANE_TAB_STRIP_LINE_LEFT = 'shadow-[inset_1px_0_0_var(--ui-stroke-tertiary)]'
 export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke-tertiary)]'
 
+// Pane tabs are content chrome, never window-titlebar controls. Leaving their
+// app region unset keeps transient layout geometry out of Electron's native
+// titlebar hit-test map.
 const TAB =
-  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag]'
+  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium'
 
 const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 border-b not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
 

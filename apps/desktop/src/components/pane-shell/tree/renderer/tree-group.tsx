@@ -355,7 +355,10 @@ export function TreeGroup({
         </ZoneMenu>
       )}
 
-      {/* Header: the file-preview tab strip (PaneTab), one shared component. */}
+      {/* Header: the file-preview tab strip (PaneTab), one shared component.
+          This is content chrome below the window titlebar. Keep Electron app
+          regions off it so pre-hydration pane geometry cannot carve stale
+          no-drag rectangles out of the native titlebar on Windows. */}
       {headerVisible && (
         <ZoneMenu {...zoneMenu}>
           <div
@@ -364,7 +367,7 @@ export function TreeGroup({
             // PANE_TAB_STRIP_LINE; active tab cuts through it.
             // data-zone-tabstrip: a drop over here STACKS (drag-session reads it).
             className={cn(
-              'group/pane-header relative flex h-7 shrink-0 select-none bg-(--pane-tab-strip-bg) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)] [--pane-tab-strip-bg:var(--theme-card-seed)]',
+              'group/pane-header relative flex h-7 shrink-0 select-none bg-(--pane-tab-strip-bg) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)] [--pane-tab-strip-bg:var(--theme-card-seed)]',
               PANE_TAB_STRIP_LINE
             )}
             data-zone-tabstrip={node.id}

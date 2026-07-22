@@ -1388,9 +1388,27 @@ class WeixinAdapter(BasePlatformAdapter):
                     asyncio.create_task(self._process_message_safe(message))
             except asyncio.CancelledError:
                 break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                # Connection-level error: recreate the polling session to recover from broken connections.
+                logger.warning(
+                    "[%s] connection error, recreating poll session: %s",
+                    self.name,
+                    exc,
+                )
+                if self._poll_session and not self._poll_session.closed:
+                    await self._poll_session.close()
+                self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+                consecutive_failures = 0
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
             except Exception as exc:
                 consecutive_failures += 1
-                logger.error("[%s] poll error (%d/%d): %s", self.name, consecutive_failures, MAX_CONSECUTIVE_FAILURES, exc)
+                logger.error(
+                    "[%s] poll error (%d/%d): %s",
+                    self.name,
+                    consecutive_failures,
+                    MAX_CONSECUTIVE_FAILURES,
+                    exc,
+                )
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0

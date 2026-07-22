@@ -386,6 +386,26 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 # =============================================================================
+# Assistant-Turn Repetition Guard
+# =============================================================================
+# Catches the model repeating the same message + tool calls turn after turn
+# even though every tool call succeeds — invisible to tool_loop_guardrails,
+# which keys on tool results (a live-page screenshot differs slightly on every
+# capture, so its result hash never repeats). After `nudge_after` identical
+# turns within the last `window` turns, a corrective user message is injected
+# telling the model to change approach or report the blocker. With
+# `abort_enabled`, `abort_after` further identical turns after the nudge end
+# the turn cleanly with a resumable session. Abort is opt-in: legitimate
+# workflows (e.g. polling a build until it finishes) repeat identical turns
+# on purpose.
+repetition_guard:
+  enabled: true
+  window: 5
+  nudge_after: 3
+  abort_enabled: false
+  abort_after: 2
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are

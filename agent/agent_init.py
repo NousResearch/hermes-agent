@@ -713,6 +713,8 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    from agent.repetition_guard import AssistantRepetitionGuard
+    agent._repetition_guard = AssistantRepetitionGuard()
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
@@ -1549,6 +1551,18 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    try:
+        from agent.repetition_guard import (
+            AssistantRepetitionGuard,
+            RepetitionGuardConfig,
+        )
+        agent._repetition_guard = AssistantRepetitionGuard(
+            RepetitionGuardConfig.from_mapping(
+                _agent_cfg.get("repetition_guard", {})
+            )
+        )
+    except Exception as _rg_err:
+        _ra().logger.warning("Repetition guard config ignored: %s", _rg_err)
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

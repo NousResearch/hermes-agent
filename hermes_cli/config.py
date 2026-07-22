@@ -1462,6 +1462,21 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Assistant-turn repetition guard: detects the model emitting the same
+    # message + tool calls over and over even though every tool call succeeds
+    # (which tool_loop_guardrails cannot see). A corrective user message is
+    # injected after `nudge_after` identical turns within `window`; with
+    # abort_enabled, `abort_after` further identical turns end the turn
+    # cleanly. Abort is opt-in because legitimate workflows (e.g. polling a
+    # build) may repeat identical turns on purpose.
+    "repetition_guard": {
+        "enabled": True,
+        "window": 5,
+        "nudge_after": 3,
+        "abort_enabled": False,
+        "abort_after": 2,
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio.

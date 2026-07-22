@@ -194,6 +194,34 @@ const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
 ]
 
 /**
+ * A marker that makes the mock emit a real blocking clarify tool call. Tests
+ * use it to hold a turn open while exercising busy-composer interactions.
+ */
+export const BLOCKING_CLARIFY_TRIGGER = 'E2E_BLOCKING_CLARIFY_TRIGGER'
+export const BLOCKING_CLARIFY_QUESTION = 'Keep this test turn running?'
+
+const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
+}
+
+function includesBlockingClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(BLOCKING_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesBlockingClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesBlockingClarifyTrigger)
+  }
+
+  return false
+}
+
+/**
  * Start the mock server on an ephemeral port.
  *
  * @returns a handle with `port`, `url`, received user prompts, and `close()`.
@@ -285,6 +313,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
+
+          if (includesBlockingClarifyTrigger(parsed.messages)) {
+            if (stream) {
+              streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+            }
+            return
+          }
 
           if (isQueueStopTrigger) {
             const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]

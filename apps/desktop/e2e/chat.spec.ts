@@ -8,13 +8,10 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { test } from './test'
+import { expect, test } from './test'
 
-import {
-  type MockBackendFixture,
-  setupMockBackend,
-  waitForAppReady,
-} from './fixtures'
+import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
+import { BLOCKING_CLARIFY_QUESTION, BLOCKING_CLARIFY_TRIGGER } from './mock-server'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: MockBackendFixture | null = null
@@ -61,7 +58,7 @@ test.describe('chat interaction with mock backend', () => {
         return (body.textContent ?? '').includes('Hello, can you hear me?')
       },
       undefined,
-      { timeout: 15_000 },
+      { timeout: 15_000 }
     )
 
     // Wait for the mock response to appear. The canned reply is:
@@ -81,11 +78,55 @@ test.describe('chat interaction with mock backend', () => {
         return text.includes('mock inference server') || text.includes('boot chain is working')
       },
       undefined,
-      { timeout: 60_000 },
+      { timeout: 60_000 }
     )
   })
 
   test('screenshot of chat with messages', async () => {
     await expectVisualSnapshot(fixture!.page, { name: 'chat-with-messages', app: fixture!.app })
+  })
+
+  test('changes the busy composer action from stop to steer or queue', async ({}, testInfo) => {
+    const page = fixture!.page
+    const composer = page.locator('[contenteditable="true"]').first()
+    const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+
+    await composer.click()
+    await composer.type(BLOCKING_CLARIFY_TRIGGER)
+    await page.keyboard.press('Enter')
+    await page.getByText(BLOCKING_CLARIFY_QUESTION).waitFor({ state: 'visible', timeout: 30_000 })
+
+    await expect(primary).toHaveAttribute('aria-label', 'Stop')
+    await expect(primary.locator('span')).toHaveClass(/bg-current/)
+
+    await composer.click()
+    await composer.type('please answer tersely')
+    await expect(primary).toHaveAttribute('aria-label', /Steer/)
+    await page.screenshot({ path: testInfo.outputPath('busy-composer-steer.png') })
+    await expect(primary.locator('svg.tabler-icon-steering-wheel')).toBeVisible()
+
+    await page.evaluate(() => {
+      const composer = document.querySelector<HTMLElement>('[contenteditable="true"]')
+      const bytes = Uint8Array.from(
+        atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqOQAAAABJRU5ErkJggg=='),
+        char => char.charCodeAt(0)
+      )
+      const image = new File([bytes], 'queued.png', { type: 'image/png' })
+      const transfer = new DataTransfer()
+
+      transfer.items.add(image)
+      composer?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+    })
+    await page.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible' })
+    await expect(primary).toHaveAttribute('aria-label', /Queue/)
+    await page.screenshot({ path: testInfo.outputPath('busy-composer-queue.png') })
+    await expect(primary.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
+
+    await primary.click()
+    await expect(page.getByText('1 Queued')).toBeVisible()
+
+    await primary.click()
+    await expect(page.getByText('1 Queued — paused')).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('busy-composer-queue-paused.png') })
   })
 })

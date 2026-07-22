@@ -1304,15 +1304,22 @@ DEFAULT_CONFIG = {
         "max_file_size_mb": 10,
         # Auto-maintenance: hermes sweeps the checkpoint base at startup
         # (at most once per ``min_interval_hours``) and:
-        #   * deletes project entries whose workdir no longer exists (orphan)
         #   * deletes project entries whose last_touch is older than
         #     ``retention_days``
         #   * GCs the single shared store to reclaim unreachable objects
         #   * enforces ``max_total_size_mb`` across remaining projects
         #   * deletes ``legacy-*`` archives older than ``retention_days``
+        #
+        # NOTE: this automatic sweep never deletes "orphan" entries (workdir
+        # no longer found on disk). A missing workdir at startup is
+        # ambiguous — it can mean the project was deleted, or that an
+        # external volume / network share / VPN is simply not mounted yet —
+        # and this sweep runs unattended, so it must never guess. Orphan
+        # cleanup is only available via the explicit
+        # ``hermes checkpoints prune`` command (add ``--keep-orphans`` to
+        # skip it), where a human is looking at the output.
         "auto_prune": True,
         "retention_days": 7,
-        "delete_orphans": True,
         "min_interval_hours": 24,
     },
 

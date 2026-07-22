@@ -2008,10 +2008,15 @@ def _run_checkpoint_auto_maintenance() -> None:
         if not cfg.get("auto_prune", False):
             return
         from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+        # delete_orphans is intentionally never honoured here: a missing
+        # workdir at startup is ambiguous (deleted project vs. an unmounted
+        # external volume / network share / VPN not yet up) and this sweep
+        # runs unattended. Orphan cleanup is only ever done via the explicit
+        # `hermes checkpoints prune` command, which the user has to invoke.
         maybe_auto_prune_checkpoints(
             retention_days=int(cfg.get("retention_days", 7)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            delete_orphans=bool(cfg.get("delete_orphans", True)),
+            delete_orphans=False,
             max_total_size_mb=int(cfg.get("max_total_size_mb", 500)),
         )
     except Exception as exc:

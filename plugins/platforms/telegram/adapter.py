@@ -10,12 +10,14 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
 import os
 import html as _html
 import re
+import subprocess
 import threading
 import time
 from contextvars import ContextVar
@@ -262,6 +264,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    get_video_cache_dir,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -362,6 +365,138 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
         pass
 
     return None
+
+
+
+def _probe_video_metadata(video_path: str) -> Dict[str, int]:
+    """Best-effort Telegram sendVideo metadata from ffprobe.
+
+    Telegram clients render large Bot API videos more reliably when sendVideo
+    includes the same fields native clients usually provide: dimensions,
+    duration, and ``supports_streaming``.  If ffprobe is unavailable or the file
+    is malformed we silently fall back to Telegram's own probing.
+    """
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,duration:format=duration",
+                "-of",
+                "json",
+                video_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        data = json.loads(completed.stdout or "{}")
+    except Exception:
+        logger.debug("[Telegram] Failed to probe video metadata for %s", video_path, exc_info=True)
+        return {}
+
+    streams = data.get("streams") or []
+    stream = streams[0] if streams and isinstance(streams[0], dict) else {}
+    fmt = data.get("format") if isinstance(data.get("format"), dict) else {}
+    out: Dict[str, int] = {}
+    for src_key, dst_key in (("width", "width"), ("height", "height")):
+        try:
+            value = int(float(stream.get(src_key)))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            out[dst_key] = value
+    duration_raw = stream.get("duration") or fmt.get("duration")
+    try:
+        duration = int(round(float(duration_raw)))
+    except (TypeError, ValueError):
+        duration = 0
+    if duration > 0:
+        out["duration"] = duration
+    return out
+
+
+_TELEGRAM_VIDEO_THUMB_MAX_BYTES = 200 * 1024
+
+
+def _valid_telegram_video_thumbnail(path: _Path) -> bool:
+    """Return True when a generated thumbnail fits Telegram's hard limits."""
+    try:
+        return 0 < path.stat().st_size <= _TELEGRAM_VIDEO_THUMB_MAX_BYTES
+    except OSError:
+        return False
+
+
+def _looks_like_telegram_thumbnail_error(error: Exception) -> bool:
+    """Best-effort check for Telegram rejecting only the video thumbnail."""
+    text = str(error).lower()
+    return any(
+        marker in text
+        for marker in (
+            "thumbnail",
+            "thumb",
+            "photo_invalid_dimensions",
+            "image_process_failed",
+        )
+    )
+
+
+def _ensure_video_thumbnail(video_path: str) -> Optional[str]:
+    """Create/cache a JPEG thumbnail for Telegram sendVideo.
+
+    Telegram accepts thumbnails under 200 kB and within 320x320.  Generating one
+    avoids all-black first-frame previews common with slide/screencast videos
+    and helps clients show a real video card instead of a black download tile.
+    """
+    try:
+        src = _Path(video_path)
+        if not src.exists():
+            return None
+        stat = src.stat()
+        digest = hashlib.sha1(
+            f"{src.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8", "replace")
+        ).hexdigest()[:16]
+        thumb = get_video_cache_dir() / f"telegram-thumb-{digest}.jpg"
+        if thumb.exists():
+            if _valid_telegram_video_thumbnail(thumb):
+                return str(thumb)
+            thumb.unlink(missing_ok=True)
+
+        # Seek a little into the file to avoid intentionally/accidentally black
+        # opening frames.  force_original_aspect_ratio=decrease fits both
+        # landscape and portrait frames inside Telegram's 320x320 thumbnail box.
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                "3",
+                "-i",
+                video_path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=320:320:force_original_aspect_ratio=decrease",
+                "-q:v",
+                "5",
+                str(thumb),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        if _valid_telegram_video_thumbnail(thumb):
+            return str(thumb)
+        thumb.unlink(missing_ok=True)
+    except Exception:
+        logger.debug("[Telegram] Failed to create video thumbnail for %s", video_path, exc_info=True)
+    return None
+
 
 
 def check_telegram_requirements() -> bool:
@@ -6837,22 +6972,94 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_video,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "video",
-                    reset_media=lambda: f.seek(0),
-                )
+            video_metadata, thumbnail_path = await asyncio.gather(
+                asyncio.to_thread(_probe_video_metadata, video_path),
+                asyncio.to_thread(_ensure_video_thumbnail, video_path),
+            )
+            send_kwargs = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "caption": caption[:1024] if caption else None,
+                "reply_to_message_id": reply_to_id,
+                "supports_streaming": True,
+                **video_metadata,
+                **thread_kwargs,
+                **self._notification_kwargs(metadata),
+            }
+
+            if self.config.extra.get("local_mode"):
+                # Local Bot API can read server-side paths directly. Passing the
+                # path preserves file metadata and avoids a huge multipart stream
+                # through the gateway process.
+                send_kwargs["video"] = video_path
+                if thumbnail_path:
+                    send_kwargs["thumbnail"] = thumbnail_path
+                try:
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                        self._bot.send_video,
+                        send_kwargs,
+                        metadata,
+                        reply_to_id,
+                        "video",
+                        reset_media=None,
+                    )
+                except Exception as send_err:
+                    if not thumbnail_path or not _looks_like_telegram_thumbnail_error(send_err):
+                        raise
+                    logger.warning(
+                        "[%s] Telegram rejected video thumbnail, retrying without it: %s",
+                        self.name,
+                        _redact_telegram_error_text(send_err),
+                    )
+                    retry_kwargs = dict(send_kwargs)
+                    retry_kwargs.pop("thumbnail", None)
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                        self._bot.send_video,
+                        retry_kwargs,
+                        metadata,
+                        reply_to_id,
+                        "video",
+                        reset_media=None,
+                    )
+            else:
+                with open(video_path, "rb") as f:
+                    thumb_file = open(thumbnail_path, "rb") if thumbnail_path else None
+                    try:
+                        send_kwargs["video"] = f
+                        if thumb_file is not None:
+                            send_kwargs["thumbnail"] = thumb_file
+                        try:
+                            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                                self._bot.send_video,
+                                send_kwargs,
+                                metadata,
+                                reply_to_id,
+                                "video",
+                                reset_media=lambda: (f.seek(0), thumb_file and thumb_file.seek(0)),
+                            )
+                        except Exception as send_err:
+                            if thumb_file is None or not _looks_like_telegram_thumbnail_error(send_err):
+                                raise
+                            logger.warning(
+                                "[%s] Telegram rejected video thumbnail, retrying without it: %s",
+                                self.name,
+                                _redact_telegram_error_text(send_err),
+                            )
+                            thumb_file.close()
+                            thumb_file = None
+                            f.seek(0)
+                            retry_kwargs = dict(send_kwargs)
+                            retry_kwargs.pop("thumbnail", None)
+                            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                                self._bot.send_video,
+                                retry_kwargs,
+                                metadata,
+                                reply_to_id,
+                                "video",
+                                reset_media=lambda: f.seek(0),
+                            )
+                    finally:
+                        if thumb_file is not None:
+                            thumb_file.close()
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(

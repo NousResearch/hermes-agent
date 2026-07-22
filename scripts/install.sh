@@ -1751,20 +1751,37 @@ EOF
 
         for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
             if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null | grep -qE 'PATH=.*\.local/bin'; then
-                echo "" >> "$SHELL_CONFIG"
-                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
-                echo "$PATH_LINE" >> "$SHELL_CONFIG"
-                log_success "Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                # Try to write, handling permission errors gracefully
+                if {
+                    echo "" >> "$SHELL_CONFIG" 2>/dev/null && \
+                    echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG" 2>/dev/null && \
+                    echo "$PATH_LINE" >> "$SHELL_CONFIG" 2>/dev/null
+                }; then
+                    log_success "Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                else
+                    log_warn "Could not write to $SHELL_CONFIG (not writable?)"
+                    echo ""
+                    log_info "Add ~/.local/bin to your PATH manually:"
+                    log_info "  $PATH_LINE"
+                    echo ""
+                fi
             fi
         done
 
         # fish uses fish_add_path instead of export PATH=...
         if [ "$IS_FISH" = "true" ]; then
             if ! grep -q 'fish_add_path.*\.local/bin' "$FISH_CONFIG" 2>/dev/null; then
-                echo "" >> "$FISH_CONFIG"
-                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$FISH_CONFIG"
-                echo 'fish_add_path "$HOME/.local/bin"' >> "$FISH_CONFIG"
-                log_success "Added ~/.local/bin to PATH in $FISH_CONFIG"
+                # Try to write, handling permission errors gracefully
+                if {
+                    echo "" >> "$FISH_CONFIG" 2>/dev/null && \
+                    echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$FISH_CONFIG" 2>/dev/null && \
+                    echo 'fish_add_path "$HOME/.local/bin"' >> "$FISH_CONFIG" 2>/dev/null
+                }; then
+                    log_success "Added ~/.local/bin to PATH in $FISH_CONFIG"
+                else
+                    log_warn "Could not write to $FISH_CONFIG"
+                    log_info "Add manually: fish_add_path \"\$HOME/.local/bin\""
+                fi
             fi
         fi
 

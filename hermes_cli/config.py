@@ -996,6 +996,13 @@ def _ensure_hermes_home_managed(home: Path):
 # =============================================================================
 
 DEFAULT_CONFIG = {
+    # ``model`` is intentionally a scalar here (the dashboard schema builder
+    # renders it as a flat string field). On disk it may also be a dict —
+    # ``model: {default, provider, base_url, context_length, allowlist}``.
+    # Dict-only subkeys are surfaced to the dashboard as virtual top-level
+    # fields (``model_context_length``, ``model_allowlist``) via the
+    # normalize/denormalize cycle in hermes_cli/web_server.py; their no-op
+    # defaults (0 = auto-detect, [] = no /model restriction) live there.
     "model": "",
     "providers": {},
     "fallback_providers": [],

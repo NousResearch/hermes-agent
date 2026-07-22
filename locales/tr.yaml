@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "Yetenekler: {capabilities}"
     prompt_caching_enabled: "Prompt önbelleği: etkin"
     warning_prefix:         "Uyarı: {warning}"
+    not_allowed:            "`{model}` bu botun izin verilen model listesinde yok. İzin verilenler: {allowed}"
     saved_global:           "config.yaml'a kaydedildi (`--global`)"
     session_only_hint:      "_(yalnızca bu oturum — kalıcı yapmak için `--global` ekleyin)_"
     current_label:          "Geçerli: `{model}` ({provider})"

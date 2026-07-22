@@ -41,6 +41,7 @@ gateway:
     capabilities_label:     "Cumais: {capabilities}"
     prompt_caching_enabled: "Taisceadh leid: cumasaithe"
     warning_prefix:         "Rabhadh: {warning}"
+    not_allowed:            "Níl `{model}` ar liosta na múnlaí ceadaithe don bhota seo. Ceadaithe: {allowed}"
     saved_global:           "Sábháilte i config.yaml (`--global`)"
     session_only_hint:      "_(seisiún amháin — cuir `--global` leis chun é a choinneáil)_"
     current_label:          "Reatha: `{model}` ar {provider}"

@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "Fähigkeiten: {capabilities}"
     prompt_caching_enabled: "Prompt-Caching: aktiviert"
     warning_prefix:         "Warnung: {warning}"
+    not_allowed:            "`{model}` steht nicht auf der Liste der erlaubten Modelle dieses Bots. Erlaubt: {allowed}"
     saved_global:           "In config.yaml gespeichert (`--global`)"
     session_only_hint:      "_(nur für diese Sitzung — `--global` ergänzen, um zu speichern)_"
     current_label:          "Aktuell: `{model}` bei {provider}"

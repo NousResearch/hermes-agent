@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "Vermoëns: {capabilities}"
     prompt_caching_enabled: "Prompt-kasing: geaktiveer"
     warning_prefix:         "Waarskuwing: {warning}"
+    not_allowed:            "`{model}` is nie op hierdie bot se lys van toegelate modelle nie. Toegelaat: {allowed}"
     saved_global:           "Gestoor in config.yaml (`--global`)"
     session_only_hint:      "_(slegs sessie — voeg `--global` by om permanent te stoor)_"
     current_label:          "Huidig: `{model}` op {provider}"

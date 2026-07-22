@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "기능: {capabilities}"
     prompt_caching_enabled: "프롬프트 캐싱: 활성화됨"
     warning_prefix:         "경고: {warning}"
+    not_allowed:            "`{model}`은(는) 이 봇에서 허용된 모델 목록에 없습니다. 허용된 모델: {allowed}"
     saved_global:           "config.yaml에 저장됨 (`--global`)"
     session_only_hint:      "_(세션 한정 — 영구 저장하려면 `--global`을 추가하세요)_"
     current_label:          "현재: `{model}` ({provider})"

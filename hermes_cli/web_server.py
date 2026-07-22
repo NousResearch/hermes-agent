@@ -805,6 +805,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "model_allowlist": {
+        "type": "list",
+        "description": (
+            "Models the in-session /model command may switch to (exact catalog "
+            "ids, e.g. anthropic/claude-sonnet-4.6). Empty = no restriction."
+        ),
+        "category": "general",
+    },
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
@@ -1006,14 +1014,17 @@ def _build_schema_from_config(
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 
 # Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
-# by the normalize/denormalize cycle.  Insert model_context_length right after
-# the "model" key so it renders adjacent in the frontend.
+# by the normalize/denormalize cycle.  Insert model_context_length and
+# model_allowlist right after the "model" key so they render adjacent in the
+# frontend (all three edit the same on-disk ``model:`` section).
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+_mal_entry = _SCHEMA_OVERRIDES["model_allowlist"]
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
         _ordered_schema["model_context_length"] = _mcl_entry
+        _ordered_schema["model_allowlist"] = _mal_entry
 CONFIG_SCHEMA = _ordered_schema
 
 
@@ -4972,19 +4983,44 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     from DEFAULT_CONFIG where ``model`` is a string, but user configs often have the
     dict form.  Normalize to the string form so the frontend schema matches.
 
-    Also surfaces ``model_context_length`` as a top-level field so the web UI can
-    display and edit it.  A value of 0 means "auto-detect".
+    Also surfaces ``model_context_length`` and ``model_allowlist`` as top-level
+    fields so the web UI can display and edit them.  A context length of 0
+    means "auto-detect"; an empty allowlist means "no restriction" (both are
+    the explicit no-op defaults, emitted even when the subkey is absent so the
+    dashboard always renders the fields).
     """
     config = dict(config)  # shallow copy
     model_val = config.get("model")
     if isinstance(model_val, dict):
-        # Extract context_length before flattening the dict
+        # Extract context_length + allowlist before flattening the dict
         ctx_len = model_val.get("context_length", 0)
+        raw_allow = model_val.get("allowlist")
         config["model"] = model_val.get("default", model_val.get("name", ""))
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
+        config["model_allowlist"] = _sanitize_model_allowlist(raw_allow)
     else:
         config["model_context_length"] = 0
+        config["model_allowlist"] = []
     return config
+
+
+def _sanitize_model_allowlist(raw: Any) -> List[str]:
+    """Coerce a ``model.allowlist`` value into a clean list of model ids.
+
+    Keeps non-empty strings (trimmed, order-preserving, de-duplicated); a
+    missing or malformed value yields ``[]`` — the no-op "no restriction"
+    default the gateway's ``/model`` gate also uses.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: List[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item and item not in out:
+            out.append(item)
+    return out
 
 
 # ── Memory provider config: one generic GET/PUT pair, dispatching on storage ──
@@ -6871,6 +6907,11 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     Also handles ``model_context_length`` — writes it back into the model dict
     as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
     from the dict so get_model_context_length() uses its normal resolution).
+
+    ``model_allowlist`` gets the same treatment — written back into the model
+    dict as ``allowlist``; an empty list means "no restriction" (key removed).
+    A payload that omits the field entirely (older frontend) leaves the
+    on-disk allowlist untouched.
     """
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
@@ -6884,6 +6925,11 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             ctx_override = int(ctx_override)
         except (TypeError, ValueError):
             ctx_override = 0
+
+    # Extract and remove model_allowlist before processing model. "Present
+    # but empty" clears the on-disk allowlist; "absent" preserves it.
+    allow_present = "model_allowlist" in config
+    allow_override = _sanitize_model_allowlist(config.pop("model_allowlist", None))
 
     model_val = config.get("model")
     if isinstance(model_val, str) and model_val:
@@ -6924,14 +6970,23 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     disk_model["context_length"] = ctx_override
                 else:
                     disk_model.pop("context_length", None)
+                # Write allowlist into the model dict (empty = remove — the
+                # explicit "no restriction" default); absent = leave as-is.
+                if allow_present:
+                    if allow_override:
+                        disk_model["allowlist"] = allow_override
+                    else:
+                        disk_model.pop("allowlist", None)
                 config["model"] = disk_model
-            # Model was previously a bare string — upgrade to dict if
-            # user is setting a context_length override
-            elif ctx_override > 0:
-                config["model"] = {
-                    "default": model_val,
-                    "context_length": ctx_override,
-                }
+            # Model was previously a bare string — upgrade to dict if the
+            # user is setting a context_length or allowlist override
+            elif ctx_override > 0 or (allow_present and allow_override):
+                new_model: Dict[str, Any] = {"default": model_val}
+                if ctx_override > 0:
+                    new_model["context_length"] = ctx_override
+                if allow_present and allow_override:
+                    new_model["allowlist"] = allow_override
+                config["model"] = new_model
         except Exception:
             pass  # can't read disk config — just use the string form
     return config
@@ -6949,7 +7004,16 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # frontend can only overwrite what it explicitly sends.
             existing = read_raw_config()
             incoming = _denormalize_config_from_web(body.config)
-            save_config(_deep_merge(existing, incoming))
+            merged = _deep_merge(existing, incoming)
+            # _denormalize_config_from_web reconstructs the FULL ``model``
+            # section from the on-disk config (every subkey recovered) and
+            # intentionally pops keys the user just cleared (context_length
+            # back to auto, allowlist emptied). Deep-merging that dict over
+            # the raw disk section would resurrect exactly those popped keys,
+            # so replace the section wholesale instead.
+            if isinstance(incoming.get("model"), dict):
+                merged["model"] = incoming["model"]
+            save_config(merged)
         return {"ok": True}
     except HTTPException:
         raise

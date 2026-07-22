@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "機能: {capabilities}"
     prompt_caching_enabled: "プロンプトキャッシュ: 有効"
     warning_prefix:         "警告: {warning}"
+    not_allowed:            "`{model}` はこのボットの許可モデル一覧にありません。許可されているモデル：{allowed}"
     saved_global:           "config.yaml に保存しました (`--global`)"
     session_only_hint:      "_(このセッションのみ — 永続化するには `--global` を追加)_"
     current_label:          "現在: `{model}` ({provider})"

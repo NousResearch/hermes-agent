@@ -303,6 +303,15 @@ export const ja = defineLocale({
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
+      backdropOff: 'オフ',
+      backdropSubtle: '控えめ',
+      backdropFull: '通常',
+      decorativeBackdropTitle: '装飾背景',
+      decorativeBackdropDesc: '半透明のチャット面の背後にある背景アートを調整します。',
+      accessibilityTitle: 'アクセシビリティ',
+      accessibilityIntro: '読みやすさや快適さに影響する視覚効果を調整します。',
+      commandPaletteTipPrefix: 'ヒント:',
+      commandPaletteTipSuffix: 'でコマンドパレットを開けます。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
@@ -318,6 +327,10 @@ export const ja = defineLocale({
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
       themeProfileNote: profile =>
         `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      importTheme: 'テーマをインポート',
+      importThemeDesc: 'Hermes テーマ JSON ファイルを読み込みます',
+      importEmpty: 'テーマファイルにテーマが含まれていません。',
+      importError: 'そのテーマをインポートできませんでした。',
       installTitle: 'VS Code から導入',
       installDesc:
         'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',

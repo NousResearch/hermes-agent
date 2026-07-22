@@ -277,13 +277,145 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Soft neutral dark with muted blue accents — low-glare default candidate. */
+export const graphiteTheme: DesktopTheme = {
+  name: 'graphite',
+  label: 'Graphite',
+  description: 'Soft neutral surfaces with calm blue accents',
+  colors: {
+    background: '#F6F7F9',
+    foreground: '#202327',
+    card: '#FFFFFF',
+    cardForeground: '#202327',
+    muted: '#ECEFF3',
+    mutedForeground: '#68707B',
+    popover: '#FFFFFF',
+    popoverForeground: '#202327',
+    primary: '#315F8C',
+    primaryForeground: '#F8FAFC',
+    secondary: '#E7ECF2',
+    secondaryForeground: '#29313A',
+    accent: '#EAF1F7',
+    accentForeground: '#243242',
+    border: '#D8DEE7',
+    input: '#D3DAE4',
+    ring: '#4777A6',
+    midground: '#4777A6',
+    composerRing: '#4777A6',
+    destructive: '#B94747',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#EEF2F6',
+    sidebarBorder: '#D7DEE8',
+    userBubble: '#E6EEF7',
+    userBubbleBorder: '#C9D8E8'
+  },
+  darkColors: {
+    background: '#17191D',
+    foreground: '#D7DCE2',
+    card: '#1E2228',
+    cardForeground: '#D7DCE2',
+    muted: '#282D34',
+    mutedForeground: '#959DA8',
+    popover: '#222730',
+    popoverForeground: '#D7DCE2',
+    primary: '#A9C7E8',
+    primaryForeground: '#17202A',
+    secondary: '#2A313A',
+    secondaryForeground: '#C7D0DA',
+    accent: '#26313C',
+    accentForeground: '#D4E1EE',
+    border: '#333A44',
+    input: '#343C46',
+    ring: '#7FA8D2',
+    midground: '#7FA8D2',
+    composerRing: '#7FA8D2',
+    destructive: '#D16A6A',
+    destructiveForeground: '#1C1010',
+    sidebarBackground: '#131519',
+    sidebarBorder: '#2A3038',
+    userBubble: '#24303C',
+    userBubbleBorder: '#3C5064'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
+/** Warm paper neutrals with sage accents — readable in bright rooms. */
+export const paperTheme: DesktopTheme = {
+  name: 'paper',
+  label: 'Paper',
+  description: 'Warm paper neutrals with sage accents',
+  colors: {
+    background: '#FAF7F0',
+    foreground: '#2A2824',
+    card: '#FFFDF8',
+    cardForeground: '#2A2824',
+    muted: '#F0EADF',
+    mutedForeground: '#6F6A60',
+    popover: '#FFFDF8',
+    popoverForeground: '#2A2824',
+    primary: '#466B5C',
+    primaryForeground: '#FAF7F0',
+    secondary: '#ECE5D8',
+    secondaryForeground: '#34302A',
+    accent: '#E6EFE8',
+    accentForeground: '#25372F',
+    border: '#DED5C6',
+    input: '#D8CEBE',
+    ring: '#5F8676',
+    midground: '#5F8676',
+    composerRing: '#5F8676',
+    destructive: '#A94A3F',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#F1EADF',
+    sidebarBorder: '#DED4C2',
+    userBubble: '#EAF1E8',
+    userBubbleBorder: '#CAD9CF'
+  },
+  darkColors: {
+    background: '#211F1B',
+    foreground: '#E9E1D2',
+    card: '#29261F',
+    cardForeground: '#E9E1D2',
+    muted: '#332F27',
+    mutedForeground: '#AAA08F',
+    popover: '#2D2922',
+    popoverForeground: '#E9E1D2',
+    primary: '#B8D2C1',
+    primaryForeground: '#17241E',
+    secondary: '#383329',
+    secondaryForeground: '#D7CDBB',
+    accent: '#2F3A31',
+    accentForeground: '#D6E8DA',
+    border: '#433D32',
+    input: '#474034',
+    ring: '#95B8A5',
+    midground: '#95B8A5',
+    composerRing: '#95B8A5',
+    destructive: '#D98273',
+    destructiveForeground: '#24100D',
+    sidebarBackground: '#1B1915',
+    sidebarBorder: '#3A352B',
+    userBubble: '#2B382F',
+    userBubbleBorder: '#486151'
+  },
+  typography: {
+    fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  graphite: graphiteTheme,
+  paper: paperTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

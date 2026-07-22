@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { Leva, useControls } from 'leva'
 import { type CSSProperties, useEffect, useState } from 'react'
 
-import { $backdrop } from '@/store/backdrop'
+import { $decorativeBackdrop, BACKDROP_OPACITY } from '@/store/backdrop'
 
 const BLEND_MODES = [
   'normal',
@@ -28,7 +28,8 @@ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/
 
 export function Backdrop() {
   const [controlsOpen, setControlsOpen] = useState(false)
-  const on = useStore($backdrop)
+  const decorativeBackdrop = useStore($decorativeBackdrop)
+  const configuredOpacity = BACKDROP_OPACITY[decorativeBackdrop]
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -72,7 +73,7 @@ export function Backdrop() {
     'Backdrop / Statue',
     {
       enabled: { value: true, label: 'on' },
-      opacity: { value: 0.025, min: 0, max: 1, step: 0.005 },
+      opacity: { value: configuredOpacity, min: 0, max: 1, step: 0.005 },
       blendMode: { value: 'difference' as BlendMode, options: BLEND_MODES, label: 'blend' },
       invert: { value: true, label: 'invert color' },
       saturate: { value: 1, min: 0, max: 3, step: 0.05, label: 'saturate' },
@@ -91,13 +92,13 @@ export function Backdrop() {
     <>
       <Leva collapsed hidden={!import.meta.env.DEV || !controlsOpen} titleBar={{ title: 'backdrop', drag: true }} />
 
-      {on && statue.enabled && (
+      {statue.enabled && (import.meta.env.DEV ? statue.opacity > 0 : configuredOpacity > 0) && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-2"
           style={{
             mixBlendMode: statue.blendMode as CSSProperties['mixBlendMode'],
-            opacity: statue.opacity
+            opacity: import.meta.env.DEV ? statue.opacity : configuredOpacity
           }}
         >
           <img

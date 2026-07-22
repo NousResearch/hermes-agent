@@ -1,25 +1,26 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { type ChangeEvent, useEffect, useRef, useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
+import { KbdCombo } from '@/components/ui/kbd'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
+import { Check, Download, Eye, Loader2, Palette, Trash2, Upload } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $decorativeBackdrop, type DecorativeBackdropMode, setDecorativeBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
-import { installVscodeThemeFromMarketplace } from '@/themes/install'
+import { installHermesThemeFromText, installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
@@ -249,13 +250,16 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
-  const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
+  const decorativeBackdrop = useStore($decorativeBackdrop)
   const profiles = useStore($profiles)
+
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
 
   const [query, setQuery] = useState('')
+  const [importError, setImportError] = useState<string | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
@@ -293,9 +297,40 @@ export function AppearanceSettings() {
     { id: 'off', label: a.embedsOff }
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
 
+  const backdropOptions = [
+    { id: 'off', label: a.backdropOff },
+    { id: 'subtle', label: a.backdropSubtle },
+    { id: 'full', label: a.backdropFull }
+  ] as const satisfies readonly { id: DecorativeBackdropMode; label: string }[]
+
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
 
   const matchedScalePreset = matchUiScalePreset(zoomPercent)
+
+  const importTheme = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) {
+      return
+    }
+
+    setImportError(null)
+
+    try {
+      const installed = installHermesThemeFromText(await file.text())
+      const first = installed[0]
+
+      if (!first) {
+        throw new Error(a.importEmpty)
+      }
+
+      triggerHaptic('crisp')
+      setTheme(first.name)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : a.importError)
+    }
+  }
 
   return (
     <SettingsContent>
@@ -303,6 +338,11 @@ export function AppearanceSettings() {
         <SectionHeading icon={Palette} title={a.title} />
         <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
           {a.intro}
+        </p>
+        <p className="mt-2 flex items-center gap-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          <span>{a.commandPaletteTipPrefix}</span>
+          <KbdCombo combo="mod+k" size="sm" />
+          <span>{a.commandPaletteTipSuffix}</span>
         </p>
 
         <div className="mt-2">
@@ -384,7 +424,36 @@ export function AppearanceSettings() {
                           </div>
                         )
                       })}
+                      <button
+                        className={cn('w-full p-2 text-left', selectableCardClass({ prominent: true }))}
+                        onClick={() => importInputRef.current?.click()}
+                        type="button"
+                      >
+                        <div className="grid h-20 place-items-center rounded-xl border border-dashed border-(--ui-stroke-secondary) bg-(--ui-bg-quinary)">
+                          <Upload className="size-5 text-(--ui-text-tertiary)" />
+                        </div>
+                        <div className="mt-3 px-1">
+                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
+                            {a.importTheme}
+                          </div>
+                          <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                            {a.importThemeDesc}
+                          </div>
+                        </div>
+                      </button>
                     </div>
+                  )}
+                  <input
+                    accept=".json,application/json"
+                    className="hidden"
+                    onChange={event => void importTheme(event)}
+                    ref={importInputRef}
+                    type="file"
+                  />
+                  {importError && (
+                    <p className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-red)">
+                      {importError}
+                    </p>
                   )}
                   <MarketplaceThemeResults installs={installs} onInstalled={name => setTheme(name)} query={query} />
                 </div>
@@ -410,6 +479,28 @@ export function AppearanceSettings() {
               </div>
             }
             wide
+          />
+
+          <div className="mt-4 border-t border-(--ui-stroke-tertiary) pt-4">
+            <SectionHeading icon={Eye} title={a.accessibilityTitle} />
+            <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {a.accessibilityIntro}
+            </p>
+          </div>
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setDecorativeBackdrop(id)
+                }}
+                options={backdropOptions}
+                value={decorativeBackdrop}
+              />
+            }
+            description={a.decorativeBackdropDesc}
+            title={a.decorativeBackdropTitle}
           />
 
           <ListRow
@@ -451,24 +542,6 @@ export function AppearanceSettings() {
             }
             description={a.translucencyDesc}
             title={a.translucencyTitle}
-          />
-
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setBackdrop(id === 'on')
-                }}
-                options={[
-                  { id: 'off', label: t.common.off },
-                  { id: 'on', label: t.common.on }
-                ]}
-                value={backdrop ? 'on' : 'off'}
-              />
-            }
-            description={a.backdropDesc}
-            title={a.backdropTitle}
           />
 
           <ListRow

@@ -333,6 +333,15 @@ export interface Translations {
       translucencyDesc: string
       backdropTitle: string
       backdropDesc: string
+      backdropOff: string
+      backdropSubtle: string
+      backdropFull: string
+      decorativeBackdropTitle: string
+      decorativeBackdropDesc: string
+      accessibilityTitle: string
+      accessibilityIntro: string
+      commandPaletteTipPrefix: string
+      commandPaletteTipSuffix: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string
@@ -346,6 +355,10 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
+      importTheme: string
+      importThemeDesc: string
+      importEmpty: string
+      importError: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

@@ -9,6 +9,7 @@
 
 import type { DesktopMarketplaceThemeResult } from '@/global'
 
+import { BUILTIN_THEMES } from './presets'
 import type { DesktopTheme } from './types'
 import { installUserTheme } from './user-themes'
 import { convertVscodeColorTheme, parseVscodeTheme, vscodeThemeSlug } from './vscode'
@@ -22,6 +23,76 @@ export function installVscodeThemeFromText(text: string, opts?: { label?: string
   const { theme } = convertVscodeColorTheme(raw, opts)
 
   return installUserTheme(theme)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function themePayloads(parsed: unknown): unknown[] {
+  if (isRecord(parsed) && Array.isArray(parsed.themes)) {
+    return parsed.themes
+  }
+
+  if (isRecord(parsed) && typeof parsed.name === 'string' && isRecord(parsed.colors)) {
+    return [parsed]
+  }
+
+  throw new Error('Expected a Hermes theme JSON object or { "themes": [...] } theme pack.')
+}
+
+function validateHermesTheme(value: unknown, index: number): DesktopTheme {
+  if (!isRecord(value)) {
+    throw new Error(`Theme ${index + 1} must be a JSON object.`)
+  }
+
+  const name = value.name
+  const label = value.label
+  const description = value.description
+  const colors = value.colors
+
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new Error(`Theme ${index + 1} is missing a valid name.`)
+  }
+
+  if (typeof label !== 'string' || !label.trim()) {
+    throw new Error(`Theme "${name}" is missing a valid label.`)
+  }
+
+  if (typeof description !== 'string') {
+    throw new Error(`Theme "${name}" is missing a valid description.`)
+  }
+
+  if (BUILTIN_THEMES[name]) {
+    throw new Error(`"${name}" collides with a built-in theme.`)
+  }
+
+  if (!isRecord(colors)) {
+    throw new Error(`Theme "${name}" is missing required colors.`)
+  }
+
+  for (const key of ['background', 'foreground', 'primary'] as const) {
+    if (typeof colors[key] !== 'string') {
+      throw new Error(`Theme "${name}" is missing required color "${key}".`)
+    }
+  }
+
+  return value as unknown as DesktopTheme
+}
+
+/** Parse and install Hermes-native DesktopTheme JSON (single theme or pack). */
+export function installHermesThemeFromText(text: string): DesktopTheme[] {
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('Theme file is not valid JSON.')
+  }
+
+  const themes = themePayloads(parsed).map(validateHermesTheme)
+
+  return themes.map(theme => installUserTheme(theme))
 }
 
 /**

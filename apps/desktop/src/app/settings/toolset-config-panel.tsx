@@ -556,6 +556,10 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   }, [activeProvider, providers, envState, cfg])
 
   async function handleSelect(provider: ToolProvider) {
+    if (selecting !== null) {
+      return
+    }
+
     providerChoiceClaimedRef.current = true
     setActiveProvider(provider.name)
     setSelecting(provider.name)
@@ -738,6 +742,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 'flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-accent/50',
                 isActive && 'bg-accent/40'
               )}
+              disabled={selecting !== null}
               onClick={() => void handleSelect(provider)}
               type="button"
             >

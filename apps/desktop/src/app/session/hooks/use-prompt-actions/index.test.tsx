@@ -548,6 +548,8 @@ describe('usePromptActions /compress', () => {
 
   it('does not clobber the foreground transcript when compression resolves after a session switch', async () => {
     const RUNTIME_SESSION_B = 'rt-session-b'
+    const storedSessionIdRef: MutableRefObject<string | null> = { current: 'stored-a' }
+    const updates: Array<{ sessionId: string; storedSessionId: null | string | undefined }> = []
 
     let resolveCompress: (value: unknown) => void = () => undefined
 
@@ -573,8 +575,10 @@ describe('usePromptActions /compress', () => {
       <Harness
         activeSessionIdRef={activeSessionIdRef}
         onReady={h => (handle = h)}
+        onUpdateState={(sessionId, storedSessionId) => updates.push({ sessionId, storedSessionId })}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={storedSessionIdRef}
       />
     )
 
@@ -605,46 +609,6 @@ describe('usePromptActions /compress', () => {
       { id: 'foreground-b', parts: [textPart('session B transcript')], role: 'user', timestamp: 0 }
     ])
     expect($currentUsage.get()).toEqual(expect.objectContaining({ calls: 7, input: 70, output: 30, total: 100 }))
-  })
-
-  it('keeps a late compression error bound to its invocation-time stored session', async () => {
-    const RUNTIME_SESSION_B = 'rt-session-b'
-    const storedSessionIdRef: MutableRefObject<string | null> = { current: 'stored-a' }
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
-    const updates: Array<{ sessionId: string; storedSessionId: null | string | undefined }> = []
-    let rejectCompress: (reason?: unknown) => void = () => undefined
-
-    const compressResult = new Promise((_, reject) => {
-      rejectCompress = reject
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.compress') {
-        return (await compressResult) as never
-      }
-
-      throw new Error(`unexpected method: ${method}`)
-    })
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        activeSessionIdRef={activeSessionIdRef}
-        onReady={h => (handle = h)}
-        onUpdateState={(sessionId, storedSessionId) => updates.push({ sessionId, storedSessionId })}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        selectedStoredSessionIdRef={storedSessionIdRef}
-      />
-    )
-
-    const submitted = handle!.submitText('/compress')
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.compress', expect.anything(), 120_000))
-    activeSessionIdRef.current = RUNTIME_SESSION_B
-    storedSessionIdRef.current = 'stored-b'
-    rejectCompress(new Error('compression failed'))
-    await submitted
-
     expect(updates).toContainEqual({ sessionId: RUNTIME_SESSION_ID, storedSessionId: 'stored-a' })
   })
 

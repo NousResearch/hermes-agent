@@ -2501,6 +2501,8 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setattr(
         server,
         "_load_cfg",
@@ -2527,7 +2529,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
 
     assert agent.model == "gpt-5.5"
     assert captured["fallback_model"] == fallback_chain
-    assert captured["platform"] == "desktop"
+    assert captured["platform"] == "tui"
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
@@ -3807,11 +3809,13 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
 
     assert created == [
-        {"key": "k1", "source": "desktop", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
     ]
 
 
@@ -3847,11 +3851,13 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
     assert created == [
-        {"key": "k1", "source": "desktop", "model": "test-model", "model_config": None, "cwd": None}
+        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": None}
     ]
 
 
@@ -5879,6 +5885,36 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
+def test_session_compress_normalizes_messages_for_desktop_transcript(monkeypatch):
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {"name": "read_file", "arguments": '{"path":"secret.txt"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "very sensitive tool output"},
+    ]
+    agent = types.SimpleNamespace()
+    server._sessions["sid"] = _session(agent=agent, history=history)
+    monkeypatch.setattr(server, "_compress_session_history", lambda *_args, **_kwargs: (0, {}))
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    try:
+        response = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["messages"] == server._history_to_messages(history)
+    assert "very sensitive tool output" not in str(response["result"]["messages"])
+
+
 def test_session_compress_returns_compute_host_history(monkeypatch):
     session = _session(agent=None, _compute_host_active=True)
     server._sessions["sid"] = session
@@ -5903,7 +5939,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
         "turn_isolation": True,
         "host_ack": {key: value for key, value in ack.items() if key != "messages"},
         "info": {"usage": {"total": 42}},
-        "messages": [{"role": "user", "content": "compressed context"}],
+        "messages": [{"role": "user", "text": "compressed context"}],
         "usage": {"total": 42},
     }
 

@@ -211,6 +211,31 @@ describe('ToolsetConfigPanel', () => {
     await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('tts', 'ElevenLabs'))
   })
 
+  it('serializes provider selection while a previous choice is pending', async () => {
+    let resolveSelection: (value: { name: string; ok: boolean; provider: string }) => void = () => undefined
+    selectToolsetProvider.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveSelection = resolve
+        })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+    const edge = await screen.findByRole('button', { name: /Microsoft Edge TTS/ })
+    const elevenlabs = screen.getByRole('button', { name: /ElevenLabs/ })
+    fireEvent.click(edge)
+
+    await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('tts', 'Microsoft Edge TTS'))
+    expect(elevenlabs.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(elevenlabs)
+    expect(selectToolsetProvider).toHaveBeenCalledTimes(1)
+
+    resolveSelection({ name: 'tts', ok: true, provider: 'Microsoft Edge TTS' })
+    await waitFor(() => expect(elevenlabs.hasAttribute('disabled')).toBe(false))
+  })
+
   it('shows a backend model catalog for image_gen and persists a pick', async () => {
     getToolsetConfig.mockResolvedValue(
       config({

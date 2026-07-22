@@ -9020,7 +9020,7 @@ def _(rid, params: dict) -> dict:
             # success toast.
             return _ok(rid, {**host_result, "turn_isolation": True})
         host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
-        host_messages = ack.get("messages") if isinstance(ack.get("messages"), list) else []
+        host_messages = _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else []
         # `messages` is returned at top level for the desktop transcript
         # replacement. Keep the host acknowledgement metadata, but do not send
         # the same (potentially large) transcript a second time inside it.
@@ -9130,7 +9130,11 @@ def _(rid, params: dict) -> dict:
                     "summary": summary,
                     "usage": usage,
                     "info": info,
-                    "messages": messages,
+                    # Keep this identical to session.resume / session.history:
+                    # raw tool results can contain large or sensitive payloads
+                    # that belong in persisted history, not the transcript
+                    # replacement response.
+                    "messages": _history_to_messages(messages),
                 },
             )
         finally:

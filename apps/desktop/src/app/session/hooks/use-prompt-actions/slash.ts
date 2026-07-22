@@ -127,7 +127,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // build-renderSlashOutput boilerplate every exec-style handler repeats.
       const withSlashOutput = async (
         ctx: SlashActionCtx
-      ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
+      ): Promise<{ render: (text: string) => void; sessionId: string; storedSessionId: string | null } | null> => {
         const sessionId = await ensureSessionId(ctx.sessionHint)
 
         if (!sessionId) {
@@ -148,7 +148,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             storedSessionId
           )
 
-        return { render, sessionId }
+        return { render, sessionId, storedSessionId }
       }
 
       // `exec` commands (and unknown skill / quick commands the backend owns)
@@ -362,7 +362,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const { render: renderSlashOutput, sessionId } = resolved
+          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
           const focusTopic = ctx.arg.trim()
           const noticeId = `session-compress:${sessionId}`
 
@@ -397,7 +397,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // publishes for the active runtime, guarding against a late result
             // clobbering the foreground after a session switch.
             if (Array.isArray(result?.messages)) {
-              updateSessionState(sessionId, state => ({ ...state, messages: toChatMessages(result.messages!) }))
+              updateSessionState(
+                sessionId,
+                state => ({ ...state, messages: toChatMessages(result.messages!) }),
+                storedSessionId
+              )
             }
 
             const usage = { ...result?.usage, ...result?.info?.usage }

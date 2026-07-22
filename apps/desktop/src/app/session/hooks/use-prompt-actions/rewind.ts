@@ -35,13 +35,17 @@ type RequestGateway = <T = unknown>(method: string, params?: Record<string, unkn
 export async function runRewindSubmit(
   requestGateway: RequestGateway,
   sessionId: string,
+  storedSessionId: string,
   text: string,
   truncateOrdinal: number | undefined,
   interruptFirst: boolean
 ): Promise<void> {
   const interrupt = async () => {
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await requestGateway('session.interrupt', {
+        expected_stored_session_id: storedSessionId,
+        session_id: sessionId
+      })
     } catch {
       // Best-effort. The submit path still gates on the gateway state.
     }
@@ -51,6 +55,7 @@ export async function runRewindSubmit(
     requestGateway(
       'prompt.submit',
       {
+        expected_stored_session_id: storedSessionId,
         session_id: sessionId,
         text,
         ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })

@@ -1789,6 +1789,17 @@ def _sess_nowait(params, rid):
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 
+def _validate_expected_stored_session(session: dict, params: dict, rid, *, action: str):
+    """Expand-compatible durable binding for Desktop session mutations."""
+    if "expected_stored_session_id" not in params:
+        return None
+    expected_key = str(params.get("expected_stored_session_id") or "").strip()
+    actual_key = str(session.get("session_key") or "").strip()
+    if expected_key != actual_key:
+        return _err(rid, 4091, f"{action} target mismatch; reload the conversation and retry")
+    return None
+
+
 def _sess(params, rid):
     s, err = _sess_nowait(params, rid)
     if err:
@@ -3884,7 +3895,8 @@ def _current_profile_name() -> str:
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 # v4: session.create fast=false is an explicit per-session normal-tier override.
-DESKTOP_BACKEND_CONTRACT = 4
+# v5: every Desktop prompt.submit is bound to its durable stored session.
+DESKTOP_BACKEND_CONTRACT = 5
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -9412,6 +9424,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if binding_err := _validate_expected_stored_session(session, params, rid, action="interrupt"):
+        return binding_err
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         if session.get("running"):
@@ -9782,6 +9796,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # A Desktop runtime id is only a volatile transport handle. New Desktop
+    # clients bind each submit to the durable conversation the composer
+    # intended; reject a stale/cross-wired binding before touching transport,
+    # busy queues, history, or persistence (#54527). Omission remains accepted
+    # for expand-compatible rollout with Desktop clients predating this field.
+    if binding_err := _validate_expected_stored_session(session, params, rid, action="prompt"):
+        return binding_err
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps

@@ -1,3 +1,4 @@
+import type { AppendMessage } from '@assistant-ui/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
@@ -71,6 +72,8 @@ async function actRender(ui: React.ReactElement) {
 interface HarnessHandle {
   activeSessionIdRef: MutableRefObject<string | null>
   cancelRun: () => Promise<void>
+  editMessage: (message: AppendMessage) => Promise<void>
+  reloadFromMessage: (parentId: string | null) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   redirectPrompt: (text: string) => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
@@ -172,6 +175,10 @@ function Harness({
       activeSessionIdRef,
       cancelRun: (...args: Parameters<typeof actions.cancelRun>) =>
         act(async () => actions.cancelRun(...args)) as Promise<void>,
+      editMessage: (...args: Parameters<typeof actions.editMessage>) =>
+        act(async () => actions.editMessage(...args)) as Promise<void>,
+      reloadFromMessage: (...args: Parameters<typeof actions.reloadFromMessage>) =>
+        act(async () => actions.reloadFromMessage(...args)) as Promise<void>,
       restoreToMessage: (...args: Parameters<typeof actions.restoreToMessage>) =>
         act(async () => actions.restoreToMessage(...args)) as Promise<void>,
       redirectPrompt: (...args: Parameters<typeof actions.redirectPrompt>) =>
@@ -184,6 +191,8 @@ function Harness({
     })
   }, [
     actions.cancelRun,
+    actions.editMessage,
+    actions.reloadFromMessage,
     actions.restoreToMessage,
     actions.redirectPrompt,
     actions.steerPrompt,
@@ -846,6 +855,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       session_id: RUNTIME_SESSION_ID
     })
     expect(calls[1]?.params).toEqual({
+      expected_stored_session_id: RUNTIME_SESSION_ID,
       session_id: RUNTIME_SESSION_ID,
       text: 'write the implementation plan'
     })
@@ -1049,6 +1059,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'hello after a stop'
       },
@@ -1078,6 +1089,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
       },
@@ -1113,6 +1125,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: 'stored-session-a',
         session_id: 'rt-session-a',
         text: 'queued for background session'
       },
@@ -1129,8 +1142,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
     // A stale-session 404 must not strand the queued entry: submitPrompt returns
     // false on failure so the composer keeps it, and the edge-independent
-    // auto-drain re-attempts once the session is idle again. storedSessionId is
-    // null so the session.resume recovery path is skipped and the error surfaces.
+    // auto-drain re-attempts once the session is idle again while the durable
+    // session target remains pinned across both attempts.
     let attempt = 0
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1151,7 +1164,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
-        storedSessionId={null}
+        storedSessionId={RUNTIME_SESSION_ID}
       />
     )
 
@@ -1163,6 +1176,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'please send me'
       },
@@ -1402,6 +1416,7 @@ describe('usePromptActions restoreToMessage', () => {
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         seedMessages={$messages.get()}
+        storedSessionId="stored-main-session"
       />
     )
 
@@ -1412,6 +1427,7 @@ describe('usePromptActions restoreToMessage', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: 'stored-main-session',
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         truncate_before_user_ordinal: 0
@@ -1420,6 +1436,67 @@ describe('usePromptActions restoreToMessage', () => {
     )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
     expect(lastState.busy).toBe(true)
+  })
+
+  it('binds regenerate to the selected durable session id', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+        storedSessionId="stored-main-session"
+      />
+    )
+
+    await handle!.reloadFromMessage(null)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        expected_stored_session_id: 'stored-main-session',
+        session_id: RUNTIME_SESSION_ID,
+        text: 'second prompt',
+        truncate_before_user_ordinal: 1
+      },
+      1_800_000
+    )
+  })
+
+  it('binds edit rewind to the selected durable session id', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+        storedSessionId="stored-main-session"
+      />
+    )
+
+    await handle!.editMessage({
+      parentId: null,
+      role: 'user',
+      sourceId: 'u2',
+      content: [{ type: 'text', text: 'edited second prompt' }]
+    } as unknown as AppendMessage)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        expected_stored_session_id: 'stored-main-session',
+        session_id: RUNTIME_SESSION_ID,
+        text: 'edited second prompt',
+        truncate_before_user_ordinal: 1
+      },
+      1_800_000
+    )
   })
 
   it('rethrows gateway failures and clears the busy flags for the dialog to surface', async () => {
@@ -1474,11 +1551,15 @@ describe('usePromptActions restoreToMessage', () => {
 
     await handle!.restoreToMessage('u1')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', {
+      expected_stored_session_id: RUNTIME_SESSION_ID,
+      session_id: RUNTIME_SESSION_ID
+    })
     expect(submitAttempts).toBe(2)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         truncate_before_user_ordinal: 0
@@ -1524,6 +1605,7 @@ describe('usePromptActions restoreToMessage', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
         truncate_before_user_ordinal: 0
@@ -1595,6 +1677,7 @@ describe('usePromptActions file attachment sync', () => {
       data_url: 'data:text/plain;base64,aGVsbG8='
     })
     expect(calls[1]?.params).toEqual({
+      expected_stored_session_id: RUNTIME_SESSION_ID,
       session_id: RUNTIME_SESSION_ID,
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
@@ -1675,7 +1758,11 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[0]?.params).not.toHaveProperty('data_url')
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
+      params: {
+        expected_stored_session_id: RUNTIME_SESSION_ID,
+        session_id: RUNTIME_SESSION_ID,
+        text: '@file:data/report.txt\n\nsummarize'
+      }
     })
   })
 })
@@ -1797,7 +1884,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RECOVERED_SESSION_ID,
+      text: 'message after wake'
+    })
   })
 
   it('background queue resume uses the queued stored id and leaves foreground runtime selected', async () => {
@@ -1844,11 +1935,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
     })
@@ -1858,6 +1951,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let interruptAttempts = 0
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
@@ -1866,6 +1961,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
         interruptAttempts += 1
 
         if (interruptAttempts === 1) {
+          selectedStoredSessionIdRef.current = 'newly-selected-session'
+          activeSessionIdRef.current = 'newly-selected-runtime'
           throw new Error('session not found')
         }
 
@@ -1882,9 +1979,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     await actRender(
       <Harness
+        activeSessionIdRef={activeSessionIdRef}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={STORED_SESSION_ID}
       />
     )
@@ -1893,9 +1992,16 @@ describe('usePromptActions sleep/wake session recovery', () => {
     await handle!.cancelRun()
 
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
-    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[0]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RUNTIME_SESSION_ID
+    })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+    expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
+      session_id: RECOVERED_SESSION_ID
+    })
+    expect(activeSessionIdRef.current).toBe('newly-selected-runtime')
   })
 
   it('clears the active and cached turn clocks when stopping a turn', async () => {
@@ -2028,6 +2134,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      expected_stored_session_id: STORED_SESSION_ID,
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
     })
@@ -2146,7 +2253,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'follow-up while the profile route is rebinding'
+      },
       1_800_000
     )
   })
@@ -2183,7 +2294,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'stay in the routed profile session'
+      },
       1_800_000
     )
   })
@@ -2214,7 +2329,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'normal follow-up'
+      },
       1_800_000
     )
   })
@@ -2271,13 +2390,18 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('retry after recovery')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
+      {
+        expected_stored_session_id: STORED_SESSION_ID,
+        session_id: RECOVERED_SESSION_ID,
+        text: 'retry after recovery'
+      },
       1_800_000
     )
   })
 
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
 
     // Mirror the real createBackendSessionForSend: a successful create
     // re-homes the active runtime ref to the session it minted BEFORE
@@ -2285,6 +2409,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // regression ship green.
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = RUNTIME_SESSION_ID
 
       return RUNTIME_SESSION_ID
     })
@@ -2306,6 +2431,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={null}
       />
     )

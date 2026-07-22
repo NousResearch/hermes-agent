@@ -431,12 +431,12 @@ export interface SessionTileDelegate {
    *  branch/handoff — act on the main surface, as they should). */
   executeSlash(rawCommand: string, sessionId: string): Promise<void>
   /** Interrupt a tile's running turn. */
-  interruptSession(runtimeId: string): Promise<void>
+  interruptSession(runtimeId: string, storedSessionId: string): Promise<void>
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws. */
   resumeTile(storedSessionId: string): Promise<string>
   /** Submit a prompt to a tile's live session. */
-  submitToSession(runtimeId: string, text: string): Promise<void>
+  submitToSession(runtimeId: string, storedSessionId: string, text: string): Promise<void>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
   updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState

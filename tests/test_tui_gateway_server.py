@@ -262,6 +262,103 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         server._sessions.pop("iso-sid", None)
 
 
+def test_desktop_prompt_submit_rejects_mismatched_durable_target_before_mutation(monkeypatch):
+    session = _session(source="desktop", session_key="stored-session-b", running=True)
+    server._sessions["runtime-session-b"] = session
+    mutations = []
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: mutations.append("persist"))
+    try:
+        response = server.handle_request({
+            "id": "cross-wired-submit", "method": "prompt.submit",
+            "params": {"session_id": "runtime-session-b", "expected_stored_session_id": "stored-session-a", "text": "must stay in session A"},
+        })
+    finally:
+        server._sessions.pop("runtime-session-b", None)
+    assert response["error"]["code"] == 4091
+    assert session["running"] is True
+    assert session.get("queued_prompt") is None
+    assert session["history"] == []
+    assert mutations == []
+
+
+def test_desktop_interrupt_rejects_mismatched_durable_target_before_mutation():
+    class _Agent:
+        def __init__(self):
+            self.interrupts = 0
+
+        def interrupt(self):
+            self.interrupts += 1
+
+    agent = _Agent()
+    session = _session(agent=agent, source="desktop", session_key="stored-session-b", running=True)
+    server._sessions["runtime-session-b"] = session
+    try:
+        response = server.handle_request({
+            "id": "cross-wired-interrupt", "method": "session.interrupt",
+            "params": {"session_id": "runtime-session-b", "expected_stored_session_id": "stored-session-a"},
+        })
+    finally:
+        server._sessions.pop("runtime-session-b", None)
+    assert response["error"]["code"] == 4091
+    assert agent.interrupts == 0
+    assert session["running"] is True
+    assert session.get("_turn_cancel_requested") is not True
+
+
+def test_legacy_desktop_interrupt_accepts_omitted_durable_target():
+    session = _session(source="desktop", session_key="stored-session", running=False)
+    server._sessions["runtime-session"] = session
+    try:
+        response = server.handle_request({
+            "id": "legacy-desktop-interrupt", "method": "session.interrupt",
+            "params": {"session_id": "runtime-session"},
+        })
+    finally:
+        server._sessions.pop("runtime-session", None)
+    assert response["result"]["status"] == "interrupted"
+    assert session["_turn_cancel_requested"] is True
+
+
+def test_legacy_desktop_prompt_submit_accepts_omitted_durable_target(monkeypatch):
+    session = _session(source="desktop", session_key="stored-session", running=True)
+    server._sessions["runtime-session"] = session
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    try:
+        response = server.handle_request({
+            "id": "legacy-desktop-submit", "method": "prompt.submit",
+            "params": {"session_id": "runtime-session", "text": "compatible legacy send"},
+        })
+    finally:
+        server._sessions.pop("runtime-session", None)
+    assert response["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == "compatible legacy send"
+    assert session["history"] == []
+
+
+def test_non_desktop_prompt_submit_remains_compatible_without_durable_target(monkeypatch):
+    class _ImmediateThread:
+        def __init__(self, target=None, **_kwargs): self._target = target
+        def start(self): self._target()
+    session = _session(source="tui", session_key="stored-session")
+    server._sessions["runtime-session"] = session
+    calls = []
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, _session, text: calls.append((rid, sid, text)))
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    try:
+        response = server.handle_request({
+            "id": "tui-submit", "method": "prompt.submit",
+            "params": {"session_id": "runtime-session", "text": "compatible send"},
+        })
+    finally:
+        server._sessions.pop("runtime-session", None)
+    assert response["result"]["status"] == "streaming"
+    assert calls == [("tui-submit", "runtime-session", "compatible send")]
+
+
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
     class _BrokenSupervisor:
         def submit_turn(self, frame, *, on_complete=None):

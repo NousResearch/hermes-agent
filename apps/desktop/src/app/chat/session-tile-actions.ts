@@ -212,7 +212,10 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     clearClarifyRequest(undefined, sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await requestGateway('session.interrupt', {
+        expected_stored_session_id: storedIdRef.current,
+        session_id: sessionId
+      })
     } catch (err) {
       notifyError(err, copy.stopFailed)
     }
@@ -251,7 +254,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // the primary chat so the two can't diverge.
   const submitRewind = useCallback(
     (text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, runtimeIdRef.current, text, truncateOrdinal, interruptFirst),
+      runRewindSubmit(requestGateway, runtimeIdRef.current, storedIdRef.current, text, truncateOrdinal, interruptFirst),
     [requestGateway]
   )
 
@@ -274,7 +277,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       try {
         await requestGateway(
           'prompt.submit',
-          { session_id: runtimeIdRef.current, text: plan.text, truncate_before_user_ordinal: plan.truncateOrdinal },
+          {
+            expected_stored_session_id: storedIdRef.current,
+            session_id: runtimeIdRef.current,
+            text: plan.text,
+            truncate_before_user_ordinal: plan.truncateOrdinal
+          },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
       } catch (err) {

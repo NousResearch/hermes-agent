@@ -526,6 +526,9 @@ export function usePromptActions({
     // The ref is updated via useEffect on every activeSessionId change, so it
     // always reflects the current session — same pattern submitText uses.
     const sessionId = activeSessionIdRef.current
+    // Pin the durable target with the runtime id. A session switch while the
+    // first interrupt is in flight must not retarget the recovery retry.
+    const storedSessionId = selectedStoredSessionIdRef.current
 
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
@@ -570,23 +573,37 @@ export function usePromptActions({
     clearClarifyRequest(undefined, sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await requestGateway('session.interrupt', {
+        expected_stored_session_id: storedSessionId,
+        session_id: sessionId
+      })
       releaseBusy()
     } catch (err) {
       let stopError = err
 
-      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+      if (isSessionNotFoundError(err) && storedSessionId) {
         try {
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current,
+            session_id: storedSessionId,
             source: 'desktop'
           })
 
           const recoveredId = resumed?.session_id
 
           if (recoveredId) {
-            activeSessionIdRef.current = recoveredId
-            await requestGateway('session.interrupt', { session_id: recoveredId })
+            // Recovery belongs to the entry-pinned pair. Keep stopping it, but
+            // do not replace a newer foreground selection with its runtime id.
+            if (
+              activeSessionIdRef.current === sessionId &&
+              selectedStoredSessionIdRef.current === storedSessionId
+            ) {
+              activeSessionIdRef.current = recoveredId
+            }
+
+            await requestGateway('session.interrupt', {
+              expected_stored_session_id: storedSessionId,
+              session_id: recoveredId
+            })
             releaseBusy()
 
             return
@@ -666,7 +683,9 @@ export function usePromptActions({
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
-      if (!activeSessionId || $busy.get()) {
+      const storedSessionId = selectedStoredSessionIdRef.current
+
+      if (!activeSessionId || !storedSessionId || $busy.get()) {
         return
       }
 
@@ -682,7 +701,12 @@ export function usePromptActions({
       try {
         await requestGateway(
           'prompt.submit',
-          { session_id: activeSessionId, text: plan.text, truncate_before_user_ordinal: plan.truncateOrdinal },
+          {
+            expected_stored_session_id: storedSessionId,
+            session_id: activeSessionId,
+            text: plan.text,
+            truncate_before_user_ordinal: plan.truncateOrdinal
+          },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
       } catch (err) {
@@ -694,7 +718,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionId, copy.regenerateFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
@@ -707,16 +731,17 @@ export function usePromptActions({
   // fresh turn. Live/stuck turns interrupt first, and a raced "session busy"
   // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
-    (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst),
+    (sessionId: string, storedSessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
+      runRewindSubmit(requestGateway, sessionId, storedSessionId, text, truncateOrdinal, interruptFirst),
     [requestGateway]
   )
 
   const restoreToMessage = useCallback(
     async (messageId: string, target?: RestoreMessageTarget) => {
       const sessionId = activeSessionId || activeSessionIdRef.current
+      const storedSessionId = selectedStoredSessionIdRef.current
 
-      if (!sessionId) {
+      if (!sessionId || !storedSessionId) {
         throw new Error('No active session to restore.')
       }
 
@@ -737,7 +762,13 @@ export function usePromptActions({
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(
+          sessionId,
+          storedSessionId,
+          plan.text,
+          plan.truncateOrdinal,
+          busyRef.current || $busy.get()
+        )
       } catch (err) {
         // The rewind never landed (e.g. the gateway stayed busy past the retry
         // deadline). Roll the optimistic truncation back to the full original
@@ -755,16 +786,24 @@ export function usePromptActions({
         throw err
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
+    [
+      activeSessionId,
+      activeSessionIdRef,
+      busyRef,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      updateSessionState
+    ]
   )
 
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
       const sessionId = activeSessionId || activeSessionIdRef.current
+      const storedSessionId = selectedStoredSessionIdRef.current
       const messages = $messages.get()
       const plan = sessionId ? planEdit(messages, edited) : null
 
-      if (!sessionId || !plan) {
+      if (!sessionId || !storedSessionId || !plan) {
         return
       }
 
@@ -786,14 +825,20 @@ export function usePromptActions({
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       try {
-        await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(
+          sessionId,
+          storedSessionId,
+          plan.text,
+          plan.truncateOrdinal,
+          busyRef.current || $busy.get()
+        )
       } catch (err) {
         let surfaced = err
 
         if (!plan.isFailedTurn && isStaleTargetError(err)) {
           try {
             // Already interrupted on the first attempt — submit as a plain resend.
-            await submitRewindPrompt(sessionId, plan.text, undefined, false)
+            await submitRewindPrompt(sessionId, storedSessionId, plan.text, undefined, false)
 
             return
           } catch (retryErr) {
@@ -811,7 +856,15 @@ export function usePromptActions({
         notifyError(surfaced, copy.editFailed)
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
+    [
+      activeSessionId,
+      activeSessionIdRef,
+      busyRef,
+      copy.editFailed,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      updateSessionState
+    ]
   )
 
   const handleThreadMessagesChange = useCallback(

@@ -442,6 +442,23 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
     normalized = os.path.normpath(_expand_tilde(path))
+    if os.sep == "\\":
+        # On Windows the read I/O shells through Git Bash, whose MSYS layer
+        # emulates /dev/* and /proc/* as real (often blocking or infinite)
+        # streams, so read_file("/dev/zero") genuinely hangs the agent.
+        # normpath turns "/dev/zero" into "\dev\zero", which would never match
+        # the POSIX strings below, silently disabling this ENTIRE device/fd/proc
+        # read-guard on Windows -- including the /proc/*/environ secret-leak
+        # family from #4427. Fold separators back to "/" so the comparisons
+        # fire. A drive-qualified native path ("C:\dev\zero" -> "C:/dev/zero")
+        # keeps its drive prefix and still falls through unblocked; the only
+        # over-match is a bare root-relative native path like "\dev\zero" on the
+        # current drive, which collapses to "/dev/zero" and is treated as
+        # blocked -- an acceptable conservative call for such an exotic path.
+        # Every caller (literal path, each symlink hop, and the realpath re-check
+        # in _is_blocked_device) routes through here, so this one point fixes
+        # all of them, #10141's realpath guard included. (#69373)
+        normalized = normalized.replace("\\", "/")
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio

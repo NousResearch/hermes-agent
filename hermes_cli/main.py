@@ -10992,6 +10992,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
                 _wait_for_gateway_exit,
+                launchd_restart,
+                launchd_start,
+                get_launchd_label,
+                get_launchd_plist_path,
             )
             import signal as _signal
 
@@ -11464,16 +11468,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # --- Launchd services (macOS) ---
             if is_macos():
                 try:
-                    from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
-                    )
-
                     plist_path = get_launchd_plist_path()
+                    label = get_launchd_label()
+
+                    def _try_launchd_start(reason: str) -> bool:
+                        """Best-effort launchd bootstrap/kickstart recovery."""
+                        print(reason)
+                        try:
+                            launchd_start()
+                            return True
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            detail = f": {stderr}" if stderr else ""
+                            print(f"  ⚠ Gateway start recovery failed{detail}")
+                        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                            print(f"  ⚠ Gateway start recovery failed: {e}")
+                        return False
+
                     if plist_path.exists():
                         check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
+                            ["launchctl", "list", label],
                             capture_output=True,
                             text=True,
                             timeout=5,
@@ -11481,10 +11495,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         if check.returncode == 0:
                             try:
                                 launchd_restart()
-                                restarted_services.append(get_launchd_label())
+                                # `launchd_restart()` can request a graceful
+                                # self-restart and return before launchd has
+                                # finished reconciling the job.  Verify the
+                                # service is still loaded; if update was
+                                # launched from the gateway and launchd ended
+                                # up unloaded, self-heal by bootstrapping it
+                                # instead of leaving the user disconnected.
+                                verify = subprocess.run(
+                                    ["launchctl", "list", label],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5,
+                                )
+                                if verify.returncode != 0 and gateway_mode:
+                                    if _try_launchd_start(
+                                        "  ↻ launchd job is unloaded after restart; starting service"
+                                    ):
+                                        restarted_services.append(label)
+                                else:
+                                    restarted_services.append(label)
                             except subprocess.CalledProcessError as e:
                                 stderr = (getattr(e, "stderr", "") or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")
+                                if gateway_mode and _try_launchd_start(
+                                    "  ↻ Retrying via launchd start"
+                                ):
+                                    restarted_services.append(label)
+                        elif gateway_mode:
+                            # A gateway-triggered update means the gateway was
+                            # alive when the update began. If the plist exists
+                            # but launchd no longer has the job loaded, treat
+                            # that as a restart failure and recover via the
+                            # same self-healing path used by `hermes gateway
+                            # start` (bootstrap + kickstart).
+                            if _try_launchd_start(
+                                "  ↻ launchd job is unloaded after update; starting service"
+                            ):
+                                restarted_services.append(label)
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 

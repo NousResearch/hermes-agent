@@ -42,6 +42,22 @@ from hermes_cli.auth import (
 logger = logging.getLogger(__name__)
 
 
+_AUTH_ERROR_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b((?:access|refresh|id)?_?token|api_?key|client_secret|secret|password)\s*=\s*([^\s,;]+)",
+    re.IGNORECASE,
+)
+
+
+def _redact_exception_message(exc: Exception) -> str:
+    """Return a redacted string representation of *exc* for safe storage."""
+    try:
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(str(exc), force=True)
+        return _AUTH_ERROR_SECRET_ASSIGNMENT_RE.sub(r"\1=***", redacted)
+    except Exception:
+        return "credential refresh failed"
+
+
 def _load_config_safe() -> Optional[dict]:
     """Load config.yaml read-only, returning None on any error.
 
@@ -1304,7 +1320,7 @@ class CredentialPool:
                                         state["last_auth_error"] = {
                                             "provider": "xai-oauth",
                                             "code": getattr(exc, "code", "unknown"),
-                                            "message": str(exc),
+                                            "message": _redact_exception_message(exc),
                                             "reason": "credential_pool_refresh_failure",
                                             "relogin_required": True,
                                             "at": datetime.now(timezone.utc).isoformat(),
@@ -1374,7 +1390,7 @@ class CredentialPool:
                                         state["last_auth_error"] = {
                                             "provider": "openai-codex",
                                             "code": getattr(exc, "code", "unknown"),
-                                            "message": str(exc),
+                                            "message": _redact_exception_message(exc),
                                             "reason": "credential_pool_refresh_failure",
                                             "relogin_required": True,
                                             "at": datetime.now(timezone.utc).isoformat(),

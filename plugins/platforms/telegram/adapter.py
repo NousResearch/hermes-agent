@@ -20,7 +20,7 @@ import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,9 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
+    import telegram as _telegram
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    CopyTextButton: Any = getattr(_telegram, "CopyTextButton", None)
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -230,6 +232,7 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    CopyTextButton = None
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -373,7 +376,7 @@ def check_telegram_requirements() -> bool:
     so the adapter's class-level type aliases get rebound.
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
-    global InlineKeyboardMarkup, LinkPreviewOptions, Application
+    global InlineKeyboardMarkup, CopyTextButton, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
@@ -384,8 +387,10 @@ def check_telegram_requirements() -> bool:
     except Exception:
         return False
     try:
+        import telegram as _telegram
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        _CTB: Any = getattr(_telegram, "CopyTextButton", None)
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -405,6 +410,7 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    CopyTextButton = _CTB
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
@@ -467,6 +473,36 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
     closing fence.
     """
     return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
+
+
+_COPY_BUTTON_LINE_RE = re.compile(
+    r'^\s*COPY_BUTTON:\s*(?P<label>[^|\n]{1,64})\|(?P<text>[^\n]{1,256})\s*$',
+    re.MULTILINE,
+)
+
+
+def _extract_copy_buttons(content: str) -> tuple[str, list[tuple[str, str]]]:
+    """Strip valid ``COPY_BUTTON: label | text`` lines and return buttons.
+
+    Invalid markers stay visible so malformed or unsupported requests never
+    silently remove user-facing content.
+    """
+    if not content or "COPY_BUTTON:" not in content:
+        return content, []
+
+    buttons: list[tuple[str, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        label = match.group("label").strip()
+        text = match.group("text").strip()
+        if not label or not text or len(text) > 256 or len(buttons) >= 20:
+            return match.group(0)
+        buttons.append((label, text))
+        return ""
+
+    stripped = _COPY_BUTTON_LINE_RE.sub(_replace, content)
+    stripped = re.sub(r'\n{3,}', '\n\n', stripped).strip()
+    return stripped, buttons
 
 
 # ---------------------------------------------------------------------------
@@ -1464,6 +1500,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    def _copy_buttons_markup(self, buttons: list[tuple[str, str]]) -> Optional[Any]:
+        """Build Telegram copy-to-clipboard inline keyboard markup."""
+        if not buttons or CopyTextButton is None:
+            return None
+        button_cls = cast(Any, InlineKeyboardButton)
+        copy_text_cls = cast(Any, CopyTextButton)
+        markup_cls = cast(Any, InlineKeyboardMarkup)
+        rows = [
+            [button_cls(label, copy_text=copy_text_cls(text=text))]
+            for label, text in buttons[:20]
+        ]
+        return markup_cls(rows)
 
     # ------------------------------------------------------------------
     # Bot API 10.1 Rich Messages (sendRichMessage)
@@ -4034,14 +4083,23 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        copy_markup = None
+        if CopyTextButton is not None:
+            content, copy_buttons = _extract_copy_buttons(content)
+            if copy_buttons and not content.strip():
+                content = "Copy buttons"
+            copy_markup = self._copy_buttons_markup(copy_buttons)
+        elif "COPY_BUTTON:" in content:
+            logger.warning(
+                "[%s] COPY_BUTTON markers requested but CopyTextButton is unavailable",
+                self.name,
+            )
         
         try:
-            # Bot API 10.1 rich fast-path: send the raw agent markdown via
-            # sendRichMessage so tables/task lists/etc. render natively. Falls
-            # through to the legacy MarkdownV2 path on permanent/capability
-            # errors or DM-topic routing skips; returns directly on success or
-            # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            # Rich messages do not currently carry reply_markup through this
+            # adapter path. Keep copy-button messages on sendMessage instead.
+            if copy_markup is None and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -4150,6 +4208,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **({"reply_markup": copy_markup} if copy_markup is not None and i == len(chunks) - 1 else {}),
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -4164,6 +4223,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **({"reply_markup": copy_markup} if copy_markup is not None and i == len(chunks) - 1 else {}),
                                 )
                             else:
                                 raise
@@ -4399,6 +4459,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        copy_markup = None
+        if finalize and CopyTextButton is not None:
+            content, copy_buttons = _extract_copy_buttons(content)
+            if copy_buttons and not content.strip():
+                content = "Copy buttons"
+            copy_markup = self._copy_buttons_markup(copy_buttons)
+        elif finalize and "COPY_BUTTON:" in content:
+            logger.warning(
+                "[%s] COPY_BUTTON markers requested but CopyTextButton is unavailable",
+                self.name,
+            )
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -4409,7 +4481,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if finalize and copy_markup is None and self._rich_eligible(content):
             rich_result = await self._try_edit_rich(
                 chat_id, message_id, content, metadata=metadata,
             )
@@ -4432,7 +4504,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             if finalize:
                 return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                    chat_id,
+                    message_id,
+                    content,
+                    finalize=finalize,
+                    metadata=metadata,
+                    reply_markup=copy_markup,
                 )
             content = self._truncate_stream_overflow_preview(content)
             _saturated_preview = True
@@ -4468,6 +4545,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
+                    **({"reply_markup": copy_markup} if copy_markup is not None else {}),
                 )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
@@ -4485,6 +4563,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=_plain,
+                    **({"reply_markup": copy_markup} if copy_markup is not None else {}),
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -4502,7 +4581,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 if finalize:
                     return await self._edit_overflow_split(
-                        chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                        chat_id,
+                        message_id,
+                        content,
+                        finalize=finalize,
+                        metadata=metadata,
+                        reply_markup=copy_markup,
                     )
                 # Mid-stream: truncate and retry instead of splitting (#48648).
                 truncated = self._truncate_stream_overflow_preview(content)
@@ -4538,6 +4622,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=normalize_telegram_chat_id(chat_id),
                         message_id=int(message_id),
                         text=content,
+                        **({"reply_markup": copy_markup} if copy_markup is not None else {}),
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
@@ -4607,6 +4692,7 @@ class TelegramAdapter(BasePlatformAdapter):
         *,
         finalize: bool,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_markup: Optional[Any] = None,
     ) -> SendResult:
         """Split an oversized edit across the existing message + continuations.
 
@@ -4626,9 +4712,10 @@ class TelegramAdapter(BasePlatformAdapter):
             content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
         )
         if len(chunks) <= 1:
-            # Defensive: shouldn't happen given the caller's pre-flight, but
-            # if truncate_message returned a single chunk just edit normally.
+            # Reactive overflow can be caused by MarkdownV2 expansion even when
+            # raw content is one chunk. Keep the final keyboard on that edit.
             chunks = [content]
+        first_chunk_markup = reply_markup if len(chunks) == 1 else None
 
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
@@ -4645,6 +4732,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=formatted,
                         parse_mode=ParseMode.MARKDOWN_V2,
+                        **({"reply_markup": first_chunk_markup} if first_chunk_markup is not None else {}),
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
@@ -4657,6 +4745,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_id=int(message_id),
                             text=_strip_mdv2(first_chunk),
+                            **({"reply_markup": first_chunk_markup} if first_chunk_markup is not None else {}),
                         )
             else:
                 await self._bot.edit_message_text(
@@ -4687,8 +4776,9 @@ class TelegramAdapter(BasePlatformAdapter):
         delivered_chunks = [first_chunk]
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
-        for chunk in chunks[1:]:
+        for chunk_index, chunk in enumerate(chunks[1:], start=1):
             sent_msg = None
+            chunk_markup = reply_markup if chunk_index == len(chunks) - 1 else None
             reply_to_id = int(prev_id) if prev_id else None
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
@@ -4716,6 +4806,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         **thread_kwargs,
                         **self._link_preview_kwargs(),
                         **self._notification_kwargs(metadata),
+                        **({"reply_markup": chunk_markup} if chunk_markup is not None else {}),
                     )
                     break
                 except Exception as send_err:
@@ -4737,6 +4828,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **({"reply_markup": chunk_markup} if chunk_markup is not None else {}),
                             )
                             break
                         except Exception as _retry_err:

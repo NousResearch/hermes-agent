@@ -48,7 +48,7 @@ palette from these; the TUI and CLI read the terminal-oriented ones directly.
 
 | Key | Drives |
 |---|---|
-| `background` | Base surface — GUI + TUI status bar seed. Set it. |
+| `background` | Base surface. Paints the whole TUI (OSC 11) + seeds the GUI. Set it. |
 | `ui_accent` / `banner_accent` | Brand accent: buttons, rings, primary. |
 | `banner_title` | Headings / primary text. |
 | `banner_text` / `ui_text` | Body foreground. |

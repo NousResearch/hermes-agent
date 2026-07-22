@@ -21,6 +21,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from hermes_cli.main import (
+    cmd_dashboard,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
     _warn_stale_dashboard_processes,  # back-compat alias
@@ -48,6 +49,7 @@ def _refresh_bindings_against_live_module():
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
     global _warn_stale_dashboard_processes
+    global cmd_dashboard
 
     live = sys.modules.get("hermes_cli.main")
     if live is None:
@@ -56,6 +58,7 @@ def _refresh_bindings_against_live_module():
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
+    cmd_dashboard = live.cmd_dashboard
     yield
 
 
@@ -82,6 +85,10 @@ def _ps_runner(stdout: str):
 
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
+
+    @pytest.fixture(autouse=True)
+    def _use_posix_ps_parser(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
 
     def test_no_matches_returns_empty(self):
         with patch("subprocess.run") as mock_run:
@@ -226,6 +233,53 @@ class TestFindStaleDashboardPids:
             )
             pids = _find_stale_dashboard_pids(exclude_pids={12345})
         assert pids == []
+
+
+class TestKillRestartMarker:
+    def test_restart_hint_writes_marker_before_sigterm(self, monkeypatch):
+        import signal as _signal
+        import gateway.status as gateway_status
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(gateway_status, "_pid_exists", lambda _pid: False)
+        events: list[tuple[str, object]] = []
+
+        def fake_write(pids):
+            events.append(("marker", list(pids)))
+
+        def fake_kill(pid, sig):
+            events.append(("kill", (pid, sig)))
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]), \
+             patch("hermes_cli.main.write_restart_markers",
+                   side_effect=fake_write), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_hint=True)
+
+        assert events[0] == ("marker", [12345])
+        assert events[1] == ("kill", (12345, _signal.SIGTERM))
+
+    def test_dashboard_stop_does_not_write_restart_marker(self, monkeypatch):
+        import types
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        args = types.SimpleNamespace(
+            ssh_session_token_file=None,
+            status=False,
+            stop=True,
+        )
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   side_effect=[[12345], [12345], []]), \
+             patch("hermes_cli.main.write_restart_markers") as marker_write, \
+             patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             pytest.raises(SystemExit) as exc_info:
+            cmd_dashboard(args)
+
+        assert exc_info.value.code == 0
+        marker_write.assert_not_called()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")

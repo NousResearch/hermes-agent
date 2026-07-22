@@ -54,6 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli.serve_restart_marker import RESTART_EXIT_CODE, consume_restart_marker
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -19401,6 +19402,10 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
+    # A restarted process gets a new PID and must not inherit marker residue
+    # from the serve instance that the updater stopped.
+    consume_restart_marker(os.getpid())
+
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
@@ -19661,6 +19666,8 @@ def start_server(
     # uvicorn's own machinery and run on the loop factory it picks.
     if sys.platform != "win32":
         asyncio.run(_serve())
+        if consume_restart_marker(os.getpid()):
+            sys.exit(RESTART_EXIT_CODE)
         return
 
     # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
@@ -19686,3 +19693,6 @@ def start_server(
         _runner(_serve(), loop_factory=_loop_factory)
     else:
         asyncio.run(_serve())
+
+    if consume_restart_marker(os.getpid()):
+        sys.exit(RESTART_EXIT_CODE)

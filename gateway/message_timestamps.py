@@ -13,11 +13,16 @@ from typing import Any, Optional, Tuple
 
 
 # Current gateway format: [Tue 2026-04-28 13:40:53 CEST]
+# The tz token allows spaces between word runs so multi-word zone names match
+# too: strftime("%Z") returns a short abbreviation ("CEST") on Linux/macOS but
+# the full descriptive name with spaces ("Pacific Daylight Time") on Windows
+# when no timezone is configured. The closing "]" bounds the match, so it never
+# spills into a following "[sender]" segment.
 _HUMAN_TIMESTAMP_RE = re.compile(
     r"^\[(?P<dow>[A-Z][a-z]{2}) "
     r"(?P<date>\d{4}-\d{2}-\d{2}) "
     r"(?P<time>\d{2}:\d{2}:\d{2})"
-    r"(?: (?P<tz>[A-Za-z0-9_+\-/:]+))?\]\s*"
+    r"(?: (?P<tz>[A-Za-z0-9_+\-/:]+(?: [A-Za-z0-9_+\-/:]+)*))?\]\s*"
 )
 
 # Older gateway format: [2026-04-13T17:02:06+0200] or [+02:00]

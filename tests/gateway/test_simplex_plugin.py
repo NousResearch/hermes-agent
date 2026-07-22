@@ -467,3 +467,44 @@ async def test_image_file_still_sets_photo_type():
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+@pytest.mark.asyncio
+async def test_send_image_prepares_off_the_event_loop(tmp_path, monkeypatch):
+    """Image preparation must not block the shared gateway event loop.
+
+    ``_prepare_image`` re-encodes the full image and builds a thumbnail: with
+    Pillow that is CPU-bound work on a possibly-large photo, and without it
+    two ``convert`` spawns at ``timeout=30`` each. Run inline on the loop, one
+    SimpleX image send stalls every other platform's traffic on the same
+    gateway — the same off-the-loop class as the inbound-image decision.
+    """
+    import threading
+
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    img = tmp_path / "photo.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    main_thread = threading.current_thread()
+    seen = {}
+
+    def _fake_prepare(path):
+        seen["thread"] = threading.current_thread()
+        return str(path), "data:image/jpg;base64,AAAA"
+
+    monkeypatch.setattr(adapter, "_prepare_image", _fake_prepare)
+    adapter._send_command = AsyncMock(return_value={"ok": True})
+
+    result = await adapter.send_image("contact-42", f"file://{img}")
+
+    assert result.success is True
+    assert seen.get("thread") is not None, "_prepare_image never ran"
+    assert seen["thread"] is not main_thread, (
+        "_prepare_image ran on the event-loop thread; it must be dispatched "
+        "via asyncio.to_thread so image re-encoding (or a 30s `convert` "
+        "spawn) can't freeze every other platform on the gateway loop"
+    )

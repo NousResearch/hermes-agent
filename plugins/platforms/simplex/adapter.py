@@ -951,7 +951,15 @@ class SimplexAdapter(BasePlatformAdapter):
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
 
-        png_path, thumb_uri = self._prepare_image(file_path)
+        # Off the event loop: _prepare_image re-encodes the full image and
+        # builds a thumbnail. With Pillow that is CPU-bound work on a
+        # possibly-large photo; without it, two `convert` spawns at
+        # timeout=30 each. Run inline it holds the shared gateway loop for
+        # that whole window, so every other platform's traffic stalls while
+        # one SimpleX image is prepared.
+        png_path, thumb_uri = await asyncio.to_thread(
+            self._prepare_image, file_path
+        )
 
         # /_send addresses by numeric ID; /f only accepts display names which
         # breaks for group IDs.

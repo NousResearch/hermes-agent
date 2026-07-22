@@ -50,6 +50,17 @@ Fixes #
 - [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
 - [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->
 
+### Architecture
+
+- [ ] Change is located in the owning subsystem — or N/A
+- [ ] Core agent behavior remains platform-agnostic — or N/A
+- [ ] Prompt stability/caching assumptions are preserved — or N/A
+- [ ] Profile-aware paths are used; no hardcoded Hermes state paths were added — or N/A
+- [ ] Optional integrations are gated and do not add hard startup dependencies — or N/A
+- [ ] New tools self-register and are exposed through toolsets intentionally — or N/A
+- [ ] Session writes go through the session/state layer — or N/A
+- [ ] I reviewed the [Architecture Adherence Checklist](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture-checklist) for changes touching internals — or N/A
+
 ### Documentation & Housekeeping
 
 <!-- Check all that apply. It's OK to check "N/A" if a category doesn't apply to your change. -->

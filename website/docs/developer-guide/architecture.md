@@ -6,7 +6,7 @@ description: "Hermes Agent internals — major subsystems, execution paths, data
 
 # Architecture
 
-This page is the top-level map of Hermes Agent internals. Use it to orient yourself in the codebase, then dive into subsystem-specific docs for implementation details.
+This page is the top-level map of Hermes Agent internals. Use it to orient yourself in the codebase, then dive into subsystem-specific docs for implementation details. When planning or reviewing changes, use the [Architecture Adherence Checklist](./architecture-checklist.md) to keep subsystem boundaries, prompt stability, and profile isolation intact.
 
 ## System Overview
 

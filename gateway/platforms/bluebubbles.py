@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 import httpx
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -676,6 +677,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 approval_id=prompt.approval_id,
             )
             if count:
+                confirmation_key = (
+                    "gateway.approve.once_singular"
+                    if choice == "once"
+                    else "gateway.deny.denied_singular"
+                )
+                task = asyncio.create_task(
+                    self.send(prompt.chat_id, t(confirmation_key))
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
                 self.resume_typing_for_chat(prompt.chat_id)
             logger.info(
                 "[bluebubbles] Tapback resolved %d approval(s) (choice=%s, user=%s)",

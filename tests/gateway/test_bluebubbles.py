@@ -246,10 +246,12 @@ class TestBlueBubblesExecApproval:
         self, monkeypatch, assoc_type
     ):
         adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        sent = []
 
         async def fake_send(chat_id, text, metadata=None):
             from gateway.platforms.base import SendResult
 
+            sent.append((chat_id, text))
             return SendResult(success=True, message_id="APPROVAL-GUID")
 
         monkeypatch.setattr(adapter, "send", fake_send)
@@ -289,6 +291,7 @@ class TestBlueBubblesExecApproval:
 
         first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
         second = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
 
         assert first.status == 200
         assert second.status == 200
@@ -297,6 +300,12 @@ class TestBlueBubblesExecApproval:
         ]
         assert resumed == ["iMessage;-;user@example.com"]
         assert adapter._approval_prompts_by_guid == {}
+        assert sent[1:] == [
+            (
+                "iMessage;-;user@example.com",
+                "✅ Command approved. The agent is resuming...",
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_canonical_tapback_resolves_exact_concurrent_entry(self, monkeypatch):
@@ -351,6 +360,47 @@ class TestBlueBubblesExecApproval:
             assert _gateway_queues[session_key] == [entry_a]
         finally:
             _gateway_queues.pop(session_key, None)
+
+    @pytest.mark.asyncio
+    async def test_tapback_without_waiter_sends_no_confirmation(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        sent = []
+
+        async def fake_send(chat_id, text, metadata=None):
+            from gateway.platforms.base import SendResult
+
+            sent.append((chat_id, text))
+            return SendResult(success=True, message_id="STALE-GUID")
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        await adapter.send_exec_approval(
+            chat_id="iMessage;-;user@example.com",
+            command="touch protected-file",
+            session_key="bluebubbles:iMessage;-;user@example.com",
+            metadata=_approval_metadata(),
+        )
+        adapter.set_authorization_check(lambda *_args: True)
+        resumed = []
+        monkeypatch.setattr(adapter, "resume_typing_for_chat", resumed.append)
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval", lambda *_args, **_kwargs: 0
+        )
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "STALE-TAPBACK-GUID",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "associatedMessageType": "like",
+                "associatedMessageGuid": "p:0/STALE-GUID",
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert len(sent) == 1
+        assert resumed == []
 
     def test_gateway_approval_metadata_carries_requester_without_thread(self):
         from gateway.run import _approval_prompt_metadata
@@ -521,10 +571,12 @@ class TestBlueBubblesExecApproval:
     @pytest.mark.parametrize("assoc_type", [2002, "2002", "dislike"])
     async def test_dislike_tapback_denies(self, monkeypatch, assoc_type):
         adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        sent = []
 
         async def fake_send(chat_id, text, metadata=None):
             from gateway.platforms.base import SendResult
 
+            sent.append((chat_id, text))
             return SendResult(success=True, message_id="DENY-GUID")
 
         monkeypatch.setattr(adapter, "send", fake_send)
@@ -554,9 +606,13 @@ class TestBlueBubblesExecApproval:
                 "associatedMessageGuid": "p:0/DENY-GUID",
             },
         }))
+        await asyncio.sleep(0)
 
         assert resolved == [
             ("bluebubbles:iMessage;-;user@example.com", "deny", "approval-1")
+        ]
+        assert sent[1:] == [
+            ("iMessage;-;user@example.com", "❌ Command denied.")
         ]
 
     @pytest.mark.asyncio

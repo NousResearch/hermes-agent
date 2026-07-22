@@ -34,6 +34,7 @@ def _make_runner(recovered_thread_id=None):
     # Stub topic recovery: returns the bound topic id for a lobby message,
     # None otherwise (the real method's contract).
     runner._recover_telegram_topic_thread_id = MagicMock(return_value=recovered_thread_id)
+    runner._telegram_topic_mode_enabled = MagicMock(return_value=True)
     return runner
 
 
@@ -69,6 +70,18 @@ def test_normalize_passthrough_when_no_recovery():
     normalized = runner._normalize_source_for_session_key(src)
 
     assert normalized is src
+
+
+def test_normalize_collapses_private_topic_when_topic_mode_is_off():
+    """With /topic off, Telegram DM topics share the root-DM session key."""
+    runner = _make_runner(recovered_thread_id=None)
+    runner._telegram_topic_mode_enabled = MagicMock(return_value=False)
+    src = _topic_dm_source(thread_id="42")
+
+    normalized = runner._normalize_source_for_session_key(src)
+
+    assert normalized.thread_id is None
+    assert src.thread_id == "42"
 
 
 def test_normalize_swallows_recovery_exceptions():

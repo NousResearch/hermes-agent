@@ -4128,6 +4128,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         the original source unchanged.  Always derive the override storage key
         from the result so storage and read use an identical key.
         """
+        # /topic off promises that Telegram private topics stop acting as
+        # independent sessions. The adapter retains the inbound thread id for
+        # topic-mode routing, but once topic mode is off it must not remain a
+        # session-key discriminator. Collapse it to the root DM before deriving
+        # the key or delivery metadata.
+        if (
+            source.platform == Platform.TELEGRAM
+            and source.chat_type == "dm"
+            and source.thread_id is not None
+            and not self._telegram_topic_mode_enabled(source)
+        ):
+            return dataclasses.replace(source, thread_id=None)
+
         try:
             recovered = self._recover_telegram_topic_thread_id(source)
         except Exception:
@@ -12106,13 +12119,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
         # last-active topic so a cross-topic Reply or stripped plain reply
         # doesn't fragment the conversation across sessions.
-        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
-        if recovered is not None:
+        normalized_source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, source
+        )
+        if normalized_source is not source:
             logger.info(
-                "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
+                "telegram session source normalized: chat=%s user=%s %r -> %r",
+                source.chat_id, source.user_id, source.thread_id,
+                normalized_source.thread_id,
             )
-            source = dataclasses.replace(source, thread_id=recovered)
+            source = normalized_source
             try:
                 event.source = source
             except Exception:

@@ -563,6 +563,20 @@ class OnePasswordSource(SecretSource):
                 result.error_kind = ErrorKind.NOT_CONFIGURED
             return result
 
+        # Honor override_existing before contacting 1Password. The registry
+        # applies precedence after fetch(), but fetching every mapped value
+        # first defeats the purpose of override_existing=False: a deleted or
+        # temporarily unavailable service account emits startup errors even
+        # when .env already contains every required value. Filter satisfied
+        # mappings here so local fallbacks can keep Hermes operational.
+        if not self.override_existing(cfg):
+            valid = {
+                name: ref for name, ref in valid.items()
+                if not os.environ.get(name)
+            }
+            if not valid:
+                return result
+
         binary_path = str(cfg.get("binary_path") or "")
         binary = find_op(binary_path)
         result.binary_path = binary

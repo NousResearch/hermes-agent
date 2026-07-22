@@ -489,6 +489,30 @@ class TestOnePasswordSource:
         assert src.override_existing({}) is True
         assert src.override_existing({"override_existing": False}) is False
 
+    def test_fetch_skips_op_when_existing_values_win(self, monkeypatch, tmp_path):
+        import agent.secret_sources.onepassword as op
+
+        monkeypatch.setenv("EXISTING_SECRET", "local-fallback")
+        monkeypatch.setattr(
+            op,
+            "find_op",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("op must not be contacted")
+            ),
+        )
+
+        result = op.OnePasswordSource().fetch(
+            {
+                "enabled": True,
+                "override_existing": False,
+                "env": {"EXISTING_SECRET": "op://Vault/Item/password"},
+            },
+            tmp_path,
+        )
+
+        assert result.ok
+        assert result.secrets == {}
+
     def test_protected_vars_track_token_env(self):
         from agent.secret_sources.onepassword import OnePasswordSource
 

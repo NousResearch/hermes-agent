@@ -188,3 +188,27 @@ test('does not issue a request when the deadline expires between loop checks', a
 
   assert.equal(requests, 0)
 })
+
+test('stops retrying immediately when an abort signal supersedes SSH bootstrap', async () => {
+  const controller = new AbortController()
+  let requests = 0
+
+  await assert.rejects(
+    waitForHermesReadiness(
+      'http://127.0.0.1:8000',
+      async () => {
+        requests += 1
+        throw new Error('connect ECONNREFUSED')
+      },
+      {
+        signal: controller.signal,
+        sleep: async () => {
+          controller.abort()
+        }
+      }
+    ),
+    (error: any) => error?.kind === 'superseded'
+  )
+
+  assert.equal(requests, 1)
+})

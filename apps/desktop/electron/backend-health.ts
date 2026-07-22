@@ -10,6 +10,14 @@ type ReadinessOptions = {
   totalTimeoutMs?: number
   requestTimeoutMs?: number
   retryMs?: number
+  signal?: AbortSignal
+}
+
+function supersededBootstrapError() {
+  const error: any = new Error('SSH bootstrap was superseded by newer connection settings.')
+  error.kind = 'superseded'
+
+  return error
 }
 
 function errorMessage(error: unknown) {
@@ -56,12 +64,41 @@ async function waitForHermesReadiness(
   const totalTimeoutMs = options.totalTimeoutMs ?? HERMES_READY_TIMEOUT_MS
   const requestTimeoutMs = options.requestTimeoutMs ?? HERMES_HEALTH_REQUEST_TIMEOUT_MS
   const retryMs = options.retryMs ?? HERMES_READY_RETRY_MS
+  const signal = options.signal
   const deadline = now() + totalTimeoutMs
+
+  const throwIfSuperseded = () => {
+    if (signal?.aborted) {
+      throw supersededBootstrapError()
+    }
+  }
+
+  const sleepUntilRetry = (delayMs: number) => {
+    if (!signal) {
+      return sleep(delayMs)
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(supersededBootstrapError())
+      signal.addEventListener('abort', onAbort, { once: true })
+      sleep(delayMs).then(
+        () => {
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        },
+        error => {
+          signal.removeEventListener('abort', onAbort)
+          reject(error)
+        }
+      )
+    })
+  }
 
   let useLegacyStatus = false
   let lastError: unknown = null
 
   while (now() < deadline) {
+    throwIfSuperseded()
     const path = useLegacyStatus ? '/api/status' : '/api/healthz'
     const remainingMs = deadline - now()
 
@@ -92,7 +129,7 @@ async function waitForHermesReadiness(
     const remainingAfterAttemptMs = deadline - now()
 
     if (remainingAfterAttemptMs > 0) {
-      await sleep(Math.min(retryMs, remainingAfterAttemptMs))
+      await sleepUntilRetry(Math.min(retryMs, remainingAfterAttemptMs))
     }
   }
 

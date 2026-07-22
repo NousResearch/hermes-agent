@@ -4632,7 +4632,7 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token, signal?) {
-  const readiness = waitForHermesReadiness(baseUrl, (url, options) => fetchJson(url, token, options))
+  const readiness = waitForHermesReadiness(baseUrl, (url, options) => fetchJson(url, token, options), { signal })
 
   if (!signal) {
     return readiness

@@ -140,7 +140,7 @@ import {
   SshConnection
 } from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { resolveBehindCount, shouldCountCommits } from './update-count'
+import { resolveBehindCount, resolveUpdateCurrentSha, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
@@ -2248,7 +2248,7 @@ async function checkUpdates() {
   if (isOfficialSshRemote(originUrl)) {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+    const [checkoutSha, target, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
       runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
       git(['status', '--porcelain']),
@@ -2256,6 +2256,12 @@ async function checkUpdates() {
     ])
 
     const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+
+    const currentSha = resolveUpdateCurrentSha({
+      checkoutSha,
+      installStampSha: INSTALL_STAMP?.commit,
+      isPackaged: IS_PACKAGED
+    })
 
     if (target.code !== 0 || !targetSha) {
       return {
@@ -2297,37 +2303,39 @@ async function checkUpdates() {
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
+  const [checkoutSha, targetSha, dirtyStr, currentBranch] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
     git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository']),
-    // merge-base exits non-zero with empty stdout when HEAD shares no common
-    // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
+    git(['rev-parse', '--abbrev-ref', 'HEAD'])
   ])
 
-  const isShallow = shallowStr === 'true'
+  const currentSha = resolveUpdateCurrentSha({
+    checkoutSha,
+    installStampSha: INSTALL_STAMP?.commit,
+    isPackaged: IS_PACKAGED
+  })
+
+  // merge-base exits non-zero with empty stdout when the installed build is
+  // absent from this checkout or has unrelated/incomplete history.
+  const mergeBaseStr = await git(['merge-base', currentSha, `origin/${branch}`])
   const hasMergeBase = Boolean(mergeBaseStr)
 
-  // Only enumerate the commit count when it is meaningful. On a shallow checkout
-  // with no merge-base, `rev-list --count` walks the entire remote ancestry
-  // (thousands of commits, see #51922) and resolveBehindCount discards the
-  // result anyway in favour of a SHA compare — so skip the expensive query.
-  const countStr = shouldCountCommits({ isShallow, hasMergeBase })
-    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+  // Only enumerate the commit count when it is meaningful. Without a
+  // merge-base, `rev-list --count` walks the remote's entire ancestry and
+  // produces a huge false count, so fall back to a binary SHA comparison.
+  const countStr = shouldCountCommits({ hasMergeBase })
+    ? await git(['rev-list', `${currentSha}..origin/${branch}`, '--count'])
     : ''
 
   const behind = resolveBehindCount({
     countStr,
     currentSha,
     targetSha,
-    isShallow,
     hasMergeBase
   })
 
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const commits = behind > 0 && hasMergeBase ? await readCommitLog(updateRoot, branch, currentSha) : []
 
   return {
     supported: true,
@@ -2343,12 +2351,12 @@ async function checkUpdates() {
   }
 }
 
-async function readCommitLog(cwd, branch) {
+async function readCommitLog(cwd, branch, currentSha = 'HEAD') {
   const SEP = '\x1f'
   const REC = '\x1e'
 
   const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `${currentSha}..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 

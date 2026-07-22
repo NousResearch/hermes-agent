@@ -10,9 +10,12 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _extract_trailing_steer_marker,
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _model_supports_mid_conversation_system,
     _refresh_oauth_token,
+    _split_trailing_steer_marker,
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
@@ -26,6 +29,7 @@ from agent.anthropic_adapter import (
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
+from agent.prompt_builder import format_steer_marker
 from agent.transports import get_transport
 
 
@@ -1355,6 +1359,191 @@ class TestConvertMessages:
         assert result[0]["role"] == "user"
         assert isinstance(result[0]["content"], list)
         assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+
+
+# ---------------------------------------------------------------------------
+# Mid-conversation system messages (Fable 5 / Mythos 5 / Opus 4.8)
+# ---------------------------------------------------------------------------
+
+
+class TestModelSupportsMidConversationSystem:
+    def test_true_for_fable_5(self):
+        assert _model_supports_mid_conversation_system("claude-fable-5") is True
+
+    def test_true_for_mythos_5(self):
+        assert _model_supports_mid_conversation_system("claude-mythos-5") is True
+
+    def test_true_for_opus_4_8(self):
+        assert _model_supports_mid_conversation_system("claude-opus-4-8") is True
+
+    def test_true_for_dated_opus_4_8_variant(self):
+        assert _model_supports_mid_conversation_system("claude-opus-4-8-20260528") is True
+
+    def test_false_for_sonnet_5(self):
+        # Explicitly not GA'd on Sonnet 5 per Anthropic's docs — must keep
+        # using the marker-in-tool-output path.
+        assert _model_supports_mid_conversation_system("claude-sonnet-5") is False
+
+    def test_false_for_opus_4_7(self):
+        assert _model_supports_mid_conversation_system("claude-opus-4-7") is False
+
+    def test_false_for_none(self):
+        assert _model_supports_mid_conversation_system(None) is False
+
+    def test_false_for_empty_string(self):
+        assert _model_supports_mid_conversation_system("") is False
+
+    def test_handles_openrouter_prefix(self):
+        # normalize_model_name strips "anthropic/" — same normalization the
+        # rest of the adapter already applies before every other model check.
+        assert _model_supports_mid_conversation_system("anthropic/claude-opus-4-8") is True
+
+
+class TestExtractTrailingSteerMarker:
+    def test_no_marker_returns_unchanged(self):
+        content, steer = _extract_trailing_steer_marker("plain tool output")
+        assert content == "plain tool output"
+        assert steer is None
+
+    def test_extracts_from_string_content(self):
+        base = "tool ran fine"
+        wrapped = base + format_steer_marker("stop and check X first")
+        content, steer = _extract_trailing_steer_marker(wrapped)
+        assert content == base
+        assert steer == "stop and check X first"
+
+    def test_string_content_becomes_placeholder_when_marker_is_only_content(self):
+        wrapped = format_steer_marker("just this")
+        content, steer = _extract_trailing_steer_marker(wrapped)
+        assert content == "(no output)"
+        assert steer == "just this"
+
+    def test_extracts_from_trailing_text_block(self):
+        blocks = [
+            {"type": "text", "text": "some tool output"},
+            {"type": "text", "text": format_steer_marker("do the other thing").lstrip()},
+        ]
+        content, steer = _extract_trailing_steer_marker(blocks)
+        assert steer == "do the other thing"
+        assert content == [{"type": "text", "text": "some tool output"}]
+
+    def test_drops_empty_marker_only_block(self):
+        blocks = [
+            {"type": "text", "text": "some tool output"},
+            {"type": "text", "text": format_steer_marker("hi").lstrip()},
+        ]
+        content, steer = _extract_trailing_steer_marker(blocks)
+        assert steer == "hi"
+        # The marker-only block is dropped entirely rather than left empty.
+        assert len(content) == 1
+
+    def test_no_marker_in_blocks_returns_unchanged(self):
+        blocks = [{"type": "text", "text": "no marker here"}]
+        content, steer = _extract_trailing_steer_marker(blocks)
+        assert content == blocks
+        assert steer is None
+
+    def test_non_text_non_string_content_returns_unchanged(self):
+        content, steer = _extract_trailing_steer_marker({"weird": "shape"})
+        assert content == {"weird": "shape"}
+        assert steer is None
+
+
+class TestSplitTrailingSteerMarker:
+    def _tool_result_message(self, content):
+        return {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": content}],
+        }
+
+    def test_promotes_marker_to_system_message_on_gated_model(self):
+        msg = self._tool_result_message("output" + format_steer_marker("go check Y"))
+        result = [msg]
+        _split_trailing_steer_marker(result, "claude-opus-4-8", None)
+        assert len(result) == 2
+        assert result[0]["content"][0]["content"] == "output"
+        assert result[1]["role"] == "system"
+        assert "go check Y" in result[1]["content"]
+        assert "New input arrived from the user" in result[1]["content"]
+
+    def test_noop_on_sonnet_5(self):
+        msg = self._tool_result_message("output" + format_steer_marker("go check Y"))
+        result = [msg]
+        _split_trailing_steer_marker(result, "claude-sonnet-5", None)
+        assert len(result) == 1
+        assert format_steer_marker("go check Y").strip() in result[0]["content"][0]["content"]
+
+    def test_noop_on_third_party_endpoint_even_for_gated_model(self):
+        msg = self._tool_result_message("output" + format_steer_marker("go check Y"))
+        result = [msg]
+        _split_trailing_steer_marker(
+            result, "claude-opus-4-8", "https://my-proxy.example.com/v1"
+        )
+        assert len(result) == 1
+
+    def test_noop_when_no_marker_present(self):
+        msg = self._tool_result_message("plain output, no steer")
+        result = [msg]
+        _split_trailing_steer_marker(result, "claude-opus-4-8", None)
+        assert len(result) == 1
+
+    def test_noop_on_empty_result(self):
+        result = []
+        _split_trailing_steer_marker(result, "claude-opus-4-8", None)
+        assert result == []
+
+    def test_noop_when_last_message_not_user_role(self):
+        result = [{"role": "assistant", "content": "hello"}]
+        _split_trailing_steer_marker(result, "claude-opus-4-8", None)
+        assert len(result) == 1
+
+    def test_noop_when_last_user_message_has_no_tool_result_block(self):
+        result = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        _split_trailing_steer_marker(result, "claude-opus-4-8", None)
+        assert len(result) == 1
+
+
+class TestConvertMessagesToAnthropicMidConversationSystem:
+    """End-to-end through convert_messages_to_anthropic, not just the helpers."""
+
+    def _messages_with_tool_result_and_steer(self, steer_text):
+        return [
+            {"role": "user", "content": "run the tests"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "run_tests", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "12 passed" + format_steer_marker(steer_text),
+            },
+        ]
+
+    def test_gated_model_gets_native_system_message_at_end(self):
+        messages = self._messages_with_tool_result_and_steer("also update the changelog")
+        _, result = convert_messages_to_anthropic(messages, model="claude-opus-4-8")
+        assert result[-1]["role"] == "system"
+        assert "also update the changelog" in result[-1]["content"]
+        # The tool_result content is cleaned of the marker.
+        tool_result_block = result[-2]["content"][0]
+        assert tool_result_block["type"] == "tool_result"
+        assert "OUT-OF-BAND" not in str(tool_result_block["content"])
+
+    def test_ungated_model_keeps_marker_inline(self):
+        messages = self._messages_with_tool_result_and_steer("also update the changelog")
+        _, result = convert_messages_to_anthropic(messages, model="claude-sonnet-5")
+        assert result[-1]["role"] == "user"
+        tool_result_block = result[-1]["content"][0]
+        assert "also update the changelog" in str(tool_result_block["content"])
+        assert "OUT-OF-BAND USER MESSAGE" in str(tool_result_block["content"])
 
 
 # ---------------------------------------------------------------------------

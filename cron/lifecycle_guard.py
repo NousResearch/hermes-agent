@@ -73,6 +73,43 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
 
 
+# A kill/pkill invocation inside a shell command line. Anchored on a shell
+# position where a command can start (line start, separator, substitution,
+# or a common wrapper like sudo/exec) so quoted prose such as
+# ``grep 'kill' notes.md`` cannot fire. The argument capture stops at the
+# next separator or newline so a PID appearing in a *later* command on the
+# same line is not attributed to the kill.
+_KILL_INVOCATION = re.compile(
+    r"(?i)"
+    r"(?:^|[;&|`(\n]|\$\(|\b(?:sudo|exec|env|command|nohup|setsid)\s+)\s*"
+    r"(?:[\w./-]+/)?p?kill\b([^;&|`)\n]*)"
+)
+
+
+def command_kills_pid(text: str, pid: int) -> bool:
+    """Return True if *text* contains a kill/pkill invocation whose argument
+    list includes *pid* as a literal token.
+
+    The word-based ``_GATEWAY_LIFECYCLE_PATTERN`` cannot catch
+    ``kill -TERM <pid>`` with a raw numeric PID — no ``hermes``/``gateway``
+    token appears (real incident: an in-gateway agent, blocked four times by
+    the pattern guard, killed the gateway by literal PID). At terminal
+    execution time the gateway knows its own PID, so a literal-token match
+    is exact: it cannot false-positive on prose or on kills of unrelated
+    processes.
+
+    Dynamic forms (``kill $PID``, ``... | xargs kill``) are out of scope —
+    this is a foot-gun guard, not a security boundary.
+    """
+    if not text or pid <= 1:
+        return False
+    pid_token = re.compile(r"(?<![\w.-])" + str(pid) + r"(?![\w.-])")
+    for match in _KILL_INVOCATION.finditer(text):
+        if pid_token.search(match.group(1)):
+            return True
+    return False
+
+
 def _resolve_script_path(script_path: str) -> Path:
     """Resolve a cron ``script`` value the same way the scheduler does.
 

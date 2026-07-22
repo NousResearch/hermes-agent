@@ -531,3 +531,120 @@ class TestRestartLoopGuard:
         rlg.check_and_record(3, 60, now=1001.0)
         rlg.clear()
         assert rlg.check_and_record(3, 60, now=1002.0) is False
+
+
+# ---------------------------------------------------------------------------
+# Defense 3b: terminal_tool blocks raw-PID kills of the gateway's own process
+# ---------------------------------------------------------------------------
+
+class TestCommandKillsPid:
+    """cron.lifecycle_guard.command_kills_pid — literal-PID kill detection.
+
+    Real incident (2026-06-30): an in-gateway agent, blocked four times by the
+    word-based lifecycle pattern, ran `kill -TERM <gateway-pid>` with the raw
+    numeric PID. No 'hermes'/'gateway' token appears, so Branch D never fires.
+    At terminal-execution time the gateway knows its own PID, so a literal
+    match is exact and cannot false-positive on prose.
+    """
+
+    def test_matches_kill_variants(self):
+        from cron.lifecycle_guard import command_kills_pid
+        for cmd in [
+            "kill -TERM 12345",
+            "kill -9 12345",
+            "kill 12345",
+            "sudo kill -TERM 12345",
+            "/bin/kill 12345",
+            "kill -TERM 12345 || true",
+            "kill -TERM 12345 67890",       # multi-pid, gateway included
+            "kill -TERM 67890 12345",
+            "echo hi; kill -KILL 12345",    # compound command
+            "kill -s TERM 12345",
+            "kill -TERM 12345\nsleep 5",   # multi-line command (as observed)
+        ]:
+            assert command_kills_pid(cmd, 12345), f"Should match: {cmd!r}"
+
+    def test_ignores_other_pids_and_prose(self):
+        from cron.lifecycle_guard import command_kills_pid
+        for cmd in [
+            "kill -TERM 99999",              # different pid
+            "kill -TERM 123456",             # gateway pid as substring only
+            "kill -TERM 2345",               # suffix substring
+            "echo 12345",                    # no kill at all
+            "pkill -f myapp",                # no literal pid
+            "kill $GATEWAY_PID",             # dynamic — out of scope
+            "ls file-12345.txt && kill -0 67890",  # pid appears outside kill args
+            "grep 'kill' notes-12345.md",    # kill as prose/word, pid in filename
+            "kill -TERM 999\necho 12345",   # pid on a later line, not a kill arg
+        ]:
+            assert not command_kills_pid(cmd, 12345), f"Should NOT match: {cmd!r}"
+
+    def test_edge_inputs(self):
+        from cron.lifecycle_guard import command_kills_pid
+        assert not command_kills_pid("", 12345)
+        assert not command_kills_pid("kill -TERM 0", 0)
+        assert not command_kills_pid("kill -TERM 1", 1)  # refuse pid <= 1
+
+
+class TestTerminalToolRawPidKillGuard:
+    """terminal_tool must refuse kill commands that target the gateway's own
+    PID when running inside the gateway (_HERMES_GATEWAY=1)."""
+
+    def _make_fake_env(self, calls=None):
+        class _FakeEnv:
+            env = {}
+            def execute(self, command, **kwargs):
+                if calls is None:  # pragma: no cover
+                    raise AssertionError("execute must not be reached")
+                calls.append(command)
+                return {"output": "", "returncode": 0}
+        return _FakeEnv()
+
+    def _minimal_config(self):
+        return {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600}
+
+    def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
+        import tools.terminal_tool as tt
+        eid = "default"
+        monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
+        monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+        monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
+        if inside_gateway:
+            monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        else:
+            monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+    def test_blocks_kill_of_own_pid_inside_gateway(self, monkeypatch):
+        import os
+        import tools.terminal_tool as tt
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command=f"kill -TERM {os.getpid()}"))
+
+        assert result["exit_code"] == 1
+        assert "Blocked" in result["error"]
+
+    def test_kill_of_unrelated_pid_passes_through(self, monkeypatch):
+        import tools.terminal_tool as tt
+        calls = []
+        self._patch_env(monkeypatch, self._make_fake_env(calls), inside_gateway=True)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
+
+        result = json.loads(tt.terminal_tool(command="kill -TERM 99999999"))
+
+        assert result["exit_code"] == 0
+        assert calls == ["kill -TERM 99999999"]
+
+    def test_kill_of_own_pid_allowed_outside_gateway(self, monkeypatch):
+        import os
+        import tools.terminal_tool as tt
+        calls = []
+        self._patch_env(monkeypatch, self._make_fake_env(calls), inside_gateway=False)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
+
+        cmd = f"kill -0 {os.getpid()}"
+        result = json.loads(tt.terminal_tool(command=cmd))
+
+        assert result["exit_code"] == 0
+        assert calls == [cmd]

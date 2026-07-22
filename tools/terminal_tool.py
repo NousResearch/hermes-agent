@@ -2349,14 +2349,32 @@ def terminal_tool(
             }, ensure_ascii=False)
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
-        # restart|stop targeting hermes-gateway) must never run inside the
-        # gateway process itself. The restart would SIGTERM the gateway, which
-        # kills this very subprocess before it can complete — the service may
-        # never restart. This mirrors the `hermes gateway restart` guard in
+        # restart|stop targeting hermes-gateway, or a raw `kill` of the
+        # gateway's own PID) must never run inside the gateway process
+        # itself. The restart would SIGTERM the gateway, which kills this
+        # very subprocess before it can complete — the service may never
+        # restart. This mirrors the `hermes gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
-        # but applies unconditionally (force=True cannot help here).
+        # but applies unconditionally (force=True cannot help here). The
+        # PID check runs first: it is exact (literal current PID), while the
+        # word-pattern check is heuristic.
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from hermes_cli.cron import _contains_gateway_lifecycle_command
+            from cron.lifecycle_guard import command_kills_pid
+            if command_kills_pid(command, os.getpid()):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": (
+                        "Blocked: this command signals the gateway's own process "
+                        f"(PID {os.getpid()}) from inside the gateway. The kill "
+                        "would terminate this command mid-flight and register as "
+                        "an unplanned failure with the service supervisor. Run "
+                        "`hermes gateway restart` from a separate shell outside "
+                        "the running gateway."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
             if _contains_gateway_lifecycle_command(command):
                 return json.dumps({
                     "output": "",

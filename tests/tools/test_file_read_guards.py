@@ -990,3 +990,33 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestWindowsBlocklistSeparatorNormalize:
+    """Regression for #69373: Windows ``os.path.normpath`` preserves backslashes
+    (``\\dev\\zero``) which never match the POSIX strings in
+    ``_BLOCKED_DEVICE_PATHS``. The fix normalises to forward slashes before
+    the blocklist compare so the check is cross-platform.
+    """
+
+    def test_normalize_for_blocklist_uses_forward_slashes(self):
+        from tools.file_tools import _normalize_for_blocklist
+        result = _normalize_for_blocklist("/dev/zero")
+        assert result == "/dev/zero", f"expected /dev/zero, got {result!r}"
+
+    def test_windows_normpath_matches_posix_blocklist(self):
+        from tools.file_tools import _is_blocked_device_path
+        assert _is_blocked_device_path("/dev/zero") is True
+
+    def test_windows_normpath_matches_proc_blocklist(self):
+        from tools.file_tools import _is_blocked_device_path
+        assert _is_blocked_device_path("/proc/self/environ") is True
+        assert _is_blocked_device_path("/proc/1/fd/0") is True
+
+    def test_windows_realpath_recheck_normalizes(self):
+        from tools.file_tools import _is_blocked_device_path
+        if os.path.exists("/dev/zero"):
+            from os.path import realpath
+            resolved = realpath("/dev/zero")
+            assert _is_blocked_device_path(resolved) is True

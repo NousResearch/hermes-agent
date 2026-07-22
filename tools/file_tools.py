@@ -132,6 +132,22 @@ def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bo
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
 
+
+def _normalize_for_blocklist(path: str) -> str:
+    """Normalize to POSIX form for device-path blocklist comparison.
+
+    On Windows, ``os.path.normpath`` preserves backslashes, so ``/dev/zero``
+    becomes ``\\dev\\zero`` — which never matches the POSIX strings in
+    ``_BLOCKED_DEVICE_PATHS`` (nor the ``startswith("/proc/")`` checks).
+    That made the entire device/fd/proc read-guard a silent no-op on
+    Windows, including the ``/proc/*/environ`` secret-leak family added
+    for #4427, and let ``read_file(/dev/zero)`` hang via Git Bash's MSYS
+    ``/dev/zero`` emulation.  Convert to forward slashes after normpath so
+    the comparison is cross-platform (#69373).
+    """
+    return os.path.normpath(path).replace(os.sep, "/")
+
+
 # ---------------------------------------------------------------------------
 # Device path blocklist — reading these hangs the process (infinite output
 # or blocking on input).  Checked by path only (no I/O).
@@ -441,7 +457,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(_expand_tilde(path))
+    normalized = _normalize_for_blocklist(_expand_tilde(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio

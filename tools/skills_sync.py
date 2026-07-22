@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
@@ -34,6 +35,73 @@ from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_owner_writable(path: Path) -> None:
+    """Add the owner-write bit on ``path`` without dropping any other mode bits.
+
+    The Nix store stores files with mode ``0444`` and directories with ``0555``.
+    ``shutil.copy2`` and ``shutil.copytree`` preserve those source mode bits on
+    the destination, leaving user-side copies of bundled skills unmodifiable.
+    Helpers in this module call this routine on every freshly-copied path so
+    later edits via ``skill_manage`` / curator / ``shutil.rmtree`` succeed.
+
+    Symlinks are skipped: ``os.chmod`` follows symlinks by default (this
+    platform has no ``os.chmod(follow_symlinks=False)`` support in the
+    common case), so chmod-ing a copied symlink would mutate the mode of
+    whatever external file it still points at rather than anything we own.
+    Copytree call sites here pass ``symlinks=True``, so real symlink entries
+    reach this function and must be left alone.
+
+    Failures are logged at DEBUG and swallowed: the worst case is the original
+    (read-only) behaviour, which the caller can already cope with.
+    """
+    if path.is_symlink():
+        return
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        os.chmod(path, mode | stat.S_IWUSR)
+    except OSError as exc:
+        logger.debug("chmod on %s failed: %s", path, exc)
+
+
+def _copy_file_writable(src, dst) -> None:
+    """Drop-in replacement for ``shutil.copy2`` that always leaves ``dst``
+    owner-writable.
+
+    Used as the ``copy_function`` for ``shutil.copytree`` so files in the
+    destination tree are editable even when the source lives on a read-only
+    filesystem (Nix store / immutable OCI image layer / squashfs).
+    """
+    shutil.copy2(src, dst)
+    _ensure_owner_writable(Path(dst))
+
+
+def _make_tree_owner_writable(root: Path) -> None:
+    """Apply :func:`_ensure_owner_writable` to ``root`` and every descendant.
+
+    ``shutil.copytree`` reapplies source-directory metadata (mode, mtime) to
+    each copied subdirectory *after* file copies, so the per-file ``copy2``
+    override above is not enough on its own. We sweep the tree once afterwards
+    to grant the user-write bit on directories too.
+    """
+    if not root.exists():
+        return
+    _ensure_owner_writable(root)
+    for path in root.rglob("*"):
+        _ensure_owner_writable(path)
+
+
+def _copytree_writable(src, dst) -> None:
+    """Like ``shutil.copytree`` but the destination is always owner-writable.
+
+    Use this in place of ``shutil.copytree`` whenever the source might come
+    from a read-only filesystem (Nix store, container image layer, squashfs).
+    The per-file copy uses :func:`_copy_file_writable`; afterwards directory
+    modes are restored via :func:`_make_tree_owner_writable`.
+    """
+    shutil.copytree(src, dst, copy_function=_copy_file_writable)
+    _make_tree_owner_writable(Path(dst))
 
 
 HERMES_HOME = get_hermes_home()
@@ -371,7 +439,9 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 backed_up.append(_move_to_restore_backup(dest, backup_root))
             if not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src, dest)
+                # Bundled source may live on a read-only Nix store; restore
+                # owner-writable mode on the destination so future edits work.
+                _copytree_writable(src, dest)
                 restored.append(folder_name)
         elif not canonical_ok:
             continue
@@ -606,7 +676,9 @@ def sync_skills(quiet: bool = False) -> dict:
                         )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(skill_src, dest)
+                    # Bundled source may live on a read-only Nix store; the
+                    # writable wrapper restores owner-write on the new copy.
+                    _copytree_writable(skill_src, dest)
                     copied.append(skill_name)
                     manifest[skill_name] = bundled_hash
                     if not quiet:
@@ -627,6 +699,12 @@ def sync_skills(quiet: bool = False) -> dict:
                 manifest[skill_name] = user_hash
                 if user_hash == bundled_hash:
                     skipped += 1  # already in sync
+                    # Same read-only-mode-bit migration as the "bundled
+                    # unchanged, user unchanged" branch below: an identical
+                    # copy predating the writable-copy fix may still be
+                    # unwritable, and content parity means it will never
+                    # hit the update path to get repaired otherwise.
+                    _make_tree_owner_writable(dest)
                 else:
                     # Can't tell if user modified or bundled changed — be safe
                     skipped += 1
@@ -652,7 +730,12 @@ def sync_skills(quiet: bool = False) -> dict:
                         _rmtree_writable(backup)
                     shutil.move(str(dest), str(backup))
                     try:
-                        shutil.copytree(skill_src, dest)
+                        # Writable wrapper: bundled source may live on a
+                        # read-only Nix store. Backup also gets the
+                        # owner-write bit restored so the rmtree below
+                        # cannot silently leak the *.bak directory.
+                        _copytree_writable(skill_src, dest)
+                        _make_tree_owner_writable(backup)
                         manifest[skill_name] = bundled_hash
                         updated.append(skill_name)
                         if not quiet:
@@ -683,6 +766,13 @@ def sync_skills(quiet: bool = False) -> dict:
                         print(f"  ! Failed to update {skill_name}: {e}")
             else:
                 skipped += 1  # bundled unchanged, user unchanged
+                # Migration for installs that predate the writable-copy fix:
+                # the user copy may still carry read-only mode bits inherited
+                # from a Nix-store bundled source at the time it was first
+                # copied. Repair it in place on every sync so it doesn't stay
+                # unwritable forever just because the content never changed
+                # again afterwards.
+                _make_tree_owner_writable(dest)
 
         else:
             # ── In manifest but not on disk — user deleted it ──
@@ -700,7 +790,9 @@ def sync_skills(quiet: bool = False) -> dict:
         if not dest_desc.exists():
             try:
                 dest_desc.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(desc_md, dest_desc)
+                # Writable wrapper: bundled source may live on a read-only
+                # Nix store; preserve copy2 metadata + grant owner-write.
+                _copy_file_writable(desc_md, dest_desc)
             except (OSError, IOError) as e:
                 logger.debug("Could not copy %s: %s", desc_md, e)
 

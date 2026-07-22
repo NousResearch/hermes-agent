@@ -583,8 +583,17 @@ def _copy_dist_payload(
                     else []
                 ),
             )
+            # Distributed payloads can originate from a read-only Nix store;
+            # restore owner-writable mode so the new profile's tooling can
+            # edit the files later (curator, skill_manage, plugin overrides).
+            from tools.skills_sync import _make_tree_owner_writable
+
+            _make_tree_owner_writable(dest)
         else:
             shutil.copy2(entry, dest)
+            from tools.skills_sync import _ensure_owner_writable
+
+            _ensure_owner_writable(dest)
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

@@ -923,9 +923,15 @@ install_node() {
     local node_link_dir
     node_link_dir="$(get_command_link_dir)"
     mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    # Only symlink node/npm/npx when no system-installed version exists.
+    # Creating unconditionally shadows Homebrew/nvm installs on macOS
+    # where ~/.local/bin precedes /opt/homebrew/bin in PATH (#45279).
+    local _cmd
+    for _cmd in node npm npx; do
+        if ! command -v "$_cmd" >/dev/null 2>&1; then
+            ln -sf "$HERMES_HOME/node/bin/$_cmd" "$node_link_dir/$_cmd"
+        fi
+    done
 
     configure_managed_node_npm_prefix
 

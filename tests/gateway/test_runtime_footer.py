@@ -137,6 +137,73 @@ def test_format_footer_custom_field_order():
     assert out == "50% · gpt-5.4"
 
 
+# ---------------------------------------------------------------------------
+# duration field
+# ---------------------------------------------------------------------------
+
+def test_format_footer_duration_seconds():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=3.4,
+        fields=("duration",),
+    )
+    assert out == "3.4s"
+
+
+def test_format_footer_duration_minutes():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=72.3,
+        fields=("duration",),
+    )
+    assert out == "1m12s"
+
+
+def test_format_footer_duration_none_skipped():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=100,
+        cwd="", duration=None,
+        fields=("duration",),
+    )
+    assert out == ""
+
+
+def test_format_footer_model_and_duration():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0, context_length=100,
+        cwd="", duration=5.2,
+        fields=("model", "duration"),
+    )
+    assert out == "gpt-5.4 · 5.2s"
+
+
+def test_format_footer_labeled_ctx_and_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=25, context_length=100,
+        cwd=str(proj), duration=5.2,
+        fields=("ctx", "cwd_label"),
+    )
+    assert out == "ctx 25% · cwd ~/proj"
+
+
+def test_build_footer_includes_duration():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model", "duration"]}}},
+        platform_key="feishu",
+        model="openai/gpt-5.4",
+        context_tokens=0, context_length=100,
+        cwd="/tmp",
+        duration=8.7,
+    )
+    assert "gpt-5.4" in out
+    assert "8.7s" in out
+
+
 def test_format_footer_unknown_field_silently_ignored():
     out = format_runtime_footer(
         model="openai/gpt-5.4",

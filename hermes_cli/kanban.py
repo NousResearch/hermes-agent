@@ -70,6 +70,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "workspace_path": t.workspace_path,
         "branch_name": t.branch_name,
         "project_id": t.project_id,
+        "project_repo_root": t.project_repo_root,
         "created_by": t.created_by,
         "created_at": t.created_at,
         "started_at": t.started_at,

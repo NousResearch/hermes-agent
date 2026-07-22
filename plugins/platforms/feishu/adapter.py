@@ -4873,6 +4873,8 @@ class FeishuAdapter(BasePlatformAdapter):
                             chat_id,
                         )
                         active_reply_to = None
+                        if metadata:
+                            metadata.pop("reply_to_message_id", None)
                         response = await self._send_raw_message(
                             chat_id=chat_id,
                             msg_type=msg_type,
@@ -4885,6 +4887,38 @@ class FeishuAdapter(BasePlatformAdapter):
                 last_error = exc
                 if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
+                # If replying to a message failed because it was withdrawn or
+                # not found (230011/231003), fall back to posting a new message
+                # directly to the chat — same as the response-code path above.
+                if active_reply_to:
+                    exc_code = getattr(exc, "code", None)
+                    if exc_code is None:
+                        # Some SDK versions embed the code in the message string.
+                        try:
+                            exc_code = int(str(exc).split("code:")[1].split(",")[0].strip())
+                        except (IndexError, ValueError):
+                            pass
+                    if exc_code in _FEISHU_REPLY_FALLBACK_CODES:
+                        if (metadata or {}).get("thread_id"):
+                            logger.warning(
+                                "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
+                                "skipping top-level fallback to avoid creating a new topic",
+                                active_reply_to,
+                                (metadata or {}).get("thread_id"),
+                                exc_code,
+                            )
+                            raise
+                        logger.warning(
+                            "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
+                            "falling back to new message in chat %s",
+                            active_reply_to,
+                            exc_code,
+                            chat_id,
+                        )
+                        active_reply_to = None
+                        if metadata:
+                            metadata.pop("reply_to_message_id", None)
+                        continue  # retry this attempt without reply_to
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
                 wait_seconds = 2 ** attempt

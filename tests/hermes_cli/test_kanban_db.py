@@ -1180,6 +1180,25 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_block_without_reason_preserves_existing_result(kanban_home):
+    """Legacy/direct block calls must not erase existing evidence."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            ("existing evidence", t),
+        )
+        conn.commit()
+        kb.claim_task(conn, t)
+
+        assert kb.block_task(conn, t, reason=None, kind=None)
+        task = kb.get_task(conn, t)
+
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.result == "existing evidence"
+
+
 def test_unblock_resets_failure_counters(kanban_home):
     """unblock_task must reset consecutive_failures and last_failure_error."""
     with kb.connect() as conn:
@@ -2015,6 +2034,340 @@ def test_dispatch_respawn_guard_skips_recent_success(
         assert kb.get_task(conn, t).status == "ready"  # not blocked, just skipped
 
 
+def test_dispatch_respawn_guard_escalates_persistent_active_pr_to_sticky_block(
+    kanban_home, all_assignees_spawnable
+):
+    """A review-flavoured guard (active_pr) that persists past
+    _RESPAWN_GUARD_BLOCK_TICKS stops deferring and issues the sticky
+    needs_input block itself.
+
+    Without this, a task whose worker delivered a PR but never called
+    kanban_block loops forever: recompute_ready promotes it (its review
+    gate is a child, not a parent) while the guard refuses every spawn —
+    permanently ready-but-unspawnable (observed 14.7h stall).
+    """
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-parked", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        # Simulate a long run of guarded ticks just below the threshold;
+        # the dispatch tick below appends one more and crosses it.
+        now = int(time.time())
+        for i in range(kb._RESPAWN_GUARD_BLOCK_TICKS - 1):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'respawn_guarded', '{\"reason\": \"active_pr\"}', ?)",
+                (t, now - 60 * (kb._RESPAWN_GUARD_BLOCK_TICKS - 1 - i)),
+            )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert (t, "active_pr") in res.respawn_guarded
+    assert t not in spawned_ids
+    assert t in res.auto_blocked, (
+        f"persistent active_pr guard should escalate to a sticky block; "
+        f"got auto_blocked={res.auto_blocked!r}"
+    )
+    with kb.connect() as conn:
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+        # Sticky: the block emitted a 'blocked' event, so recompute_ready
+        # must NOT auto-promote it back to ready.
+        assert kb._has_sticky_block(conn, t)
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, t).status == "blocked"
+
+
+def test_handoff_creates_athena_gate_and_sticky_review_source(kanban_home):
+    """A handoff parks its source in presentation-only Review, not Blocked."""
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="build thing", assignee="alice")
+        gate = kb.handoff_task(
+            conn, src, review_ref="https://github.com/o/r/pull/9",
+            reason="tests green, please review the API change",
+        )
+        g = kb.get_task(conn, gate)
+        assert g is not None and g.assignee == "oa-athena"
+        assert "VERDICT: GO|NO-GO|HOLD" in (g.body or "")
+        assert "review_result.json" in (g.body or "")
+        assert conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?",
+            (gate, src),
+        ).fetchone(), "gate must be linked as parent of the source"
+        s = kb.get_task(conn, src)
+        assert s.status == "review"
+        assert "review-required" in (s.result or "")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, src).status == "review", (
+            "Review must remain sticky until explicit H-Omar arbitration"
+        )
+
+
+def test_handoff_is_idempotent_and_shares_router_key(kanban_home):
+    """Calling handoff twice reuses the same gate (idempotency key
+    auto-athena-review:<source> — the router's key, so neither path
+    duplicates the other)."""
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="again", assignee="alice")
+        g1 = kb.handoff_task(conn, src, review_ref="repo#12")
+        g2 = kb.handoff_task(conn, src, review_ref="repo#12")
+        assert g1 == g2
+        n = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = ?",
+            (f"auto-athena-review:{src}",),
+        ).fetchone()[0]
+        assert n == 1
+
+
+def test_gate_go_verdict_keeps_source_in_review_until_arbitration(kanban_home):
+    """Athena's GO is evidence; it never auto-respawns or completes source."""
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="deliver", assignee="alice")
+        gate = kb.handoff_task(conn, src, review_ref="repo#77")
+        assert kb.get_task(conn, src).status == "review"
+        assert kb.complete_task(conn, gate, result="VERDICT: GO — checks green")
+        assert kb.get_task(conn, src).status == "review"
+        assert kb.get_task(conn, gate).result.startswith("VERDICT: GO")
+
+
+def test_gate_nogo_verdict_keeps_source_in_review_until_arbitration(kanban_home):
+    """NO-GO is evidence only; H-Omar decides when rework returns to ready."""
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="deliver-bad", assignee="alice")
+        gate = kb.handoff_task(conn, src, review_ref="repo#78")
+        kb.complete_task(
+            conn, gate,
+            result="VERDICT: NO-GO — repo#78 tests fail on py311",
+        )
+        assert kb.get_task(conn, src).status == "review"
+        bodies = [
+            r[0] for r in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ?", (src,)
+            )
+        ]
+        assert any("VERDICT: NO-GO" in (b or "") for b in bodies)
+
+
+def test_non_verdict_completion_does_not_touch_review_source(kanban_home):
+    """A normal gate completion cannot move a review source."""
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="waiting", assignee="alice")
+        gate = kb.handoff_task(conn, src, review_ref="repo#79")
+        kb.complete_task(
+            conn, gate, result="done without any verdict marker",
+        )
+        assert kb.get_task(conn, src).status == "review"
+
+
+def test_arbitrate_review_derives_default_operator_from_runtime_home(kanban_home):
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="operator decision", assignee="alice")
+        kb.handoff_task(conn, src, review_ref="repo#80")
+        assert kb.arbitrate_review_task(
+            conn, src, decision="no-go-ready"
+        )
+        task = kb.get_task(conn, src)
+        assert task.status == "ready"
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='review_arbitrated' "
+            "ORDER BY id DESC LIMIT 1",
+            (src,),
+        ).fetchone()
+        assert event is not None and "no-go-ready" in event["payload"]
+
+
+@pytest.mark.parametrize("decision", ["go-ready", "no-go-ready", "go-complete"])
+@pytest.mark.parametrize("profile", ["oa-builder", "oa-athena", "arbitrary-profile"])
+def test_arbitrate_review_rejects_oa_builder_and_cannot_forge_default(
+    kanban_home, monkeypatch, decision, profile,
+):
+    """The DB API derives its authority from HERMES_HOME, never caller input."""
+    profile_home = kanban_home / "profiles" / profile
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="protected review", assignee="alice")
+        kb.handoff_task(conn, src, review_ref="repo#protected")
+
+        with pytest.raises(PermissionError, match="review arbitration"):
+            kb.arbitrate_review_task(conn, src, decision=decision)
+
+        with pytest.raises(TypeError, match="actor"):
+            kb.arbitrate_review_task(
+                conn, src, decision=decision, actor="default",
+            )
+
+        assert kb.get_task(conn, src).status == "review"
+        assert conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND kind='review_arbitrated'",
+            (src,),
+        ).fetchone() is None
+
+
+@pytest.mark.parametrize("profile", ["default", "h-omar"])
+def test_arbitrate_review_allows_configured_operator_profiles(
+    kanban_home, monkeypatch, profile,
+):
+    if profile != "default":
+        operator_home = kanban_home / "profiles" / profile
+        operator_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(operator_home))
+
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="authorized review", assignee="alice")
+        kb.handoff_task(conn, src, review_ref="repo#authorized")
+
+        assert kb.arbitrate_review_task(conn, src, decision="go-ready")
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='review_arbitrated' "
+            "ORDER BY id DESC LIMIT 1",
+            (src,),
+        ).fetchone()
+        assert event is not None and profile in event["payload"]
+
+
+def test_legacy_review_required_migration_dry_run_is_non_mutating(kanban_home):
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="legacy review", assignee="alice")
+        kb.block_task(conn, src, reason="review-required: repo#81", kind="needs_input")
+        human = kb.create_task(conn, title="human block", assignee="bob")
+        kb.block_task(conn, human, reason="missing credential", kind="capability")
+
+        preview = kb.migrate_legacy_review_required(conn, dry_run=True)
+
+        assert preview["candidate_ids"] == [src]
+        assert preview["would_create_gate_ids"] == [src]
+        assert kb.get_task(conn, src).status == "blocked"
+        assert kb.get_task(conn, human).status == "blocked"
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
+
+
+def test_handoff_requires_review_ref(kanban_home):
+    with kb.connect() as conn:
+        src = kb.create_task(conn, title="no-ref", assignee="alice")
+        with pytest.raises(ValueError):
+            kb.handoff_task(conn, src, review_ref="   ")
+        assert kb.get_task(conn, src).status == "ready", (
+            "a refused handoff must not touch the source"
+        )
+
+
+def _seed_rate_limited_events(conn, task_id, n, age_seconds=0):
+    now = int(time.time())
+    for i in range(n):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'rate_limited', NULL, ?)",
+            (task_id, now - age_seconds - i),
+        )
+
+
+def test_fleet_breaker_pauses_spawning(kanban_home, all_assignees_spawnable):
+    """>= _FLEET_BREAKER_TRIP rate_limited events inside the window pause
+    ALL spawning (C3): the ready task stays ready (not blocked, not
+    claimed) and fleet_paused_until is reported."""
+    spawned = []
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="wall-work", assignee="alice")
+        _seed_rate_limited_events(conn, target, kb._FLEET_BREAKER_TRIP)
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, ws: spawned.append(task.id),
+        )
+    assert res.fleet_paused_until > time.time()
+    assert not spawned, "no spawn may happen while the breaker is tripped"
+    with kb.connect() as conn:
+        assert kb.get_task(conn, target).status == "ready"
+
+
+def test_fleet_breaker_below_trip_spawns(kanban_home, all_assignees_spawnable):
+    """One event short of the trip threshold: spawning proceeds."""
+    spawned = []
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="ok-work", assignee="alice")
+        _seed_rate_limited_events(conn, target, kb._FLEET_BREAKER_TRIP - 1)
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, ws: spawned.append(task.id),
+        )
+    assert res.fleet_paused_until == 0.0
+    assert target in spawned
+
+
+def test_fleet_breaker_stale_wall_spawns(kanban_home, all_assignees_spawnable):
+    """Rate-limited events older than the trip window do not pause."""
+    spawned = []
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="old-wall", assignee="alice")
+        _seed_rate_limited_events(
+            conn, target, kb._FLEET_BREAKER_TRIP,
+            age_seconds=kb._FLEET_BREAKER_WINDOW + 120,
+        )
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, ws: spawned.append(task.id),
+        )
+    assert res.fleet_paused_until == 0.0
+    assert target in spawned
+
+
+def test_respawn_guard_exempts_review_lanes(kanban_home):
+    """Gate/review cards cite the PR they must review — the active_pr and
+    recent_success guards must not park them (their purpose IS the PR)."""
+    with kb.connect() as conn:
+        # oa-athena assignee with a PR comment: exempt.
+        t1 = kb.create_task(conn, title="review something", assignee="oa-athena")
+        kb.add_comment(
+            conn, t1, "router",
+            "Source PR: https://github.com/totemx-AI/subsidysmart/pull/7",
+        )
+        assert kb.check_respawn_guard(conn, t1) is None
+        # [ATHENA GATE] title on a generic assignee: exempt too.
+        t2 = kb.create_task(
+            conn, title="[ATHENA GATE] repo PR#8: review output", assignee="alice",
+        )
+        kb.add_comment(
+            conn, t2, "router",
+            "Source PR: https://github.com/totemx-AI/subsidysmart/pull/8",
+        )
+        assert kb.check_respawn_guard(conn, t2) is None
+        # Control: same comment on a non-review card still guards.
+        t3 = kb.create_task(conn, title="build feature", assignee="alice")
+        kb.add_comment(
+            conn, t3, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/9",
+        )
+        assert kb.check_respawn_guard(conn, t3) == "active_pr"
+
+
+def test_dispatch_respawn_guard_below_threshold_still_defers(
+    kanban_home, all_assignees_spawnable
+):
+    """Below _RESPAWN_GUARD_BLOCK_TICKS, the active_pr guard keeps the old
+    defer-only behaviour (stays ready, no block)."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-fresh", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/100",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert (t, "active_pr") in res.respawn_guarded
+    assert t not in res.auto_blocked
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "ready"
+
+
 def test_dispatch_respawn_guard_skips_active_pr(
     kanban_home, all_assignees_spawnable
 ):
@@ -2037,6 +2390,43 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_authorized_athena_gate_with_pr_url(
+    kanban_home, all_assignees_spawnable
+):
+    """An explicitly authorized Athena gate reviews an existing PR, so
+    the PR URL in its comments is input data, not proof that this task
+    already opened a duplicate PR.
+    """
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="[ATHENA GATE] omar-app PR#54: review",
+            assignee="oa-athena",
+        )
+        kb.add_comment(
+            conn, t, "h-omar",
+            "OA-GH-INGEST-FP repo=omar-app; kind=pr; number=54; "
+            "url=https://github.com/omar-paris/omar-app/pull/54; "
+            "next_gate=athena-review-needed.",
+        )
+        kb.add_comment(
+            conn, t, "h-omar",
+            "UNBLOCK: H-Omar arbitration: omar-app PR#54 still OPEN/MERGEABLE; "
+            "authorize oa-athena cold review only. No merge/release from summary; "
+            "require parseable review_result.json.",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(
@@ -2421,6 +2811,68 @@ def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
     assert ws.exists(), "failed completion must keep scratch available for retry"
 
 
+def test_complete_task_rejects_missing_declared_dir_workspace_artifact(
+    kanban_home,
+    tmp_path,
+):
+    """Declared files under any task workspace must exist before completion."""
+    workspace = tmp_path / "source-workspace"
+    workspace.mkdir()
+    missing = workspace / "report.md"
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="missing dir report",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+
+        with pytest.raises(kb.ArtifactPreservationError, match="unavailable"):
+            kb.complete_task(
+                conn,
+                tid,
+                result="report complete",
+                metadata={"artifacts": [str(missing)]},
+            )
+
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.list_attachments(conn, tid) == []
+    assert workspace.exists(), "failed completion must not mutate source workspace"
+
+
+def test_complete_task_archives_declared_dir_workspace_artifact_without_mutating_source(
+    kanban_home,
+    tmp_path,
+):
+    """Existing workspace files are copied to durable attachments, never moved."""
+    workspace = tmp_path / "source-workspace"
+    workspace.mkdir()
+    artifact = workspace / "report.md"
+    artifact.write_text("durable handoff\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="dir report",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="report complete",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        run = kb.latest_run(conn, tid)
+
+    archived = Path(run.metadata["artifacts"][0])
+    assert archived == kb.task_attachments_dir(tid) / "report.md"
+    assert archived.read_text(encoding="utf-8") == "durable handoff\n"
+    assert artifact.read_text(encoding="utf-8") == "durable handoff\n"
+    assert artifact.exists(), "completion must copy, not move, source artifacts"
+
+
 def test_complete_task_preserves_legacy_artifact_path_from_summary(kanban_home):
     """Summary-only workers keep the file they tell the user was delivered."""
     with kb.connect() as conn:
@@ -2596,6 +3048,68 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 # Deferred scratch cleanup for parent/child handoff (#33774)
 # ---------------------------------------------------------------------------
+
+def test_completion_archives_explicit_scratch_artifacts_before_cleanup(kanban_home):
+    """Explicit completion artifacts survive scratch workspace cleanup.
+
+    Regression for workers that passed ``kanban_complete(artifacts=[...])`` with
+    paths inside their scratch workspace: completion deleted the workspace before
+    humans or downstream agents could read the declared deliverable.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="artifact producer", assignee="worker")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        artifact = ws / "report.md"
+        artifact.write_text("durable handoff\n", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="produced report",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert run and run.metadata
+    archived_paths = run.metadata["artifacts"]
+    assert len(archived_paths) == 1
+    archived = Path(archived_paths[0])
+    assert archived == kb.task_attachments_dir(tid) / "report.md"
+    assert archived.read_text(encoding="utf-8") == "durable handoff\n"
+    assert run.metadata["artifact_archive_map"][str(artifact)] == str(archived)
+    completed = [ev for ev in events if ev.kind == "completed"][-1]
+    assert completed.payload is not None
+    assert completed.payload["artifacts"] == [str(archived)]
+
+
+def test_completion_rejects_missing_declared_workspace_artifact(kanban_home):
+    """A missing workspace deliverable must not produce a false completion."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="missing artifact", assignee="worker")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, workspace)
+        missing = str(workspace / "missing.md")
+        with pytest.raises(kb.ArtifactPreservationError, match="unavailable"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="attempted artifact",
+                metadata={"artifacts": [missing]},
+            )
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+
+    assert task is not None
+    assert task.status == "ready"
+    assert run is None
+
 
 def test_cleanup_workspace_deferred_while_child_active(kanban_home):
     """A scratch parent's workspace survives completion while a child is still active.
@@ -3864,167 +4378,32 @@ def _set_task_status(conn: sqlite3.Connection, task_id: str, status: str) -> Non
     conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
 
 
-def test_claim_review_task_transitions_to_running(kanban_home):
-    """claim_review_task atomically transitions review -> running."""
+def test_review_lane_is_not_claimable_or_dispatchable(kanban_home, all_assignees_spawnable):
+    """Review is a sticky presentation lane; only its separate Athena gate runs."""
+    spawned = []
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        claimed = kb.claim_review_task(conn, t)
-    assert claimed is not None
-    assert claimed.status == "running"
-    assert claimed.claim_lock is not None
-
-
-def test_claim_review_task_fails_on_non_review(kanban_home):
-    """claim_review_task returns None if task is not in review status."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="ready task", assignee="alice")
-        # Task is in 'ready', not 'review'
-        claimed = kb.claim_review_task(conn, t)
-    assert claimed is None
-
-
-def test_claim_review_task_fails_when_already_claimed(kanban_home):
-    """claim_review_task returns None if the task was already claimed."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        first = kb.claim_review_task(conn, t)
-        assert first is not None
-        second = kb.claim_review_task(conn, t)
-    assert second is None
-
-
-def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
-    """dispatch_once dry-run sees review tasks and reports them as spawned."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert len(res.spawned) == 1
-    assert res.spawned[0][0] == t
-    # Dry run must NOT mutate status.
-    with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "review"
-
-
-def test_dispatch_review_spawns_with_correct_skills(
-    kanban_home, all_assignees_spawnable,
-):
-    """Review tasks get sdlc-review skill set before spawning."""
-    spawned_tasks = []
-
-    def capture_spawn(task, workspace, board=None):
-        spawned_tasks.append(task)
-        return 42  # fake PID
-
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
-    assert len(res.spawned) == 1
-    assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
-
-
-def test_dispatch_review_skips_unassigned(kanban_home):
-    """Unassigned review tasks go to skipped_unassigned, not spawned."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review floater")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_unassigned
-    assert not res.spawned
-
-
-def test_dispatch_review_counts_toward_max_spawn(
-    kanban_home, all_assignees_spawnable,
-):
-    """Review spawns count against max_spawn alongside ready tasks."""
-    spawns = []
-
-    def fake_spawn(task, workspace, board=None):
-        spawns.append(task.id)
-        return 42
-
-    with kb.connect() as conn:
-        # Create 2 ready tasks + 1 review task, max_spawn=2
-        t1 = kb.create_task(conn, title="ready 1", assignee="alice")
-        t2 = kb.create_task(conn, title="ready 2", assignee="bob")
-        t3 = kb.create_task(conn, title="review", assignee="alice")
-        _set_task_status(conn, t3, "review")
-        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
-    # Only 2 should spawn (ready tasks get priority in the loop)
-    assert len(res.spawned) == 2
-    assert len(spawns) == 2
-
-
-def test_dispatch_review_spawns_when_ready_empty(
-    kanban_home, all_assignees_spawnable,
-):
-    """When only review tasks exist, they still get dispatched."""
-    spawns = []
-
-    def fake_spawn(task, workspace, board=None):
-        spawns.append(task.id)
-        return 42
-
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
-    assert len(res.spawned) == 1
-    assert spawns[0] == t
-
-
-def test_has_spawnable_review_true(kanban_home):
-    """has_spawnable_review returns True when review tasks exist with real profiles."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="default")
-        _set_task_status(conn, t, "review")
-        # default profile should exist in the test env
-        assert kb.has_spawnable_review(conn) is True
-
-
-def test_has_spawnable_review_false_on_empty(kanban_home):
-    """has_spawnable_review returns False when no review tasks exist."""
-    with kb.connect() as conn:
-        assert kb.has_spawnable_review(conn) is False
-
-
-def test_has_spawnable_review_false_when_only_terminal_lanes(
-    kanban_home, monkeypatch,
-):
-    """has_spawnable_review returns False when review tasks are terminal lanes."""
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review", assignee="orion-cc")
-        _set_task_status(conn, t, "review")
-        assert kb.has_spawnable_review(conn) is False
-
-
-def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
-    """Review tasks with non-existent profiles go to skipped_nonspawnable."""
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review", assignee="orion-cc")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_nonspawnable
-    assert not res.spawned
-
+        source = kb.create_task(conn, title="review source", assignee="alice")
+        gate = kb.handoff_task(conn, source, review_ref="repo#82")
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace, board=None: spawned.append(task.id),
+        )
+        assert kb.claim_review_task(conn, source) is None
+        assert source not in [task_id for task_id, *_ in result.spawned]
+        assert gate in [task_id for task_id, *_ in result.spawned]
+        task = kb.get_task(conn, source)
+        assert task is not None and task.status == "review"
+    assert spawned == [gate]
 
 def test_review_status_in_valid_statuses():
     """'review' is a valid task status."""
     assert "review" in kb.VALID_STATUSES
 
 
-def test_dispatch_review_does_not_claim_ready_tasks(
+def test_claim_review_task_never_claims_ready_tasks(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review dispatch uses claim_review_task, which only claims review tasks."""
+    """The retired review claim helper remains a safe no-op."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="ready task", assignee="alice")
         # claim_review_task should NOT claim a ready task

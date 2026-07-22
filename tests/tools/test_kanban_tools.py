@@ -399,6 +399,44 @@ def test_complete_with_result_only(worker_env):
     assert d["ok"] is True
 
 
+def test_complete_rejects_empty_handoff(worker_env):
+    """Workers must not be able to complete without a readable handoff."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({})
+    d = json.loads(out)
+    assert d["error"]
+    assert "summary or result is required" in d["error"]
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_whitespace_only_summary(worker_env):
+    """Whitespace-only handoffs are empty after normalization."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({"summary": " \n\t "})
+    d = json.loads(out)
+    assert d["error"]
+    assert "summary or result is required" in d["error"]
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
 def test_complete_with_artifacts_lands_in_event_payload(worker_env):
     """``artifacts=[...]`` rides into the completed event payload so the
     gateway notifier can upload them as native attachments. See the

@@ -105,6 +105,20 @@ The landing page shows a live overview of your installation:
 
 The status page auto-refreshes every 5 seconds.
 
+### Public health/readiness probes
+
+Remote smoke checks can verify that a dashboard/QG process is alive without a dashboard session, token, or secret-bearing header:
+
+```bash
+curl -fsS http://localhost:9119/healthz
+curl -fsS http://localhost:9119/readyz
+```
+
+- `GET /healthz` returns only `status`, `service`, and `version`.
+- `GET /readyz` returns the same safe metadata plus component checks such as `kanban_db` reachability.
+- Neither endpoint returns secrets, session data, task contents, file paths, PIDs, user data, or host internals.
+- On a network-exposed dashboard, prefer an HTTPS domain/reverse proxy for terminal smoke jobs; use `localhost` when the daily agent runs on the same host.
+
 ### Chat
 
 The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.

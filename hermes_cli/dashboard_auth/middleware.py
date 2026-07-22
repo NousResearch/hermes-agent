@@ -47,6 +47,8 @@ _log = logging.getLogger(__name__)
 # (login page, OAuth round trip, provider listing) and static asset
 # mounts go here.
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
+    "/healthz",
+    "/readyz",
     "/auth/login",
     "/auth/callback",
     "/auth/password-login",
@@ -202,9 +204,17 @@ def _auto_sso_response(request: Request) -> Response | None:
 
     # list_session_providers() already filters on supports_session=True, so
     # token-only credentials (drain/service providers) are never candidates.
-    providers = list_session_providers()
+    # Auto-SSO can only target redirect/OAuth providers. Password providers
+    # render a form on /login and intentionally raise from start_login();
+    # sending them through /auth/login produces a 500 instead of a usable
+    # credential prompt.
+    providers = [
+        p for p in list_session_providers()
+        if not getattr(p, "supports_password", False)
+    ]
     if len(providers) != 1:
-        # Zero → nothing to redirect to. Two+ → user must choose at /login.
+        # Zero → nothing to redirect to (or only password providers). Two+ →
+        # user must choose at /login.
         return None
 
     from hermes_cli.dashboard_auth.prefix import prefix_from_request

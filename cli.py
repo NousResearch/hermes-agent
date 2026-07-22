@@ -1319,13 +1319,55 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         _single_query_finalize_attempted_session_ids.add(session_id)
 
 
+def _close_single_query_agent(cli) -> None:
+    """Close the agent-owned state.db session before a one-shot process exits.
+
+    ``chat -q`` does not enter the interactive CLI shutdown path, so resource
+    cleanup alone never calls :meth:`AIAgent.close`.  This is also deliberately
+    safe from the Kanban SIGTERM handler: ``end_session`` is autocommitted and
+    must happen before that handler uses ``os._exit`` to avoid orphaning a
+    worker process.
+    """
+    agent = getattr(cli, "agent", None)
+    close = getattr(agent, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.debug("single-query agent close failed", exc_info=True)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
         _notify_single_query_session_finalize(cli)
+        _close_single_query_agent(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
+
+
+def _single_query_exit_code(result) -> int:
+    """Return the process exit code for ``hermes chat -q`` automation.
+
+    Kanban workers are spawned through the human single-query path
+    (``chat -q`` without ``-Q``). Provider/auth/model bootstrap failures must
+    therefore produce a non-zero exit just like the fully-quiet machine path;
+    otherwise the dispatcher records a bogus rc=0 protocol violation.
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return 0
+    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in (
+        "rate_limit",
+        "billing",
+    ):
+        try:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
+
+            return int(_RL_CODE)
+        except Exception:
+            return 1
+    return 1
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -12411,6 +12453,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self.session_id = self.agent.session_id
                 self._pending_title = None
 
+            # Keep the raw turn result available to non-interactive wrappers
+            # after ``chat()`` returns.  The fully-quiet ``-Q`` single-query
+            # path calls ``run_conversation()`` inline and can exit non-zero
+            # directly when the provider/auth/model bootstrap fails.  The
+            # human single-query path goes through ``cli.chat()`` instead; if
+            # we drop ``result`` here, ``hermes chat -q ...`` exits 0 after a
+            # failed API bootstrap.  Kanban dispatchers then see a clean worker
+            # exit and misclassify provider/auth/model failures as a protocol
+            # violation.  Store the exact result so the caller can mirror the
+            # quiet-mode exit contract.
+            self._last_chat_result = result
+
             # Get the final response
             response = result.get("final_response", "") if result else ""
 
@@ -15963,6 +16017,11 @@ def main(
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # This path deliberately bypasses ``finally`` via os._exit() to
+            # prevent a stuck worker thread from being reparented. Persist the
+            # agent-owned session end marker first; otherwise every killed
+            # Kanban worker leaves an ``ended_at IS NULL`` row in state.db.
+            _close_single_query_agent(cli)
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
@@ -16172,20 +16231,7 @@ def main(
                         # 5-hour quota window can't trip the circuit breaker and
                         # permanently block the card. Non-kanban runs keep the
                         # plain 0/1 contract automation wrappers expect.
-                        _exit_code = 0
-                        if isinstance(result, dict) and result.get("failed"):
-                            _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing"):
-                                try:
-                                    from hermes_cli.kanban_db import (
-                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
-                                    )
-                                    _exit_code = _RL_CODE
-                                except Exception:
-                                    _exit_code = 1
-                        sys.exit(_exit_code)
+                        sys.exit(_single_query_exit_code(result))
 
                 # Exit with error code if credentials or agent init fails
                 sys.exit(1)
@@ -16211,6 +16257,8 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
+                _result = getattr(cli, "_last_chat_result", None)
+                sys.exit(_single_query_exit_code(_result))
         finally:
             _finalize_single_query(cli)
         return

@@ -550,6 +550,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--allow-empty-result",
+        action="store_true",
+        help=(
+            "Emergency escape hatch: allow completion without --result/--summary. "
+            "Requires --allow-empty-reason and records an audit note."
+        ),
+    )
+    p_complete.add_argument(
+        "--allow-empty-reason",
+        default=None,
+        help="Required human-readable reason when --allow-empty-result is used.",
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -587,6 +600,55 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+    p_block.add_argument(
+        "--allow-empty-result",
+        action="store_true",
+        help=(
+            "Emergency escape hatch: allow blocking without a positional "
+            "reason/result. Requires --allow-empty-reason."
+        ),
+    )
+    p_block.add_argument(
+        "--allow-empty-reason",
+        default=None,
+        help="Required human-readable reason when --allow-empty-result is used.",
+    )
+
+    p_handoff = sub.add_parser(
+        "handoff",
+        help=(
+            "Atomic review handoff: create/reuse the Athena gate for a "
+            "deliverable AND sticky-block the source in one verb"
+        ),
+    )
+    p_handoff.add_argument("task_id")
+    p_handoff.add_argument(
+        "--review", required=True, dest="review_ref",
+        help="What the gate must review: PR URL, PR#N, commit hash or artifact path",
+    )
+    p_handoff.add_argument(
+        "reason", nargs="*",
+        help="Optional context appended to the review handoff and gate body",
+    )
+
+    p_review_decision = sub.add_parser(
+        "review-decision",
+        help="H-Omar: explicitly route a Review source after its Athena verdict",
+    )
+    p_review_decision.add_argument("task_id")
+    p_review_decision.add_argument(
+        "decision", choices=("go-ready", "no-go-ready", "go-complete"),
+    )
+
+    p_review_migrate = sub.add_parser(
+        "review-migrate",
+        help="Preview or apply migration of legacy blocked review-required cards",
+    )
+    p_review_migrate.add_argument(
+        "--apply", action="store_true",
+        help="Apply the idempotent migration (default is non-mutating preview)",
+    )
+    p_review_migrate.add_argument("--json", action="store_true")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -1003,6 +1065,9 @@ def kanban_command(args: argparse.Namespace) -> int:
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "handoff":  _cmd_handoff,
+            "review-decision": _cmd_review_decision,
+            "review-migrate": _cmd_review_migrate,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -2018,6 +2083,31 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    result = getattr(args, "result", None)
+    if result is not None and not str(result).strip():
+        result = None
+    if result is None and summary is not None and str(summary).strip():
+        result = str(summary).strip()
+    allow_empty = bool(getattr(args, "allow_empty_result", False))
+    allow_reason = (getattr(args, "allow_empty_reason", None) or "").strip()
+    if result is None:
+        if not allow_empty:
+            print(
+                "kanban: refusing to complete without --result or --summary; "
+                "use --allow-empty-result --allow-empty-reason '...' only for "
+                "explicit recovery exceptions",
+                file=sys.stderr,
+            )
+            return 2
+        if not allow_reason:
+            print(
+                "kanban: --allow-empty-result requires --allow-empty-reason",
+                file=sys.stderr,
+            )
+            return 2
+        if metadata is None:
+            metadata = {}
+        metadata["allow_empty_result_reason"] = allow_reason
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
@@ -2067,7 +2157,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
 
             if not kb.complete_task(
                 conn, tid,
-                result=args.result,
+                result=result,
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
@@ -2107,9 +2197,80 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_handoff(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    with kb.connect_closing() as conn:
+        try:
+            gate_id = kb.handoff_task(
+                conn,
+                args.task_id,
+                review_ref=args.review_ref,
+                reason=reason,
+                author=author,
+            )
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+    print(
+        f"Handoff {args.task_id}: gate {gate_id} (oa-athena) — source "
+        f"moved to Review 'review-required: {args.review_ref}'"
+    )
+    return 0
+
+
+def _cmd_review_decision(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect_closing() as conn:
+            if not kb.arbitrate_review_task(
+                conn, args.task_id, decision=args.decision,
+            ):
+                print(f"cannot arbitrate {args.task_id} (it must be in Review)", file=sys.stderr)
+                return 1
+    except PermissionError as exc:
+        print(f"kanban: not authorized for review arbitration: {exc}", file=sys.stderr)
+        return 2
+    print(f"Review decision {args.task_id}: {args.decision}")
+    return 0
+
+
+def _cmd_review_migrate(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        report = kb.migrate_legacy_review_required(
+            conn, dry_run=not args.apply, author=_profile_author(),
+        )
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    else:
+        mode = "applied" if args.apply else "preview"
+        print(
+            f"Review migration {mode}: {len(report['candidate_ids'])} candidate(s); "
+            f"{len(report['would_create_gate_ids'])} gate(s) would be created; "
+            f"{len(report['migrated_ids'])} migrated."
+        )
+    return 0
+
+
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
+    allow_empty = bool(getattr(args, "allow_empty_result", False))
+    allow_reason = (getattr(args, "allow_empty_reason", None) or "").strip()
+    if not reason:
+        if not allow_empty:
+            print(
+                "kanban: refusing to block without a reason/result; "
+                "use --allow-empty-result --allow-empty-reason '...' only for "
+                "explicit recovery exceptions",
+                file=sys.stderr,
+            )
+            return 2
+        if not allow_reason:
+            print(
+                "kanban: --allow-empty-result requires --allow-empty-reason",
+                file=sys.stderr,
+            )
+            return 2
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
@@ -2117,6 +2278,13 @@ def _cmd_block(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
+            elif allow_reason:
+                kb.add_comment(
+                    conn,
+                    tid,
+                    author,
+                    f"ALLOW_EMPTY_RESULT(block): {allow_reason}",
+                )
             if not kb.block_task(
                 conn,
                 tid,

@@ -245,6 +245,128 @@ def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assign
         conn.close()
 
 
+
+def test_timed_out_handoff_summary_is_persisted_on_run(kanban_home, all_assignees_spawnable):
+    """Budget guards should leave an exploitable timed_out run summary,
+    not an empty row after useful work.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="long worker", assignee="worker", max_retries=2)
+        kb.claim_task(conn, tid)
+        summary = "Partial handoff: files inspected, next action is split card."
+        tripped = kb._record_task_failure(
+            conn,
+            tid,
+            error="Iteration budget exhausted/handoff (55/60)",
+            outcome="timed_out",
+            summary=summary,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 55, "budget_max": 60},
+        )
+        assert tripped is False
+        run = conn.execute(
+            "SELECT status, outcome, summary, error, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["status"] == "timed_out"
+        assert run["outcome"] == "timed_out"
+        assert run["summary"] == summary
+        assert json.loads(run["metadata"])["handoff_summary_len"] == len(summary)
+    finally:
+        conn.close()
+
+
+def test_gave_up_handoff_summary_is_persisted_on_run(kanban_home, all_assignees_spawnable):
+    """When the failure breaker trips, the final gave_up run keeps the
+    timed_out handoff summary and records its exact length.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="long worker", assignee="worker", max_retries=1)
+        kb.claim_task(conn, tid)
+        summary = "Partial handoff: files inspected, next action is split card."
+        tripped = kb._record_task_failure(
+            conn,
+            tid,
+            error="Iteration budget exhausted/handoff (55/60)",
+            outcome="timed_out",
+            summary=summary,
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"budget_used": 55, "budget_max": 60},
+        )
+        assert tripped is True
+        run = conn.execute(
+            "SELECT status, outcome, summary, error, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["status"] == "gave_up"
+        assert run["outcome"] == "gave_up"
+        assert run["summary"] == summary
+        assert json.loads(run["metadata"])["handoff_summary_len"] == len(summary)
+    finally:
+        conn.close()
+
+
+def test_non_handoff_failure_modes_do_not_persist_summary(kanban_home, all_assignees_spawnable):
+    """The handoff summary escape hatch is limited to timed_out/gave_up
+    failures; spawn/crash behavior stays unchanged.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="spawn fail", assignee="worker", max_retries=2)
+        kb.claim_task(conn, tid)
+        tripped = kb._record_task_failure(
+            conn,
+            tid,
+            error="worker failed to start",
+            outcome="spawn_failed",
+            summary="this should not be stored for spawn failures",
+            release_claim=True,
+            end_run=True,
+        )
+        assert tripped is False
+        run = conn.execute(
+            "SELECT status, outcome, summary, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["status"] == "spawn_failed"
+        assert run["outcome"] == "spawn_failed"
+        assert run["summary"] is None
+        assert "handoff_summary_len" not in json.loads(run["metadata"])
+    finally:
+        conn.close()
+
+
+def test_empty_timed_out_handoff_records_zero_summary_len(kanban_home, all_assignees_spawnable):
+    """Timed-out budget handoffs always carry summary-length metadata,
+    even when the no-tools summary came back empty.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="empty handoff", assignee="worker", max_retries=2)
+        kb.claim_task(conn, tid)
+        kb._record_task_failure(
+            conn,
+            tid,
+            error="Iteration budget exhausted/handoff (55/60)",
+            outcome="timed_out",
+            summary="",
+            release_claim=True,
+            end_run=True,
+        )
+        run = conn.execute(
+            "SELECT summary, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["summary"] == ""
+        assert json.loads(run["metadata"])["handoff_summary_len"] == 0
+    finally:
+        conn.close()
+
+
 def test_per_task_max_retries_allows_more_than_default(kanban_home, all_assignees_spawnable):
     """A task with ``max_retries=5`` does NOT auto-block at the default
     limit of 2 — it must reach the per-task override first."""
@@ -358,6 +480,112 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
         assert tid in res.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("initial_status", ["ready"])
+def test_worktree_without_path_or_board_default_blocks_before_claim(
+    kanban_home,
+    all_assignees_spawnable,
+    initial_status,
+):
+    """Unanchored worktree tasks are config-blocked before worker claim/spawn.
+
+    This must cover both normal ready dispatch and the review dispatch lane:
+    review tasks used to stay in ``status='review'`` because block_task()
+    refused that state.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title=f"broken worktree {initial_status}",
+            assignee="worker",
+            workspace_kind="worktree",
+        )
+        if initial_status == "review":
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'review' WHERE id = ?",
+                    (tid,),
+                )
+
+        def _should_not_spawn(_task, _workspace):
+            raise AssertionError("workspace guard should fire before spawn")
+
+        res = kb.dispatch_once(conn, spawn_fn=_should_not_spawn, failure_limit=3)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert tid in res.auto_blocked
+        assert res.skipped_policy_guarded
+        guarded_id, policy, reason = res.skipped_policy_guarded[-1]
+        assert guarded_id == tid
+        assert policy == "workspace-config"
+        assert "no workspace_path" in reason
+        assert "no default_workdir" in reason
+        assert res.spawned == []
+
+        events = kb.list_events(conn, tid)
+        assert any(e.kind == "dispatch_guarded" for e in events)
+        assert any(e.kind == "blocked" for e in events)
+        assert not any(e.kind == "claimed" for e in events)
+        run = conn.execute(
+            "SELECT outcome, summary FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["outcome"] == "blocked"
+        assert run["summary"].startswith("config-blocked: workspace config invalid")
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("initial_status", ["ready"])
+def test_missing_attached_skill_blocks_before_claim_or_spawn(
+    kanban_home, monkeypatch, initial_status,
+):
+    """A task skill absent from its assignee profile is config-blocked, not retried."""
+    def missing_skill(_task, names=None):
+        assert names is not None
+        assert "missing-skill" in names
+        if initial_status == "review":
+            assert "sdlc-review" in names
+        return ["missing-skill"]
+
+    monkeypatch.setattr(kb, "_task_skills_loadable", missing_skill)
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title=f"missing skill {initial_status}",
+            assignee="worker",
+            skills=["missing-skill"],
+        )
+        if initial_status == "review":
+            with kb.write_txn(conn):
+                conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+
+        def _should_not_spawn(_task, _workspace):
+            raise AssertionError("skill guard should fire before spawn")
+
+        res = kb.dispatch_once(conn, spawn_fn=_should_not_spawn)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert tid in res.auto_blocked
+        assert res.skipped_policy_guarded[-1][:2] == (tid, "skills")
+        assert "missing-skill" in res.skipped_policy_guarded[-1][2]
+        assert res.spawned == []
+        assert not any(e.kind == "claimed" for e in kb.list_events(conn, tid))
+        guarded = [e for e in kb.list_events(conn, tid) if e.kind == "dispatch_guarded"][-1]
+        assert guarded.payload["policy"] == "skills"
+        assert guarded.payload["missing_skills"] == ["missing-skill"]
     finally:
         conn.close()
 
@@ -2055,8 +2283,11 @@ def test_cli_bulk_complete_with_summary_rejects(kanban_home):
         conn.close()
 
 
-def test_cli_bulk_complete_without_summary_still_works(kanban_home):
-    """Bulk close with no per-task handoff is allowed — the common case."""
+def test_cli_bulk_complete_requires_result(kanban_home):
+    """Bulk close now REQUIRES --result/--summary (proof policy, local
+    patch 49b62f0e7 + contrat de carte champ 4) : a bare complete is
+    refused with a pointer to the explicit recovery escape hatch, and a
+    bulk complete WITH --result closes every listed task."""
     conn = kb.connect()
     try:
         a = kb.create_task(conn, title="a", assignee="worker")
@@ -2065,6 +2296,8 @@ def test_cli_bulk_complete_without_summary_still_works(kanban_home):
     finally:
         conn.close()
     out = run_slash(f"complete {a} {b}")
+    assert "refusing to complete without --result" in out
+    out = run_slash(f"complete {a} {b} --result 'no-artifact: bulk test closure'")
     assert f"Completed {a}" in out
     assert f"Completed {b}" in out
 
@@ -4527,6 +4760,48 @@ def test_detect_crashed_workers_protocol_violation_streak_trips_at_limit(kanban_
         # Side channel consumed by dispatch_once — read through the same
         # (current) module object the reaper ran in, see _drive_worker_exit.
         assert tid in _kb.detect_crashed_workers._last_auto_blocked
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_clean_exit_during_quota_wall_requeues(kanban_home):
+    """A clean rc=0 exit while the provider quota wall is active is NOT a
+    protocol violation — the agent died on the wall before its first tool
+    call (C1, harvest 06/07: 45 false violations in 80 min during the
+    05/07 429 window). Expect: reclassified rate_limited, requeued to
+    ``ready``, no failure counted, no protocol_violation event.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wall-victim", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        original_wall = _kb._provider_quota_wall_active
+        _kb._pid_alive = lambda p: False
+        _kb._provider_quota_wall_active = lambda: True
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+            _kb._provider_quota_wall_active = original_wall
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            f"quota-wall clean exit should requeue to ready, got {task.status}"
+        )
+        assert (task.consecutive_failures or 0) == 0, (
+            f"no failure should be counted, got {task.consecutive_failures}"
+        )
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "rate_limited" in kinds, f"expected 'rate_limited' event, got {kinds}"
+        assert "protocol_violation" not in kinds, (
+            f"must NOT record a protocol violation during a quota wall, got {kinds}"
+        )
     finally:
         conn.close()
 

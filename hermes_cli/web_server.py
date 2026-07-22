@@ -32,6 +32,7 @@ import re
 import secrets
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -3223,6 +3224,69 @@ async def get_status(profile: Optional[str] = None):
     finally:
         if status_scope is not None:
             status_scope.__exit__(*sys.exc_info())
+
+
+@app.get("/healthz")
+async def healthz():
+    """Unauthenticated liveness probe with no host/user detail."""
+    return {
+        "status": "ok",
+        "service": "hermes-dashboard",
+        "version": __version__,
+    }
+
+
+def _kanban_readiness_check() -> dict[str, Any]:
+    """Return a safe, read-only Kanban DB readiness check.
+
+    The dashboard's QG/Kanban smoke must be runnable without credentials. Keep
+    this probe intentionally narrow: open the resolved Kanban database in
+    SQLite read-only mode and verify the expected ``tasks`` table exists. Do not
+    expose the DB path, task counts, titles, users, sessions, or any other board
+    content.
+    """
+    try:
+        from hermes_cli import kanban_db as kb
+
+        path = kb.kanban_db_path()
+        if not path.exists():
+            return {"status": "unavailable"}
+        uri = f"file:{path.resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+            ).fetchone()
+        finally:
+            conn.close()
+        return {"status": "ok" if row else "unavailable"}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Unauthenticated readiness probe for external smoke checks.
+
+    Returns only liveness metadata and component status; never secrets, session
+    state, file paths, task data, user data, or host internals.
+    """
+    checks = {
+        "app": {"status": "ok"},
+        "kanban_db": _kanban_readiness_check(),
+    }
+    status = (
+        "ok"
+        if all(c.get("status") == "ok" for c in checks.values())
+        else "degraded"
+    )
+    body = {
+        "status": status,
+        "service": "hermes-dashboard",
+        "version": __version__,
+        "checks": checks,
+    }
+    return JSONResponse(content=body, status_code=200 if status == "ok" else 503)
 
 
 _WINDOWS_11_MIN_BUILD = 22000

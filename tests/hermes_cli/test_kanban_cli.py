@@ -115,19 +115,83 @@ def test_run_slash_rejects_branch_without_worktree(kanban_home):
 def test_run_slash_create_with_parent_and_cascade(kanban_home):
     # Parent then child via --parent
     out1 = kc.run_slash("create 'parent' --assignee alice")
-    # Extract the "t_xxxx" id from "Created t_xxxx (ready, ...)"
     import re
-    m = re.search(r"(t_[a-f0-9]+)", out1)
+    m = re.search(r"(t_[0-9a-f]+)", out1)
     assert m
     p = m.group(1)
     out2 = kc.run_slash(f"create 'child' --assignee bob --parent {p}")
     assert "todo" in out2  # child starts as todo
 
     # Complete parent; list should promote child to ready
-    kc.run_slash(f"complete {p}")
+    kc.run_slash(f"complete {p} --result parent-done")
     # Explicit filter: child should now be ready (was todo before complete).
     ready_list = kc.run_slash("list --status ready")
     assert "child" in ready_list
+
+
+def test_run_slash_complete_requires_result_or_explicit_escape_hatch(kanban_home):
+    out = kc.run_slash("create 'needs result' --assignee alice")
+    import re
+    match = re.search(r"(t_[0-9a-f]+)", out)
+    assert match
+    tid = match.group(1)
+
+    rejected = kc.run_slash(f"complete {tid}")
+    assert "refusing to complete without --result or --summary" in rejected
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+
+    ok = kc.run_slash(f"complete {tid} --summary 'smoke evidence: ok'")
+    assert "Completed" in ok
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        assert task.result == "smoke evidence: ok"
+
+
+def test_run_slash_block_requires_reason_or_explicit_escape_hatch(kanban_home):
+    out = kc.run_slash("create 'needs block reason' --assignee alice")
+    import re
+    match = re.search(r"(t_[0-9a-f]+)", out)
+    assert match
+    tid = match.group(1)
+
+    rejected = kc.run_slash(f"block {tid}")
+    assert "refusing to block without a reason/result" in rejected
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+
+    ok = kc.run_slash(f"block {tid} 'blocked evidence: missing credential'")
+    assert "Blocked" in ok
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.result == "blocked evidence: missing credential"
+
+
+def test_run_slash_complete_allow_empty_records_reason_in_metadata(kanban_home):
+    out = kc.run_slash("create 'legacy exception' --assignee alice")
+    import re
+    match = re.search(r"(t_[0-9a-f]+)", out)
+    assert match
+    tid = match.group(1)
+
+    ok = kc.run_slash(
+        f"complete {tid} --allow-empty-result --allow-empty-reason 'legacy import'"
+    )
+    assert "Completed" in ok
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["allow_empty_result_reason"] == "legacy import"
 
 
 def test_run_slash_show_includes_comments(kanban_home):
@@ -157,6 +221,42 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     kc.run_slash(f"claim {tid}")
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_run_slash_review_migration_preview_and_operator_decision(kanban_home):
+    created = kc.run_slash("create 'review source' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", created).group(1)
+
+    handoff = kc.run_slash(f"handoff {tid} --review repo#91")
+    assert "moved to Review" in handoff
+    assert "Review decision" in kc.run_slash(f"review-decision {tid} go-ready")
+
+    legacy = kc.run_slash("create 'legacy review' --assignee bob")
+    legacy_id = re.search(r"(t_[a-f0-9]+)", legacy).group(1)
+    kc.run_slash(f"block {legacy_id} 'review-required: repo#92'")
+    preview = json.loads(kc.run_slash("review-migrate --json"))
+    assert preview["candidate_ids"] == [legacy_id]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, legacy_id)
+        assert task is not None and task.status == "blocked"
+
+
+def test_run_slash_review_decision_rejects_non_operator_profile(kanban_home, monkeypatch):
+    created = kc.run_slash("create 'protected review' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", created).group(1)
+    kc.run_slash(f"handoff {tid} --review repo#protected")
+    builder_home = kanban_home / "profiles" / "oa-builder"
+    builder_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(builder_home))
+
+    out = kc.run_slash(f"review-decision {tid} go-ready")
+
+    assert "not authorized" in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "review"
 
 
 def test_run_slash_json_output(kanban_home):

@@ -108,6 +108,9 @@ export interface BillingMonthlyCap {
 }
 
 export interface BillingAutoReload {
+  // The gateway's _parse_auto_reload_card returns None for a missing/unknown-kind
+  // card, and _serialize_billing_state emits `card: null` — so the wire really can
+  // carry null. Consumers must keep a null branch (treat it like the canonical card).
   card:
     | { kind: 'canonical' }
     | {
@@ -117,6 +120,7 @@ export interface BillingAutoReload {
         last4: string | null
       }
     | { kind: 'none' }
+    | null
   enabled: boolean
   reload_to_display: string
   reload_to_usd: string | null

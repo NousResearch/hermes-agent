@@ -103,3 +103,36 @@ def test_merge_appends_to_existing_warning(monkeypatch):
     merge_preflight_compression_warning(result, agent=agent)
     assert "expensive" in result.warning_message
     assert "preflight compression" in result.warning_message
+
+
+def test_cross_route_switch_does_not_inherit_current_context_pin(monkeypatch):
+    def _resolve_metadata(*_args, **kwargs):
+        return kwargs["config_context_length"] or 32_000
+
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        _resolve_metadata,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard._estimate_tokens",
+        lambda *a, **k: 90_000,
+    )
+    cc = _compressor(monkeypatch, context_length=1_048_576)
+    agent = SimpleNamespace(
+        model="shared-model",
+        provider="custom",
+        context_compressor=cc,
+        compression_enabled=True,
+        conversation_history=[],
+        base_url="https://large.example/v1",
+        api_key="",
+    )
+    result = _result(model="shared-model")
+
+    merge_preflight_compression_warning(
+        result,
+        agent=agent,
+        config_context_length=1_048_576,
+    )
+
+    assert "preflight compression" in result.warning_message

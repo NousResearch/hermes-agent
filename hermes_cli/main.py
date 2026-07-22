@@ -422,6 +422,7 @@ from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -4557,6 +4558,13 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_skin(args):
+    """Skin management (list / use / set)."""
+    from hermes_cli.skin_cmd import skin_command
+
+    skin_command(args)
+
+
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     if getattr(args, "quick", False):
@@ -6191,11 +6199,10 @@ def _find_stale_dashboard_pids(
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
+    The dashboard may be manually started or managed by the optional
+    ``hermes-dashboard.service`` systemd unit.  Managed units are restarted
+    through their owning systemd scope; only manually-started processes use
+    the kill path because we can't know their original launch args.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
@@ -6339,6 +6346,116 @@ def _print_curator_first_run_notice() -> None:
     )
 
 
+def _print_fts_optimize_available_notice() -> None:
+    """Advertise the opt-in v23 search-index optimization after `hermes update`.
+
+    Only fires when the current profile's state.db is still on the legacy
+    (pre-v23) inline FTS layout. Leads with the reclaimable-space figure and
+    points at the exact command. Honors ``sessions.fts_optimize_notice``:
+    ``advise`` (default) prints an advisory notice, ``require`` prints a
+    firmer required-upgrade notice, ``off`` suppresses it. Silent for
+    fresh/already-optimized installs.
+    """
+    mode = "advise"
+    try:
+        from hermes_cli.config import load_config
+
+        mode = str(
+            ((load_config() or {}).get("sessions") or {}).get(
+                "fts_optimize_notice", "advise"
+            )
+        ).strip().lower()
+    except Exception:
+        mode = "advise"
+    if mode == "off":
+        return
+
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+    except Exception:
+        return
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        size_gb = db_path.stat().st_size / (1024 ** 3)
+    except OSError:
+        return
+    # Skip the notice for trivially small DBs — the win isn't worth the nag.
+    if size_gb < 0.5:
+        return
+    db = None
+    interrupted = False
+    try:
+        db = SessionDB(db_path=db_path, read_only=True)
+        # read_only opens skip schema init, so probe the layout directly.
+        row = db._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'messages_fts'"
+        ).fetchone()
+        # An interrupted `optimize-storage` run: the table is already the
+        # v23 shape, but backfill markers / demoted trash tables remain.
+        # Offer the command again — re-running resumes and finishes it.
+        interrupted = bool(
+            db._conn.execute(
+                "SELECT 1 FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
+            ).fetchone()
+            or db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
+            ).fetchone()
+        )
+    except Exception:
+        return
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    sql = (row[0] if row else "") or ""
+    if not sql or ("tool_name" in sql and not interrupted):
+        # v23 layout already present (fresh/optimized) — nothing to offer.
+        return
+
+    if interrupted:
+        print()
+        print("◆ Session database optimization incomplete")
+        print(
+            "  A previous `hermes sessions optimize-storage` run was "
+            "interrupted. Search still works; re-run the command to resume "
+            "and finish reclaiming disk:"
+        )
+        print("    hermes sessions optimize-storage")
+        return
+
+    # Concrete size framing — lead with the savings the user cares about.
+    est_reclaim = size_gb * 0.6
+    print()
+    if mode == "require":
+        print("◆ Session database upgrade required")
+        print(
+            f"  Your search index uses the OLD storage layout and should be "
+            f"upgraded. The new layout typically frees ~60% of state.db "
+            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+            f"required for continued optimal operation."
+        )
+    else:
+        print("◆ Reclaim ~60% of your session database disk")
+        print(
+            f"  Your search index uses the old storage layout. Upgrading it "
+            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+            f"of your current {size_gb:.1f} GB."
+        )
+    print("  Run when convenient:  hermes sessions optimize-storage")
+    print(
+        "  It runs in the foreground with a progress bar, is safe to "
+        "interrupt/re-run, and never changes your conversations."
+    )
+
+
 def _print_curator_recent_run_notice() -> None:
     """Print the most recent curator run summary, exactly once.
 
@@ -6425,8 +6542,121 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+_DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
+
+
+def _restart_managed_dashboard_service(
+    reason: str,
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+) -> bool:
+    """Restart a systemd-managed dashboard instead of raw-killing its PID.
+
+    Returns True when a dashboard unit was found and handled (successfully or
+    with a printed actionable failure).  Returning True deliberately prevents
+    the caller from falling back to ``os.kill``: systemd treats a direct
+    SIGTERM of the service's main PID as a clean stop, so ``Restart=on-failure``
+    will not bring the dashboard back.
+    """
+    if sys.platform == "win32":
+        return False
+
+    def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["systemctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    # Probe the user manager first: Hermes installs Linux services in the
+    # user's systemd scope by default.  Only fall back to the system manager
+    # when the unit is not present there, preserving root/system deployments.
+    # Crucially, keep the selected scope for *all* probes and the restart — a
+    # user unit must never be restarted through the system manager (or raw-killed).
+    scope: tuple[str, ...] | None = None
+    listed: subprocess.CompletedProcess | None = None
+    for candidate in (("--user",), ()):
+        try:
+            result = _systemctl(
+                *candidate, "list-unit-files", unit, "--no-legend", "--no-pager"
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        unit_rows = (result.stdout or "").splitlines()
+        if any(row.split()[0:1] == [unit] for row in unit_rows if row.split()):
+            scope = candidate
+            listed = result
+            break
+
+    if scope is None or listed is None:
+        return False
+
+    try:
+        active = _systemctl(*scope, "is-active", unit)
+        enabled = _systemctl(*scope, "is-enabled", unit)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+    active_state = (active.stdout or "").strip()
+    enabled_state = (enabled.stdout or "").strip()
+    if active_state != "active" and enabled_state not in {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "static",
+        "generated",
+    }:
+        return False
+
+    print()
+    print(f"⟲ Restarting managed dashboard service ({reason})")
+
+    scope_label = "systemctl --user" if scope else "sudo systemctl"
+    restart = ("systemctl", *scope, "restart", unit)
+    commands = [restart]
+    if not scope:
+        # System units may require privilege escalation; user units must use
+        # the user manager directly and never prompt for sudo.
+        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+
+    errors: list[str] = []
+    for command in commands:
+        try:
+            result = subprocess.run(
+                list(command),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            errors.append(f"{' '.join(command)}: {e}")
+            continue
+        if result.returncode == 0:
+            print(f"    ✓ restarted {unit}")
+            return True
+        errors.append(
+            f"{' '.join(command)}: {(result.stderr or result.stdout or '').strip()}"
+        )
+
+    print(f"    ✗ failed to restart {unit}")
+    for err in errors:
+        if err.strip():
+            print(f"      {err}")
+    print(
+        "  Dashboard is managed by systemd; not raw-killing its PID because "
+        "systemd would treat that as a clean stop."
+    )
+    print(f"  Restart manually: {scope_label} restart {unit}")
+    return True
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
+    *,
+    restart_managed: bool = False,
 ) -> None:
     """Kill running ``hermes dashboard`` processes.
 
@@ -6442,10 +6672,15 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    Manually-started dashboards are not auto-restarted because we don't know
+    the original launch args (--host, --port, --insecure, --tui, --no-open).
+    When ``restart_managed`` is true (the ``hermes update`` path), a detected
+    ``hermes-dashboard.service`` is restarted through systemd instead of
+    raw-killing its main PID.
     """
+    if restart_managed and _restart_managed_dashboard_service(reason):
+        return
+
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
@@ -6797,7 +7032,7 @@ def _update_via_zip(args):
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
     else:
-        _kill_stale_dashboard_processes()
+        _kill_stale_dashboard_processes(restart_managed=True)
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -9808,6 +10043,60 @@ def _cold_start_windows_gateway_after_update() -> None:
         print(f"  ✓ Starting Windows gateway after update (PID {pid})")
 
 
+
+def _for_each_systemd_gateway_unit(
+    list_units_stdout: str,
+    *,
+    process_unit,
+    on_unit_timeout,
+) -> None:
+    """Process each ``hermes-gateway*.service`` from ``systemctl list-units``.
+
+    ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
+    that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
+    abort the rest of the fleet (#68523).
+    """
+    for line in (list_units_stdout or "").strip().splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        unit = parts[0]
+        if not unit.endswith(".service"):
+            continue
+        # list-units is already pattern-filtered, but keep the name gate so a
+        # stray non-gateway line cannot enter the restart path.
+        if not unit.startswith("hermes-gateway"):
+            continue
+        svc_name = unit.removesuffix(".service")
+        try:
+            process_unit(svc_name)
+        except subprocess.TimeoutExpired as exc:
+            on_unit_timeout(svc_name, exc)
+
+
+def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
+    """Print an explicit incomplete-update warning for unrestarted units."""
+    if not failed_units:
+        return
+    # Preserve discovery order while de-duplicating.
+    seen = set()
+    ordered = []
+    for name in failed_units:
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    print()
+    print("⚠ Update incomplete — some gateway units were not restarted:")
+    for name in ordered:
+        print(f"    - {name}")
+    print("  Skipped units may still be running pre-update code (mixed")
+    print("  sys.modules). Restart them manually, then verify:")
+    print("    hermes gateway status")
+    print("    systemctl --user restart <unit>   # user-scope")
+    print("    sudo systemctl restart <unit>     # system-scope")
+
+
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
     if not token or not token.get("resume_needed"):
@@ -10889,6 +11178,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             print("✓ Update complete!")
 
+        # Search-index optimization notice (v23). Existing installs keep their
+        # working search index untouched on update; the compact v23 layout —
+        # which reclaims a large fraction of state.db on heavy users — is
+        # opt-in. Surface it here (the moment the user is already thinking
+        # about their install) with the exact command and the concrete size
+        # win. Show-once-ish: only when a legacy index is actually present.
+        try:
+            _print_fts_optimize_available_notice()
+        except Exception as e:
+            logger.debug("FTS optimize notice failed: %s", e)
+
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
         # have fired against a fresh skill library. Kept silent on steady
@@ -10969,6 +11269,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _exit_code_path.write_text("0")
             except OSError:
                 pass
+
+        gateway_fleet_restart_incomplete = False
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -11160,6 +11462,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _drain_budget = max(_drain_budget, 30.0) + 15.0
 
             restarted_services = []
+            failed_or_stale_units = []
             killed_pids = set()
             relaunched_profiles = []
             externally_supervised_profiles = []
@@ -11190,268 +11493,279 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             text=True,
                             timeout=10,
                         )
-                        for line in result.stdout.strip().splitlines():
-                            parts = line.split()
-                            if not parts:
-                                continue
-                            unit = parts[
-                                0
-                            ]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
-                            if not unit.endswith(".service"):
-                                continue
-                            svc_name = unit.removesuffix(".service")
-                            # Check if active
-                            check = subprocess.run(
-                                scope_cmd + ["is-active", svc_name],
+                    except FileNotFoundError:
+                        continue
+                    except subprocess.TimeoutExpired as exc:
+                        # Discovery timeout — skip this scope, keep the other.
+                        print(
+                            f"  ⚠ systemctl timed out listing {scope}-scope "
+                            f"gateway units ({exc.cmd if exc.cmd else 'unknown command'}). "
+                            f"Check the gateway with: hermes gateway status"
+                        )
+                        continue
+
+                    def _restart_one_systemd_gateway_unit(svc_name: str) -> None:
+                        # Check if active
+                        check = subprocess.run(
+                            scope_cmd + ["is-active", svc_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if check.stdout.strip() != "active":
+                            return
+
+                        # Resolve how we may run manage-units verbs
+                        # (reset-failed/start/restart) for this scope.
+                        # None ⇒ no non-interactive privilege path; we
+                        # must avoid those verbs entirely or polkit will
+                        # throw an interactive auth prompt inside our
+                        # captured 10-15s subprocess (the user sees it
+                        # flash and "exit directly" — reported June 2026).
+                        _manage_cmd = _resolve_manage_cmd(
+                            scope, scope_cmd, svc_name
+                        )
+
+                        # Prefer a graceful SIGUSR1 restart so in-flight
+                        # agent runs drain instead of being SIGKILLed.
+                        # The gateway's SIGUSR1 handler calls
+                        # request_restart(via_service=True) → drain →
+                        # exit; systemd's Restart=always respawns the unit.
+                        _main_pid = 0
+                        try:
+                            _show = subprocess.run(
+                                scope_cmd
+                                + [
+                                    "show",
+                                    svc_name,
+                                    "--property=MainPID",
+                                    "--value",
+                                ],
                                 capture_output=True,
                                 text=True,
                                 timeout=5,
                             )
-                            if check.stdout.strip() != "active":
-                                continue
+                            _main_pid = int((_show.stdout or "").strip() or 0)
+                        except (
+                            ValueError,
+                            subprocess.TimeoutExpired,
+                            FileNotFoundError,
+                        ):
+                            _main_pid = 0
 
-                            # Resolve how we may run manage-units verbs
-                            # (reset-failed/start/restart) for this scope.
-                            # None ⇒ no non-interactive privilege path; we
-                            # must avoid those verbs entirely or polkit will
-                            # throw an interactive auth prompt inside our
-                            # captured 10-15s subprocess (the user sees it
-                            # flash and "exit directly" — reported June 2026).
-                            _manage_cmd = _resolve_manage_cmd(
-                                scope, scope_cmd, svc_name
+                        _graceful_ok = False
+                        if _main_pid > 0:
+                            print(
+                                f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                            )
+                            _graceful_ok = _graceful_restart_via_sigusr1(
+                                _main_pid,
+                                drain_timeout=_drain_budget,
                             )
 
-                            # Prefer a graceful SIGUSR1 restart so in-flight
-                            # agent runs drain instead of being SIGKILLed.
-                            # The gateway's SIGUSR1 handler calls
-                            # request_restart(via_service=True) → drain →
-                            # exit; systemd's Restart=always respawns the unit.
-                            _main_pid = 0
-                            try:
-                                _show = subprocess.run(
-                                    scope_cmd
-                                    + [
-                                        "show",
-                                        svc_name,
-                                        "--property=MainPID",
-                                        "--value",
-                                    ],
+                        if _graceful_ok:
+                            # Gateway exited after a planned restart.
+                            # ``Restart=always`` means systemd WILL respawn
+                            # the unit — but only after
+                            # ``RestartSec`` (default 60s on our unit
+                            # file). That 60s wait is a crash-loop guard,
+                            # and is the right default when the gateway
+                            # dies unexpectedly. For a voluntary restart
+                            # on update, it's dead time the user watches.
+                            #
+                            # Shortcut it: ``reset-failed`` + ``start``
+                            # skips RestartSec entirely (we're manually
+                            # initiating the unit, not waiting for
+                            # systemd's auto-restart logic). Takes about
+                            # as long as the process takes to come up
+                            # (~1-3s on a warm box).
+                            #
+                            # If the unit is already active because
+                            # RestartSec elapsed while we were draining,
+                            # ``start`` is a no-op and we fall through to
+                            # the poll below. Either way we collapse the
+                            # 60s+ delay to a ~5s one.
+                            #
+                            # The shortcut needs manage-units privileges.
+                            # Without them (system service, non-root, no
+                            # passwordless sudo) skip it — systemd's own
+                            # auto-restart still relaunches the unit after
+                            # RestartSec, no privileges required.
+                            if _manage_cmd is not None:
+                                subprocess.run(
+                                    _manage_cmd + ["reset-failed", svc_name],
                                     capture_output=True,
                                     text=True,
-                                    timeout=5,
+                                    timeout=10,
                                 )
-                                _main_pid = int((_show.stdout or "").strip() or 0)
-                            except (
-                                ValueError,
-                                subprocess.TimeoutExpired,
-                                FileNotFoundError,
-                            ):
-                                _main_pid = 0
-
-                            _graceful_ok = False
-                            if _main_pid > 0:
-                                print(
-                                    f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                                subprocess.run(
+                                    _manage_cmd + ["start", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15,
                                 )
-                                _graceful_ok = _graceful_restart_via_sigusr1(
-                                    _main_pid,
-                                    drain_timeout=_drain_budget,
-                                )
-
-                            if _graceful_ok:
-                                # Gateway exited after a planned restart.
-                                # ``Restart=always`` means systemd WILL respawn
-                                # the unit — but only after
-                                # ``RestartSec`` (default 60s on our unit
-                                # file). That 60s wait is a crash-loop guard,
-                                # and is the right default when the gateway
-                                # dies unexpectedly. For a voluntary restart
-                                # on update, it's dead time the user watches.
-                                #
-                                # Shortcut it: ``reset-failed`` + ``start``
-                                # skips RestartSec entirely (we're manually
-                                # initiating the unit, not waiting for
-                                # systemd's auto-restart logic). Takes about
-                                # as long as the process takes to come up
-                                # (~1-3s on a warm box).
-                                #
-                                # If the unit is already active because
-                                # RestartSec elapsed while we were draining,
-                                # ``start`` is a no-op and we fall through to
-                                # the poll below. Either way we collapse the
-                                # 60s+ delay to a ~5s one.
-                                #
-                                # The shortcut needs manage-units privileges.
-                                # Without them (system service, non-root, no
-                                # passwordless sudo) skip it — systemd's own
-                                # auto-restart still relaunches the unit after
-                                # RestartSec, no privileges required.
-                                if _manage_cmd is not None:
-                                    subprocess.run(
-                                        _manage_cmd + ["reset-failed", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=10,
-                                    )
-                                    subprocess.run(
-                                        _manage_cmd + ["start", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=15,
-                                    )
-                                    # Short poll: the gateway should be up
-                                    # within a few seconds now that we
-                                    # bypassed RestartSec.
-                                    if _wait_for_service_active(
-                                        scope_cmd,
-                                        svc_name,
-                                        timeout=10.0,
-                                    ):
-                                        restarted_services.append(svc_name)
-                                        continue
-                                # Passive poll: systemd's auto-restart fires
-                                # after RestartSec regardless of privileges.
-                                # This is the primary path when _manage_cmd is
-                                # None, and the fallback when the explicit
-                                # start didn't take.
-                                _restart_sec = _service_restart_sec(
-                                    scope_cmd,
-                                    svc_name,
-                                    default=0.0,
-                                )
-                                _post_drain_timeout = max(
-                                    10.0,
-                                    _restart_sec + 10.0,
-                                )
-                                if _manage_cmd is None and _restart_sec > 5.0:
-                                    print(
-                                        f"  → {svc_name}: waiting for systemd "
-                                        f"auto-restart (~{int(_restart_sec)}s; "
-                                        "no root for an immediate restart)..."
-                                    )
-                                if _wait_for_service_active(
-                                    scope_cmd,
-                                    svc_name,
-                                    timeout=_post_drain_timeout,
-                                ):
-                                    restarted_services.append(svc_name)
-                                    continue
-                                # Process exited but wasn't respawned (older
-                                # unit without Restart=on-failure or
-                                # RestartForceExitStatus=75).  Fall through
-                                # to systemctl start/restart.
-                                print(
-                                    f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
-                                )
-
-                            # Forcing a restart requires manage-units
-                            # privileges.  Without a non-interactive path,
-                            # running systemctl here would spawn a polkit
-                            # auth prompt inside a captured 10-15s subprocess
-                            # — it flashes and dies before the user can
-                            # answer.  Skip with clear instructions instead.
-                            if _manage_cmd is None:
-                                print(
-                                    f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
-                                    f"    Restart it manually to load the new version:\n"
-                                    f"      sudo systemctl restart {svc_name}\n"
-                                    f"    To let `hermes update` restart it automatically, allow\n"
-                                    f"    passwordless sudo for systemctl, or run updates with sudo."
-                                )
-                                continue
-
-                            # Fallback: blunt systemctl restart.  This is
-                            # what the old code always did; we get here only
-                            # when the graceful path failed (unit missing
-                            # SIGUSR1 wiring, drain exceeded the budget,
-                            # restart-policy mismatch).
-                            #
-                            # Always `reset-failed` first.  If systemd's own
-                            # auto-restart attempts already parked the unit
-                            # in a failed state (transient CHDIR / OOM /
-                            # filesystem race after our drain + exit-75),
-                            # a plain `systemctl restart` can wedge against
-                            # the RestartSec backoff and leave the unit
-                            # dead.  Clearing the failed state first makes
-                            # the restart idempotent.  Mirrors the recovery
-                            # path in `hermes gateway restart`
-                            # (`systemd_restart()`) as of PR #20949.
-                            subprocess.run(
-                                _manage_cmd + ["reset-failed", svc_name],
-                                capture_output=True,
-                                text=True,
-                                timeout=10,
-                            )
-                            restart = subprocess.run(
-                                _manage_cmd + ["restart", svc_name],
-                                capture_output=True,
-                                text=True,
-                                timeout=15,
-                            )
-                            if restart.returncode == 0:
-                                # Verify the service actually survived the
-                                # restart.  systemctl restart returns 0 even
-                                # if the new process crashes immediately.
+                                # Short poll: the gateway should be up
+                                # within a few seconds now that we
+                                # bypassed RestartSec.
                                 if _wait_for_service_active(
                                     scope_cmd,
                                     svc_name,
                                     timeout=10.0,
                                 ):
                                     restarted_services.append(svc_name)
-                                else:
-                                    # Retry once — transient startup failures
-                                    # (stale module cache, import race) often
-                                    # resolve on the second attempt.  Again
-                                    # clear any failed state first so the
-                                    # retry isn't blocked by the previous
-                                    # crash.
-                                    print(
-                                        f"  ⚠ {svc_name} died after restart, retrying..."
-                                    )
-                                    subprocess.run(
-                                        _manage_cmd + ["reset-failed", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=10,
-                                    )
-                                    subprocess.run(
-                                        _manage_cmd + ["restart", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=15,
-                                    )
-                                    if _wait_for_service_active(
-                                        scope_cmd,
-                                        svc_name,
-                                        timeout=10.0,
-                                    ):
-                                        restarted_services.append(svc_name)
-                                        print(f"  ✓ {svc_name} recovered on retry")
-                                    else:
-                                        _scope_flag = "--user " if scope == "user" else ""
-                                        _sudo_hint = "sudo " if scope == "system" else ""
-                                        print(
-                                            f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                            f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
-                                            f"    Recover manually:\n"
-                                            f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
-                                            f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
-                                        )
-                            else:
+                                    return
+                            # Passive poll: systemd's auto-restart fires
+                            # after RestartSec regardless of privileges.
+                            # This is the primary path when _manage_cmd is
+                            # None, and the fallback when the explicit
+                            # start didn't take.
+                            _restart_sec = _service_restart_sec(
+                                scope_cmd,
+                                svc_name,
+                                default=0.0,
+                            )
+                            _post_drain_timeout = max(
+                                10.0,
+                                _restart_sec + 10.0,
+                            )
+                            if _manage_cmd is None and _restart_sec > 5.0:
                                 print(
-                                    f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
+                                    f"  → {svc_name}: waiting for systemd "
+                                    f"auto-restart (~{int(_restart_sec)}s; "
+                                    "no root for an immediate restart)..."
                                 )
-                    except FileNotFoundError:
-                        pass
-                    except subprocess.TimeoutExpired as exc:
-                        # Don't swallow this silently — a wedged systemctl
-                        # call here used to make the whole restart phase
-                        # vanish with no output (June 2026 report).
-                        print(
-                            f"  ⚠ systemctl timed out during the {scope}-scope "
-                            f"gateway restart ({exc.cmd if exc.cmd else 'unknown command'}). "
-                            f"Check the gateway with: hermes gateway status"
+                            if _wait_for_service_active(
+                                scope_cmd,
+                                svc_name,
+                                timeout=_post_drain_timeout,
+                            ):
+                                restarted_services.append(svc_name)
+                                return
+                            # Process exited but wasn't respawned (older
+                            # unit without Restart=on-failure or
+                            # RestartForceExitStatus=75).  Fall through
+                            # to systemctl start/restart.
+                            print(
+                                f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
+                            )
+
+                        # Forcing a restart requires manage-units
+                        # privileges.  Without a non-interactive path,
+                        # running systemctl here would spawn a polkit
+                        # auth prompt inside a captured 10-15s subprocess
+                        # — it flashes and dies before the user can
+                        # answer.  Skip with clear instructions instead.
+                        if _manage_cmd is None:
+                            failed_or_stale_units.append(svc_name)
+                            print(
+                                f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
+                                f"    Restart it manually to load the new version:\n"
+                                f"      sudo systemctl restart {svc_name}\n"
+                                f"    To let `hermes update` restart it automatically, allow\n"
+                                f"    passwordless sudo for systemctl, or run updates with sudo."
+                            )
+                            return
+
+                        # Fallback: blunt systemctl restart.  This is
+                        # what the old code always did; we get here only
+                        # when the graceful path failed (unit missing
+                        # SIGUSR1 wiring, drain exceeded the budget,
+                        # restart-policy mismatch).
+                        #
+                        # Always `reset-failed` first.  If systemd's own
+                        # auto-restart attempts already parked the unit
+                        # in a failed state (transient CHDIR / OOM /
+                        # filesystem race after our drain + exit-75),
+                        # a plain `systemctl restart` can wedge against
+                        # the RestartSec backoff and leave the unit
+                        # dead.  Clearing the failed state first makes
+                        # the restart idempotent.  Mirrors the recovery
+                        # path in `hermes gateway restart`
+                        # (`systemd_restart()`) as of PR #20949.
+                        subprocess.run(
+                            _manage_cmd + ["reset-failed", svc_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
                         )
+                        restart = subprocess.run(
+                            _manage_cmd + ["restart", svc_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        if restart.returncode == 0:
+                            # Verify the service actually survived the
+                            # restart.  systemctl restart returns 0 even
+                            # if the new process crashes immediately.
+                            if _wait_for_service_active(
+                                scope_cmd,
+                                svc_name,
+                                timeout=10.0,
+                            ):
+                                restarted_services.append(svc_name)
+                            else:
+                                # Retry once — transient startup failures
+                                # (stale module cache, import race) often
+                                # resolve on the second attempt.  Again
+                                # clear any failed state first so the
+                                # retry isn't blocked by the previous
+                                # crash.
+                                print(
+                                    f"  ⚠ {svc_name} died after restart, retrying..."
+                                )
+                                subprocess.run(
+                                    _manage_cmd + ["reset-failed", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10,
+                                )
+                                subprocess.run(
+                                    _manage_cmd + ["restart", svc_name],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=15,
+                                )
+                                if _wait_for_service_active(
+                                    scope_cmd,
+                                    svc_name,
+                                    timeout=10.0,
+                                ):
+                                    restarted_services.append(svc_name)
+                                    print(f"  ✓ {svc_name} recovered on retry")
+                                else:
+                                    failed_or_stale_units.append(svc_name)
+                                    _scope_flag = "--user " if scope == "user" else ""
+                                    _sudo_hint = "sudo " if scope == "system" else ""
+                                    print(
+                                        f"  ✗ {svc_name} failed to stay running after restart.\n"
+                                        f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
+                                        f"    Recover manually:\n"
+                                        f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
+                                        f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
+                                    )
+                        else:
+                            failed_or_stale_units.append(svc_name)
+                            print(
+                                f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
+                            )
+
+                    def _on_unit_timeout(svc_name: str, exc: subprocess.TimeoutExpired) -> None:
+                        # Isolate the timeout to this unit and keep going
+                        # (#68523). A scope-wide handler used to abort every
+                        # later gateway and leave the fleet on mixed code.
+                        failed_or_stale_units.append(svc_name)
+                        print(
+                            f"  ⚠ systemctl timed out restarting {svc_name} "
+                            f"({exc.cmd if exc.cmd else 'unknown command'}); "
+                            f"continuing with remaining gateways"
+                        )
+
+                    _for_each_systemd_gateway_unit(
+                        result.stdout,
+                        process_unit=_restart_one_systemd_gateway_unit,
+                        on_unit_timeout=_on_unit_timeout,
+                    )
 
             # --- Launchd services (macOS) ---
             if is_macos():
@@ -11577,6 +11891,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             "    (or: hermes -p <profile> gateway run  for each profile)"
                         )
 
+            if failed_or_stale_units:
+                gateway_fleet_restart_incomplete = True
+                if gateway_mode:
+                    _exit_code_path = get_hermes_home() / ".update_exit_code"
+                    try:
+                        _exit_code_path.write_text("1")
+                    except OSError:
+                        pass
+            _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
+
             if not restarted_services and not killed_pids:
                 # No gateways were running — nothing to do
                 pass
@@ -11657,26 +11981,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
-        #
-        # Exception: if the Node dependency refresh failed, the rebuilt
-        # frontend the new backend expects may not exist, so stopping a
-        # working dashboard would leave the user with nothing running
-        # rather than a usable (if mixed) state (#30271). Leave it alone.
+        # Restart a managed dashboard through systemd, or stop stale manual
+        # dashboard processes.  Raw-killing a systemd-owned dashboard PID makes
+        # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
+        # Preserve the safety rule above: a failed Node refresh leaves the
+        # currently running dashboard untouched.
         if node_failures:
             print()
             print("  ℹ Leaving running dashboard process(es) untouched because the")
             print("    Node.js dependency refresh did not complete.")
         else:
-            _kill_stale_dashboard_processes()
+            _kill_stale_dashboard_processes(restart_managed=True)
 
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
+
+        if gateway_fleet_restart_incomplete:
+            # Code update itself succeeded, but at least one gateway still
+            # runs pre-update modules — surface that as a failed update so
+            # automation / operators do not treat the fleet as healthy.
+            sys.exit(1)
 
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
@@ -13093,7 +13418,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13937,6 +14262,11 @@ def main():
     build_config_parser(subparsers, cmd_config=cmd_config)
 
     # =========================================================================
+    # skin command  (parser built in hermes_cli/subcommands/skin.py)
+    # =========================================================================
+    build_skin_parser(subparsers, cmd_skin=cmd_skin)
+
+    # =========================================================================
     # console command  (parser built in hermes_cli/subcommands/console.py)
     # =========================================================================
     build_console_parser(subparsers, cmd_console=cmd_console)
@@ -14531,6 +14861,33 @@ def main():
     sessions_subparsers.add_parser(
         "optimize",
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
+    )
+
+    sessions_optimize_storage = sessions_subparsers.add_parser(
+        "optimize-storage",
+        help="Migrate the search index to the compact v23 layout (reclaims disk on large DBs)",
+        description=(
+            "Rebuild the full-text search index in the compact v23 "
+            "external-content layout. On large databases this reclaims a "
+            "large fraction of state.db (the old layout stored duplicate "
+            "copies of every message and indexed tool output). Runs "
+            "foreground with a progress bar, throttles so a running gateway "
+            "stays responsive, and VACUUMs at the end. Safe to interrupt and "
+            "re-run — it resumes where it left off. No conversation data is "
+            "changed; only the search index is rebuilt."
+        ),
+    )
+    sessions_optimize_storage.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        default=False,
+        help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)",
+    )
+    sessions_optimize_storage.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the disk-space confirmation prompt",
     )
 
     sessions_repair = sessions_subparsers.add_parser(
@@ -15314,6 +15671,96 @@ def main():
                 f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
                 f"(reclaimed {saved:.1f} MB)"
             )
+
+        elif action == "optimize-storage":
+            db_path = db.db_path
+            if not db.fts_optimize_available():
+                print("Search index is already on the compact layout — nothing to do.")
+                db.close()
+                return
+
+            before_bytes = os.path.getsize(db_path) if db_path.exists() else 0
+            before_mb = before_bytes / (1024 * 1024)
+
+            # Disk preflight: the rebuild adds the new index before the old is
+            # torn down, and the final VACUUM needs a full second copy of the
+            # file. Require headroom ≈ current file size to finish cleanly.
+            do_vacuum = not getattr(args, "no_vacuum", False)
+            try:
+                import shutil as _shutil
+                free_bytes = _shutil.disk_usage(db_path.parent).free
+            except Exception:
+                free_bytes = None
+            need_bytes = before_bytes if do_vacuum else int(before_bytes * 0.3)
+            print(f"Search-index optimization for {db_path}")
+            print(f"  Current database size: {before_mb:.1f} MB")
+            if free_bytes is not None:
+                print(f"  Free disk: {free_bytes / (1024*1024):.0f} MB "
+                      f"(need ~{need_bytes / (1024*1024):.0f} MB to complete"
+                      f"{' incl. VACUUM' if do_vacuum else ''})")
+                if free_bytes < need_bytes:
+                    print()
+                    print("⚠ Not enough free disk to complete safely. Free up "
+                          "space, or run with --no-vacuum (rebuilds the index "
+                          "but doesn't reclaim space until a later VACUUM).")
+                    db.close()
+                    return
+            if before_mb > 500:
+                print("  This may take a while on a large database. It runs in "
+                      "the foreground with progress below; safe to Ctrl-C and "
+                      "re-run (it resumes).")
+            if not getattr(args, "yes", False):
+                try:
+                    resp = input("Proceed? [y/N] ").strip().lower()
+                except EOFError:
+                    resp = ""
+                if resp not in ("y", "yes"):
+                    print("Cancelled.")
+                    db.close()
+                    return
+
+            _last = {"phase": None}
+
+            def _progress(info):
+                phase = info.get("phase")
+                pct = info.get("percent", 0)
+                if phase == "backfill":
+                    print(f"\r  Rebuilding index: {pct:3d}% "
+                          f"({info.get('indexed',0):,}/{info.get('total',0):,})",
+                          end="", flush=True)
+                elif phase != _last["phase"]:
+                    label = {"teardown": "Reclaiming old index",
+                             "vacuum": "Compacting database (VACUUM)",
+                             "done": "Done"}.get(phase, phase)
+                    print(f"\n  {label}…", flush=True)
+                _last["phase"] = phase
+
+            print("Optimizing search-index storage…")
+            try:
+                result = db.optimize_fts_storage(
+                    progress_cb=_progress, vacuum=do_vacuum
+                )
+            except Exception as e:
+                print(f"\nError: optimization failed: {e}")
+                print("No data was lost. Re-run to resume.")
+                db.close()
+                return
+            if not result.get("ok"):
+                print(f"\nCould not optimize: {result.get('reason', 'unknown')}")
+                db.close()
+                return
+            after_mb = (
+                os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
+            )
+            saved = before_mb - after_mb
+            print(f"\n✓ Search index optimized.")
+            print(
+                f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                f"(reclaimed {saved:.1f} MB)"
+            )
+            if result.get("vacuumed") is False:
+                print("  (VACUUM was skipped or failed — run "
+                      "`hermes sessions optimize` later to reclaim freed space.)")
 
         elif action == "stats":
             total = db.session_count()

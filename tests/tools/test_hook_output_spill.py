@@ -122,7 +122,7 @@ class SpillIfOversizedTests(unittest.TestCase):
         # Spill file exists under the session subdir and has full content.
         session_dir = Path(self.tmpdir) / "sess-123"
         self.assertTrue(session_dir.is_dir())
-        files = list(session_dir.iterdir())
+        files = list(session_dir.glob("*.txt"))
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0].read_text().rstrip("\n"), big)
         # Preview references the spill path.
@@ -218,6 +218,69 @@ class SpillIfOversizedTests(unittest.TestCase):
 
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
+
+    def test_prune_preserves_unmarked_session_directory(self):
+        session = Path(self.tmpdir) / "human-session"
+        session.mkdir()
+        human = session / "human-notes.txt"
+        human.write_text("keep")
+        old_time = os.path.getmtime(human) - 100
+        os.utime(human, (old_time, old_time))
+
+        removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(human.read_text(), "keep")
+
+    def test_prune_preserves_malformed_marker_directory(self):
+        session = Path(self.tmpdir) / "foreign-session"
+        session.mkdir()
+        (session / ".hermes-managed").write_text("someone-else\n")
+        human = session / "human-notes.txt"
+        human.write_text("keep")
+        old_time = os.path.getmtime(human) - 100
+        os.utime(human, (old_time, old_time))
+
+        removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(human.read_text(), "keep")
+
+    def test_prune_preserves_symlink_marker_directory(self):
+        session = Path(self.tmpdir) / "linked-session"
+        session.mkdir()
+        target = Path(self.tmpdir) / "foreign-marker"
+        target.write_text("hook_outputs\n")
+        try:
+            (session / ".hermes-managed").symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"symlink unavailable on this host: {exc}")
+        human = session / "human-notes.txt"
+        human.write_text("keep")
+        old_time = os.path.getmtime(human) - 100
+        os.utime(human, (old_time, old_time))
+
+        removed = hos.prune_spill_files(self.tmpdir, retention_seconds=1)
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(human.read_text(), "keep")
+
+    def test_spill_refuses_to_adopt_preexisting_unmarked_session(self):
+        session = Path(self.tmpdir) / "existing-session"
+        session.mkdir()
+        human = session / "human-notes.txt"
+        human.write_text("keep")
+
+        result = hos.spill_if_oversized(
+            "x" * 500,
+            session_id="existing-session",
+            config=self._cfg(max_chars=10),
+        )
+
+        self.assertIn("spill write failed", result)
+        self.assertEqual(human.read_text(), "keep")
+        self.assertFalse((session / ".hermes-managed").exists())
+        self.assertEqual(list(session.glob("*.txt")), [human])
 
 
 if __name__ == "__main__":

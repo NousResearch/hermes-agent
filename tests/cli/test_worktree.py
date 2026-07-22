@@ -1171,6 +1171,19 @@ class TestWorktreeLockPredicate:
         p = self._mk_locked(git_repo, "hermes-dead", "hermes pid=999999")
         assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
 
+    def test_reused_pid_start_mismatch_returns_dead(self, git_repo, monkeypatch):
+        import cli
+        import gateway.status
+
+        p = self._mk_locked(
+            git_repo, "hermes-reused", "hermes pid=4242 start=100"
+        )
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(
+            gateway.status, "get_process_start_time", lambda _pid: 200
+        )
+        assert cli._worktree_lock_is_live(str(git_repo), str(p)) == "dead"
+
     def test_foreign_lock_reason_returns_unknown(self, git_repo):
         import cli
         p = self._mk_locked(git_repo, "hermes-foreign", "some other tool")

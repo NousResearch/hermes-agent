@@ -143,6 +143,22 @@ KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 # a different task.
 _SCRATCH_OWNER_MARKER_NAME = ".hermes-kanban-owner.json"
 _SCRATCH_OWNER_VERSION = 1
+_TXN_ROLLBACK_CLEANUPS: dict[int, list[Any]] = {}
+
+
+def _register_txn_rollback_cleanup(conn: sqlite3.Connection, callback: Any) -> None:
+    """Register filesystem cleanup if the connection's current txn rolls back."""
+    _TXN_ROLLBACK_CLEANUPS.setdefault(id(conn), []).append(callback)
+
+
+def _finish_txn_rollbacks(conn: sqlite3.Connection, *, run: bool) -> None:
+    callbacks = _TXN_ROLLBACK_CLEANUPS.pop(id(conn), [])
+    if run:
+        for callback in reversed(callbacks):
+            try:
+                callback()
+            except Exception:
+                pass
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -2657,6 +2673,7 @@ def write_txn(conn: sqlite3.Connection):
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
+    _finish_txn_rollbacks(conn, run=False)
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
@@ -2668,6 +2685,7 @@ def write_txn(conn: sqlite3.Connection):
             # under EIO, lock contention, or corruption). Nothing to undo;
             # do not let this secondary failure shadow the real one.
             pass
+        _finish_txn_rollbacks(conn, run=True)
         raise
     else:
         try:
@@ -2679,7 +2697,9 @@ def write_txn(conn: sqlite3.Connection):
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
                 pass
+            _finish_txn_rollbacks(conn, run=True)
             raise
+        _finish_txn_rollbacks(conn, run=False)
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
@@ -3519,9 +3539,16 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         )
     try:
         p = Path(att.stored_path)
-        if p.is_file():
+        board = _connection_board(conn)
+        owned_root = task_attachments_dir(att.task_id, board=board).resolve(strict=False)
+        resolved = p.resolve(strict=True)
+        if (
+            p.is_file()
+            and not p.is_symlink()
+            and resolved.parent == owned_root
+        ):
             p.unlink()
-    except OSError:
+    except (OSError, ValueError):
         pass
     return att
 
@@ -4747,6 +4774,8 @@ def _persist_scratch_completion_artifacts(
         except OSError:
             pass
 
+    _register_txn_rollback_cleanup(conn, _discard_copies)
+
     for item in raw_artifacts:
         artifact = str(item).strip() if isinstance(item, str) else ""
         if not artifact:
@@ -4808,8 +4837,11 @@ def _persist_scratch_completion_artifacts(
 
     if changed:
         metadata["artifacts"] = persisted
+        attachment_root = attachment_dir.resolve()
         metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
+            path
+            for path in persisted
+            if Path(path).resolve().parent == attachment_root
         ]
 
 
@@ -5032,12 +5064,23 @@ def _materialize_owned_scratch_workspace(
             if canonical.is_symlink() or not canonical.is_dir():
                 raise ValueError(f"scratch workspace is not a regular directory: {canonical}")
         if created:
-            _create_scratch_owner_marker(
-                canonical,
-                task_id=task.id,
-                board=board_slug,
-                tenant=task.tenant,
-            )
+            try:
+                _create_scratch_owner_marker(
+                    canonical,
+                    task_id=task.id,
+                    board=board_slug,
+                    tenant=task.tenant,
+                )
+            except Exception:
+                # We exclusively created this directory. Remove only the
+                # marker we attempted and the directory if it is otherwise
+                # empty, so an interrupted marker write can be retried safely.
+                try:
+                    (canonical / _SCRATCH_OWNER_MARKER_NAME).unlink(missing_ok=True)
+                    canonical.rmdir()
+                except OSError:
+                    pass
+                raise
         elif not _read_scratch_owner_marker(
             canonical,
             task_id=task.id,
@@ -7814,11 +7857,11 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
-    # All recorded failures are terminal for this worker attempt.  Remove the
-    # disposable workspace now so retries materialize a clean, bounded path;
-    # the containment guard keeps persistent or ambiguous paths untouched.
-    if outcome in {"spawn_failed", "crashed", "timed_out"}:
-        _cleanup_workspace(conn, task_id)
+    # Failure is not ownership transfer or permission to discard partial work.
+    # Preserve scratch across retries and after circuit-breaker blocking so a
+    # later worker or operator can resume from the exact failure checkpoint.
+    # Terminal lifecycle transitions (complete/archive/delete) remain the only
+    # places that remove an exact-owned scratch workspace.
     return blocked
 
 

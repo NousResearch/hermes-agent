@@ -12,6 +12,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 """
 
 import importlib
+import concurrent.futures
 import json
 import os
 import sys
@@ -423,6 +424,80 @@ class TestTrackForgetQuick:
         assert summary["deleted"] == 0
         assert summary["errors"]
         assert memory.read_text() == "human memory"
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "state.db",
+            "kanban.db",
+            "projects.db",
+            "response_store.db",
+            "memory_store.db",
+            "verification_evidence.db",
+            "gateway_state.json",
+            "channel_directory.json",
+            "channel_aliases.json",
+            "processes.json",
+            "feishu_comment_pairing.json",
+        ],
+    )
+    def test_canonical_top_level_state_is_never_deletable(
+        self, _isolate_env, filename
+    ):
+        dg = _load_lib()
+        durable = _isolate_env / filename
+        durable.write_text("human state")
+        identity = dg._capture_identity(durable)
+
+        assert dg.track(str(durable), "test", silent=True) is False
+        dg.save_tracked([{
+            "path": str(durable),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": durable.stat().st_size,
+            "identity": identity,
+        }])
+
+        assert dg.quick()["deleted"] == 0
+        assert durable.read_text() == "human state"
+
+    def test_quick_commit_preserves_concurrent_tracking_addition(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        first = _isolate_env / "test_first.py"
+        concurrent = _isolate_env / "keep.concurrent"
+        first.write_text("delete")
+        concurrent.write_text("preserve tracking")
+        assert dg.track(str(first), "test", silent=True)
+        original_remove = dg._remove_tracked_path
+
+        def remove_while_another_hook_tracks(path, identity):
+            assert dg.track(str(concurrent), "temp", silent=True)
+            return original_remove(path, identity)
+
+        monkeypatch.setattr(dg, "_remove_tracked_path", remove_while_another_hook_tracks)
+
+        assert dg.quick()["deleted"] == 1
+        assert [item["path"] for item in dg.load_tracked()] == [str(concurrent.resolve())]
+
+    def test_parallel_tracking_keeps_every_registry_entry(self, _isolate_env):
+        dg = _load_lib()
+        paths = [_isolate_env / f"parallel-{index}.tmp" for index in range(20)]
+        for path in paths:
+            path.write_text(path.name)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(
+                executor.map(
+                    lambda path: dg.track(str(path), "temp", silent=True), paths
+                )
+            )
+
+        assert all(results)
+        assert {item["path"] for item in dg.load_tracked()} == {
+            str(path.resolve()) for path in paths
+        }
 
     def test_forget_removes_entry(self, _isolate_env):
         dg = _load_lib()

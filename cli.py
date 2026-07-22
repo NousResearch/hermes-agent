@@ -1808,8 +1808,12 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
                     # number is live, so preserve them conservatively.
                     return "unknown"
                 actual_start = get_process_start_time(pid)
-                if actual_start is None or actual_start != int(expected_match.group(1)):
+                if actual_start is None:
                     return "unknown"
+                if actual_start != int(expected_match.group(1)):
+                    # The PID exists but belongs to a different process now.
+                    # That proves the recorded owner is dead (PID reuse).
+                    return "dead"
                 return "live"
             except Exception:
                 # Can't determine liveness — fail safe toward keeping it.

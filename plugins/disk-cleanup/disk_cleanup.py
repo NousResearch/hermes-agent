@@ -26,6 +26,9 @@ import logging
 import os
 import shutil
 import stat
+import tempfile
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -41,6 +44,7 @@ except Exception:  # pragma: no cover — plugin may load before constants resol
 
 
 logger = logging.getLogger(__name__)
+_TRACKED_THREAD_LOCK = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +128,39 @@ def _log(message: str) -> None:
 # tracked.json — atomic read/write, backup scoped to tracked.json only
 # ---------------------------------------------------------------------------
 
-def load_tracked() -> List[Dict[str, Any]]:
+@contextmanager
+def _tracked_registry_lock():
+    """Serialize tracked.json read-modify-write cycles across processes."""
+    lock_path = get_state_dir() / "tracked.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _TRACKED_THREAD_LOCK, lock_path.open("a+b") as lock_file:
+        if lock_file.seek(0, os.SEEK_END) == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+        lock_file.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _load_tracked_unlocked() -> List[Dict[str, Any]]:
     """Load tracked.json.  Restores from ``.bak`` on corruption."""
     tf = get_tracked_file()
     tf.parent.mkdir(parents=True, exist_ok=True)
@@ -152,15 +188,59 @@ def load_tracked() -> List[Dict[str, Any]]:
         return []
 
 
-def save_tracked(tracked: List[Dict[str, Any]]) -> None:
+def load_tracked() -> List[Dict[str, Any]]:
+    with _tracked_registry_lock():
+        return _load_tracked_unlocked()
+
+
+def _save_tracked_unlocked(tracked: List[Dict[str, Any]]) -> None:
     """Atomic write: ``.tmp`` → backup old → rename."""
     tf = get_tracked_file()
     tf.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tf.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(tracked, indent=2))
-    if tf.exists():
-        shutil.copy2(tf, tf.with_suffix(".json.bak"))
-    tmp.replace(tf)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=tf.parent,
+            prefix="tracked-",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            json.dump(tracked, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        if tf.exists():
+            shutil.copy2(tf, tf.with_suffix(".json.bak"))
+        tmp_path.replace(tf)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def save_tracked(tracked: List[Dict[str, Any]]) -> None:
+    with _tracked_registry_lock():
+        _save_tracked_unlocked(tracked)
+
+
+def _commit_tracked_snapshot(
+    original: List[Dict[str, Any]], desired: List[Dict[str, Any]]
+) -> None:
+    """Apply removals from one snapshot without losing concurrent additions."""
+    desired_ids = {id(item) for item in desired}
+    removed = [item for item in original if id(item) not in desired_ids]
+    with _tracked_registry_lock():
+        current = _load_tracked_unlocked()
+        for old_item in removed:
+            try:
+                current.remove(old_item)
+            except ValueError:
+                pass
+        _save_tracked_unlocked(current)
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +292,14 @@ _PROTECTED_TRACKED_TOP_LEVEL = frozenset({
     ".worktrees",
     "backups",
     "disk-cleanup",
+    "gateway",
     "hermes-agent",
+    "kanban",
     "logs",
     "memories",
     "optional-skills",
+    "pairing",
+    "platforms",
     "plugins",
     "profiles",
     "sessions",
@@ -227,9 +311,25 @@ _PROTECTED_TRACKED_TOP_LEVEL_FILES = frozenset({
     "SOUL.md",
     "USER.md",
     "auth.json",
+    "channel_aliases.json",
+    "channel_directory.json",
     "config.yaml",
+    "feishu_comment_pairing.json",
+    "gateway_state.json",
+    "kanban.db",
+    "memory_store.db",
+    "processes.json",
+    "projects.db",
+    "response_store.db",
     "state.db",
+    "verification_evidence.db",
 })
+_PROTECTED_TRACKED_TOP_LEVEL_CASEFOLD = frozenset(
+    name.casefold() for name in _PROTECTED_TRACKED_TOP_LEVEL
+)
+_PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD = frozenset(
+    name.casefold() for name in _PROTECTED_TRACKED_TOP_LEVEL_FILES
+)
 
 
 def _is_protected_cron_path(p: Path) -> bool:
@@ -250,11 +350,11 @@ def _is_protected_cron_path(p: Path) -> bool:
         hermes_home = get_hermes_home()
         for parent in ("cron", "cronjobs"):
             base = hermes_home / parent
-            _PROTECTED_CRON_PATHS.add(str(base))
-            _PROTECTED_CRON_PATHS.add(str(base / "output"))
-            _PROTECTED_CRON_PATHS.add(str(base / "jobs.json"))
-            _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
-    resolved = str(p.resolve())
+            for protected in (base, base / "output", base / "jobs.json", base / ".tick.lock"):
+                _PROTECTED_CRON_PATHS.add(
+                    os.path.normcase(os.path.normpath(str(protected.resolve())))
+                )
+    resolved = os.path.normcase(os.path.normpath(str(p.resolve())))
     return resolved in _PROTECTED_CRON_PATHS
 
 
@@ -266,10 +366,13 @@ def _is_protected_tracked_path(path: Path) -> bool:
         return False
     if not rel.parts:
         return True
-    top = rel.parts[0]
+    top = rel.parts[0].casefold()
     return (
-        top in _PROTECTED_TRACKED_TOP_LEVEL
-        or (len(rel.parts) == 1 and top in _PROTECTED_TRACKED_TOP_LEVEL_FILES)
+        top in _PROTECTED_TRACKED_TOP_LEVEL_CASEFOLD
+        or (
+            len(rel.parts) == 1
+            and top in _PROTECTED_TRACKED_TOP_LEVEL_FILES_CASEFOLD
+        )
     )
 
 
@@ -477,23 +580,21 @@ def track(
         _log(f"REJECT: {path} (creation identity changed before tracking)")
         return False
     size = identity["size"] if path.is_file() else 0
-    tracked = load_tracked()
-
-    # Deduplicate
-    if any(
-        isinstance(item, dict) and item.get("path") == str(path)
-        for item in tracked
-    ):
-        return False
-
-    tracked.append({
-        "path": str(path),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "category": category,
-        "size": size,
-        "identity": identity,
-    })
-    save_tracked(tracked)
+    with _tracked_registry_lock():
+        tracked = _load_tracked_unlocked()
+        if any(
+            isinstance(item, dict) and item.get("path") == str(path)
+            for item in tracked
+        ):
+            return False
+        tracked.append({
+            "path": str(path),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "category": category,
+            "size": size,
+            "identity": identity,
+        })
+        _save_tracked_unlocked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
     if not silent:
         print(f"Tracked: {path} ({category}, {fmt_size(size)})")
@@ -503,13 +604,14 @@ def track(
 def forget(path_str: str) -> int:
     """Remove a path from tracking without deleting the file."""
     p = Path(path_str).resolve()
-    tracked = load_tracked()
-    before = len(tracked)
-    tracked = [i for i in tracked if Path(i["path"]).resolve() != p]
-    removed = before - len(tracked)
-    if removed:
-        save_tracked(tracked)
-        _log(f"FORGOT: {p} ({removed} entries)")
+    with _tracked_registry_lock():
+        tracked = _load_tracked_unlocked()
+        before = len(tracked)
+        tracked = [i for i in tracked if Path(i["path"]).resolve() != p]
+        removed = before - len(tracked)
+        if removed:
+            _save_tracked_unlocked(tracked)
+            _log(f"FORGOT: {p} ({removed} entries)")
     return removed
 
 
@@ -693,7 +795,7 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     # manual/global quick command additionally performs retention and empty-dir
     # sweeps under their separately marked ownership roots.
     if scoped_paths is not None:
-        save_tracked(new_tracked)
+        _commit_tracked_snapshot(tracked, new_tracked)
         _log(
             f"QUICK_SUMMARY: {deleted} files, 0 dirs, "
             f"{fmt_size(freed)}"
@@ -790,7 +892,7 @@ def quick(paths: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         except OSError:
             pass
 
-    save_tracked(new_tracked)
+    _commit_tracked_snapshot(tracked, new_tracked)
     _log(
         f"QUICK_SUMMARY: {deleted} files, {empty_removed} dirs, "
         f"{fmt_size(freed)}"
@@ -888,7 +990,9 @@ def deep(
 
     if to_remove:
         remove_paths = {i["path"] for i in to_remove}
-        save_tracked([i for i in tracked if i["path"] not in remove_paths])
+        _commit_tracked_snapshot(
+            tracked, [i for i in tracked if i["path"] not in remove_paths]
+        )
 
     return {"quick": quick_result, "deep_deleted": count, "deep_freed": freed}
 

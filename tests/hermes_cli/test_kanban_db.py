@@ -2389,13 +2389,15 @@ def test_delete_task_cleans_managed_scratch_dir_before_row_disappears(kanban_hom
     assert not ws.exists()
 
 
-def test_failure_path_cleans_managed_scratch_dir(kanban_home):
-    """A failed retry must release its disposable workspace for the next run."""
+def test_failure_path_preserves_managed_scratch_checkpoint(kanban_home):
+    """A failed retry must preserve partial work for the next worker."""
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="failed scratch")
         task = kb.get_task(conn, task_id)
         ws = kb.resolve_workspace(task)
         kb.set_workspace_path(conn, task_id, ws)
+        checkpoint = ws / "checkpoint.txt"
+        checkpoint.write_text("resume here")
         kb._record_task_failure(
             conn,
             task_id,
@@ -2404,7 +2406,28 @@ def test_failure_path_cleans_managed_scratch_dir(kanban_home):
             failure_limit=5,
         )
 
-    assert not ws.exists()
+    assert checkpoint.read_text() == "resume here"
+
+
+def test_auto_blocked_failure_preserves_scratch_for_operator(kanban_home):
+    """Circuit-breaker blocking must leave the exact failed workspace recoverable."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="blocked scratch")
+        task = kb.get_task(conn, task_id)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, ws)
+        checkpoint = ws / "checkpoint.txt"
+        checkpoint.write_text("operator evidence")
+        blocked = kb._record_task_failure(
+            conn,
+            task_id,
+            "worker failed",
+            outcome="crashed",
+            failure_limit=1,
+        )
+
+    assert blocked is True
+    assert checkpoint.read_text() == "operator evidence"
 
 
 def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
@@ -2441,6 +2464,87 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     assert [(a.filename, a.stored_path) for a in attachments] == [
         ("chart.png", str(persisted.resolve()))
     ]
+
+
+def test_completion_artifact_prefix_collision_is_not_registered(kanban_home):
+    """A sibling whose name shares the attachment-dir prefix stays external."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="contain staged paths")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        real = workspace / "real.txt"
+        real.write_text("owned")
+        sibling = kb.task_attachments_dir(task_id).with_name(f"{task_id}-foreign")
+        sibling.mkdir(parents=True)
+        human = sibling / "human.txt"
+        human.write_text("keep")
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="done",
+            metadata={"artifacts": [str(real), str(human)]},
+        )
+        attachments = kb.list_attachments(conn, task_id)
+
+    assert [item.filename for item in attachments] == ["real.txt"]
+    assert human.read_text() == "keep"
+
+
+def test_delete_attachment_never_unlinks_outside_task_storage(kanban_home):
+    """A corrupt or legacy row cannot turn row deletion into arbitrary unlink."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="contained delete")
+        outside = kanban_home / "human.txt"
+        outside.write_text("keep")
+        attachment_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename=outside.name,
+            stored_path=str(outside),
+            uploaded_by="legacy",
+        )
+
+        assert kb.delete_attachment(conn, attachment_id) is not None
+        assert kb.get_attachment(conn, attachment_id) is None
+
+    assert outside.read_text() == "keep"
+
+
+def test_completion_rollback_removes_staged_artifact_copy(
+    kanban_home, monkeypatch
+):
+    """A failed SQLite commit must not orphan the pre-cleanup artifact copy."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="rollback artifact")
+        task = kb.get_task(conn, task_id)
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "report.txt"
+        artifact.write_text("result")
+        original_boundary = kb._execute_boundary_with_retry
+
+        def fail_commit(connection, sql):
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("forced commit failure")
+            return original_boundary(connection, sql)
+
+        monkeypatch.setattr(kb, "_execute_boundary_with_retry", fail_commit)
+        with pytest.raises(sqlite3.OperationalError, match="forced commit failure"):
+            kb.complete_task(
+                conn,
+                task_id,
+                result="done",
+                metadata={"artifacts": [str(artifact)]},
+            )
+
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert kb.list_attachments(conn, task_id) == []
+
+    assert artifact.exists()
+    attachment_dir = kb.task_attachments_dir(task_id)
+    assert not attachment_dir.exists() or not list(attachment_dir.iterdir())
 
 
 def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
@@ -2653,6 +2757,30 @@ def test_scratch_workspace_has_exact_owner_marker(kanban_home):
         "tenant": "tenant-a",
         "workspace": str(workspace.resolve()),
     }
+
+
+def test_interrupted_scratch_marker_creation_can_retry(
+    kanban_home, monkeypatch
+):
+    """An interrupted marker write does not poison the canonical path forever."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="retry marker")
+        task = kb.get_task(conn, task_id)
+        canonical = kb.workspaces_root() / task_id
+        original = kb._create_scratch_owner_marker
+
+        def interrupt(workspace, **_kwargs):
+            (workspace / kb._SCRATCH_OWNER_MARKER_NAME).write_text("{")
+            raise OSError("interrupted marker write")
+
+        monkeypatch.setattr(kb, "_create_scratch_owner_marker", interrupt)
+        with pytest.raises(ValueError, match="could not materialize"):
+            kb.resolve_workspace(task)
+        assert not canonical.exists()
+
+        monkeypatch.setattr(kb, "_create_scratch_owner_marker", original)
+        assert kb.resolve_workspace(task) == canonical
+        assert (canonical / kb._SCRATCH_OWNER_MARKER_NAME).is_file()
 
 
 def test_scratch_cleanup_preserves_cross_task_workspace(kanban_home):

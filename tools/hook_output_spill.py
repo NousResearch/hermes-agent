@@ -58,6 +58,8 @@ DEFAULT_PREVIEW_TAIL = 500
 DEFAULT_ENABLED = True
 DEFAULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_MAX_FILES_PER_SESSION = 100
+_OWNERSHIP_MARKER = ".hermes-managed"
+_OWNERSHIP_VALUE = "hook_outputs"
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -168,6 +170,40 @@ def _build_preview(
     return "\n".join(parts)
 
 
+def _is_owned_spill_dir(path: Path) -> bool:
+    """Return whether a session directory has exact, non-symlink ownership."""
+    marker = path / _OWNERSHIP_MARKER
+    try:
+        return (
+            path.is_dir()
+            and not path.is_symlink()
+            and marker.is_file()
+            and not marker.is_symlink()
+            and marker.read_text(encoding="utf-8").strip() == _OWNERSHIP_VALUE
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def _prepare_owned_spill_dir(path: Path) -> bool:
+    """Create and mark a new session dir, or verify an existing owned one."""
+    try:
+        path.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        # Never adopt a pre-existing directory by stamping a marker into it.
+        return _is_owned_spill_dir(path)
+    except OSError:
+        return False
+
+    marker = path / _OWNERSHIP_MARKER
+    try:
+        with marker.open("x", encoding="utf-8") as marker_file:
+            marker_file.write(f"{_OWNERSHIP_VALUE}\n")
+    except (FileExistsError, OSError):
+        return False
+    return _is_owned_spill_dir(path)
+
+
 def prune_spill_files(
     base_directory: str | os.PathLike[str],
     *,
@@ -195,7 +231,7 @@ def prune_spill_files(
     removed = 0
     try:
         session_dirs = sorted(
-            (p for p in root.iterdir() if p.is_dir() and not p.is_symlink()),
+            (p for p in root.iterdir() if _is_owned_spill_dir(p)),
             key=lambda p: p.name,
         )
     except OSError:
@@ -288,18 +324,8 @@ def spill_if_oversized(
                 "max_files_per_session", DEFAULT_MAX_FILES_PER_SESSION
             ),
         )
-        spill_dir.mkdir(parents=True, exist_ok=True)
-        marker = spill_dir / ".hermes-managed"
-        if (
-            directory_override is None
-            and not marker.exists()
-            and not marker.is_symlink()
-        ):
-            try:
-                with marker.open("x", encoding="utf-8") as marker_file:
-                    marker_file.write("hook_outputs\n")
-            except FileExistsError:
-                pass
+        if not _prepare_owned_spill_dir(spill_dir):
+            raise OSError(f"spill directory is not exclusively Hermes-owned: {spill_dir}")
         filename = f"{uuid.uuid4().hex}.txt"
         spill_path = spill_dir / filename
         # Write the raw text plus a trailing newline so tail readers

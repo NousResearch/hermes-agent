@@ -227,7 +227,7 @@ export function StarMap({
 
   const memById = useMemo(() => {
     const m = new Map<string, MemoryCard>()
-    graph.memory.forEach((card, i) => m.set(`memory:${card.source}:${i}`, card))
+    graph.memory.forEach((card, i) => m.set(card.id ?? `memory:${card.source}:${i}`, card))
 
     return m
   }, [graph.memory])

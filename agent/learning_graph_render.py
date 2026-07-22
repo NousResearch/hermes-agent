@@ -360,7 +360,7 @@ def _bucket_nodes(bucket: _ChartBucket, memory_lookup: Optional[dict[str, dict[s
 def _bucket_rows(buckets: list[_ChartBucket], payload: dict[str, Any]) -> list[dict[str, Any]]:
     cmap = category_color_map(payload)
     memory_lookup = {
-        f"memory:{card.get('source')}:{idx}": card
+        str(card.get("id") or f"memory:{card.get('source')}:{idx}"): card
         for idx, card in enumerate(payload.get("memory", []) or [])
         if isinstance(card, dict)
     }

@@ -15,6 +15,7 @@ Run as a module to print edge-density stats against real data:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -23,6 +24,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+
+
+def _memory_content_digest(content: str) -> str:
+    """Stable identity for a normalized, complete memory entry."""
+    return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
+
+
+def _memory_node_id(source: str, content: str) -> str:
+    return f"memory:{source}:{_memory_content_digest(content)}"
 
 
 @dataclass
@@ -205,12 +215,15 @@ def _memory_cards() -> list[dict[str, Any]]:
             file_ts = _to_int_ts(path.stat().st_mtime)
         except OSError:
             continue
+        seen_chunks: set[str] = set()
         for chunk_idx, chunk in enumerate(c.strip() for c in text.split("\n§\n")):
-            if not chunk:
+            if not chunk or chunk in seen_chunks:
                 continue
+            seen_chunks.add(chunk)
             first = chunk.splitlines()[0].strip().lstrip("# ").strip()
             cards.append(
                 {
+                    "id": _memory_node_id(source, chunk),
                     "source": source,
                     "timestamp": file_ts + chunk_idx if file_ts is not None else None,
                     "title": (first[:80] + "…") if len(first) > 80 else first,
@@ -227,8 +240,8 @@ def _tokenize(text: str) -> set[str]:
 def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNode]) -> list[tuple[str, str]]:
     edges: list[tuple[str, str]] = []
     skill_meta = [(s, _tokenize(s.name), s.name.lower()) for s in skills]
-    for idx, card in enumerate(memory_cards):
-        mem_id = f"memory:{card['source']}:{idx}"
+    for card in memory_cards:
+        mem_id = card["id"]
         text = f"{card.get('title', '')}\n{card.get('body', '')}".lower()
         text_tokens = _tokenize(text)
         scored: list[tuple[int, str]] = []
@@ -290,10 +303,10 @@ def build_learning_graph() -> dict[str, Any]:
         }
         for n in learned_skills.values()
     ]
-    for i, card in enumerate(memory_cards):
+    for card in memory_cards:
         graph_nodes.append(
             {
-                "id": f"memory:{card['source']}:{i}",
+                "id": card["id"],
                 "label": card["title"],
                 "kind": "memory",
                 "memorySource": card["source"],

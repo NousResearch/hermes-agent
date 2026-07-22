@@ -3,10 +3,9 @@
 The journey graph (``agent.learning_graph``) gives every node a stable id:
 
 - **skills** → the skill name (e.g. ``"debugging-hermes-desktop"``)
-- **memories** → ``memory:<source>:<index>`` where ``source`` is ``memory``
-  (``MEMORY.md``) or ``profile`` (``USER.md``) and ``index`` is the node's
-  position in the combined card list (``MEMORY.md`` cards first, then
-  ``USER.md``).
+- **memories** → ``memory:<source>:<digest>`` where ``source`` is
+  ``memory`` (``MEMORY.md``) or ``profile`` (``USER.md``), and the digest is
+  derived from the complete entry rather than its position in the file.
 
 This module maps a node id back to its on-disk home and performs the mutation,
 shared by the CLI (``hermes journey delete|edit``), the TUI ``/journey`` overlay
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 _MEMORY_FILES = {"memory": "MEMORY.md", "profile": "USER.md"}
+_MEMORY_TARGETS = {"memory": "memory", "profile": "user"}
 
 
 def parse_node_kind(node_id: str) -> str:
@@ -33,51 +33,38 @@ def _memories_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
-def _parse_memory_id(node_id: str) -> tuple[str, int]:
-    """``memory:<source>:<index>`` → (source, global_index)."""
+def _parse_memory_id(node_id: str) -> tuple[str, str]:
+    """Parse a content-addressed memory node id."""
     parts = node_id.split(":", 2)
+    if len(parts) == 3 and parts[0] == "memory" and parts[2].isdigit():
+        raise ValueError("legacy memory node id is stale — refresh the graph")
     if len(parts) != 3 or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
         raise ValueError(f"bad memory node id: {node_id!r}")
     try:
-        return parts[1], int(parts[2])
+        digest = parts[2]
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            raise ValueError
+        return parts[1], digest
     except ValueError as exc:
         raise ValueError(f"bad memory node id: {node_id!r}") from exc
 
 
-def _memory_local_index(source: str, global_index: int) -> int:
-    """Global card index → position within the source's own file.
-
-    ``_memory_cards`` emits all ``MEMORY.md`` cards before ``USER.md`` cards, so
-    a profile card's local index is its global index minus the memory count.
-    """
-    from agent.learning_graph import _memory_cards
-
-    cards = _memory_cards()
-    if not 0 <= global_index < len(cards):
-        raise IndexError(f"memory index {global_index} out of range")
-    if cards[global_index].get("source") != source:
-        raise ValueError("memory node id is stale — refresh the graph")
-    if source == "memory":
-        return global_index
-    return global_index - sum(1 for c in cards if c.get("source") == "memory")
-
-
-def _locate_memory(source: str, gidx: int) -> tuple[Path, list[str], int]:
-    """Resolve a memory card to its file, all §-delimited entries, and local index.
-
-    Entries come from ``MemoryStore._read_file`` — the same parser the memory
-    tool uses — so journey indices stay aligned with what the graph renders.
-    """
+def _locate_memory(source: str, digest: str) -> tuple[Path, str]:
+    """Resolve an opaque node id to its current exact on-disk entry."""
+    from agent.learning_graph import _memory_content_digest
     from tools.memory_tool import MemoryStore
 
     path = _memories_dir() / _MEMORY_FILES[source]
     if not path.exists():
         raise ValueError(f"{path.name} not found")
     chunks = MemoryStore._read_file(path)
-    local = _memory_local_index(source, gidx)
-    if not 0 <= local < len(chunks):
+    match = next(
+        (chunk for chunk in chunks if _memory_content_digest(chunk) == digest),
+        None,
+    )
+    if match is None:
         raise ValueError("memory node id is stale — refresh the graph")
-    return path, chunks, local
+    return path, match
 
 
 # ── Inspect (edit prefill) ──────────────────────────────────────────────────
@@ -94,9 +81,9 @@ def node_detail(node_id: str) -> dict[str, Any]:
 
 def _node_detail(node_id: str) -> dict[str, Any]:
     if parse_node_kind(node_id) == "memory":
-        source, gidx = _parse_memory_id(node_id)
-        _, chunks, local = _locate_memory(source, gidx)
-        body = chunks[local].strip()
+        source, digest = _parse_memory_id(node_id)
+        _, body = _locate_memory(source, digest)
+        body = body.strip()
 
         return {"ok": True, "kind": "memory", "id": node_id, "label": body.splitlines()[0][:80], "content": body}
 
@@ -142,12 +129,13 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    source, gidx = _parse_memory_id(node_id)
-    path, chunks, local = _locate_memory(source, gidx)
+    source, digest = _parse_memory_id(node_id)
+    path, body = _locate_memory(source, digest)
+    from tools.memory_tool import load_on_disk_store
 
-    del chunks[local]
-    _write_memory(path, chunks)
-
+    result = load_on_disk_store().remove(_MEMORY_TARGETS[source], body, exact=True)
+    if not result.get("success"):
+        return {"ok": False, "message": result.get("error", "delete failed")}
     return {"ok": True, "message": f"deleted memory from {path.name}"}
 
 
@@ -174,27 +162,19 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
 
 
 def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
-    source, gidx = _parse_memory_id(node_id)
+    source, digest = _parse_memory_id(node_id)
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(source, gidx)
+    path, old_body = _locate_memory(source, digest)
+    from tools.memory_tool import load_on_disk_store
 
-    chunks[local] = body
-    _write_memory(path, chunks)
-
+    result = load_on_disk_store().replace(
+        _MEMORY_TARGETS[source], old_body, body, exact=True
+    )
+    if not result.get("success"):
+        return {"ok": False, "message": result.get("error", "edit failed")}
     return {"ok": True, "message": f"updated memory in {path.name}"}
-
-
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-
-def _write_memory(path: Path, chunks: list[str]) -> None:
-    """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
-    from tools.memory_tool import MemoryStore
-
-    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
 
 
 def _clear_skill_cache() -> None:

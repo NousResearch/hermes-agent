@@ -86,6 +86,26 @@ def test_memory_is_cards_split_on_separator(tmp_path):
     assert all(c["source"] in {"memory", "profile"} for c in graph["memory"])
     assert all("timestamp" in c for c in graph["memory"])
     assert any(n["kind"] == "memory" for n in graph["nodes"])
+    card_ids = {c["id"] for c in graph["memory"]}
+    node_ids = {n["id"] for n in graph["nodes"] if n["kind"] == "memory"}
+    assert card_ids == node_ids
+
+
+def test_duplicate_memory_chunks_share_one_card(tmp_path):
+    home = tmp_path / ".hermes"
+    (home / "memories").mkdir(parents=True)
+    (home / "memories" / "MEMORY.md").write_text(
+        "same note\n§\nsame note\n§\nkeep note",
+        encoding="utf-8",
+    )
+    token = set_hermes_home_override(home)
+    try:
+        cards = learning_graph._memory_cards()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert [card["title"] for card in cards] == ["same note", "keep note"]
+    assert len({card["id"] for card in cards}) == 2
 
 
 def test_malformed_frontmatter_metadata_does_not_crash(tmp_path):

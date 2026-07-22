@@ -524,6 +524,7 @@ export interface StarmapCluster {
 
 /** Freeform memory rendered as a card — never a graph node. */
 export interface StarmapMemoryCard {
+  id?: string
   source: 'memory' | 'profile'
   timestamp?: null | number
   title: string

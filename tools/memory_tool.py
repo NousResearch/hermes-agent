@@ -395,8 +395,15 @@ class MemoryStore:
 
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+    def replace(
+        self,
+        target: str,
+        old_text: str,
+        new_content: str,
+        *,
+        exact: bool = False,
+    ) -> Dict[str, Any]:
+        """Replace an entry matching ``old_text`` by substring or exact text."""
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -415,7 +422,11 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            matches = [
+                (i, entry)
+                for i, entry in enumerate(entries)
+                if entry == old_text or (not exact and old_text in entry)
+            ]
 
             if not matches:
                 return self._consolidation_failure({
@@ -464,8 +475,8 @@ class MemoryStore:
 
         return self._success_response(target, "Entry replaced.")
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+    def remove(self, target: str, old_text: str, *, exact: bool = False) -> Dict[str, Any]:
+        """Remove an entry matching ``old_text`` by substring or exact text."""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -476,7 +487,11 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            matches = [
+                (i, entry)
+                for i, entry in enumerate(entries)
+                if entry == old_text or (not exact and old_text in entry)
+            ]
 
             if not matches:
                 return self._consolidation_failure({
@@ -1156,7 +1171,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

@@ -6425,10 +6425,107 @@ def _format_time_ago(iso_ts: str) -> str:
         return "recently"
 
 
+def _get_systemd_service_for_pid(pid: int) -> str | None:
+    """If *pid* belongs to a systemd service unit, return the unit name.
+
+    Reads ``/proc/<pid>/cgroup`` and extracts the service name (e.g.
+    ``hermes-serve.service``).  Returns ``None`` when the PID is not
+    part of a systemd service, when the file is unreadable, or on
+    non-Linux platforms.
+    """
+    try:
+        cgroup_path = Path(f"/proc/{pid}/cgroup")
+        if not cgroup_path.is_file():
+            return None
+        text = cgroup_path.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            # Format: 0::/system.slice/hermes-serve.service
+            #         0::/user.slice/user-1000.slice/session-42.scope
+            parts = line.split("::", 1)
+            if len(parts) != 2:
+                continue
+            cg_path = parts[1]
+            if cg_path.endswith(".service"):
+                svc_name = cg_path.rsplit("/", 1)[-1]
+                if svc_name:
+                    return svc_name
+    except (OSError, PermissionError):
+        pass
+    return None
+
+
+def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:
+    """Extract the systemd scope (``user`` or ``system``) from a cgroup path.
+
+    The cgroup path format is ``/system.slice/<name>.service`` for system
+    services and ``/user.slice/user-<uid>.slice/<name>.service`` for user
+    services.  Returns ``None`` when the scope cannot be determined.
+    """
+    if "/system.slice/" in cgroup_entry:
+        return "system"
+    if "/user.slice/" in cgroup_entry:
+        return "user"
+    return None
+
+
+def _get_pid_cgroup_path(pid: int) -> str | None:
+    """Return the cgroup path from ``/proc/<pid>/cgroup``, or ``None``.
+
+    Only the unified (``0::``) hierarchy cgroup entry is examined.
+    """
+    try:
+        cgroup_path = Path(f"/proc/{pid}/cgroup")
+        if not cgroup_path.is_file():
+            return None
+        text = cgroup_path.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            parts = line.split("::", 1)
+            if len(parts) == 2:
+                return parts[1]
+    except (OSError, PermissionError):
+        pass
+    return None
+
+
+def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
+    """Attempt to restart *svc_name* via systemctl.
+
+    Uses ``systemctl --user`` for user-scope services and ``systemctl``
+    for system-scope services.  Returns ``True`` on success.
+    """
+    scope = _extract_scope_from_cgroup(cgroup_path) if cgroup_path else None
+    if scope == "user":
+        cmd = ["systemctl", "--user", "restart", svc_name]
+    elif scope == "system":
+        cmd = ["systemctl", "restart", svc_name]
+    else:
+        # Unknown scope — try system first, then user
+        cmd = None
+        for candidate in (
+            ["systemctl", "restart", svc_name],
+            ["systemctl", "--user", "restart", svc_name],
+        ):
+            try:
+                r = subprocess.run(candidate, capture_output=True, text=True, timeout=15)
+                if r.returncode == 0:
+                    return True
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                continue
+        return False
+
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
-    """Kill running ``hermes dashboard`` processes.
+    """Kill running ``hermes dashboard`` / ``hermes serve`` processes.
 
     Called at the end of ``hermes update`` (default ``reason``) and also
     from ``hermes dashboard --stop`` (which overrides ``reason``).  The
@@ -6442,9 +6539,9 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    The dashboard isn't auto-restarted because we don't know the original
-    launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; a hint is printed.
+    New in #68934: if a killed process was supervised by systemd, the
+    corresponding service unit is restarted so the remote backend comes
+    back online without manual intervention.
     """
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
@@ -6472,6 +6569,17 @@ def _kill_stale_dashboard_processes(
 
     print()
     print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+
+    # Before killing, snapshot systemd cgroup info for each PID so we can
+    # restart supervised services after the kill (the cgroup disappears
+    # along with the process).  Only meaningful on Linux.
+    pid_cgroup: dict[int, str | None] = {}
+    pid_service: dict[int, str | None] = {}
+    if sys.platform != "win32":
+        for pid in pids:
+            cg_path = _get_pid_cgroup_path(pid)
+            pid_cgroup[pid] = cg_path
+            pid_service[pid] = _get_systemd_service_for_pid(pid)
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -6539,7 +6647,35 @@ def _kill_stale_dashboard_processes(
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
+    # Restart systemd-supervised processes that we just killed.
+    # Without this, a remote backend (hermes serve) brought down by
+    # systemctl kill / Restart=on-failure won't auto-relaunch after
+    # the clean SIGTERM, and the Desktop never reconnects (#68934).
+    restarted_services: list[str] = []
     if killed:
+        failed_restarts: list[tuple[str, str]] = []
+        seen_services: set[str] = set()
+        for pid in killed:
+            cg_path = pid_cgroup.get(pid)
+            if not cg_path:
+                continue
+            svc_name = pid_service.get(pid)
+            if not svc_name or svc_name in seen_services:
+                continue
+            seen_services.add(svc_name)
+            if _try_restart_systemd_service(svc_name, cg_path):
+                restarted_services.append(svc_name)
+            else:
+                failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
+
+        if restarted_services:
+            for svc in restarted_services:
+                print(f"    ✓ restarted systemd service {svc}")
+        if failed_restarts:
+            for svc, err in failed_restarts:
+                print(f"    ⚠ {svc}: {err}")
+
+    if killed and not restarted_services:
         print("  Restart the dashboard when you're ready:")
         print("    hermes dashboard --port <port>")
 

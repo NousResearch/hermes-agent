@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildGroups, firstVisibleGroupIndex, isVirtualizedGroup, LIVE_TAIL_GROUPS, type MessageGroup } from './list'
+import {
+  buildGroups,
+  earlierGroupIndex,
+  firstVisibleGroupIndex,
+  isVirtualizedGroup,
+  LIVE_TAIL_GROUPS,
+  MAX_INITIAL_GROUPS,
+  type MessageGroup
+} from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
@@ -108,5 +116,27 @@ describe('isVirtualizedGroup', () => {
   it('honors a custom tail size', () => {
     expect(isVirtualizedGroup(5, 10, 3)).toBe(true)
     expect(isVirtualizedGroup(7, 10, 3)).toBe(false)
+  })
+})
+
+describe('firstVisibleGroupIndex group cap', () => {
+  const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
+
+  it('applies a literal group cap in addition to the part budget', () => {
+    const groups = Array.from({ length: MAX_INITIAL_GROUPS + 10 }, (_, index) => group(String(index), 1))
+
+    expect(groups.length - firstVisibleGroupIndex(groups, 60)).toBe(MAX_INITIAL_GROUPS)
+  })
+})
+
+describe('earlierGroupIndex', () => {
+  const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
+
+  it('advances by a bounded page for ordinary history', () => {
+    expect(earlierGroupIndex([group('old', 60), group('new', 60)], 1)).toBe(0)
+  })
+
+  it('always reveals an earlier group after a very heavy visible turn', () => {
+    expect(earlierGroupIndex([group('old', 5), group('huge', 500)], 1)).toBe(0)
   })
 })

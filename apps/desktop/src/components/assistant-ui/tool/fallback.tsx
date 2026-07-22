@@ -37,8 +37,6 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { recordPreviewArtifact } from '@/store/preview-status'
-import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
@@ -51,7 +49,6 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   isFileEditTool,
-  isPreviewableTarget,
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
@@ -63,6 +60,7 @@ import {
   type ToolTitleAction
 } from './fallback-model'
 import { prettyJson } from './fallback-model/format'
+import { toolPartPageKey, useToolTurnPagination } from './turn-pagination'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -307,27 +305,6 @@ function ToolEntry({ part }: ToolEntryProps) {
 
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, result, stablePart])
-
-  // Surface a previewable artifact (HTML file / localhost URL) as a compact link
-  // in the composer status stack rather than a bulky inline card. Uses the same
-  // detected target the old inline card did, keyed to the active session the
-  // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
-  const previewTarget = view.previewTarget
-
-  useEffect(() => {
-    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
-      return
-    }
-
-    // Read (don't subscribe) session/cwd: this only fires when a previewable
-    // target appears, and subscribing re-rendered every tool row on any session
-    // or cwd change.
-    const activeSessionId = $activeSessionId.get()
-
-    if (activeSessionId) {
-      recordPreviewArtifact(activeSessionId, previewTarget, $currentCwd.get() || '')
-    }
-  }, [isPending, previewTarget])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
@@ -624,10 +601,11 @@ function ToolEntry({ part }: ToolEntryProps) {
 // A back-to-back run of this many tool calls collapses into the bounded,
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
+const TOOL_GROUP_DOM_PAGE = 20
 
 // Tools whose body (an interactive form, a full-size image) must never be
-// trapped behind the window's max-height + fade mask. A run holding any of
-// them stays a plain, fully-visible stack no matter how long it is.
+// trapped behind the window's max-height + fade mask. Large runs still page
+// their DOM independently; the newest page contains the active tool.
 export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
 
 export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
@@ -709,6 +687,8 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
+  const { t } = useI18n()
+  const turnPagination = useToolTurnPagination()
 
   const hasUnboundable = useAuiState(s =>
     s.message.parts
@@ -718,12 +698,61 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
-  const bounded = shouldBoundToolGroup(Children.count(children), hasUnboundable)
+  const childArray = Children.toArray(children)
+  const bounded = shouldBoundToolGroup(childArray.length, hasUnboundable)
+  const pageKey = `${messageId}:${startIndex}`
+  const [page, setPage] = useState({ count: TOOL_GROUP_DOM_PAGE, key: pageKey })
+
+  const partKeysSignature = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .map((part, offset) =>
+        part.type === 'tool-call' ? toolPartPageKey(messageId, Math.max(0, startIndex) + offset, part.toolCallId) : ''
+      )
+      .filter(Boolean)
+      .join('\n')
+  )
+
+  if (page.key !== pageKey) {
+    setPage({ count: TOOL_GROUP_DOM_PAGE, key: pageKey })
+  }
+
+  const renderCount = page.key === pageKey ? page.count : TOOL_GROUP_DOM_PAGE
+
+  const partKeys = partKeysSignature ? partKeysSignature.split('\n') : []
+  const keyedChildren = childArray.map((child, index) => ({ child, key: partKeys[index] ?? `${pageKey}:${index}` }))
+  const localHiddenCount = Math.max(0, keyedChildren.length - renderCount)
+
+  const visibleChildren = turnPagination
+    ? keyedChildren.filter(item => turnPagination.isVisible(item.key))
+    : localHiddenCount > 0
+      ? keyedChildren.slice(-renderCount)
+      : keyedChildren
+
+  const showTurnPager = Boolean(
+    turnPagination &&
+    turnPagination.hiddenCount > 0 &&
+    visibleChildren.some(item => item.key === turnPagination.pagerKey)
+  )
+
   const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
 
   return (
     <ToolEmbedContext.Provider value={false}>
       <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
+        {(showTurnPager || (!turnPagination && localHiddenCount > 0)) && (
+          <button
+            className="mx-auto mb-1 block rounded-full border border-border/65 bg-(--composer-fill) px-2.5 py-0.5 text-[0.65rem] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() =>
+              turnPagination
+                ? turnPagination.revealEarlier()
+                : setPage(current => ({ ...current, count: current.count + TOOL_GROUP_DOM_PAGE }))
+            }
+            type="button"
+          >
+            {t.assistant.thread.showEarlierToolCalls}
+          </button>
+        )}
         <div
           className={cn(
             bounded && 'tool-group-scroll max-h-(--tool-group-scroll-max-h) overflow-y-auto',
@@ -733,7 +762,11 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
           ref={scrollRef}
         >
           <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" ref={contentRef}>
-            {children}
+            {visibleChildren.map(item => (
+              <div data-tool-page-key={item.key} key={item.key} tabIndex={-1}>
+                {item.child}
+              </div>
+            ))}
           </div>
         </div>
       </div>

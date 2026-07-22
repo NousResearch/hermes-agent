@@ -8,8 +8,9 @@ import { previewName } from '@/lib/preview-targets'
  * NOT auto-opened and NOT a bulky inline card. Click opens the rail preview or
  * the browser; both are manual.
  *
- * Fed from the tool row itself (see tool-fallback.tsx) using the same detected
- * target the inline card used, so detection parity is exact.
+ * Fed from the authoritative thread collection using the same lightweight
+ * target extractor as tool rendering, so paginated rows remain discoverable
+ * without mounting their expensive visual subtree.
  */
 export interface PreviewArtifact {
   /** cwd captured at detection so a relative path still resolves on click. */
@@ -44,8 +45,8 @@ const writePreviews = (sid: string, items: PreviewArtifact[]) => {
 
 /**
  * Record a detected artifact, newest last, capped. Idempotent: a target already
- * in the list keeps its slot (the tool row re-registers on every render, so this
- * must not churn the atom or reorder rows).
+ * in the list keeps its slot (transcript reconciliation may see it repeatedly,
+ * so this must not churn the atom or reorder rows).
  */
 export function recordPreviewArtifact(sid: string, target: string, cwd: string) {
   const raw = target.trim()

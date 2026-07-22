@@ -430,27 +430,36 @@ class TestBusyInputModeQueueFifo:
         # The last accepted overflow item is msg-{cap-1}.
         assert runner._queued_events[session_key][-1].text == f"msg-{cap - 1:03d}"
 
-    def test_photo_burst_still_merges_in_head_slot(self):
-        """Photo bursts must keep album-merge semantics, not split into N turns."""
+    def test_media_events_are_queued_in_fifo_order_without_merging(self):
+        """Busy queueing must retain each media event and its native context."""
         runner, adapter = self._make_runner_and_adapter()
         session_key = "telegram:user:burst"
 
         source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        events = []
+        raw_messages = []
         for i in range(3):
-            runner._queue_or_replace_pending_event(
-                session_key,
-                MessageEvent(
-                    text="",
-                    message_type=MessageType.PHOTO,
-                    source=source,
-                    message_id=f"p-{i}",
-                    media_urls=[f"http://example.com/{i}.jpg"],
-                    media_types=["image/jpeg"],
-                ),
+            raw_message = object()
+            event = MessageEvent(
+                text="",
+                message_type=MessageType.PHOTO,
+                source=source,
+                raw_message=raw_message,
+                message_id=f"p-{i}",
+                media_urls=[f"https://example.invalid/{i}.jpg"],
+                media_types=["image/jpeg"],
+                metadata={"native_id": f"attachment-{i}"},
             )
+            events.append(event)
+            raw_messages.append(raw_message)
+            runner._queue_or_replace_pending_event(session_key, event)
 
-        # Single merged head event with all three media URLs.
-        assert session_key not in runner._queued_events or not runner._queued_events[session_key]
-        head = adapter._pending_messages[session_key]
-        assert head.message_type == MessageType.PHOTO
-        assert len(head.media_urls) == 3
+        assert adapter._pending_messages[session_key] is events[0]
+        assert runner._queued_events[session_key][0] is events[1]
+        assert runner._queued_events[session_key][1] is events[2]
+        assert [event.raw_message for event in events] == raw_messages
+        assert [event.metadata["native_id"] for event in events] == [
+            "attachment-0",
+            "attachment-1",
+            "attachment-2",
+        ]

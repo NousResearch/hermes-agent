@@ -445,6 +445,66 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
 
+    @pytest.mark.parametrize(
+        ("platform", "message_type", "media_url", "media_type"),
+        [
+            (
+                Platform.DISCORD,
+                MessageType.DOCUMENT,
+                "/tmp/fixture.pdf",
+                "application/pdf",
+            ),
+            (Platform.TELEGRAM, MessageType.VOICE, "/tmp/fixture.ogg", "audio/ogg"),
+            (Platform.TELEGRAM, MessageType.TEXT, "/tmp/replied-voice.ogg", "audio/ogg"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_steer_mode_queues_media_event_with_native_context_intact(
+        self,
+        platform,
+        message_type,
+        media_url,
+        media_type,
+    ):
+        """Discord and Telegram media stay complete instead of becoming text."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter(platform_val=platform.value)
+        source = SessionSource(
+            platform=platform,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+        )
+        raw_message = object()
+        event = MessageEvent(
+            text="inspect this attachment",
+            message_type=message_type,
+            source=source,
+            raw_message=raw_message,
+            message_id="media-message",
+            platform_update_id=42,
+            media_urls=[media_url],
+            media_types=[media_type],
+            metadata={"native_attachment_id": "fixture-attachment"},
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        queued = adapter._pending_messages[sk]
+        assert queued is event
+        assert queued.raw_message is raw_message
+        assert queued.platform_update_id == 42
+        assert queued.media_urls == [media_url]
+        assert queued.media_types == [media_type]
+        assert queued.metadata == {"native_attachment_id": "fixture-attachment"}
+
     @pytest.mark.asyncio
     async def test_interrupt_mode_text_followups_fifo_not_merged(self):
         """Two TEXT follow-ups during a busy turn (interrupt mode) must each

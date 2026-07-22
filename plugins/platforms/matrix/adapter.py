@@ -129,6 +129,7 @@ from gateway.platforms.base import (
     SendResult,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
+    safe_url_for_log,
     _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
@@ -976,7 +977,10 @@ class MatrixAdapter(BasePlatformAdapter):
         # Proxy support — resolve once at init, reuse for all HTTP traffic.
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
-            logger.info("Matrix: proxy configured — %s", self._proxy_url)
+            # SECURITY: never log the raw proxy URL — userinfo (e.g.
+            # ``http://agent_token:hermes@vault:14322``) embeds a credential
+            # that would leak into ``gateway.log`` on every restart (#58994).
+            logger.debug("Matrix: proxy configured — %s", safe_url_for_log(self._proxy_url))
         try:
             self._max_media_bytes = int(os.getenv("MATRIX_MAX_MEDIA_BYTES", str(100 * 1024 * 1024)))
         except ValueError:

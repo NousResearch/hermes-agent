@@ -263,6 +263,7 @@ from gateway.platforms.base import (
     cache_video_from_bytes,
     cache_document_from_bytes,
     resolve_proxy_url,
+    safe_url_for_log,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
@@ -3570,7 +3571,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     },
                 )
             elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+                # SECURITY: never log the raw proxy URL — userinfo (e.g.
+                # ``http://agent_token:hermes@vault:14322``) embeds a credential
+                # that would leak into ``gateway.log`` on every restart (#58994).
+                # The actual URL passed to HTTPXRequest stays unchanged.
+                logger.debug(
+                    "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
+                    self.name,
+                    safe_url_for_log(proxy_url),
+                )
                 request = HTTPXRequest(
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )

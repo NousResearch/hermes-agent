@@ -540,13 +540,28 @@ export function openSessionTile(
   }
 }
 
+export type OpenSessionSurface = 'main' | 'tile'
+
+export function openSessionSurface(
+  storedSessionId: string,
+  selectedStoredSessionId: null | string,
+  tiles: readonly SessionTile[]
+): null | OpenSessionSurface {
+  if (tiles.some(t => t.storedSessionId === storedSessionId)) {
+    return 'tile'
+  }
+
+  return storedSessionId === selectedStoredSessionId ? 'main' : null
+}
+
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —
- *  front its tab (and focus its zone) and return true. A sidebar click on an
- *  already-open chat JUMPS to its tab instead of reloading it; `false` means the
- *  caller must load it into main. Covers the two dead clicks: an open tile, and
- *  the main session while focus sits on a tile (route unchanged → no reload). */
-export function focusOpenSession(storedSessionId: string): boolean {
-  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+ *  front its tab (and focus its zone) and identify which surface owns it. A
+ *  sidebar click on an already-open chat JUMPS to its tab instead of reloading
+ *  it; `null` means the caller must load it into main. */
+export function focusOpenSession(storedSessionId: string): null | OpenSessionSurface {
+  const surface = openSessionSurface(storedSessionId, $selectedStoredSessionId.get(), $sessionTiles.get())
+
+  if (surface === 'tile') {
     const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()
@@ -556,19 +571,19 @@ export function focusOpenSession(storedSessionId: string): boolean {
       noteActiveTreeGroup(group.id)
     }
 
-    return true
+    return surface
   }
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (storedSessionId === $selectedStoredSessionId.get()) {
+  if (surface === 'main') {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 
-    return true
+    return surface
   }
 
-  return false
+  return null
 }
 
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the

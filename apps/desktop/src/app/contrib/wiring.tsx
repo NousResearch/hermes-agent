@@ -763,9 +763,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main.
+    // otherwise load it into main. The main session still needs its chat route
+    // restored when the workspace is showing a full-page view.
     onResumeSession: sessionId => {
-      if (!focusOpenSession(sessionId)) {
+      if (focusOpenSession(sessionId) !== 'tile') {
         navigate(sessionRoute(sessionId))
       }
     },

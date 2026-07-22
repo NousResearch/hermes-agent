@@ -190,6 +190,54 @@ class TestSaveOutsideLock:
         assert save_lock_states == [False]
         store._record_gateway_session_peer.assert_not_called()
 
+    def test_set_session_metadata_persists_snapshot_outside_lock(self, tmp_path):
+        source = _source()
+        store = _make_store(tmp_path, _db_with_rows({}))
+        key = store._generate_session_key(source)
+        entry = _seed_entry(store, key, "sid")
+        persisted = []
+
+        def tracking_persist(data, generation):
+            persisted.append((store._lock.held, data, generation))
+
+        store._persist_routing_data = tracking_persist  # type: ignore[method-assign]
+
+        assert store.set_session_metadata(key, "thread_watermark", "123.456") is True
+        assert entry.metadata == {"thread_watermark": "123.456"}
+        assert len(persisted) == 1
+        lock_held, snapshot, generation = persisted[0]
+        assert lock_held is False
+        assert snapshot[key]["metadata"] == {"thread_watermark": "123.456"}
+        assert generation > 0
+
+    def test_advance_compression_session_persists_snapshot_outside_lock(
+        self, tmp_path
+    ):
+        source = _source()
+        store = _make_store(tmp_path, _db_with_rows({}))
+        key = store._generate_session_key(source)
+        entry = _seed_entry(store, key, "sid-parent")
+        persisted = []
+
+        def tracking_persist(data, generation):
+            persisted.append((store._lock.held, data, generation))
+
+        store._persist_routing_data = tracking_persist  # type: ignore[method-assign]
+
+        result = store.advance_compression_session(
+            key,
+            "sid-parent",
+            "sid-child",
+        )
+
+        assert result is entry
+        assert entry.session_id == "sid-child"
+        assert len(persisted) == 1
+        lock_held, snapshot, generation = persisted[0]
+        assert lock_held is False
+        assert snapshot[key]["session_id"] == "sid-child"
+        assert generation > 0
+
 
 class TestRecoverOutsideLock:
     def test_recover_not_holding_lock(self, tmp_path):

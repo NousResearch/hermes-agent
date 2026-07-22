@@ -1781,14 +1781,14 @@ class TestSessionMetadata:
 
     def test_store_session_metadata_get_set(self, tmp_path):
         """set/get_session_metadata round-trips through the store and
-        persists via _save (restart survival is provided by the routing
-        index — state.db gateway_routing + sessions.json mirror)."""
+        persists a routing snapshot (restart survival is provided by the
+        state.db gateway_routing index + sessions.json mirror)."""
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._loaded = True
         store._db = None
-        store._save = MagicMock()
+        store._persist_routing_data = MagicMock()
 
         from gateway.session import SessionEntry
         from datetime import datetime
@@ -1804,7 +1804,12 @@ class TestSessionMetadata:
         assert store.set_session_metadata(
             "k1", "slack_thread_watermark:C123:123.000", "123.456"
         )
-        store._save.assert_called_once()
+        store._persist_routing_data.assert_called_once()
+        persisted, generation = store._persist_routing_data.call_args.args
+        assert persisted["k1"]["metadata"] == {
+            "slack_thread_watermark:C123:123.000": "123.456"
+        }
+        assert generation > 0
         assert (
             store.get_session_metadata("k1", "slack_thread_watermark:C123:123.000")
             == "123.456"

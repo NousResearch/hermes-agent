@@ -2269,8 +2269,10 @@ class SessionStore:
                 return False
             entry.metadata[key] = value
             entry.updated_at = _now()
-            self._save()
-            return True
+            data, generation = self._snapshot_routing_locked()
+
+        self._persist_routing_data(data, generation)
+        return True
 
     def commit_compression_handoff(
         self,
@@ -2594,8 +2596,10 @@ class SessionStore:
             ):
                 return None
             entry.updated_at = _now()
-            self._save()
-            return entry
+            data, generation = self._snapshot_routing_locked()
+
+        self._persist_routing_data(data, generation)
+        return entry
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.

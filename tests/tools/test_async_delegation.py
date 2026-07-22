@@ -138,6 +138,46 @@ def test_busy_retry_sleeps_outside_process_writer_lane(tmp_path, monkeypatch):
     assert len(attempts) >= 2
 
 
+def test_drop_completion_delivery_retries_busy_and_persists_terminal_state(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    claim_id = "gateway:test-claim"
+    delegation_id = "deleg_terminal_drop"
+    with ad._connect() as conn:
+        conn.execute(
+            """INSERT INTO async_delegations (
+                   delegation_id, origin_session, state, dispatched_at,
+                   updated_at, delivery_state, delivery_claim,
+                   delivery_claimed_at
+               ) VALUES (?, 'owner', 'completed', ?, ?, 'pending', ?, ?)""",
+            (delegation_id, time.time(), time.time(), claim_id, time.time()),
+        )
+
+    real_connect = ad._connect
+    attempts = []
+
+    def flaky_connect():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ad.sqlite3.OperationalError("database is locked")
+        return real_connect()
+
+    monkeypatch.setattr(ad, "_connect", flaky_connect)
+    monkeypatch.setattr(ad, "_DB_RETRY_MIN_SECONDS", 0.0)
+    monkeypatch.setattr(ad, "_DB_RETRY_MAX_SECONDS", 0.0)
+
+    assert ad.drop_completion_delivery(delegation_id, claim_id) is True
+    assert len(attempts) == 2
+    with real_connect() as conn:
+        state = conn.execute(
+            """SELECT delivery_state, delivery_claim, delivery_claimed_at
+               FROM async_delegations WHERE delegation_id=?""",
+            (delegation_id,),
+        ).fetchone()
+    assert tuple(state) == ("dropped", None, None)
+
+
 def test_durable_dispatch_failure_releases_capacity(monkeypatch):
     monkeypatch.setattr(
         ad,

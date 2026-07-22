@@ -13,6 +13,23 @@ from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_r
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
+# Every env var the cron home-channel fallback can read. Clearing them all
+# makes "no delivery target" assertions hermetic against a developer machine
+# that happens to have one configured (e.g. WEIXIN_HOME_CHANNEL set globally).
+_ALL_HOME_CHANNEL_ENV_VARS = (
+    "MATRIX_HOME_ROOM", "TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL",
+    "SLACK_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL",
+    "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
+    "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
+    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL",
+    "WHATSAPP_HOME_CHANNEL", "WHATSAPP_CLOUD_HOME_CHANNEL",
+)
+
+
+def _clear_all_home_channels(monkeypatch):
+    for var in _ALL_HOME_CHANNEL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
 
 class TestPerJobToolsetMcpMerge:
     """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
@@ -490,6 +507,63 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "1001234567890",
             "thread_id": None,
+        }
+
+    def test_api_server_origin_does_not_pretend_to_deliver(self, monkeypatch):
+        """#69304 — an api_server-origin job must NOT resolve deliver=origin to
+        the api_server itself. That adapter's send() is a hardwired no-op, so
+        trusting the origin would make the job look healthy (last_status=ok)
+        while every report silently failed to deliver. With no home channel
+        configured the target is unresolvable (None), not a fake api_server
+        target."""
+        _clear_all_home_channels(monkeypatch)
+
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "api_server", "chat_id": "sess-123"},
+        }
+        assert _resolve_delivery_target(job) is None
+
+    def test_api_server_origin_falls_back_to_home_channel(self, monkeypatch):
+        """#69304 — an undeliverable api_server origin is treated like a missing
+        one: deliver=origin falls back to a configured home channel so the
+        report actually lands somewhere instead of being silently dropped."""
+        _clear_all_home_channels(monkeypatch)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-4242")
+
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "api_server", "chat_id": "sess-123"},
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-4242",
+            "thread_id": None,
+        }
+
+    def test_bare_api_server_platform_with_matching_origin_resolves_to_nothing(self, monkeypatch):
+        """#69304 — deliver='api_server' (origin matches) is not a usable
+        delivery target: the bare-platform branch must not trust an
+        undeliverable origin either."""
+        _clear_all_home_channels(monkeypatch)
+
+        job = {
+            "deliver": "api_server",
+            "origin": {"platform": "api_server", "chat_id": "sess-123"},
+        }
+        assert _resolve_delivery_target(job) is None
+
+    def test_deliverable_origin_still_resolves(self):
+        """The undeliverable-origin guard must not break a normal deliverable
+        origin (telegram): deliver=origin still resolves to that chat."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-999", "thread_id": "42"},
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-999",
+            "thread_id": "42",
         }
 
     def test_list_form_deliver_is_normalized(self, monkeypatch):

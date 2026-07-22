@@ -1142,14 +1142,20 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         return None
 
     if deliver_value == "origin":
-        if origin:
+        if origin and _is_known_delivery_platform(origin.get("platform", "")):
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
+        # Origin missing OR points at a platform that cannot receive cron
+        # delivery. The latter is the api_server trap (#69304): jobs created
+        # in an api_server session capture ``origin.platform="api_server"``,
+        # but that adapter's ``send()`` is a hardwired no-op (HTTP is
+        # request/response only). Trusting such an origin here makes the job
+        # look healthy (last_status=ok) while every fire silently fails to
+        # deliver. Treat an undeliverable origin like a missing one and fall
+        # back to configured home channels instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
@@ -1209,7 +1215,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     platform_name = deliver_value
-    if origin and origin.get("platform") == platform_name:
+    if origin and origin.get("platform") == platform_name and _is_known_delivery_platform(platform_name):
         chat_id = _get_home_target_chat_id(platform_name)
         if chat_id:
             return {

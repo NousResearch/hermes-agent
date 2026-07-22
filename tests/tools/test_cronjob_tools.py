@@ -597,6 +597,19 @@ class TestLocalDeliveryNotice:
             "HERMES_SESSION_CHAT_NAME",
         ):
             monkeypatch.delenv(var, raising=False)
+        # Clear every gateway home channel so "no delivery target" assertions
+        # are hermetic against a developer machine that has one configured
+        # (e.g. WEIXIN_HOME_CHANNEL set globally would otherwise make the
+        # origin-fallback find a target and suppress the notice).
+        for var in (
+            "MATRIX_HOME_ROOM", "TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL",
+            "SLACK_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL",
+            "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
+            "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
+            "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL",
+            "WHATSAPP_HOME_CHANNEL", "WHATSAPP_CLOUD_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(var, raising=False)
         from gateway.session_context import clear_session_vars, set_session_vars
 
         tokens = set_session_vars()  # reset ContextVars to empty
@@ -655,6 +668,45 @@ class TestLocalDeliveryNotice:
             cronjob(action="create", prompt="x", schedule="every 2m")
         )
         assert created["deliver"] == "origin"
+        assert "local-only cron job" not in created["message"]
+
+    def test_api_server_origin_emits_targeted_notice(self, monkeypatch):
+        """#69304 — an api_server origin can't deliver; flag it at create time.
+
+        The api_server adapter's send() is a no-op, so deliver=origin would run
+        the job but silently drop every report. The create-time notice must
+        surface this with a platform-specific message (not the generic CLI/TUI
+        one) so the agent relays it instead of promising delivery.
+        """
+        from gateway.session_context import set_session_vars
+
+        # No home channels configured (the autouse fixture clears them), so the
+        # origin-fallback also finds nothing.
+        set_session_vars(platform="api_server", chat_id="sess-123")
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 2m")
+        )
+        assert created["success"] is True
+        assert created["deliver"] == "origin"
+        # Targeted message naming the undeliverable origin platform.
+        assert "api_server" in created["message"]
+        assert "cannot receive cron deliveries" in created["message"]
+        assert "deliver='telegram'" in created["message"]
+        # Not the generic CLI/TUI wording.
+        assert "local-only cron job" not in created["message"]
+
+    def test_api_server_origin_with_home_channel_no_notice(self, monkeypatch):
+        """An api_server origin that falls back to a configured home channel
+        does deliver somewhere, so no notice is emitted."""
+        from gateway.session_context import set_session_vars
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        set_session_vars(platform="api_server", chat_id="sess-123")
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 2m")
+        )
+        assert created["success"] is True
+        assert "cannot receive cron deliveries" not in created["message"]
         assert "local-only cron job" not in created["message"]
 
 

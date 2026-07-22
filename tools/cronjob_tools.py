@@ -308,6 +308,23 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
+def _origin_platform_can_deliver(platform: str) -> bool:
+    """Whether a captured-origin platform can actually receive cron delivery.
+
+    Thin wrapper over ``cron.scheduler._is_known_delivery_platform`` so the
+    create-time notice stays in sync with the fire-time target resolver. The
+    api_server platform is the motivating case (#69304): it is a real gateway
+    platform with a working session, but its adapter ``send()`` is a no-op, so
+    an ``origin.platform="api_server"`` job can never deliver.
+    """
+    try:
+        from cron.scheduler import _is_known_delivery_platform
+
+        return _is_known_delivery_platform(platform)
+    except Exception:
+        return True  # don't second-guess on import failure; resolver will gate
+
+
 def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
     """Return an informational notice when a created job won't deliver anywhere.
 
@@ -336,6 +353,21 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
         # If resolution can't be evaluated, fall back to the origin signal.
         if job.get("origin"):
             return None
+    origin = job.get("origin") or {}
+    if origin.get("platform") and not _origin_platform_can_deliver(origin["platform"]):
+        # The job was created in a session whose platform cannot receive cron
+        # delivery — the api_server trap (#69304): its adapter's send() is a
+        # no-op, so deliver=origin would run the job but silently drop every
+        # report. Point the caller at a real delivery channel.
+        return (
+            "This cron job's origin platform "
+            f"({origin['platform']}) cannot receive cron deliveries — its "
+            "output is saved (view it with cronjob(action='list')) but will "
+            "NOT be delivered back into that session. To be notified when it "
+            "runs, recreate or update the job with deliver set to a "
+            "gateway-connected platform, e.g. deliver='telegram' or "
+            "deliver='all'."
+        )
     return (
         "This is a local-only cron job: its output is saved (view it with "
         "cronjob(action='list')) but will NOT be delivered back into this "

@@ -16,15 +16,23 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import contextvars
 import hashlib
 import json
 import logging
 import sqlite3
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
+from agent.auxiliary_client import (
+    AuxiliaryWallClockTimeout,
+    _get_task_wall_clock_timeout,
+    _is_connection_error,
+    aux_interrupt_protection,
+    call_llm,
+)
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
@@ -36,6 +44,72 @@ from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
+
+
+_WALL_CLOCK_DEADLINE_UNSET = object()
+
+
+class SummaryWallClockTimeout(TimeoutError):
+    """Raised when the complete compression-summary workflow exceeds its limit."""
+
+
+def _call_llm_with_wall_clock(
+    call_kwargs: Dict[str, Any],
+    deadline: float,
+):
+    """Run one summary call behind an absolute wall-clock deadline.
+
+    The OpenAI-compatible SDK timeout is inactivity-based, so a byte-trickling
+    response can outlive it indefinitely. The worker is daemonized because the
+    shared cached client cannot be safely closed from this watchdog. It may
+    finish late, but it only writes to this helper's private outcome container.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SummaryWallClockTimeout(
+            "Context compression wall-clock timeout exceeded before summary retry"
+        )
+
+    call_kwargs = {**call_kwargs, "wall_clock_deadline": deadline}
+    outcome: Dict[str, Any] = {}
+    caller_context = contextvars.copy_context()
+
+    def _run() -> None:
+        try:
+            # Interrupt protection is thread-local, so it must be entered on
+            # the worker that invokes the auxiliary client (#23975).
+            with aux_interrupt_protection():
+                outcome["response"] = call_llm(**call_kwargs)
+        except AuxiliaryWallClockTimeout as exc:
+            # Preserve the compressor's typed network-failure classification;
+            # a raw TimeoutError would enter cooldown without aborting safely.
+            outcome["exception"] = SummaryWallClockTimeout(str(exc))
+        except BaseException as exc:  # Re-raise on the waiting caller thread.
+            outcome["exception"] = exc
+
+    worker = threading.Thread(
+        target=caller_context.run,
+        args=(_run,),
+        name="hermes-compression-summary",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive():
+        logger.warning(
+            "Context compression wall-clock timeout exceeded after %.1fs; "
+            "daemon summary worker %s is still running and its late result "
+            "will be discarded",
+            remaining,
+            worker.name,
+        )
+        raise SummaryWallClockTimeout(
+            f"Context compression wall-clock timeout exceeded after {remaining:.1f}s"
+        )
+
+    if "exception" in outcome:
+        raise outcome["exception"]
+    return outcome["response"]
 
 
 _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
@@ -2146,6 +2220,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         turns_to_summarize: List[Dict[str, Any]],
         focus_topic: Optional[str] = None,
         memory_context: str = "",
+        _wall_clock_deadline: Any = _WALL_CLOCK_DEADLINE_UNSET,
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -2171,6 +2246,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 self._summary_failure_cooldown_until - now,
             )
             return None
+
+        # Resolve once for the complete workflow. Recursive fallback to the main
+        # model receives the same absolute deadline; ``None`` means the opt-in
+        # guard is disabled and preserves the historical inline call path.
+        if _wall_clock_deadline is _WALL_CLOCK_DEADLINE_UNSET:
+            _wall_clock_timeout = _get_task_wall_clock_timeout("compression")
+            _wall_clock_deadline = (
+                time.monotonic() + _wall_clock_timeout
+                if _wall_clock_timeout is not None
+                else None
+            )
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
@@ -2384,8 +2470,14 @@ This compaction should PRIORITISE preserving all information related to the focu
             # aborts the summary and compression falls back to a degraded static
             # marker, losing the real handoff (#23975). Re-entrant: a main-model
             # retry (_generate_summary recursion) re-enters harmlessly.
-            with aux_interrupt_protection():
-                response = call_llm(**call_kwargs)
+            if _wall_clock_deadline is None:
+                with aux_interrupt_protection():
+                    response = call_llm(**call_kwargs)
+            else:
+                response = _call_llm_with_wall_clock(
+                    call_kwargs,
+                    _wall_clock_deadline,
+                )
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some
             # OpenAI-compatible proxies / local backends return a dict- or
@@ -2472,7 +2564,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
             )
-            _is_timeout = (
+            _is_wall_clock_timeout = isinstance(e, SummaryWallClockTimeout)
+            _is_timeout = _is_wall_clock_timeout or (
                 _status in {408, 429, 502, 504}
                 or "timeout" in _err_str
                 or "timed out" in _err_str
@@ -2496,7 +2589,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             # transient network events; treat them like a timeout so we fall
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
-            _is_streaming_closed = _is_connection_error(e)
+            _is_streaming_closed = (
+                not _is_wall_clock_timeout and _is_connection_error(e)
+            )
+            if _is_wall_clock_timeout:
+                # Deliberately reuse the existing preserve-and-abort path for
+                # terminal network failures. Do not rely on exception naming.
+                self._last_summary_network_failure = True
             # Authentication, permission, and exhausted-quota failures are NOT
             # transient or fixable by retrying the same request. Flag them so
             # compress() preserves the session instead of rotating into a
@@ -2540,6 +2639,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     turns_to_summarize,
                     focus_topic=focus_topic,
                     memory_context=memory_context,
+                    _wall_clock_deadline=_wall_clock_deadline,
                 )  # retry immediately
 
             # Unknown-error best-effort retry on main model.  Losing N turns of
@@ -2561,6 +2661,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     turns_to_summarize,
                     focus_topic=focus_topic,
                     memory_context=memory_context,
+                    _wall_clock_deadline=_wall_clock_deadline,
                 )
 
             # Transient errors (timeout, rate limit, network, JSON decode,
@@ -2602,7 +2703,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # placeholder marker — retrying once the network recovers is
             # strictly better than dropping context (#29559, #25585). Mirrors
             # the auth-failure carve-out; independent of abort_on_summary_failure.
-            if _is_streaming_closed:
+            if _is_streaming_closed or _is_wall_clock_timeout:
                 self._last_summary_network_failure = True
             logger.warning(
                 "Failed to generate context summary: %s. "

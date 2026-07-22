@@ -1652,6 +1652,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "wall_clock_timeout": 0,  # seconds — opt-in total workflow deadline; 0 disables it
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },

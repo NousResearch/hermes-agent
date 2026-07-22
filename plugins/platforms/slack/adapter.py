@@ -3825,6 +3825,12 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
+        #
+        # Keep recovered history separate from ``text``. Prepending it here
+        # moves a recognized command away from character zero, so downstream
+        # command routing can misclassify it as conversational text.
+        # ``channel_context`` is prepended only after command dispatch.
+        channel_context = None
         if is_thread_reply and not self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
@@ -3838,7 +3844,7 @@ class SlackAdapter(BasePlatformAdapter):
                 team_id=team_id,
             )
             if thread_context:
-                text = thread_context + text
+                channel_context = thread_context
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -4176,6 +4182,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
+            channel_context=channel_context,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
             metadata={

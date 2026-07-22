@@ -1484,6 +1484,55 @@ class TestBangPrefixCommands:
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio
+    async def test_bang_queue_survives_first_thread_context_backfill(self, adapter):
+        """Backfill stays out of command text while remaining available."""
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value=(
+                "[Slack thread context — earlier messages]\n"
+                "Alice: prior request\n"
+                "[End of thread context]\n\n"
+            )
+        )
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="prior request")
+
+        evt = self._make_event(
+            "!queue follow up after the current task",
+            thread_ts="1111111111.000001",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/queue follow up after the current task"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "queue"
+        assert msg_event.get_command_args() == "follow up after the current task"
+        assert msg_event.channel_context.startswith("[Slack thread context")
+        assert "prior request" in msg_event.channel_context
+
+    @pytest.mark.asyncio
+    async def test_non_command_thread_backfill_uses_channel_context(self, adapter):
+        """Normal thread text remains separate without losing its backfill."""
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value="[Slack thread context]\nAlice: earlier note\n"
+        )
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="earlier note")
+
+        evt = self._make_event(
+            "follow up",
+            thread_ts="1111111111.000001",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "follow up"
+        assert msg_event.message_type == MessageType.TEXT
+        assert msg_event.channel_context == (
+            "[Slack thread context]\nAlice: earlier note\n"
+        )
+
+    @pytest.mark.asyncio
     async def test_bang_unknown_token_passes_through_unchanged(self, adapter):
         """``!nice work`` is just a casual message — must NOT be rewritten."""
         await adapter._handle_slack_message(self._make_event("!nice work"))

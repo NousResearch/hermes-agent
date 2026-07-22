@@ -150,6 +150,19 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 `--relay-python ../nemo-relay/python` only when testing a locally built Relay
 binding.
 
+To repeat the complete scenario and add a real NVIDIA NIM turn, set
+`NVIDIA_API_KEY` and run:
+
+```bash
+./.venv/bin/python scripts/smoke_nemo_relay_shared_metrics_nvidia.py
+```
+
+The live wrapper keeps the deterministic tool and skill assertions, restarts
+Hermes against NVIDIA NIM, and verifies that exactly one additional model call
+and task reach SQLite and a new schema-valid delta package. The API key remains
+in the subprocess environment and is checked alongside the prompt and exact
+model ID as prohibited persisted data.
+
 The smoke first emits an opted-in setup lifecycle, then has the local model
 request a real `read_file` tool call before its final response. It also drives
 create, load, reuse, patch, edit, stale, archive, restore, and install skill

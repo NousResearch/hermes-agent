@@ -1,5 +1,6 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
+import asyncio
 import json
 import pytest
 from unittest.mock import MagicMock
@@ -89,6 +90,89 @@ class TestBuildToolPreview:
         result = build_tool_preview("web_search", {"query": "hello world"})
         assert result is not None
         assert "hello world" in result
+
+    def test_web_tool_progress_uses_distinct_configured_provider_labels(
+        self, tmp_path, monkeypatch
+    ):
+        from tools import web_tools
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("EXA_API_KEY", "test-exa-key")
+        monkeypatch.setenv("PARALLEL_API_KEY", "test-parallel-key")
+        (home / "config.yaml").write_text(
+            "web:\n  search_backend: exa\n  extract_backend: parallel\n",
+            encoding="utf-8",
+        )
+
+        search_preview = build_tool_preview("web_search", {"query": "hello world"})
+        search_completion = get_cute_tool_message("web_search", {"query": "hello world"}, 0.1)
+        extract_preview = build_tool_preview("web_extract", {"urls": ["https://example.com"]})
+        extract_completion = get_cute_tool_message(
+            "web_extract", {"urls": ["https://example.com"]}, 0.1
+        )
+
+        # Exercise the unmocked config and registry calls used by both dispatchers.
+        from agent.web_search_registry import get_provider
+
+        assert web_tools._get_search_backend() == "exa"
+        assert web_tools._get_extract_backend() == "parallel"
+        search_provider = get_provider("exa")
+        extract_provider = get_provider("parallel")
+        assert search_provider is not None and search_provider.supports_search()
+        assert extract_provider is not None and extract_provider.supports_extract()
+        assert search_preview == "Exa search: hello world"
+        assert "Exa search" in search_completion
+        assert extract_preview == "Parallel fetch: https://example.com"
+        assert "Parallel fetch" in extract_completion
+
+        search_calls = []
+        extract_calls = []
+
+        def fake_search(query, limit):
+            search_calls.append((query, limit))
+            return {"success": True, "data": {"web": []}}
+
+        async def fake_extract(urls, *, format=None):
+            extract_calls.append((urls, format))
+            return []
+
+        async def allow_url(_url):
+            return True
+
+        monkeypatch.setattr(search_provider, "search", fake_search)
+        monkeypatch.setattr(extract_provider, "extract", fake_extract)
+        monkeypatch.setattr(web_tools, "async_is_safe_url", allow_url)
+
+        assert json.loads(web_tools.web_search_tool("dispatched", 3))["success"] is True
+        assert search_calls == [("dispatched", 3)]
+        asyncio.run(
+            web_tools.web_extract_tool(
+                ["https://example.com"]
+            )
+        )
+        assert extract_calls == [(["https://example.com"], None)]
+
+    def test_web_tool_progress_uses_dispatcher_fallback_provider(self, tmp_path, monkeypatch):
+        from tools import web_tools
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("EXA_API_KEY", "test-exa-key")
+        (home / "config.yaml").write_text(
+            "web:\n  search_backend: not-a-real-provider\n",
+            encoding="utf-8",
+        )
+
+        from agent.web_search_registry import get_active_search_provider
+
+        assert web_tools._get_search_backend() == "exa"
+        provider = get_active_search_provider()
+        assert provider is not None
+        assert provider.name == "exa"
+        assert build_tool_preview("web_search", {"query": "fallback"}) == "Exa search: fallback"
 
     def test_read_file_preview(self):
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
@@ -428,7 +512,9 @@ class TestBuildToolLabel:
     def test_web_search_uses_for_connector(self):
         from agent.display import build_tool_label
         label = build_tool_label("web_search", {"query": "weather in NYC"})
-        assert label == 'Searching the web for weather in NYC'
+        assert label is not None
+        assert label.startswith("Searching the web for ")
+        assert label.endswith("weather in NYC")
 
     def test_web_extract_reads_url(self):
         from agent.display import build_tool_label

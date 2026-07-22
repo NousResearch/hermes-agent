@@ -801,7 +801,9 @@ When this flag is on, Hermes still generates an internal session title (used by 
 
 ### `/new` inside a topic
 
-Resets the current topic's session (new session ID, fresh history) without touching other topics. Hermes replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
+Resets the current topic's session (new session ID, fresh history) without touching other topics. The visible Telegram topic is renamed to **New Session** immediately so it no longer advertises the previous conversation; after the first new exchange, the normal auto-title pipeline replaces that placeholder with a descriptive title. If you use `/new <title>`, Hermes applies that explicit title instead. Topic renames remain best-effort and honor `extra.disable_topic_auto_rename`.
+
+Hermes also replies with a reminder that for parallel work, creating another topic (via **All Messages**) is usually what you want.
 
 ### Restoring a previous session
 

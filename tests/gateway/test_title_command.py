@@ -15,13 +15,14 @@ from gateway.session import SessionSource
 
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
-                user_id="12345", chat_id="67890"):
+                user_id="12345", chat_id="67890", thread_id=None):
     """Build a MessageEvent for testing."""
     source = SessionSource(
         platform=platform,
         user_id=user_id,
         chat_id=chat_id,
         user_name="testuser",
+        thread_id=thread_id,
     )
     return MessageEvent(text=text, source=source)
 
@@ -282,6 +283,7 @@ class TestResetCommandWithTitle:
             user_id="12345",
             chat_id="67890",
             user_name="testuser",
+            thread_id="17585",
         )
         session_key = build_session_key(source)
         new_session_entry = SessionEntry(
@@ -305,13 +307,20 @@ class TestResetCommandWithTitle:
         runner._agent_cache_lock = None
         runner._is_user_authorized = lambda _source: True
         runner._format_session_info = lambda: ""
+        runner._telegram_topic_mode_enabled = lambda source: True
+        runner._record_telegram_topic_binding = MagicMock()
+        runner._schedule_telegram_topic_title_rename = MagicMock()
 
-        event = _make_event(text="/new Custom Name")
+        event = _make_event(text="/new Custom Name", thread_id="17585")
         result = await runner._handle_reset_command(event)
 
         runner.session_store.reset_session.assert_called_once()
         runner._session_db.set_session_title.assert_called_once_with(
             "sess-new", "Custom Name"
+        )
+        assert runner._schedule_telegram_topic_title_rename.call_args.args[1:] == (
+            "sess-new",
+            "Custom Name",
         )
         # Header reflects the applied title
         assert "Custom Name" in str(result)

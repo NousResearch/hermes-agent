@@ -1107,7 +1107,12 @@ def _consume_codex_event_stream(
             # must never fall through to visible final text. Providers can mix
             # item_id/output_index shapes; without a proven association the safe
             # destination is the private reasoning rail.
-            if delta_text and state is None and aliases:
+            if (
+                delta_text
+                and state is None
+                and aliases
+                and active_message_state is not None
+            ):
                 if on_reasoning_delta is not None:
                     try:
                         on_reasoning_delta(delta_text)

@@ -9,13 +9,16 @@ Outputs:
                                     comments separating files.
 
 Both publish at:
+  https://hermes-agent.nousresearch.com/llms.txt
+  https://hermes-agent.nousresearch.com/llms-full.txt
   https://hermes-agent.nousresearch.com/docs/llms.txt
   https://hermes-agent.nousresearch.com/docs/llms-full.txt
 
 The `/docs/` prefix is not a mistake — Docusaurus serves `website/static/`
-at the `docs/` base path. Clients and IDE plugins that probe the classic
-`/llms.txt` root will miss these. Document the canonical URLs in the docs
-index and in the repo README.
+at the `docs/` base path. The deploy workflow mirrors the generated files
+to the site root as well, so both the classic `/llms.txt` probe and the
+`/docs/llms.txt` docs path work. Document both URLs in the docs index and
+in the repo README.
 
 Called from `website/scripts/prebuild.mjs` on every `npm run start` /
 `npm run build` so the output stays in sync with the docs tree.
@@ -250,6 +253,7 @@ def emit_llms_full() -> str:
         ),
         "Canonical site: https://hermes-agent.nousresearch.com/docs\n",
         "Short index: https://hermes-agent.nousresearch.com/docs/llms.txt\n",
+        "Root alias: https://hermes-agent.nousresearch.com/llms.txt\n",
         "\n---\n\n",
     ]
 

@@ -249,7 +249,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   // Built-in memory is not a provider plugin: the empty sentinel renders as
   // "Built-in only" and a legacy literal `builtin` value is only kept visible
-  // via enumOptionsFor's current-value passthrough (#49513).
+  // via enumOptionsFor's current-value passthrough (#49513). This static list
+  // is only a pre-load fallback: config-settings.tsx feeds enumOptionsFor the
+  // live discovered set (getMemoryStatus) so user-installed/pip providers show.
   'memory.provider': ['', 'honcho', 'hindsight'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/

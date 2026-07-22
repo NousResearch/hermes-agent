@@ -1311,6 +1311,38 @@ class TestChatCompletionsEndpoint:
             assert data["choices"][0]["message"]["content"] == mock_result["final_response"]
 
     @pytest.mark.asyncio
+    async def test_non_stream_includes_reasoning_content(self, adapter):
+        """Non-streaming response includes reasoning_content from last_reasoning."""
+        app = _create_app(adapter)
+        mock_result = {
+            "final_response": "The answer is 42.",
+            "last_reasoning": "I should inspect the request.",
+            "messages": [],
+            "api_calls": 1,
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "answer"}],
+                        "stream": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            assert "text/event-stream" not in resp.headers.get("Content-Type", "")
+            data = await resp.json()
+            assert data["object"] == "chat.completion"
+            assert data["choices"][0]["message"]["content"] == "The answer is 42."
+            assert data["reasoning_content"] == "I should inspect the request."
+
+    @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
         """Regression guard for #24451: completion callback must signal SSE EOS."""
         app = _create_app(adapter)
@@ -1504,6 +1536,74 @@ class TestChatCompletionsEndpoint:
                                 assert "ls -la" not in content or content == "Here are the files."
                 # Final content must also be present
                 assert "Here are the files." in body
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_content_via_run_agent_mock(self, adapter):
+        """reasoning_callback flows through _handle_chat_completions → _run_agent
+        and reasoning_content appears in SSE output, NOT inside delta.content.
+
+        This exercises the callback wiring inside _handle_chat_completions and
+        the SSE emit paths, proving the handler correctly passes reasoning
+        through the queue to the writer.
+        """
+        import asyncio
+
+        app = _create_app(adapter)
+        reasoning_text = "I need to analyze the request carefully."
+        content_text = "The answer is 42."
+
+        async def _mock_run_agent(**kwargs):
+            reasoning_cb = kwargs.get("reasoning_callback")
+            cb = kwargs.get("stream_delta_callback")
+            if reasoning_cb:
+                reasoning_cb(reasoning_text)
+            if cb:
+                await asyncio.sleep(0.05)
+                cb(content_text)
+            return (
+                {"final_response": content_text, "messages": [], "api_calls": 1},
+                {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            )
+
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "answer"}],
+                        "stream": True,
+                    },
+                )
+
+                assert resp.status == 200
+                body = await resp.text()
+
+        # Basic structural assertions
+        assert "[DONE]" in body
+        assert reasoning_text in body
+        assert content_text in body
+
+        # Reasoning must appear as delta.reasoning_content, not delta.content
+        saw_reasoning = False
+        for line in body.splitlines():
+            if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                continue
+            chunk = json.loads(line[len("data: "):])
+            if chunk.get("object") != "chat.completion.chunk":
+                continue
+            for choice in chunk.get("choices", []):
+                delta = choice.get("delta", {})
+                assert reasoning_text not in delta.get("content", ""), (
+                    "Reasoning leaked into delta.content"
+                )
+                if delta.get("reasoning_content") == reasoning_text:
+                    saw_reasoning = True
+
+        assert saw_reasoning, (
+            "reasoning_text was emitted somewhere in the SSE body but NOT as "
+            "delta.reasoning_content"
+        )
 
     @pytest.mark.asyncio
     async def test_stream_tool_progress_skips_internal_events(self, adapter):
@@ -2776,6 +2876,66 @@ class TestResponsesStreaming:
         stored = adapter._response_store.get(response_id)
         assert stored is not None, "snapshot must survive client disconnect"
         assert stored["response"]["status"] == "incomplete"
+
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_delta_in_responses_sse(self, adapter):
+        """reasoning_callback fires → response.reasoning.delta events appear in SSE,
+        NOT inside response.output_text.delta."""
+        app = _create_app(adapter)
+        reasoning_text = "I need to analyze this carefully."
+        content_text = "The answer is 42."
+
+        async def _mock_run_agent(**kwargs):
+            reasoning_cb = kwargs.get("reasoning_callback")
+            cb = kwargs.get("stream_delta_callback")
+            if reasoning_cb:
+                reasoning_cb(reasoning_text)
+            if cb:
+                await asyncio.sleep(0.05)
+                cb(content_text)
+            return (
+                {"final_response": content_text, "messages": [], "api_calls": 1},
+                {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            )
+
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "test", "input": "answer", "stream": True},
+                )
+
+                assert resp.status == 200
+                body = await resp.text()
+
+        # Standard Responses SSE events must be present
+        assert "event: response.created" in body
+        assert "event: response.output_text.delta" in body
+        assert "event: response.completed" in body
+
+        # Reasoning delta event must be present
+        assert "event: response.reasoning.delta" in body
+
+        # Reasoning text must NOT leak into output_text.delta content
+        assert reasoning_text in body
+        for line in body.splitlines():
+            if "event: response.output_text.delta" in line:
+                continue
+            if line.startswith("data: "):
+                import json as _json
+                try:
+                    parsed = _json.loads(line[len("data: "):])
+                except _json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and parsed.get("type") == "response.output_text.delta":
+                    delta_content = parsed.get("delta", "")
+                    assert reasoning_text not in delta_content, (
+                        "Reasoning leaked into output_text.delta"
+                    )
+
+        # Content text must appear in output_text.delta events
+        assert content_text in body
 
 
 # ---------------------------------------------------------------------------

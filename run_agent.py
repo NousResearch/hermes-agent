@@ -1823,6 +1823,34 @@ class AIAgent:
         with persist_lock:
             return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
 
+    def _rewrite_persisted_tool_results(self, messages: List[Dict]) -> int:
+        """Persist in-place rewrites of tool rows already flushed this turn."""
+        if getattr(self, "_persist_disabled", False) or not self._session_db:
+            return 0
+
+        updates = [
+            (msg.get("tool_call_id"), msg.get("content"))
+            for msg in messages
+            if isinstance(msg, dict)
+            and msg.get("role") == "tool"
+            and msg.get(_DB_PERSISTED_MARKER)
+            and msg.get("tool_call_id")
+        ]
+        if not updates:
+            return 0
+
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            return self._session_db.update_active_tool_result_contents(
+                self.session_id,
+                updates,
+            )
+        with persist_lock:
+            return self._session_db.update_active_tool_result_contents(
+                self.session_id,
+                updates,
+            )
+
     def _flush_messages_to_session_db_unlocked(
         self,
         messages: List[Dict],

@@ -255,6 +255,191 @@ class TestDiscoveryShape:
         assert "s_newest" not in sids
 
 
+# =========================================================================
+# Citation layer (per-result provenance block)
+# =========================================================================
+
+class TestCitation:
+    """Every discovery result should include a 'citation' block with:
+       exact_quote, speaker, decided_at, reply_quote (optional), context_url.
+       Title-match path should also include it.
+    """
+
+    def test_citation_present_on_discovery_result(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        assert result["count"] >= 1
+        for hit in result["results"]:
+            assert "citation" in hit, f"missing citation in hit {hit.get('session_id')}"
+            cit = hit["citation"]
+            assert "exact_quote" in cit
+            assert "speaker" in cit
+            assert "decided_at" in cit
+            assert "context_url" in cit
+
+    def test_exact_quote_matches_anchor_message(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            anchor_id = hit["match_message_id"]
+            anchor_msg = next(m for m in hit["messages"] if m["id"] == anchor_id)
+            assert hit["citation"]["exact_quote"] == anchor_msg["content"]
+
+    def test_speaker_is_anchor_role(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            anchor_id = hit["match_message_id"]
+            anchor_msg = next(m for m in hit["messages"] if m["id"] == anchor_id)
+            assert hit["citation"]["speaker"] == anchor_msg["role"]
+
+    def test_reply_quote_for_user_anchor_picks_assistant_reply(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        user_hit = next(
+            (h for h in result["results"]
+             if next((m for m in h["messages"] if m["id"] == h["match_message_id"]), {}).get("role") == "user"),
+            None,
+        )
+        if user_hit is None:
+            pytest.skip("no user-role anchor in seeded data")
+        reply = user_hit["citation"].get("reply_quote")
+        assert reply is not None
+        window_ids_in_order = sorted(
+            (m["id"], m) for m in user_hit["messages"] if m["id"] > user_hit["match_message_id"]
+        )
+        if window_ids_in_order:
+            next_msg = window_ids_in_order[0][1]
+            if next_msg["role"] == "assistant":
+                assert reply == next_msg["content"]
+
+    def test_reply_quote_none_when_no_neighbour(self, db):
+        db.create_session("s_solo", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (int(time.time()), "Solo Modpack Thought", "s_solo"),
+        )
+        db.append_message("s_solo", role="user", content="I really should build a modpack")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="modpack", db=db))
+        if result["count"] >= 1:
+            hit = next((h for h in result["results"] if h["session_id"] == "s_solo"), None)
+            if hit:
+                assert hit["citation"].get("reply_quote") is None
+
+    def test_context_url_is_pasteable_recipe(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=1, db=db))
+        hit = result["results"][0]
+        ctx = hit["citation"]["context_url"]
+        assert "session_search" in ctx
+        assert hit["session_id"] in ctx
+        assert str(hit["match_message_id"]) in ctx
+
+    def test_citation_present_on_title_match(self, db):
+        db.create_session("s_fingerprint", source="cli")
+        db.set_session_title("s_fingerprint", "fingerprint-login")
+        db.append_message("s_fingerprint", role="user", content="PAM auth setup")
+
+        result = json.loads(session_search(query="fingerprint-login", db=db))
+        assert result["count"] == 1
+        hit = result["results"][0]
+        assert hit["matched_role"] == "session_title"
+        assert "citation" in hit
+        cit = hit["citation"]
+        assert cit["exact_quote"]
+        assert cit["speaker"] == "user"
+
+
+# =========================================================================
+# Rerank + transcript expansion (anchor promotion when FTS5 lands on empty)
+# =========================================================================
+
+class TestRerank:
+    """When FTS5 ranks an empty/tool-only message at the top, the rerank
+    pass should promote the nearest substantive user/assistant message to
+    the anchor, so citation surfaces real content instead of empty quotes.
+    """
+
+    def test_substantive_anchor_unchanged(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            anchor_id = hit["match_message_id"]
+            anchor_msg = next((m for m in hit["messages"] if m["id"] == anchor_id), None)
+            if anchor_msg and len((anchor_msg.get("content") or "").strip()) >= 20:
+                # Substantive anchors must not shift
+                assert hit["effective_anchor_id"] == anchor_id
+
+    def test_effective_anchor_present_on_every_result(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            assert "effective_anchor_id" in hit
+            assert hit["effective_anchor_id"] is not None
+            # Effective anchor must be flagged in the window
+            assert any(m.get("anchor") for m in hit["messages"])
+
+    def test_empty_anchor_promoted_to_substantive(self, db):
+        """Seed a session where a tool-only message sits between two
+        substantive messages. When FTS5 ranks the tool-only message,
+        the rerank should promote one of the substantive neighbours."""
+        db.create_session("s_tool", source="cli")
+        # Substantive user prompt
+        db.append_message("s_tool", role="user", content="Let's discuss the modpack build pipeline in detail")
+        # Empty tool-call message (the kind that often ranks top in FTS5)
+        db.append_message("s_tool", role="assistant", content="", tool_name="write_file")
+        # Substantive assistant answer
+        db.append_message("s_tool", role="assistant", content="The modpack build pipeline uses NeoForge 1.21.1 with tier-0 mods")
+        db._conn.commit()
+
+        # FTS5 will match on "modpack" — likely on the empty assistant (depends on
+        # whether tool_name / arguments index it). Verify effective_anchor_id
+        # is NOT the empty one.
+        result = json.loads(session_search(query="modpack", db=db))
+        if result["count"] >= 1:
+            hit = result["results"][0]
+            effective = hit["effective_anchor_id"]
+            effective_msg = next((m for m in hit["messages"] if m["id"] == effective), None)
+            if effective_msg:
+                assert len((effective_msg.get("content") or "").strip()) >= 20, \
+                    f"effective_anchor_id={effective} landed on empty content; rerank failed"
+
+    def test_no_substantive_falls_back_to_fts_anchor(self, db):
+        """When the candidate pool has no substantive message (very edge case),
+        the rerank should return the original FTS5 anchor id unchanged."""
+        # Direct test of the helper
+        from tools.session_search_tool import _rerank_anchor
+        view = {
+            "window": [
+                {"id": 1, "role": "assistant", "content": ""},
+                {"id": 2, "role": "tool", "content": "json output"},
+            ],
+            "bookend_start": [],
+            "bookend_end": [],
+        }
+        assert _rerank_anchor(view, fts_anchor_id=1) == 1
+        assert _rerank_anchor(view, fts_anchor_id=2) == 2
+
+    def test_picks_nearest_substantive_by_id_distance(self, db):
+        """When FTS5 anchor is empty, rerank picks the substantive message
+        with smallest id-distance, not the first in window order."""
+        from tools.session_search_tool import _rerank_anchor
+        view = {
+            "window": [
+                {"id": 10, "role": "user", "content": "earlier substantive"},
+                {"id": 20, "role": "assistant", "content": ""},  # FTS5 anchor (empty)
+                {"id": 21, "role": "assistant", "content": "adjacent substantive (1 away)"},
+                {"id": 30, "role": "user", "content": "later substantive (10 away)"},
+            ],
+            "bookend_start": [],
+            "bookend_end": [],
+        }
+        # Anchor 20 is empty. Nearest substantive by id-distance is 21 (dist=1), not 10 (dist=10).
+        assert _rerank_anchor(view, fts_anchor_id=20) == 21
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
         _seed_modpack_sessions(db)

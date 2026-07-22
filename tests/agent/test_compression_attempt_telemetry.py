@@ -138,7 +138,10 @@ def test_aux_call_telemetry_records_durations_without_content(caplog):
 
     payload = _extract_telemetry(caplog)
     assert payload["aux_prompt_tokens"] is not None
-    assert payload["aux_output_reservation"] is not None
+    # Current main intentionally omits max_tokens from the aux summary call
+    # (the summary budget is prompt-level guidance only), so no output
+    # reservation is recorded.
+    assert payload["aux_output_reservation"] is None
     assert isinstance(payload["aux_call_duration_ms"], int)
     assert payload["aux_provider"]
     assert payload["aux_model"]

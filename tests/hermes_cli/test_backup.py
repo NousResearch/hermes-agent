@@ -2272,6 +2272,80 @@ class TestPreUpdateBackup:
         assert result is None
         assert not out.exists()
 
+    def test_failed_zip_write_preserves_recreated_temp_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Failure cleanup removes only the temp inode created by this call."""
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        backup_dir = hermes_home / "backups"
+        backup_dir.mkdir()
+        out = backup_dir / "pre-update-failed.zip"
+        real_remove = backup_mod._remove_owned_snapshot_file
+        recreated = []
+
+        def replace_before_cleanup(path, expected):
+            if Path(path).suffix == ".zip" and Path(path) != out:
+                Path(path).unlink()
+                Path(path).write_text("human replacement")
+                recreated.append(Path(path))
+            return real_remove(path, expected)
+
+        monkeypatch.setattr(
+            backup_mod.zipfile.ZipFile,
+            "write",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("forced")),
+        )
+        monkeypatch.setattr(
+            backup_mod, "_remove_owned_snapshot_file", replace_before_cleanup
+        )
+
+        assert backup_mod._write_full_zip_backup(out, hermes_home) is None
+        preserved = [*recreated, *backup_dir.glob(".*.hermes-delete-*")]
+        assert any(
+            path.exists() and path.read_text() == "human replacement"
+            for path in preserved
+        )
+
+    def test_sqlite_temp_cleanup_preserves_pathname_replacement(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        db = hermes_home / "state.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+        backup_dir = hermes_home / "backups"
+        backup_dir.mkdir()
+        out = backup_dir / "pre-update.zip"
+        real_write = backup_mod.zipfile.ZipFile.write
+        replaced = []
+
+        def replace_db_after_archive_write(archive, filename, *args, **kwargs):
+            result = real_write(archive, filename, *args, **kwargs)
+            path = Path(filename)
+            if path.suffix == ".db" and path.parent == backup_dir:
+                path.unlink()
+                path.write_text("human replacement")
+                replaced.append(path)
+            return result
+
+        monkeypatch.setattr(
+            backup_mod.zipfile.ZipFile, "write", replace_db_after_archive_write
+        )
+
+        assert backup_mod._write_full_zip_backup(out, hermes_home) == out
+        preserved = [*replaced, *backup_dir.glob(".*.hermes-delete-*")]
+        assert any(
+            path.exists() and path.read_text() == "human replacement"
+            for path in preserved
+        )
+
     @pytest.fixture
     def hermes_home(self, tmp_path):
         root = tmp_path / ".hermes"
@@ -2385,6 +2459,43 @@ class TestPreUpdateBackup:
             _t.sleep(1.05)
 
         assert manual.exists(), "Manual backup zip was incorrectly pruned"
+
+    @pytest.mark.parametrize(
+        ("prefix", "prune_name"),
+        [
+            ("pre-update-", "_prune_pre_update_backups"),
+            ("pre-migration-", "_prune_pre_migration_backups"),
+        ],
+    )
+    def test_zip_rotation_preserves_replacement_after_selection(
+        self, hermes_home, monkeypatch, prefix, prune_name
+    ):
+        import hermes_cli.backup as backup_mod
+
+        backup_dir = hermes_home / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        victim = backup_dir / f"{prefix}20260101-000000.zip"
+        newest = backup_dir / f"{prefix}20260102-000000.zip"
+        victim.write_bytes(b"owned")
+        newest.write_bytes(b"newest")
+        real_remove = backup_mod._remove_owned_snapshot_file
+
+        def replace_before_remove(path, expected):
+            if Path(path) == victim:
+                victim.unlink()
+                victim.write_text("human replacement")
+            return real_remove(path, expected)
+
+        monkeypatch.setattr(
+            backup_mod, "_remove_owned_snapshot_file", replace_before_remove
+        )
+
+        assert getattr(backup_mod, prune_name)(backup_dir, keep=1) == 0
+        preserved = [victim, *backup_dir.glob(f".{victim.name}.hermes-delete-*")]
+        assert any(
+            path.exists() and path.read_text() == "human replacement"
+            for path in preserved
+        )
 
     def test_returns_none_if_root_missing(self, tmp_path):
         from hermes_cli.backup import create_pre_update_backup

@@ -1578,6 +1578,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         return None
 
     temp_path: Optional[Path] = None
+    temp_identity: Optional[os.stat_result] = None
     written_members = 0
     try:
         # Publish through a sibling temporary file.  The destination is never
@@ -1587,6 +1588,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
             suffix=".zip", delete=False, dir=str(out_path.parent)
         ) as tmp:
             temp_path = Path(tmp.name)
+            temp_identity = os.fstat(tmp.fileno())
 
         with zipfile.ZipFile(
             temp_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
@@ -1601,6 +1603,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         suffix=".db", delete=False, dir=str(out_path.parent)
                     ) as tmp_db_file:
                         tmp_db = Path(tmp_db_file.name)
+                        tmp_db_identity = os.fstat(tmp_db_file.fileno())
                     try:
                         if not _safe_copy_db(abs_path, tmp_db):
                             logger.warning(
@@ -1611,7 +1614,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         zf.write(tmp_db, arcname=rel_path.as_posix())
                         written_members += 1
                     finally:
-                        tmp_db.unlink(missing_ok=True)
+                        _remove_owned_snapshot_file(tmp_db, tmp_db_identity)
                 else:
                     zf.write(abs_path, arcname=rel_path.as_posix())
                     written_members += 1
@@ -1631,14 +1634,15 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
             os.fsync(archive_file.fileno())
         os.replace(temp_path, out_path)
         temp_path = None
+        temp_identity = None
         return out_path
     except (PermissionError, OSError, ValueError, zipfile.BadZipFile) as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None
     finally:
-        if temp_path is not None:
+        if temp_path is not None and temp_identity is not None:
             try:
-                temp_path.unlink(missing_ok=True)
+                _remove_owned_snapshot_file(temp_path, temp_identity)
             except OSError:
                 pass
 
@@ -1676,18 +1680,29 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     if not backup_dir.exists():
         return 0
 
-    backups = sorted(
-        (p for p in backup_dir.iterdir()
-         if p.is_file() and p.name.startswith(_PRE_UPDATE_PREFIX) and p.suffix.lower() == ".zip"),
-        key=lambda p: p.name,
+    backups = []
+    for path in backup_dir.iterdir():
+        try:
+            selected = path.lstat()
+        except OSError:
+            continue
+        if (
+            stat.S_ISREG(selected.st_mode)
+            and not _snapshot_path_is_link_like(path)
+            and path.name.startswith(_PRE_UPDATE_PREFIX)
+            and path.suffix.lower() == ".zip"
+        ):
+            backups.append((path, selected))
+    backups.sort(
+        key=lambda item: item[0].name,
         reverse=True,
     )
 
     deleted = 0
-    for p in backups[keep:]:
+    for p, selected in backups[keep:]:
         try:
-            p.unlink()
-            deleted += 1
+            if _remove_owned_snapshot_file(p, selected):
+                deleted += 1
         except OSError as exc:
             logger.warning("Failed to prune backup %s: %s", p.name, exc)
 
@@ -1750,18 +1765,29 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     if not backup_dir.exists():
         return 0
 
-    backups = sorted(
-        (p for p in backup_dir.iterdir()
-         if p.is_file() and p.name.startswith(_PRE_MIGRATION_PREFIX) and p.suffix.lower() == ".zip"),
-        key=lambda p: p.name,
+    backups = []
+    for path in backup_dir.iterdir():
+        try:
+            selected = path.lstat()
+        except OSError:
+            continue
+        if (
+            stat.S_ISREG(selected.st_mode)
+            and not _snapshot_path_is_link_like(path)
+            and path.name.startswith(_PRE_MIGRATION_PREFIX)
+            and path.suffix.lower() == ".zip"
+        ):
+            backups.append((path, selected))
+    backups.sort(
+        key=lambda item: item[0].name,
         reverse=True,
     )
 
     deleted = 0
-    for p in backups[keep:]:
+    for p, selected in backups[keep:]:
         try:
-            p.unlink()
-            deleted += 1
+            if _remove_owned_snapshot_file(p, selected):
+                deleted += 1
         except OSError as exc:
             logger.warning("Failed to prune pre-migration backup %s: %s", p.name, exc)
 

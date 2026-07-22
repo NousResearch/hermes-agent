@@ -3308,7 +3308,8 @@ DEFAULT_CONFIG = {
         # How to handle missing server binaries.
         # ``"auto"`` — try to install via npm/go/pip into
         #              ``<HERMES_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
+        # ``"manual"`` — only use binaries already on PATH or in
+        #                  ``<HERMES_HOME>/lsp/bin/``.
         # ``"off"`` — alias for ``manual``.
         "install_strategy": "manual",
 

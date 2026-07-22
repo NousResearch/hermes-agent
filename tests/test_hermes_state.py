@@ -5226,6 +5226,161 @@ class TestFTS5ToolCallMigration:
 class TestApplyWalProbe:
     """Unit tests for the journal_mode probe in apply_wal_with_fallback."""
 
+    @pytest.mark.parametrize(
+        ("persisted_mode", "sidecars"),
+        [
+            ("delete", ("-wal",)),
+            ("delete", ("-shm",)),
+            ("wal", ("-wal", "-shm")),
+        ],
+        ids=["delete-empty-wal", "delete-empty-shm", "wal-empty-pair"],
+    )
+    def test_sidecar_fast_path_requires_valid_sqlite_wal_files(
+        self, tmp_path, persisted_mode, sidecars
+    ):
+        """Empty or one-sided sidecars cannot authenticate the WAL fast path."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / f"{persisted_mode}.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("CREATE TABLE events (id INTEGER PRIMARY KEY)")
+            if persisted_mode == "wal":
+                assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        for suffix in sidecars:
+            (tmp_path / f"{persisted_mode}.db{suffix}").touch()
+
+        conn = sqlite3.connect(str(db_path), factory=_TracingConn)
+        try:
+            assert apply_wal_with_fallback(conn) == "wal"
+            assert any("journal_mode" in sql.lower() for sql in conn.executed)
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        finally:
+            conn.close()
+
+    def test_live_wal_sidecars_skip_journal_pragmas_when_probe_eio(self, tmp_path):
+        """A live WAL DB remains usable when journal_mode probes raise EIO."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _JournalModeFails(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "live.db"
+        seed = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            seed.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, value TEXT)")
+            seed.execute("INSERT INTO events (value) VALUES ('live')")
+            assert (tmp_path / "live.db-wal").exists()
+            assert (tmp_path / "live.db-shm").exists()
+
+            conn = sqlite3.connect(str(db_path), factory=_JournalModeFails)
+            try:
+                assert apply_wal_with_fallback(conn) == "wal"
+                assert conn.execute("SELECT value FROM events").fetchone() == ("live",)
+            finally:
+                conn.close()
+        finally:
+            seed.close()
+
+        assert not any("journal_mode" in sql.lower() for sql in conn.executed)
+
+    def test_live_truncated_wal_skips_journal_pragmas_when_probe_eio(self, tmp_path):
+        """A live WAL remains identifiable after a normal TRUNCATE checkpoint."""
+        import sqlite3
+        from hermes_state import apply_wal_with_fallback
+
+        class _JournalModeFails(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "truncated-live.db"
+        seed = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            seed.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, value TEXT)")
+            seed.execute("INSERT INTO events (value) VALUES ('checkpointed')")
+            assert seed.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0)
+            assert (tmp_path / "truncated-live.db-wal").stat().st_size == 0
+            assert (tmp_path / "truncated-live.db-shm").stat().st_size >= 136
+
+            conn = sqlite3.connect(str(db_path), factory=_JournalModeFails)
+            try:
+                assert apply_wal_with_fallback(conn) == "wal"
+                assert conn.execute("SELECT value FROM events").fetchone() == (
+                    "checkpointed",
+                )
+            finally:
+                conn.close()
+        finally:
+            seed.close()
+
+        assert not any("journal_mode" in sql.lower() for sql in conn.executed)
+
+    def test_live_wal_fast_path_preserves_macos_durability(self, tmp_path, monkeypatch):
+        """The sidecar fast path keeps both macOS WAL durability pragmas."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _JournalModeFails(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "macos-live.db"
+        seed = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            seed.execute("CREATE TABLE events (id INTEGER PRIMARY KEY)")
+            seed.execute("INSERT INTO events DEFAULT VALUES")
+            assert (tmp_path / "macos-live.db-wal").exists()
+            assert (tmp_path / "macos-live.db-shm").exists()
+            monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+            conn = sqlite3.connect(str(db_path), factory=_JournalModeFails)
+            try:
+                assert apply_wal_with_fallback(conn) == "wal"
+            finally:
+                conn.close()
+        finally:
+            seed.close()
+
+        assert not any("journal_mode" in sql.lower() for sql in conn.executed)
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed)
+        assert any("synchronous=FULL" in sql for sql in conn.executed)
+
     def test_skips_set_pragma_when_already_wal(self, tmp_path):
         """Already-WAL connection must not trigger the set-pragma."""
         import sqlite3

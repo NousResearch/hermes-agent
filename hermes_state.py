@@ -333,6 +333,52 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
     return str(mode).strip().lower() if mode is not None else None
 
 
+def _sqlite_database_path(conn: sqlite3.Connection) -> Optional[str]:
+    """Return the main database path for *conn*, if SQLite exposes one."""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or len(row) < 3:
+        return None
+    path = row[2]
+    return str(path) if path else None
+
+
+def _database_has_valid_wal_sidecars(conn: sqlite3.Connection) -> bool:
+    """Return whether the main DB and both sidecars form a valid WAL set."""
+    db_path = _sqlite_database_path(conn)
+    if not db_path:
+        return False
+    try:
+        with open(db_path, "rb") as db_file:
+            db_header = db_file.read(20)
+        with open(f"{db_path}-wal", "rb") as wal_file:
+            wal_header = wal_file.read(32)
+        with open(f"{db_path}-shm", "rb") as shm_file:
+            shm_header = shm_file.read(96)
+    except OSError:
+        return False
+    # SQLite file-format bytes 18/19 are the read/write versions (2 = WAL).
+    # WAL may be empty after a TRUNCATE checkpoint, so authenticate the two
+    # native-endian WAL-index header copies in SHM before accepting that state.
+    shm_headers_valid = len(shm_header) == 96 and all(
+        int.from_bytes(shm_header[offset : offset + 4], sys.byteorder) == 3007000
+        and shm_header[offset + 12] == 1
+        for offset in (0, 48)
+    )
+    wal_header_valid = not wal_header or (
+        len(wal_header) == 32
+        and wal_header[:4] in (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83")
+    )
+    return (
+        db_header[:16] == b"SQLite format 3\x00"
+        and db_header[18:20] == b"\x02\x02"
+        and shm_headers_valid
+        and wal_header_valid
+    )
+
+
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
     """Enable ``PRAGMA checkpoint_fullfsync`` on macOS (no-op elsewhere).
 
@@ -423,6 +469,14 @@ def apply_wal_with_fallback(
 
     Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
     """
+    # A live WAL connection may make even the read-only journal_mode probe
+    # fail transiently under contention. Existing sidecars let us avoid both
+    # journal_mode pragmas while preserving per-connection durability setup.
+    if _database_has_valid_wal_sidecars(conn):
+        _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
+        return "wal"
+
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     try:

@@ -3289,6 +3289,68 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     conn.close()
 
 
+@pytest.mark.parametrize("cached_path", [False, True], ids=["first-init", "cached"])
+def test_connect_live_wal_skips_failing_journal_probe(
+    tmp_path, monkeypatch, cached_path
+):
+    """Both connect paths survive journal_mode EIO on a live WAL database."""
+    db_path = tmp_path / "kanban.db"
+    resolved = str(db_path.resolve())
+    kb._INITIALIZED_PATHS.discard(resolved)
+
+    anchor = kb.connect(db_path=db_path)
+    try:
+        task_id = kb.create_task(anchor, title="live-wal-task")
+        assert (tmp_path / "kanban.db-wal").exists()
+        assert (tmp_path / "kanban.db-shm").exists()
+        if cached_path:
+            kb._INITIALIZED_PATHS.add(resolved)
+        else:
+            kb._INITIALIZED_PATHS.discard(resolved)
+
+        opened = []
+
+        class _JournalModeFails(sqlite3.Connection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, params)
+
+        def _connect_with_failing_journal_probe(path):
+            conn = sqlite3.connect(
+                str(path),
+                isolation_level=None,
+                timeout=kb._resolve_busy_timeout_ms() / 1000.0,
+                factory=_JournalModeFails,
+            )
+            conn.execute(f"PRAGMA busy_timeout={kb._resolve_busy_timeout_ms()}")
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(kb, "_sqlite_connect", _connect_with_failing_journal_probe)
+
+        conn = kb.connect(db_path=db_path)
+        try:
+            assert kb.get_task(conn, task_id).title == "live-wal-task"
+        finally:
+            conn.close()
+    finally:
+        anchor.close()
+        kb._INITIALIZED_PATHS.discard(resolved)
+
+    assert opened
+    assert not any(
+        "journal_mode" in sql.lower()
+        for connection in opened
+        for sql in connection.executed
+    )
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

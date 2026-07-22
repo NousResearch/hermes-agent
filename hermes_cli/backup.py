@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -23,7 +24,7 @@ import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
@@ -341,6 +342,7 @@ def _safe_copy_db(
     dst: Path,
     *,
     expected_dst_identity: Optional[os.stat_result] = None,
+    expected_src_identity: Optional[os.stat_result] = None,
 ) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
@@ -351,6 +353,10 @@ def _safe_copy_db(
     conn = None
     backup_conn = None
     owner_fd: Optional[int] = None
+    source_fd: Optional[int] = None
+    stage_fd: Optional[int] = None
+    stage_path: Optional[Path] = None
+    stage_identity: Optional[os.stat_result] = None
     created_here = False
     success = False
     try:
@@ -385,9 +391,56 @@ def _safe_copy_db(
                 )
                 return False
 
+        source_selected = src.lstat()
+        if (
+            expected_src_identity is not None
+            and not _same_snapshot_object(expected_src_identity, source_selected)
+        ):
+            raise OSError(f"SQLite source changed after enumeration: {src}")
+        source_flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            source_flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            source_flags |= os.O_NOFOLLOW
+        source_fd = os.open(src, source_flags)
+        if (
+            not stat.S_ISREG(source_selected.st_mode)
+            or int(getattr(source_selected, "st_file_attributes", 0)) & 0x400
+            or not os.path.samestat(source_selected, os.fstat(source_fd))
+        ):
+            raise OSError(f"SQLite source changed before backup: {src}")
+
+        # SQLite must not open the caller's replaceable destination pathname.
+        # Back up into a random, already-open sibling and then stream that
+        # snapshot into the verified destination descriptor.
+        with tempfile.NamedTemporaryFile(
+            suffix=".db", delete=False, dir=str(dst.parent)
+        ) as stage_file:
+            stage_path = Path(stage_file.name)
+            stage_fd = os.dup(stage_file.fileno())
+            stage_identity = os.fstat(stage_file.fileno())
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
+        backup_conn = sqlite3.connect(str(stage_path))
         conn.backup(backup_conn)
+        backup_conn.close()
+        backup_conn = None
+
+        if not os.path.samestat(source_selected, src.lstat()):
+            raise OSError(f"SQLite source changed during backup: {src}")
+        if not os.path.samestat(stage_identity, os.fstat(stage_fd)):
+            raise OSError(f"SQLite staging file changed during backup: {stage_path}")
+
+        os.lseek(stage_fd, 0, os.SEEK_SET)
+        os.lseek(owner_fd, 0, os.SEEK_SET)
+        os.ftruncate(owner_fd, 0)
+        while chunk := os.read(stage_fd, 1024 * 1024):
+            view = memoryview(chunk)
+            while view:
+                written = os.write(owner_fd, view)
+                if written <= 0:
+                    raise OSError("short write while copying SQLite snapshot")
+                view = view[written:]
+        os.fsync(owner_fd)
         success = True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
@@ -400,7 +453,37 @@ def _safe_copy_db(
                     pass
         if owner_fd is not None:
             try:
+                opened_destination = os.fstat(owner_fd)
+                path_destination = dst.lstat()
+                success = bool(
+                    success
+                    and expected_dst_identity is not None
+                    and _same_snapshot_object(
+                        expected_dst_identity, opened_destination
+                    )
+                    and _same_snapshot_object(
+                        opened_destination, path_destination
+                    )
+                )
+            except OSError:
+                success = False
+            try:
                 os.close(owner_fd)
+            except OSError:
+                pass
+        if source_fd is not None:
+            try:
+                os.close(source_fd)
+            except OSError:
+                pass
+        if stage_fd is not None:
+            try:
+                os.close(stage_fd)
+            except OSError:
+                pass
+        if stage_path is not None and stage_identity is not None:
+            try:
+                _remove_owned_snapshot_file(stage_path, stage_identity)
             except OSError:
                 pass
 
@@ -410,7 +493,7 @@ def _safe_copy_db(
             success
             and expected_dst_identity is not None
             and stat.S_ISREG(current.st_mode)
-            and os.path.samestat(current, expected_dst_identity)
+            and _same_snapshot_object(expected_dst_identity, current)
         )
     except OSError:
         success = False
@@ -964,24 +1047,26 @@ def _move_owned_snapshot_path(path: Path, expected: os.stat_result) -> Optional[
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
     try:
         current = path.lstat()
-        if not os.path.samestat(expected, current):
-            return None
-        # Windows may recycle a just-unlinked file index immediately. Its
-        # creation timestamp remains independent evidence that the pathname
-        # still names the object we opened, rather than a race winner that
-        # inherited the same index.
-        if os.name == "nt" and expected.st_ctime_ns != current.st_ctime_ns:
+        if not _same_snapshot_object(expected, current):
             return None
         os.replace(path, quarantine)
         moved = quarantine.lstat()
-        if (
-            os.path.samestat(expected, moved)
-            and (os.name != "nt" or expected.st_ctime_ns == moved.st_ctime_ns)
-        ):
+        if _same_snapshot_object(expected, moved):
             return quarantine
     except OSError:
         return None
     return None
+
+
+def _same_snapshot_object(
+    expected: os.stat_result,
+    current: os.stat_result,
+) -> bool:
+    """Compare stable object evidence, including Windows creation time."""
+    return bool(
+        os.path.samestat(expected, current)
+        and (os.name != "nt" or expected.st_ctime_ns == current.st_ctime_ns)
+    )
 
 
 def _remove_owned_snapshot_file(path: Path, expected: os.stat_result) -> bool:
@@ -1315,6 +1400,84 @@ def create_quick_snapshot(
     return snap_id
 
 
+def _legacy_quick_snapshot_manifest(snapshot_dir: Path) -> Optional[Dict[str, Any]]:
+    """Validate a pre-marker snapshot for read-only list/restore compatibility."""
+    if (
+        os.path.lexists(snapshot_dir / _QUICK_OWNERSHIP_MARKER)
+        or os.path.lexists(snapshot_dir / _QUICK_IN_PROGRESS_MARKER)
+        or re.fullmatch(r"\d{8}-\d{6}(?:-\d{6})?(?:-[A-Za-z0-9_-]+)?", snapshot_dir.name)
+        is None
+    ):
+        return None
+    manifest_path = snapshot_dir / "manifest.json"
+    fd: Optional[int] = None
+    try:
+        directory_identity = snapshot_dir.lstat()
+        manifest_identity = manifest_path.lstat()
+        if (
+            not stat.S_ISDIR(directory_identity.st_mode)
+            or _snapshot_path_is_link_like(snapshot_dir)
+            or not stat.S_ISREG(manifest_identity.st_mode)
+            or _snapshot_path_is_link_like(manifest_path)
+        ):
+            return None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(manifest_path, flags)
+        if not os.path.samestat(manifest_identity, os.fstat(fd)):
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            fd = None
+            metadata = json.load(stream)
+        if not isinstance(metadata, dict) or metadata.get("id") != snapshot_dir.name:
+            return None
+        files = metadata.get("files")
+        if not isinstance(files, dict) or not files:
+            return None
+        allowed_roots = tuple(PurePosixPath(item) for item in _QUICK_STATE_FILES)
+        total_size = 0
+        for raw_rel, declared_size in files.items():
+            if (
+                not isinstance(raw_rel, str)
+                or not isinstance(declared_size, int)
+                or declared_size < 0
+            ):
+                return None
+            rel = PurePosixPath(raw_rel)
+            if rel.is_absolute() or not rel.parts or ".." in rel.parts or "." in rel.parts:
+                return None
+            if not any(rel == root or root in rel.parents for root in allowed_roots):
+                return None
+            source = snapshot_dir.joinpath(*rel.parts)
+            selected = source.lstat()
+            if (
+                not stat.S_ISREG(selected.st_mode)
+                or _snapshot_path_is_link_like(source)
+                or selected.st_size != declared_size
+                or not source.resolve(strict=True).is_relative_to(
+                    snapshot_dir.resolve(strict=True)
+                )
+            ):
+                return None
+            total_size += declared_size
+        if (
+            metadata.get("file_count") != len(files)
+            or metadata.get("total_size") != total_size
+            or not os.path.samestat(directory_identity, snapshot_dir.lstat())
+            or not os.path.samestat(manifest_identity, manifest_path.lstat())
+        ):
+            return None
+        return metadata
+    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def list_quick_snapshots(
     limit: int = 20,
     hermes_home: Optional[Path] = None,
@@ -1326,10 +1489,16 @@ def list_quick_snapshots(
 
     results = []
     for d in sorted(root.iterdir(), reverse=True):
-        if (
-            _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER) is None
-            or (d / _QUICK_IN_PROGRESS_MARKER).exists()
-        ):
+        owned = _quick_snapshot_marker_payload(d, _QUICK_OWNERSHIP_MARKER)
+        legacy_metadata = None if owned is not None else _legacy_quick_snapshot_manifest(d)
+        if (owned is None and legacy_metadata is None) or (
+            d / _QUICK_IN_PROGRESS_MARKER
+        ).exists():
+            continue
+        if legacy_metadata is not None:
+            results.append(legacy_metadata)
+            if len(results) >= limit:
+                break
             continue
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
@@ -1371,18 +1540,22 @@ def restore_quick_snapshot(
         logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
         return False
 
-    if (
-        _quick_snapshot_marker_payload(snap_dir, _QUICK_OWNERSHIP_MARKER) is None
-        or (snap_dir / _QUICK_IN_PROGRESS_MARKER).exists()
-    ):
+    owned = _quick_snapshot_marker_payload(snap_dir, _QUICK_OWNERSHIP_MARKER)
+    legacy_metadata = None if owned is not None else _legacy_quick_snapshot_manifest(snap_dir)
+    if (owned is None and legacy_metadata is None) or (
+        snap_dir / _QUICK_IN_PROGRESS_MARKER
+    ).exists():
         return False
 
     manifest_path = snap_dir / "manifest.json"
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    if legacy_metadata is not None:
+        meta = legacy_metadata
+    else:
+        with open(manifest_path, encoding="utf-8") as f:
+            meta = json.load(f)
 
     restored = 0
     for rel in meta.get("files", {}):
@@ -1659,6 +1832,66 @@ def _owned_archive_identity(path: Path) -> Optional[os.stat_result]:
         if fd is not None:
             os.close(fd)
 
+
+def _write_bound_file_to_zip(
+    archive: zipfile.ZipFile,
+    source: Path,
+    arcname: str,
+    *,
+    expected_identity: Optional[os.stat_result] = None,
+) -> int:
+    """Archive one opened regular file only while its pathname stays bound."""
+    selected = source.lstat()
+    if expected_identity is not None and not _same_snapshot_object(
+        expected_identity, selected
+    ):
+        raise OSError(f"backup source changed after enumeration: {source}")
+    reparse = int(getattr(selected, "st_file_attributes", 0)) & 0x400
+    if not stat.S_ISREG(selected.st_mode) or reparse:
+        raise OSError(f"backup source is not a regular file: {source}")
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(source, flags)
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(selected, opened)
+        ):
+            raise OSError(f"backup source changed before open: {source}")
+
+        timestamp = list(time.localtime(opened.st_mtime)[:6])
+        timestamp[0] = min(max(timestamp[0], 1980), 2107)
+        info = zipfile.ZipInfo(arcname.replace(os.sep, "/"), tuple(timestamp))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 3
+        info.external_attr = (opened.st_mode & 0xFFFF) << 16
+        copied = 0
+        with os.fdopen(fd, "rb", closefd=False) as source_file, archive.open(
+            info, "w", force_zip64=True
+        ) as destination:
+            while chunk := source_file.read(1024 * 1024):
+                destination.write(chunk)
+                copied += len(chunk)
+
+        after = os.fstat(fd)
+        if (
+            copied != opened.st_size
+            or after.st_size != opened.st_size
+            or after.st_mtime_ns != opened.st_mtime_ns
+            or after.st_ctime_ns != opened.st_ctime_ns
+            or not os.path.samestat(opened, source.lstat())
+        ):
+            raise OSError(f"backup source changed while reading: {source}")
+        return copied
+    finally:
+        os.close(fd)
+
+
 def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     """Write a full zip snapshot of ``hermes_root`` to ``out_path``.
 
@@ -1666,7 +1899,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     Returns the output path on success, None on failure (nothing to back up,
     or write error — caller should surface the outcome but not raise).
     """
-    files_to_add: list[tuple[Path, Path]] = []
+    files_to_add: list[tuple[Path, Path, os.stat_result]] = []
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
@@ -1682,8 +1915,14 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
 
                 if _should_skip_backup_file(fpath, rel, out_path):
                     continue
+                selected = fpath.lstat()
+                reparse = int(
+                    getattr(selected, "st_file_attributes", 0)
+                ) & 0x400
+                if not stat.S_ISREG(selected.st_mode) or reparse:
+                    continue
 
-                files_to_add.append((fpath, rel))
+                files_to_add.append((fpath, rel, selected))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
@@ -1707,7 +1946,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         with zipfile.ZipFile(
             temp_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
         ) as zf:
-            for abs_path, rel_path in files_to_add:
+            for abs_path, rel_path, source_identity in files_to_add:
                 if abs_path.suffix == ".db":
                     # Stage the snapshot alongside the output zip so that the
                     # temp file lives on the same filesystem.  The system
@@ -1723,18 +1962,29 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                             abs_path,
                             tmp_db,
                             expected_dst_identity=tmp_db_identity,
+                            expected_src_identity=source_identity,
                         ):
                             logger.warning(
                                 "Full-zip backup aborted: SQLite snapshot failed for %s",
                                 rel_path,
                             )
                             return None
-                        zf.write(tmp_db, arcname=rel_path.as_posix())
+                        _write_bound_file_to_zip(
+                            zf,
+                            tmp_db,
+                            rel_path.as_posix(),
+                            expected_identity=tmp_db_identity,
+                        )
                         written_members += 1
                     finally:
                         _remove_owned_snapshot_file(tmp_db, tmp_db_identity)
                 else:
-                    zf.write(abs_path, arcname=rel_path.as_posix())
+                    _write_bound_file_to_zip(
+                        zf,
+                        abs_path,
+                        rel_path.as_posix(),
+                        expected_identity=source_identity,
+                    )
                     written_members += 1
             zf.comment = _archive_ownership_comment(out_path)
 
@@ -1897,7 +2147,7 @@ def create_pre_update_backup(
             if result is None:
                 return None
             _prune_pre_update_backups(backup_dir, keep=keep)
-            return out_path
+            return result
     except OSError as exc:
         logger.warning("Could not publish pre-update backup: %s", exc)
         return None
@@ -1983,7 +2233,7 @@ def create_pre_migration_backup(
             if result is None:
                 return None
             _prune_pre_migration_backups(backup_dir, keep=keep)
-            return out_path
+            return result
     except OSError as exc:
         logger.warning("Could not publish pre-migration backup: %s", exc)
         return None

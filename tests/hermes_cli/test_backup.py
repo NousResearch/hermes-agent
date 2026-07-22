@@ -1475,6 +1475,30 @@ class TestSafeCopyDb:
         assert backup_mod._safe_copy_db(src, dst) is False
         assert dst.read_text() == "human replacement"
 
+    def test_sqlite_never_opens_the_caller_destination(self, tmp_path, monkeypatch):
+        """SQLite writes a private stage, then copies through the bound fd."""
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "source.db"
+        dst = tmp_path / "copy.db"
+        with sqlite3.connect(src) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+            conn.execute("INSERT INTO state VALUES ('safe')")
+
+        real_connect = backup_mod.sqlite3.connect
+        opened = []
+
+        def record_connect(database, *args, **kwargs):
+            opened.append(str(database))
+            return real_connect(database, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", record_connect)
+        assert backup_mod._safe_copy_db(src, dst)
+
+        assert str(dst) not in opened
+        with real_connect(dst) as copied:
+            assert copied.execute("SELECT value FROM state").fetchall() == [("safe",)]
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
@@ -1897,6 +1921,38 @@ class TestQuickSnapshot:
         assert (snapshot / "human.txt").read_text() == "keep"
         assert (displaced / "config.yaml").exists()
 
+    def test_legacy_snapshot_remains_listable_restorable_but_not_prunable(
+        self, hermes_home
+    ):
+        import hermes_cli.backup as backup_mod
+
+        root = hermes_home / "state-snapshots"
+        legacy = root / "20260101-010101"
+        legacy.mkdir(parents=True)
+        payload = b"legacy: restored\n"
+        (legacy / "config.yaml").write_bytes(payload)
+        manifest = {
+            "id": legacy.name,
+            "timestamp": "20260101-010101",
+            "label": None,
+            "file_count": 1,
+            "total_size": len(payload),
+            "files": {"config.yaml": len(payload)},
+        }
+        (legacy / "manifest.json").write_text(json.dumps(manifest))
+
+        listed = backup_mod.list_quick_snapshots(hermes_home=hermes_home)
+        assert [item["id"] for item in listed] == [legacy.name]
+        (hermes_home / "config.yaml").write_text("current")
+        assert backup_mod.restore_quick_snapshot(
+            legacy.name, hermes_home=hermes_home
+        )
+        assert (hermes_home / "config.yaml").read_bytes() == payload
+        assert backup_mod.prune_quick_snapshots(
+            keep=0, hermes_home=hermes_home
+        ) == 0
+        assert legacy.is_dir()
+
     def test_snapshot_includes_pairing_directories(self, hermes_home):
         """Pairing JSONs live outside state.db — snapshot must capture them
         recursively (generic + per-platform) so approved-user lists survive
@@ -2243,7 +2299,10 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(
+            Path(s).parts[-3:] == ("boards", "work", "kanban.db")
+            for s in called["db"]
+        ), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -2307,7 +2366,7 @@ class TestPreUpdateBackup:
         def fail_write(*_args, **_kwargs):
             raise OSError("forced archive write failure")
 
-        monkeypatch.setattr(backup_mod.zipfile.ZipFile, "write", fail_write)
+        monkeypatch.setattr(backup_mod, "_write_bound_file_to_zip", fail_write)
         out = hermes_home / "backups" / "pre-migration-failed.zip"
         out.parent.mkdir()
         result = backup_mod._write_full_zip_backup(out, hermes_home)
@@ -2352,6 +2411,48 @@ class TestPreUpdateBackup:
         assert published is not None and published != requested
         assert backup_mod._owned_archive_identity(published) is not None
 
+    def test_create_backup_returns_the_actual_collision_retry_path(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        actual = hermes_home / "backups" / "pre-update-retry.zip"
+        monkeypatch.setattr(
+            backup_mod,
+            "_write_full_zip_backup",
+            lambda _requested, _root: actual,
+        )
+        monkeypatch.setattr(backup_mod, "_prune_pre_update_backups", lambda *_a, **_k: 0)
+
+        assert backup_mod.create_pre_update_backup(hermes_home=hermes_home) == actual
+
+    def test_regular_source_replacement_aborts_publication(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        source = hermes_home / "config.yaml"
+        source.write_text("agent")
+        out = tmp_path / "backup.zip"
+        real_open = backup_mod.os.open
+        replaced = False
+
+        def replace_before_open(path, flags, *args, **kwargs):
+            nonlocal replaced
+            if Path(path) == source and not replaced:
+                replaced = True
+                source.unlink()
+                source.write_text("human replacement")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.os, "open", replace_before_open)
+
+        assert backup_mod._write_full_zip_backup(out, hermes_home) is None
+        assert source.read_text() == "human replacement"
+        assert not out.exists()
+
     def test_failed_zip_write_preserves_recreated_temp_path(
         self, tmp_path, monkeypatch
     ):
@@ -2375,8 +2476,8 @@ class TestPreUpdateBackup:
             return real_remove(path, expected)
 
         monkeypatch.setattr(
-            backup_mod.zipfile.ZipFile,
-            "write",
+            backup_mod,
+            "_write_bound_file_to_zip",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("forced")),
         )
         monkeypatch.setattr(
@@ -2403,7 +2504,7 @@ class TestPreUpdateBackup:
         backup_dir = hermes_home / "backups"
         backup_dir.mkdir()
         out = backup_dir / "pre-update.zip"
-        real_write = backup_mod.zipfile.ZipFile.write
+        real_write = backup_mod._write_bound_file_to_zip
         replaced = []
 
         def replace_db_after_archive_write(archive, filename, *args, **kwargs):
@@ -2416,7 +2517,7 @@ class TestPreUpdateBackup:
             return result
 
         monkeypatch.setattr(
-            backup_mod.zipfile.ZipFile, "write", replace_db_after_archive_write
+            backup_mod, "_write_bound_file_to_zip", replace_db_after_archive_write
         )
 
         assert backup_mod._write_full_zip_backup(out, hermes_home) == out

@@ -1432,6 +1432,49 @@ class TestSafeCopyDb:
         conn.close()
         assert rows == [("wal-test",)]
 
+    def test_failure_cleanup_preserves_pathname_replacement(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed backup cannot authorize unlinking a later human file."""
+        import hermes_cli.backup as backup_mod
+
+        src = tmp_path / "source.db"
+        with sqlite3.connect(src) as conn:
+            conn.execute("CREATE TABLE state (value TEXT)")
+        dst = tmp_path / "copy.db"
+        real_remove = backup_mod._remove_owned_snapshot_file
+
+        class FailingSource:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def backup(self, _destination):
+                raise sqlite3.OperationalError("forced failure")
+
+            def close(self):
+                self.connection.close()
+
+        real_connect = backup_mod.sqlite3.connect
+
+        def failing_connect(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if str(database).startswith(f"file:{src}"):
+                return FailingSource(connection)
+            return connection
+
+        def replace_before_cleanup(path, expected):
+            Path(path).unlink()
+            Path(path).write_text("human replacement")
+            return real_remove(path, expected)
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", failing_connect)
+        monkeypatch.setattr(
+            backup_mod, "_remove_owned_snapshot_file", replace_before_cleanup
+        )
+
+        assert backup_mod._safe_copy_db(src, dst) is False
+        assert dst.read_text() == "human replacement"
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
@@ -1850,8 +1893,8 @@ class TestQuickSnapshot:
             keep=0, hermes_home=hermes_home
         ) == 0
         quarantines = list(root.glob(f".{snap_id}.hermes-delete-*"))
-        assert len(quarantines) == 1
-        assert (quarantines[0] / "human.txt").read_text() == "keep"
+        assert quarantines == []
+        assert (snapshot / "human.txt").read_text() == "keep"
         assert (displaced / "config.yaml").exists()
 
     def test_snapshot_includes_pairing_directories(self, hermes_home):
@@ -2271,6 +2314,43 @@ class TestPreUpdateBackup:
 
         assert result is None
         assert not out.exists()
+
+    def test_publication_collision_preserves_winner_and_retries(
+        self, hermes_home, monkeypatch
+    ):
+        import hermes_cli.backup as backup_mod
+
+        backup_dir = hermes_home / "backups"
+        backup_dir.mkdir()
+        requested = backup_dir / "pre-update-race.zip"
+        if os.name == "nt":
+            real_publish = backup_mod.os.rename
+
+            def collide_once(source, destination):
+                destination = Path(destination)
+                if destination == requested and not destination.exists():
+                    destination.write_text("human winner")
+                    raise FileExistsError(str(destination))
+                return real_publish(source, destination)
+
+            monkeypatch.setattr(backup_mod.os, "rename", collide_once)
+        else:
+            real_publish = backup_mod.os.link
+
+            def collide_once(source, destination, **kwargs):
+                destination = Path(destination)
+                if destination == requested and not destination.exists():
+                    destination.write_text("human winner")
+                    raise FileExistsError(str(destination))
+                return real_publish(source, destination, **kwargs)
+
+            monkeypatch.setattr(backup_mod.os, "link", collide_once)
+
+        published = backup_mod._write_full_zip_backup(requested, hermes_home)
+
+        assert requested.read_text() == "human winner"
+        assert published is not None and published != requested
+        assert backup_mod._owned_archive_identity(published) is not None
 
     def test_failed_zip_write_preserves_recreated_temp_path(
         self, tmp_path, monkeypatch

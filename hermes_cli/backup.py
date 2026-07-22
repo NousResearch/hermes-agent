@@ -336,7 +336,12 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
-def _safe_copy_db(src: Path, dst: Path) -> bool:
+def _safe_copy_db(
+    src: Path,
+    dst: Path,
+    *,
+    expected_dst_identity: Optional[os.stat_result] = None,
+) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
@@ -345,18 +350,47 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     """
     conn = None
     backup_conn = None
+    owner_fd: Optional[int] = None
+    created_here = False
+    success = False
     try:
+        if expected_dst_identity is None:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            owner_fd = os.open(dst, flags, 0o600)
+            expected_dst_identity = os.fstat(owner_fd)
+            created_here = True
+        else:
+            selected = dst.lstat()
+            if (
+                not stat.S_ISREG(selected.st_mode)
+                or not os.path.samestat(selected, expected_dst_identity)
+            ):
+                logger.warning(
+                    "SQLite safe copy refused changed destination %s", dst
+                )
+                return False
+            flags = os.O_RDWR
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            owner_fd = os.open(dst, flags)
+            if not os.path.samestat(os.fstat(owner_fd), expected_dst_identity):
+                logger.warning(
+                    "SQLite safe copy refused replaced destination %s", dst
+                )
+                return False
+
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
         conn.backup(backup_conn)
-        return True
+        success = True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
     finally:
         for connection in (backup_conn, conn):
             if connection is not None:
@@ -364,6 +398,29 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
                     connection.close()
                 except Exception:
                     pass
+        if owner_fd is not None:
+            try:
+                os.close(owner_fd)
+            except OSError:
+                pass
+
+    try:
+        current = dst.lstat()
+        success = bool(
+            success
+            and expected_dst_identity is not None
+            and stat.S_ISREG(current.st_mode)
+            and os.path.samestat(current, expected_dst_identity)
+        )
+    except OSError:
+        success = False
+
+    if not success and created_here and expected_dst_identity is not None:
+        try:
+            _remove_owned_snapshot_file(dst, expected_dst_identity)
+        except OSError:
+            pass
+    return success
 
 
 # ---------------------------------------------------------------------------
@@ -484,14 +541,20 @@ def run_backup(args) -> None:
                         suffix=".db", delete=False, dir=str(out_path.parent)
                     ) as tmp:
                         tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
-                        total_bytes += tmp_db.stat().st_size
-                        tmp_db.unlink(missing_ok=True)
-                    else:
-                        tmp_db.unlink(missing_ok=True)
-                        errors.append(f"  {rel_path}: SQLite safe copy failed")
-                        continue
+                        tmp_db_identity = os.fstat(tmp.fileno())
+                    try:
+                        if _safe_copy_db(
+                            abs_path,
+                            tmp_db,
+                            expected_dst_identity=tmp_db_identity,
+                        ):
+                            zf.write(tmp_db, arcname=str(rel_path))
+                            total_bytes += tmp_db.stat().st_size
+                        else:
+                            errors.append(f"  {rel_path}: SQLite safe copy failed")
+                            continue
+                    finally:
+                        _remove_owned_snapshot_file(tmp_db, tmp_db_identity)
                 else:
                     zf.write(abs_path, arcname=str(rel_path))
                     total_bytes += abs_path.stat().st_size
@@ -900,8 +963,21 @@ def _move_owned_snapshot_path(path: Path, expected: os.stat_result) -> Optional[
     """Move the exact expected object to a nonce sibling, or preserve it there."""
     quarantine = path.with_name(f".{path.name}.hermes-delete-{uuid.uuid4().hex}")
     try:
+        current = path.lstat()
+        if not os.path.samestat(expected, current):
+            return None
+        # Windows may recycle a just-unlinked file index immediately. Its
+        # creation timestamp remains independent evidence that the pathname
+        # still names the object we opened, rather than a race winner that
+        # inherited the same index.
+        if os.name == "nt" and expected.st_ctime_ns != current.st_ctime_ns:
+            return None
         os.replace(path, quarantine)
-        if os.path.samestat(expected, quarantine.lstat()):
+        moved = quarantine.lstat()
+        if (
+            os.path.samestat(expected, moved)
+            and (os.name != "nt" or expected.st_ctime_ns == moved.st_ctime_ns)
+        ):
             return quarantine
     except OSError:
         return None
@@ -1643,7 +1719,11 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         tmp_db = Path(tmp_db_file.name)
                         tmp_db_identity = os.fstat(tmp_db_file.fileno())
                     try:
-                        if not _safe_copy_db(abs_path, tmp_db):
+                        if not _safe_copy_db(
+                            abs_path,
+                            tmp_db,
+                            expected_dst_identity=tmp_db_identity,
+                        ):
                             logger.warning(
                                 "Full-zip backup aborted: SQLite snapshot failed for %s",
                                 rel_path,
@@ -1669,12 +1749,53 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 logger.warning("Full-zip backup aborted: archive integrity check failed")
                 return None
 
-        with open(temp_path, "r+b") as archive_file:
-            os.fsync(archive_file.fileno())
-        os.replace(temp_path, out_path)
-        temp_path = None
-        temp_identity = None
-        return out_path
+        candidate = out_path
+        for attempt in range(16):
+            if attempt:
+                candidate = out_path.with_name(
+                    f"{out_path.stem}-{uuid.uuid4().hex[:12]}{out_path.suffix}"
+                )
+                with zipfile.ZipFile(temp_path, "a") as zf:
+                    zf.comment = _archive_ownership_comment(candidate)
+
+            with open(temp_path, "r+b") as archive_file:
+                os.fsync(archive_file.fileno())
+                temp_identity = os.fstat(archive_file.fileno())
+
+            try:
+                if os.name == "nt":
+                    # Unlike os.replace(), Windows os.rename() fails when the
+                    # destination already exists.
+                    os.rename(temp_path, candidate)
+                    published_via_link = False
+                else:
+                    # link() is the portable no-replace publication primitive
+                    # on POSIX. The sibling temp and destination share a
+                    # filesystem by construction.
+                    os.link(temp_path, candidate, follow_symlinks=False)
+                    published_via_link = True
+            except FileExistsError:
+                continue
+
+            published = candidate.lstat()
+            if (
+                not stat.S_ISREG(published.st_mode)
+                or not os.path.samestat(published, temp_identity)
+            ):
+                logger.warning(
+                    "Full-zip backup: published archive identity changed: %s",
+                    candidate,
+                )
+                return None
+
+            if published_via_link:
+                _remove_owned_snapshot_file(temp_path, temp_identity)
+            temp_path = None
+            temp_identity = None
+            return candidate
+
+        logger.warning("Full-zip backup: destination kept colliding: %s", out_path)
+        return None
     except (PermissionError, OSError, ValueError, zipfile.BadZipFile) as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None

@@ -3411,10 +3411,17 @@ def run_conversation(
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
                 }
-                _is_transport_failure = classified.reason in {
-                    FailoverReason.timeout,
-                    FailoverReason.overloaded,
-                }
+                # Separate stale-stream kills (expensive, want eager fallback)
+                # from ordinary connection failures (fast, should try primary
+                # transport recovery first).  _consecutive_stale_streams is
+                # incremented by the stale-stream detector in
+                # chat_completion_helpers.py when it kills a stalled stream.
+                _is_stale_stream = (
+                    classified.reason == FailoverReason.timeout
+                    and getattr(agent, "_consecutive_stale_streams", 0) > 0
+                )
+                _is_overloaded = classified.reason == FailoverReason.overloaded
+                _is_transport_failure = _is_stale_stream or _is_overloaded
                 # Z.AI Coding Plan GLM-5.2 overload 429s classify as
                 # `overloaded` (to spare the credential pool), but `overloaded`
                 # is excluded from `is_rate_limited` — the gate for the adaptive
@@ -3429,7 +3436,8 @@ def run_conversation(
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
                 _should_fallback = (
                     is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                    or (_is_overloaded and retry_count >= 2)
+                    or (_is_stale_stream and retry_count >= 1)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may

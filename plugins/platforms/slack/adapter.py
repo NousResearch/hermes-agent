@@ -744,6 +744,8 @@ class SlackAdapter(BasePlatformAdapter):
         # the primary client meanwhile.
         self._channel_team: Dict[str, str] = {}
         self._CHANNEL_TEAM_MAX = 10000
+        # user target (team_id:user_id) → opened DM conversation ID (D...)
+        self._dm_conversation_cache: Dict[str, str] = {}
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events (#4777). The TTL must outlast Slack's
         # worst-case reconnect-redelivery gap, not just a few seconds — the
@@ -1966,6 +1968,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients = {}
         self._team_bot_user_ids = {}
         self._channel_team = {}
+        self._dm_conversation_cache = {}
 
         self._release_platform_lock()
 
@@ -1992,6 +1995,49 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    async def _ensure_dm_conversation(
+        self, chat_id: str, team_id: Optional[str] = None
+    ) -> str:
+        """Resolve a bare Slack user ID target to a DM conversation ID.
+
+        ``chat.postMessage`` and ``files_upload_v2`` reject user IDs (U.../W...)
+        — a DM must be opened first via ``conversations.open`` to obtain a D...
+        conversation ID (#19236 / #17261). Conversation IDs (C/G/D...) pass
+        through unchanged. Resolution goes through the workspace-scoped client
+        so multi-workspace installs open the DM with the right bot token, and
+        results are cached per (team, user) so repeated sends don't re-open.
+
+        Returns the resolved conversation ID, or the original ``chat_id`` when
+        resolution is not applicable or fails (the downstream API call then
+        surfaces the real Slack error).
+        """
+        cid = str(chat_id or "")
+        if not cid or cid[0] not in ("U", "W"):
+            return chat_id
+        cache_key = f"{team_id or ''}:{cid}"
+        cached = self._dm_conversation_cache.get(cache_key)
+        if cached:
+            return cached
+        try:
+            response = await self._get_client(cid, team_id=team_id).conversations_open(
+                users=cid
+            )
+            dm_id = ((response or {}).get("channel") or {}).get("id")
+            if dm_id:
+                self._dm_conversation_cache[cache_key] = dm_id
+                # DM belongs to the same workspace as the user target.
+                if team_id:
+                    self._channel_team[dm_id] = team_id
+                return dm_id
+        except Exception as e:
+            logger.warning(
+                "[Slack] conversations.open failed for user target %s: %s "
+                "(check the bot's im:write scope)",
+                cid,
+                e,
+            )
+        return chat_id
+
     async def send(
         self,
         chat_id: str,
@@ -2003,6 +2049,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         thread_ts = None
         try:
             # Check for a pending slash-command context.  When the user ran a
@@ -2536,6 +2585,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         last_exc = None
         for attempt in range(3):
@@ -2586,6 +2638,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not images:
             return
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             import httpx as _httpx
             from urllib.parse import unquote as _unquote
@@ -3261,6 +3316,9 @@ class SlackAdapter(BasePlatformAdapter):
                 response.raise_for_status()
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            chat_id = await self._ensure_dm_conversation(
+                chat_id, team_id=self._metadata_team_id(metadata)
+            )
             result = await self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
             ).files_upload_v2(
@@ -3334,6 +3392,9 @@ class SlackAdapter(BasePlatformAdapter):
                 success=False, error=f"Video file not found: {video_path}"
             )
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_exc = None
@@ -3396,6 +3457,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         display_name = file_name or os.path.basename(file_path)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
 
         try:
             last_exc = None
@@ -5176,6 +5240,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -5270,6 +5337,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
             # Same 3000-char section-block cap as send_exec_approval: budget
@@ -5374,6 +5444,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 

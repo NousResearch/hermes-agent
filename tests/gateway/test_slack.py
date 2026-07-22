@@ -7021,3 +7021,161 @@ class TestTrackingStructureBounds:
         # can never remove a newer entry while an older one remains).
         for i in range(450, 500):
             assert f"{2000 + i}.000000" in adapter._bot_message_ts
+
+
+# ---------------------------------------------------------------------------
+# TestEnsureDmConversation — bare user-ID targets resolve to DM channels
+# (#19236 / #17261: attachments and Block Kit prompts to U... targets)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureDmConversation:
+    @pytest.mark.asyncio
+    async def test_user_id_target_is_opened_as_dm(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+
+        resolved = await adapter._ensure_dm_conversation("U123ABCDEF")
+
+        assert resolved == "D999NEW"
+        adapter._app.client.conversations_open.assert_awaited_once_with(
+            users="U123ABCDEF"
+        )
+
+    @pytest.mark.asyncio
+    async def test_conversation_ids_pass_through(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock()
+        for cid in ("C123CHAN", "G123GROUP", "D123DM"):
+            assert await adapter._ensure_dm_conversation(cid) == cid
+        adapter._app.client.conversations_open.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resolution_is_cached_per_user(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+
+        first = await adapter._ensure_dm_conversation("U123ABCDEF")
+        second = await adapter._ensure_dm_conversation("U123ABCDEF")
+
+        assert first == second == "D999NEW"
+        adapter._app.client.conversations_open.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_original_target(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock(
+            side_effect=Exception("missing_scope")
+        )
+
+        resolved = await adapter._ensure_dm_conversation("U123ABCDEF")
+
+        assert resolved == "U123ABCDEF"
+
+    @pytest.mark.asyncio
+    async def test_workspace_scoped_client_used_for_team_id(self, adapter):
+        team_client = AsyncMock()
+        team_client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D_TEAM2"}}
+        )
+        adapter._team_clients["T_SECOND"] = team_client
+        adapter._app.client.conversations_open = AsyncMock()
+
+        resolved = await adapter._ensure_dm_conversation(
+            "U123ABCDEF", team_id="T_SECOND"
+        )
+
+        assert resolved == "D_TEAM2"
+        team_client.conversations_open.assert_awaited_once_with(users="U123ABCDEF")
+        adapter._app.client.conversations_open.assert_not_awaited()
+        # The opened DM is recorded as belonging to the same workspace.
+        assert adapter._channel_team["D_TEAM2"] == "T_SECOND"
+
+    @pytest.mark.asyncio
+    async def test_send_resolves_user_target_before_posting(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        result = await adapter.send("U123ABCDEF", "hello there")
+
+        assert result.success is True
+        post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
+        assert post_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_upload_file_resolves_user_target(self, adapter, tmp_path):
+        media = tmp_path / "report.pdf"
+        media.write_bytes(b"%PDF-1.4 fake")
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            return_value={"ok": True, "file": {"id": "F1"}}
+        )
+
+        result = await adapter._upload_file("U123ABCDEF", str(media))
+
+        assert result.success is True
+        upload_kwargs = adapter._app.client.files_upload_v2.await_args.kwargs
+        assert upload_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_send_document_resolves_user_target(self, adapter, tmp_path):
+        media = tmp_path / "notes.md"
+        media.write_bytes(b"# notes")
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            return_value={"ok": True, "file": {"id": "F1"}}
+        )
+
+        result = await adapter.send_document("U123ABCDEF", str(media))
+
+        assert result.success is True
+        upload_kwargs = adapter._app.client.files_upload_v2.await_args.kwargs
+        assert upload_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_resolves_user_target(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="U123ABCDEF",
+            question="Which one?",
+            choices=["a", "b"],
+            clarify_id="cl-1",
+            session_key="sk-1",
+        )
+
+        assert result.success is True
+        post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
+        assert post_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_resolves_user_target(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        result = await adapter.send_exec_approval(
+            chat_id="U123ABCDEF",
+            command="rm -rf /tmp/x",
+            session_key="sk-1",
+        )
+
+        assert result.success is True
+        post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
+        assert post_kwargs["channel"] == "D999NEW"

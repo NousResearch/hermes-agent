@@ -140,6 +140,11 @@ def strip_dangling_tool_call_tail(
     ``assistant(tool_calls)`` whose calls have NO corresponding ``tool``
     results — a completed assistant→tool pair (any tool answers present) is
     left untouched so genuine mid-progress tool loops still resume.
+
+    If the trailing ``assistant(tool_calls)`` message ALSO has ``content``
+    (partial text the user may have seen streamed before the session died),
+    the tool_calls are stripped but the content-only assistant message is
+    kept — this preserves partial output the user already saw.
     """
     if not agent_history:
         return agent_history
@@ -150,6 +155,17 @@ def strip_dangling_tool_call_tail(
         and last.get("role") == "assistant"
         and last.get("tool_calls")
     ):
+        return agent_history
+
+    # If the assistant message has visible content, preserve it by stripping
+    # only the tool_calls instead of popping the whole message.
+    if last.get("content"):
+        logger.debug(
+            "Stripping tool_calls from dangling assistant(tool_calls) tail "
+            "with content — preserving visible output (%d call(s), #49201)",
+            len(last.get("tool_calls") or []),
+        )
+        last.pop("tool_calls", None)
         return agent_history
 
     tool_calls = last.get("tool_calls") or []
@@ -186,19 +202,82 @@ def strip_dangling_tool_call_tail(
     return agent_history[:-1]
 
 
-def sanitize_replay_history(
+def strip_trailing_orphan_tool_messages(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Apply both replay-tail strippers in the canonical order.
+    """Strip trailing ``tool`` messages left when a session dies mid-tool-loop.
 
-    Convenience entry point for resume code paths: removes interrupted
-    assistant→tool blocks anywhere in the history, then removes a dangling
-    unanswered ``assistant(tool_calls)`` tail.  Returns the same list object
-    when there is nothing to strip.
+    When a session is killed after the assistant issued ``tool_calls`` and
+    the tool results were written, but before the assistant produced its
+    continuation response, the persisted transcript ends with::
+
+        assistant(tool_calls=[…]) → tool → tool → … → [session dies]
+
+    The trailing ``tool`` messages are orphaned — there is no following
+    assistant turn to consume them — so on resume the model sees an
+    unanswered tool result at the tail, which most providers reject
+    (``tool`` must be followed by ``assistant``, not be the last message).
+
+    This function pops trailing ``tool`` messages. It does NOT touch the
+    preceding ``assistant(tool_calls)`` message — that's handled by
+    :func:`strip_dangling_tool_call_tail` (when the assistant has NO tool
+    results at all) and :func:`prepare_messages_for_resume` (when called
+    from the CLI resume path which also needs to strip the assistant).
+
+    A trailing ``assistant(tool_calls) → tool → user`` sequence (user
+    jumped in after the tool result) is a valid mid-dialog pattern and is
+    NOT stripped — the ``user`` tail means the conversation is ongoing, not
+    dead.  Only a history whose tail is literally ``tool`` (no following
+    user or assistant) is cleaned up here.
     """
     if not agent_history:
         return agent_history
-    return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
+
+    # Only strip if the tail is a tool message. A trailing user or
+    # assistant message means the conversation is alive — don't touch it.
+    if not (
+        isinstance(agent_history[-1], dict)
+        and agent_history[-1].get("role") == "tool"
+    ):
+        return agent_history
+
+    # Count trailing tool messages to pop.
+    n = len(agent_history)
+    pop_count = 0
+    while pop_count < n and agent_history[n - 1 - pop_count].get("role") == "tool":
+        pop_count += 1
+
+    if pop_count == 0:
+        return agent_history
+
+    logger.debug(
+        "Stripping %d trailing orphan tool message(s) from replay history",
+        pop_count,
+    )
+    return agent_history[:n - pop_count]
+
+
+def sanitize_replay_history(
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Apply all replay-tail strippers in the canonical order.
+
+    Convenience entry point for resume code paths (CLI, gateway, TUI).
+    Strips in order:
+      1. Interrupted assistant→tool blocks anywhere in the history.
+      2. Trailing orphan ``tool`` messages (session died after tool results
+         were written but before the assistant continuation).
+      3. A dangling unanswered ``assistant(tool_calls)`` tail (process
+         killed mid-tool-call, before any tool result was written).
+
+    Returns the same list object when there is nothing to strip.
+    """
+    if not agent_history:
+        return agent_history
+    cleaned = strip_interrupted_tool_tails(agent_history)
+    cleaned = strip_trailing_orphan_tool_messages(cleaned)
+    cleaned = strip_dangling_tool_call_tail(cleaned)
+    return cleaned
 
 
 # ──────────────────────────────────────────────────────────────────────

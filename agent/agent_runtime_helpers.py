@@ -721,6 +721,89 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
+def prepare_messages_for_resume(agent, messages: List[Dict]) -> int:
+    """Strip trailing orphaned tool/assistant(tool_calls) from a resumed history.
+
+    .. note::
+
+        This function runs on **RESUME** — the session died (crash, OOM,
+        transient outage) and the user is replaying the history into a fresh
+        process.  At resume time there is no trailing ``user`` message because
+        the user hasn't typed anything yet; the tail is whatever the dead
+        session left behind (typically a dangling ``tool`` result or an
+        unanswered ``assistant(tool_calls)``).  This is a *different* context
+        from :func:`repair_message_sequence` (and its cursor variant), which
+        runs *before every live API call* to enforce role-alternation
+        invariants in the active dialog.  The test
+        ``test_repair_does_not_rewind_ongoing_dialog_tool_pair`` covers
+        ``repair_message_sequence`` (live dialog) and does NOT apply here —
+        on resume, ``assistant(tool_calls) → tool → user`` has a ``user`` tail
+        that this function never pops (it only pops ``tool`` and
+        ``assistant(tool_calls)`` tails).
+
+    A session resumed after a transient provider outage may have a trailing
+    ``tool`` message or an ``assistant(tool_calls)`` pair with no following
+    tool results — shapes that ``repair_message_sequence_with_cursor`` does
+    not rewind (they are valid mid-dialog) and that
+    ``_drop_trailing_empty_response_scaffolding`` only handles when private
+    scaffolding flags are present (which an outage-killed session lacks).
+    Runs unconditionally on resume, before the first API call, so the next
+    user turn follows a user/assistant message instead of an orphan. See
+    issue #33693.
+
+    ``agent`` may be ``None`` (the CLI lazily constructs the AIAgent on the
+    first turn, so ``/resume`` can fire before one exists); in that case the
+    cleanup runs standalone — it is a pure list operation with no agent
+    state. When an agent is supplied the method form
+    :meth:`AIAgent.prepare_for_resume` is used so the behaviour stays in one
+    place.
+
+    Returns the number of messages dropped (or converted — see below).
+    """
+    if agent is not None and hasattr(agent, "prepare_for_resume"):
+        return agent.prepare_for_resume(messages)
+    # Standalone path (agent not yet constructed) — same logic as
+    # AIAgent.prepare_for_resume, kept in sync.
+    dropped = 0
+
+    # 1. Drop trailing tool messages. A bare trailing ``tool`` message is
+    #    always an orphan on resume: tool results must follow an
+    #    assistant(tool_calls) turn, so a tail ending in ``tool`` can never
+    #    start a valid next turn.
+    while (
+        messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "tool"
+    ):
+        messages.pop()
+        dropped += 1
+
+    # 2. Handle a trailing assistant message with tool_calls. If the
+    #    assistant message ALSO has content (partial text the user may have
+    #    seen streamed before the session died), strip the tool_calls and
+    #    keep the content-only assistant message instead of popping it
+    #    entirely. This preserves partial output the user already saw.
+    #    An assistant message with ONLY tool_calls (no content) is popped
+    #    as before — there's nothing visible to preserve.
+    if (
+        messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "assistant"
+        and messages[-1].get("tool_calls")
+    ):
+        tail = messages[-1]
+        if tail.get("content"):
+            # Preserve the visible content, strip the unanswered tool_calls.
+            tail.pop("tool_calls", None)
+            dropped += 1
+        else:
+            messages.pop()
+            dropped += 1
+
+    return dropped
+
+
+
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 

@@ -9193,6 +9193,65 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _fetch_with_stale_ref_recovery(
+    git_cmd, remote: str, branch: str, cwd, depth_args: list[str] | None = None
+):
+    """Run ``git fetch <remote> <branch>`` with one-shot stale-ref recovery.
+
+    When a remote branch is force-pushed upstream or a dependabot/PR ref is
+    rewritten, ``$cwd/.git/refs/remotes/<remote>/...`` can be left pointing
+    at an object that no longer exists. The next fetch then aborts with:
+
+        fatal: bad object refs/remotes/<remote>/dependabot/...
+
+    ``git remote prune <remote>`` purges every dangling tracking ref in a
+    single call, so we attempt it once and retry the same scoped fetch.
+
+    Critical invariant: the retry MUST stay branch-scoped. A bare
+    ``git fetch <remote>`` pulls every ref in the repo, which on a non-
+    single-branch checkout stalls for minutes. Both the original and the
+    retried fetch use the explicit ``<branch>`` argument. ``depth_args`` lets
+    callers preserve shallow-fetch flags such as ``--depth 1`` across both
+    attempts.
+    """
+    depth_args = depth_args or []
+    fetch_result = subprocess.run(
+        git_cmd + ["fetch"] + depth_args + [remote, branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_result.returncode == 0:
+        return fetch_result
+
+    stderr = fetch_result.stderr or ""
+    if f"bad object refs/remotes/{remote}/" not in stderr:
+        return fetch_result
+
+    print(
+        f"  ⚠ Detected stale remote-tracking ref in '{remote}'; "
+        f"running 'git remote prune {remote}' and retrying..."
+    )
+    prune_result = subprocess.run(
+        git_cmd + ["remote", "prune", remote],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if prune_result.returncode != 0:
+        return fetch_result
+
+    retried = subprocess.run(
+        git_cmd + ["fetch"] + depth_args + [remote, branch],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if retried.returncode == 0:
+        print("  ✓ Stale refs cleaned up; fetch succeeded.")
+    return retried
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -9279,11 +9338,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
+            fetch_result = _fetch_with_stale_ref_recovery(
+                git_cmd, "origin", branch, PROJECT_ROOT, depth_args
             )
             upstream_exists = False
             compare_branch = f"origin/{branch}"
@@ -9293,11 +9349,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch"] + depth_args + ["origin", branch],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+        fetch_result = _fetch_with_stale_ref_recovery(
+            git_cmd, "origin", branch, PROJECT_ROOT, depth_args
         )
         upstream_exists = False
         compare_branch = f"origin/{branch}"
@@ -9308,6 +9361,14 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print("✗ Network error — cannot reach the remote repository.")
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
             print("✗ Authentication failed — check your git credentials or SSH key.")
+        elif f"bad object refs/remotes/origin/" in stderr:
+            print("✗ Failed to fetch (stale remote refs).")
+            if stderr:
+                print(f"  {stderr.splitlines()[0]}")
+            print(
+                f"  Try manually: cd {PROJECT_ROOT} && "
+                f"git remote prune origin && git fetch origin {branch}"
+            )
         else:
             print("✗ Failed to fetch.")
             if stderr:
@@ -10493,11 +10554,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _resolve_update_branch(args)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+        fetch_result = _fetch_with_stale_ref_recovery(
+            git_cmd, "origin", branch, PROJECT_ROOT
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
@@ -10509,6 +10567,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             ):
                 print(
                     "✗ Authentication failed — check your git credentials or SSH key."
+                )
+            elif f"bad object refs/remotes/origin/" in stderr:
+                print("✗ Failed to fetch updates from origin (stale remote refs).")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                print(
+                    f"  Try manually: cd {PROJECT_ROOT} && "
+                    f"git remote prune origin && git fetch origin {branch}"
                 )
             else:
                 print("✗ Failed to fetch updates from origin.")

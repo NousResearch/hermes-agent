@@ -704,6 +704,177 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     assert ["git", "fetch", "origin"] not in recorded
 
 
+def _make_stale_ref_side_effect(
+    retry_succeeds=True,
+    remote="origin",
+    branch="main",
+):
+    """Build a subprocess.run side_effect for stale-ref recovery flows."""
+    normal = _make_update_side_effect()[0]
+    state = {"fetch_calls": [], "prune_calls": 0}
+    stale_err = (
+        f"error: refs/remotes/{remote}/dependabot/github_actions/"
+        "actions/setup-python-6.2.0 does not point to a valid object!\n"
+        f"fatal: bad object refs/remotes/{remote}/dependabot/"
+        "github_actions/actions/setup-python-6.2.0\n"
+    )
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        is_fetch = (
+            "fetch" in joined and remote in joined and "rev-parse" not in joined
+        )
+        if is_fetch:
+            state["fetch_calls"].append(list(cmd))
+            if len(state["fetch_calls"]) == 1:
+                return SimpleNamespace(stdout="", stderr=stale_err, returncode=128)
+            if retry_succeeds:
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+            return SimpleNamespace(stdout="", stderr=stale_err, returncode=128)
+        if "remote" in joined and "prune" in joined and remote in joined:
+            state["prune_calls"] += 1
+            return SimpleNamespace(
+                stdout="* [pruned] origin/dependabot/...\n",
+                stderr="",
+                returncode=0,
+            )
+        return normal(cmd, **kwargs)
+
+    return side_effect, state
+
+
+def test_cmd_update_auto_prunes_and_retries_on_stale_remote_ref(
+    monkeypatch, tmp_path, capsys
+):
+    """A stale-ref fetch failure triggers ``git remote prune`` + retry."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    side_effect, state = _make_stale_ref_side_effect(retry_succeeds=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "stale remote-tracking ref" in out
+    assert "git remote prune origin" in out
+    assert "Stale refs cleaned up" in out
+    assert "Failed to fetch updates from origin" not in out
+    assert state["prune_calls"] == 1
+    assert len(state["fetch_calls"]) == 2
+
+
+def test_cmd_update_stale_ref_retry_stays_branch_scoped(monkeypatch, tmp_path):
+    """Both fetches must stay ``git fetch origin <branch>``."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    side_effect, state = _make_stale_ref_side_effect(retry_succeeds=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    for call in state["fetch_calls"]:
+        assert call == ["git", "fetch", "origin", "main"], (
+            f"stale-ref recovery dropped branch scope: {call!r}"
+        )
+
+
+def test_cmd_update_falls_through_to_manual_message_when_prune_does_not_help(
+    monkeypatch, tmp_path, capsys
+):
+    """If prune cannot resolve the breakage, show the manual recovery command."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    side_effect, state = _make_stale_ref_side_effect(retry_succeeds=False)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(SimpleNamespace())
+    assert exc_info.value.code == 1
+
+    out = capsys.readouterr().out
+    assert state["prune_calls"] == 1
+    assert len(state["fetch_calls"]) == 2
+    assert "stale remote refs" in out
+    assert "git remote prune origin && git fetch origin" in out
+
+
+def test_cmd_update_network_error_does_not_trigger_prune(
+    monkeypatch, tmp_path, capsys
+):
+    """Network / auth failures must not trigger the prune branch."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    prune_calls = {"n": 0}
+    side_effect, _ = _make_update_side_effect(
+        fetch_fails=True,
+        fetch_stderr=(
+            "fatal: unable to access 'https://github.com/...': "
+            "Could not resolve host: github.com\n"
+        ),
+    )
+
+    def tracking(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "remote" in joined and "prune" in joined:
+            prune_calls["n"] += 1
+        return side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", tracking)
+
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert prune_calls["n"] == 0
+    assert "Network error" in out
+
+
+def test_fetch_with_stale_ref_recovery_helper_branch_scoping(monkeypatch):
+    """The helper must preserve the caller's branch argument across retry."""
+    calls = []
+    stale_err = (
+        "fatal: bad object refs/remotes/origin/dependabot/github_actions/"
+        "actions/setup-python-6.2.0\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        joined = " ".join(str(c) for c in cmd)
+        if "fetch" in joined and "rev-parse" not in joined:
+            fetch_count = len(
+                [c for c in calls if "fetch" in " ".join(str(x) for x in c)]
+            )
+            if fetch_count == 1:
+                return SimpleNamespace(stdout="", stderr=stale_err, returncode=128)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "prune" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    result = hermes_main._fetch_with_stale_ref_recovery(
+        ["git"], "origin", "feature/x", "/some/cwd"
+    )
+
+    assert result.returncode == 0
+    fetch_calls = [c for c in calls if "fetch" in " ".join(str(x) for x in c)]
+    assert len(fetch_calls) == 2
+    for call in fetch_calls:
+        assert call == ["git", "fetch", "origin", "feature/x"], (
+            f"helper dropped branch scope on retry: {call!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fetch failure — friendly error messages
 # ---------------------------------------------------------------------------

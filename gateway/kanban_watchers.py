@@ -25,6 +25,26 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _format_gave_up_message(
+    board_tag: str,
+    assignee_tag: str,
+    task_id: str,
+    payload: Optional[dict[str, Any]],
+) -> str:
+    """Render a truthful circuit-breaker notification.
+
+    ``gave_up`` covers more than spawn failures: iteration exhaustion,
+    timeouts, crashes, and other repeated failures all share this terminal
+    event. Never invent a more specific cause than the event supplies.
+    """
+    error = str((payload or {}).get("error") or "").strip()
+    detail = error[:200] if error else "failure limit reached"
+    return (
+        f"✖ {board_tag}{assignee_tag}Kanban {task_id} gave up\n"
+        f"{detail}"
+    )
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -371,12 +391,11 @@ class GatewayKanbanWatchersMixin:
                                 reason = f": {str(ev.payload['reason'])[:160]}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                            msg = _format_gave_up_message(
+                                board_tag,
+                                tag,
+                                sub["task_id"],
+                                ev.payload,
                             )
                         elif kind == "crashed":
                             msg = (

@@ -175,9 +175,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
+      // Set once this submit itself mints a new chat (see the re-pin after
+      // createBackendSessionForSend): that create re-homes selection + route to
+      // the session it made, but the navigate() only lands on the NEXT React
+      // render. A submit that then awaits real work — an image/file upload —
+      // sees the route token flip mid-flight and would misread our own re-home
+      // as a user session switch, silently aborting EVERY first send that
+      // carries an attachment (#65733). Inside that window drift is judged by
+      // the session refs — every real switch retargets them synchronously —
+      // instead of the deferred route token.
+      let createdSessionId: null | string = null
+
       const sessionContextDrifted = (): boolean =>
         targetStartedInCurrentView &&
-        (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
+        (createdSessionId !== null
+          ? activeSessionIdRef.current !== createdSessionId ||
+            selectedStoredSessionIdRef.current !== startingStoredSessionId
+          : selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionContextDrifted()
 
@@ -428,8 +442,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         // Re-pin the baseline to the created chat for the rest of the
         // pipeline; the closures (seedOptimistic et al) see the new value.
+        // From here on drift is judged against the created session id, not the
+        // route token: createBackendSessionForSend's navigate() re-homes the
+        // route on a LATER render, so a following upload await would otherwise
+        // read our own re-home as a user switch (#65733).
         startingStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
+        createdSessionId = sessionId
 
         seedOptimistic(sessionId)
       }

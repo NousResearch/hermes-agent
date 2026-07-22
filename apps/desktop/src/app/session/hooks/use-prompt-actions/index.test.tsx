@@ -1711,6 +1711,157 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 })
 
+describe('usePromptActions new-chat attachment drift (#65733)', () => {
+  const CREATED_RUNTIME_ID = 'rt-new-chat'
+  const CREATED_STORED_ID = 'stored-new-chat'
+
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  function imageAttachment(): ComposerAttachment {
+    return {
+      id: 'image:pic.png',
+      kind: 'image',
+      label: 'pic.png',
+      path: '/Users/alice/Pictures/pic.png'
+    }
+  }
+
+  it('submits a new chat with an image — the late route re-home landing during upload is not user drift', async () => {
+    // Remote mode + a brand-new chat + an image attachment is the exact #65733
+    // repro. createBackendSessionForSend re-homes the session refs synchronously
+    // and (in the real app) calls navigate(), but that navigate only flips the
+    // route token on the NEXT render — which here lands WHILE image.attach_bytes
+    // is in flight. The pre-fix drift check read that self re-home as a user
+    // session switch and silently aborted: no prompt.submit, nothing on disk.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/png;base64,aGVsbG8=') }
+    })
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    // The pre-create route; the created chat's route only lands on a later
+    // render, simulated by flipping this while the upload is awaited.
+    let routeToken = 'route-new-draft'
+    const getRouteToken = () => routeToken
+
+    // Mirror the real create: session refs retarget synchronously before it
+    // returns. The route token is deliberately NOT flipped here — that is the
+    // deferred navigate() that lands during the upload below.
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = CREATED_RUNTIME_ID
+      selectedStoredSessionIdRef.current = CREATED_STORED_ID
+
+      return CREATED_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'image.attach_bytes') {
+        // The create's navigate() re-home lands here, mid-upload.
+        routeToken = 'route-created-session'
+
+        return { attached: true, path: '/remote/work/.hermes/desktop-attachments/pic.png' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={getRouteToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('look at this', { attachments: [imageAttachment()] })
+
+    // The submit must reach the gateway against the chat create minted, not
+    // bounce back to the composer.
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+
+    const submit = calls.find(c => c.method === 'prompt.submit')
+    expect(submit).toBeDefined()
+    expect(submit?.params).toMatchObject({ session_id: CREATED_RUNTIME_ID })
+    expect(calls.map(c => c.method)).toEqual(['image.attach_bytes', 'prompt.submit'])
+  })
+
+  it('still aborts when the user genuinely switches away during the image upload', async () => {
+    // The fix must not blind the drift guard: a REAL switch mid-upload still
+    // retargets the session refs synchronously, so the created-session drift
+    // check catches it and the send is dropped rather than misrouted.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/png;base64,aGVsbG8=') }
+    })
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = CREATED_RUNTIME_ID
+      selectedStoredSessionIdRef.current = CREATED_STORED_ID
+
+      return CREATED_RUNTIME_ID
+    })
+
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'image.attach_bytes') {
+        // User switches to another chat while the upload is in flight: every
+        // switch path retargets these refs synchronously.
+        activeSessionIdRef.current = 'rt-other-chat'
+        selectedStoredSessionIdRef.current = 'stored-other-chat'
+
+        return { attached: true, path: '/remote/work/.hermes/desktop-attachments/pic.png' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('look at this', { attachments: [imageAttachment()] })
+
+    expect(ok).toBe(false)
+    expect(calls).not.toContain('prompt.submit')
+  })
+})
+
 describe('usePromptActions submit session-context isolation (#54527)', () => {
   const STORED_SESSION_A = 'stored-project-a'
   const STORED_SESSION_B = 'stored-project-b'

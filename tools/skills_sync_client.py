@@ -312,6 +312,88 @@ def resolve_sync_base_url() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Sync feature configuration — env-first, so a Hermes Cloud instance can be set
+# up to use sync BY DEFAULT purely through environment variables (no per-user
+# config.yaml edit, no per-skill CLI call). Every knob follows the same
+# precedence as base_url: the HERMES_SYNC_* env var wins, else config.yaml
+# ``sync.*``, else a built-in default.
+#
+#   HERMES_SYNC_BASE_URL        -> sync.base_url        (the HSP plane URL)
+#   HERMES_SYNC_ENABLED         -> sync.enabled         (master on/off; default off)
+#   HERMES_SYNC_DEFAULT_OPT_IN  -> sync.default_opt_in  (M1-D policy; default false
+#                                                        = opt-in. Set true to make
+#                                                        every eligible skill sync
+#                                                        without per-skill enable —
+#                                                        the opt-OUT default a Cloud
+#                                                        deployment wants.)
+# ---------------------------------------------------------------------------
+
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off", ""}
+
+
+def _parse_bool(value: Any) -> Optional[bool]:
+    """Parse a config/env bool. Returns None if unrecognized (so callers can
+    fall through to the next precedence layer). Accepts real bools + strings."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if s in _TRUE:
+        return True
+    if s in _FALSE:
+        return False
+    return None
+
+
+def _sync_config_bool(env_var: str, config_key: str, *, default: bool) -> bool:
+    """Resolve a boolean sync knob: ``env_var`` -> ``sync.<config_key>`` -> default."""
+    env_val = _parse_bool(os.getenv(env_var))
+    if env_val is not None:
+        return env_val
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        sync_cfg = cfg.get("sync") or {}
+        cfg_val = _parse_bool(sync_cfg.get(config_key))
+        if cfg_val is not None:
+            return cfg_val
+    except Exception as e:
+        logger.debug("skills_sync_client: config sync.%s read failed: %s", config_key, e)
+    return default
+
+
+def sync_feature_enabled() -> bool:
+    """Whether the sync feature is turned on for this instance (env-first).
+
+    ``HERMES_SYNC_ENABLED`` -> ``sync.enabled`` -> False. This is the master
+    switch a Hermes Cloud deployment sets to opt its instances into sync by
+    default. It is checked by the gate-and-swallow entrypoints IN ADDITION to
+    the dev-phase token gate and a configured base URL — all three must hold for
+    background sync to run.
+    """
+    return _sync_config_bool("HERMES_SYNC_ENABLED", "enabled", default=False)
+
+
+def sync_default_opt_in() -> bool:
+    """The M1-D default opt-in policy (env-first).
+
+    ``HERMES_SYNC_DEFAULT_OPT_IN`` -> ``sync.default_opt_in`` -> False.
+
+    False (default): opt-IN — a skill syncs only after an explicit
+    ``hermes sync enable`` (or a plane manifest that opted it in). True: opt-OUT
+    — every sync-eligible skill is treated as opted in unless explicitly
+    disabled, which is the "your skills follow you with no setup" default a
+    Hermes Cloud deployment wants. Per design.md §3.0 M1-D this default is
+    provisional and expected to flip; exposing it as env config lets the
+    operator choose per deployment without a protocol change.
+    """
+    return _sync_config_bool("HERMES_SYNC_DEFAULT_OPT_IN", "default_opt_in", default=False)
+
+
+# ---------------------------------------------------------------------------
 # Local skill eligibility + the M1-D opt-in "sync" flag
 #
 # Only agent-created + user-authored skills under ~/.hermes/skills/ sync.
@@ -348,16 +430,70 @@ def is_sync_eligible(skill_name: str) -> bool:
 
 
 def list_synced_skill_names() -> List[str]:
-    """Return the names of skills the user has opted into sync (``sync: true``)
-    AND that remain eligible. Sorted, deduped."""
+    """Return the names of skills that should sync, honoring the opt-in policy.
+
+    Two policies (``sync_default_opt_in()``, env-first — see that function):
+
+    - **opt-in (default):** a skill syncs only when its usage record carries
+      ``sync: true`` AND it is eligible. Nothing syncs by default.
+    - **opt-out (Hermes Cloud "on by default"):** every *eligible* skill syncs
+      UNLESS its usage record explicitly carries ``sync: false``. This is what a
+      deployment sets (via ``HERMES_SYNC_DEFAULT_OPT_IN``) so a user's skills
+      follow them with no per-skill setup.
+
+    Sorted, deduped.
+    """
     try:
         from tools.skill_usage import load_usage
     except Exception:
         return []
+    usage = load_usage() or {}
+
+    if sync_default_opt_in():
+        # opt-OUT: all eligible skills except those explicitly turned off.
+        names = []
+        for name in _all_local_skill_names():
+            rec = usage.get(name)
+            if isinstance(rec, dict) and rec.get("sync") is False:
+                continue  # explicit opt-out wins over the deployment default
+            if is_sync_eligible(name):
+                names.append(name)
+        return sorted(set(names))
+
+    # opt-IN (default): only explicitly-enabled eligible skills.
     names = []
-    for name, rec in (load_usage() or {}).items():
+    for name, rec in usage.items():
         if isinstance(rec, dict) and rec.get("sync") is True and is_sync_eligible(name):
             names.append(name)
+    return sorted(set(names))
+
+
+def _all_local_skill_names() -> List[str]:
+    """Best-effort enumeration of every locally-present skill name (used by the
+    opt-out policy). A skill is any directory under ~/.hermes/skills/ containing
+    a ``SKILL.md``; the name is its frontmatter ``name`` (falling back to the
+    directory name). Eligibility (bundled/hub/external exclusion) is applied by
+    the caller via ``is_sync_eligible``.
+    """
+    names: List[str] = []
+    root = _skills_dir()
+    try:
+        if not root.exists():
+            return []
+        for skill_md in root.rglob("SKILL.md"):
+            if skill_md.is_symlink():
+                continue
+            name: Optional[str] = None
+            try:
+                from tools.skill_usage import _read_skill_name
+
+                name = _read_skill_name(skill_md, skill_md.parent.name)
+            except Exception:
+                name = skill_md.parent.name
+            if name:
+                names.append(name)
+    except OSError as e:
+        logger.debug("skills_sync_client: local skill enumeration failed: %s", e)
     return sorted(set(names))
 
 
@@ -635,26 +771,55 @@ class HSPClient:
 
 
 # ---------------------------------------------------------------------------
-# HSP sync manifest (client-local, FULL-digest namespace)
+# HSP local sync STATE (client-local head bookkeeping, FULL-digest namespace)
 #
-# Records, per synced skill, the last commit HEAD we pushed/pulled and the
-# tree hash of the on-disk content at that point. Distinct from the bundled
-# manifest (skills_sync.py, truncated local content_hash namespace). Lives at
-# ~/.hermes/skills/.sync_manifest as JSON.
+# Records the last commit HEAD we pushed/pulled and, per synced skill, the tree
+# hash of the on-disk content at that point. Distinct from the bundled manifest
+# (skills_sync.py, truncated local content_hash namespace) AND from the §2.8
+# `sync-manifest` OBJECT in the sync plane (the per-skill opt-in content). This
+# is purely local reconciliation bookkeeping. Lives at
+# ~/.hermes/skills/.sync_state as JSON.
+#
+# NOTE: renamed from `.sync_manifest` -> `.sync_state` to remove the collision
+# with the §2.8 plane `sync-manifest`. `read_sync_state` migrates an existing
+# `.sync_manifest` on first read so no local head record is lost.
 # ---------------------------------------------------------------------------
 
-def _sync_manifest_path() -> Path:
+def _sync_state_path() -> Path:
+    return _skills_dir() / ".sync_state"
+
+
+def _legacy_sync_state_path() -> Path:
     return _skills_dir() / ".sync_manifest"
 
 
-def read_sync_manifest() -> Dict[str, Any]:
-    """Read the HSP sync manifest. Returns {} on missing/corrupt.
+def read_sync_state() -> Dict[str, Any]:
+    """Read the local HSP sync state. Returns a default on missing/corrupt.
 
     Shape: ``{"head": "sha256:...|null", "skills": {name: {tree, commit}}}``.
     ``head`` is the last profile-root HEAD commit we reconciled with.
+
+    Migrates a legacy ``.sync_manifest`` file (pre-rename) transparently: if the
+    new ``.sync_state`` is absent but the legacy file exists, it is read and
+    rewritten to the new path so an existing device keeps its head record.
     """
-    path = _sync_manifest_path()
+    path = _sync_state_path()
     if not path.exists():
+        legacy = _legacy_sync_state_path()
+        if legacy.exists():
+            try:
+                data = json.loads(legacy.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    data.setdefault("head", None)
+                    data.setdefault("skills", {})
+                    write_sync_state(data)  # migrate to the new path
+                    try:
+                        legacy.unlink()
+                    except OSError:
+                        pass
+                    return data
+            except (OSError, json.JSONDecodeError) as e:
+                logger.debug("skills_sync_client: legacy sync state migrate failed: %s", e)
         return {"head": None, "skills": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -663,18 +828,18 @@ def read_sync_manifest() -> Dict[str, Any]:
             data.setdefault("skills", {})
             return data
     except (OSError, json.JSONDecodeError) as e:
-        logger.debug("skills_sync_client: sync manifest read failed: %s", e)
+        logger.debug("skills_sync_client: sync state read failed: %s", e)
     return {"head": None, "skills": {}}
 
 
-def write_sync_manifest(data: Dict[str, Any]) -> None:
-    """Write the HSP sync manifest atomically. Best-effort."""
+def write_sync_state(data: Dict[str, Any]) -> None:
+    """Write the local HSP sync state atomically. Best-effort."""
     import tempfile
 
-    path = _sync_manifest_path()
+    path = _sync_state_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".sync_manifest_", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".sync_state_", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
@@ -688,7 +853,7 @@ def write_sync_manifest(data: Dict[str, Any]) -> None:
                 pass
             raise
     except Exception as e:
-        logger.debug("skills_sync_client: sync manifest write failed: %s", e)
+        logger.debug("skills_sync_client: sync state write failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -956,7 +1121,7 @@ def push_skills(
 
     objects, root_hash, _ = snapshot_profile(skill_names, max_object_bytes=max_bytes)
 
-    manifest = read_sync_manifest()
+    manifest = read_sync_state()
     base_head = manifest.get("head")
 
     # Idempotency: if the profile-root tree is unchanged since our last push,
@@ -978,7 +1143,7 @@ def push_skills(
         client.cas_ref(ref, base_head, commit_hash)
         manifest["head"] = commit_hash
         manifest["root"] = root_hash
-        write_sync_manifest(manifest)
+        write_sync_state(manifest)
         return {"ok": True, "head": commit_hash, "pushed_objects": len(objects)}
     except HSPConflict as conflict:
         return _resolve_push_conflict(
@@ -1095,10 +1260,10 @@ def _resolve_push_conflict(
             "message": f"merge CAS lost again (head now {c2.actual}); retry sync.",
             "actual_head": c2.actual,
         }
-    manifest = read_sync_manifest()
+    manifest = read_sync_state()
     manifest["head"] = merge_commit
     manifest["root"] = merged_root
-    write_sync_manifest(manifest)
+    write_sync_state(manifest)
     return {"ok": True, "head": merge_commit, "merged": True}
 
 
@@ -1194,7 +1359,7 @@ def pull_skills(
     if not head:
         return {"ok": True, "reason": "no remote HEAD yet", "noop": True}
 
-    manifest = read_sync_manifest()
+    manifest = read_sync_state()
     if head == manifest.get("head"):
         return {"ok": True, "reason": "already up to date", "head": head, "noop": True}
 
@@ -1236,7 +1401,7 @@ def pull_skills(
         updated.append(path)
 
     manifest["head"] = head
-    write_sync_manifest(manifest)
+    write_sync_state(manifest)
     return {
         "ok": True,
         "head": head,
@@ -1271,6 +1436,8 @@ def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[st
         identity = resolve_identity()
         if not identity.get("dev_gate_ok"):
             return None  # DEV-PHASE gate: inert without tool_gateway_admin
+        if not sync_feature_enabled():
+            return None  # feature off for this instance (HERMES_SYNC_ENABLED)
         if not resolve_sync_base_url():
             return None
         if not list_synced_skill_names():
@@ -1289,6 +1456,8 @@ def maybe_pull_skills() -> Optional[Dict[str, Any]]:
         identity = resolve_identity()
         if not identity.get("dev_gate_ok"):
             return None  # DEV-PHASE gate: inert without tool_gateway_admin
+        if not sync_feature_enabled():
+            return None  # feature off for this instance (HERMES_SYNC_ENABLED)
         if not resolve_sync_base_url():
             return None
         return pull_skills(identity=identity)
@@ -1302,6 +1471,8 @@ def sync_status() -> Dict[str, Any]:
     status: Dict[str, Any] = {
         "dev_gate_ok": False,
         "logged_in": False,
+        "feature_enabled": sync_feature_enabled(),
+        "default_opt_in": sync_default_opt_in(),
         "base_url": resolve_sync_base_url(),
         "opted_in_skills": [],
         "local_head": None,
@@ -1318,7 +1489,7 @@ def sync_status() -> Dict[str, Any]:
         logger.debug("skills_sync_client: sync_status identity failed: %s", e)
     try:
         status["opted_in_skills"] = list_synced_skill_names()
-        status["local_head"] = read_sync_manifest().get("head")
+        status["local_head"] = read_sync_state().get("head")
     except Exception:
         pass
     return status

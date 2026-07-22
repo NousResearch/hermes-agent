@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $newChatProfile } from '@/store/profile'
 import { $busy, $connection, $messages, $sessions, $turnStartedAt, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -402,6 +403,37 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     await handle!.submitText('/ pasted context that must not vanish')
 
     expect($composerDraft.get()).toBe('/ pasted context that must not vanish')
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+})
+
+describe('usePromptActions /new', () => {
+  afterEach(() => {
+    cleanup()
+    $newChatProfile.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('clears a sticky per-profile "+" selection so the next new chat follows the live context', async () => {
+    // A plain "new session" trigger (top nav, keybind, /new) is documented to
+    // leave $newChatProfile null so createBackendSessionForSend() falls back
+    // to the active gateway profile (see use-session-actions/index.ts's own
+    // comment) — only the per-profile "+" (newSessionInProfile) and /profile
+    // <name> are supposed to set it explicitly. /new must clear it just like
+    // the top-nav "New Session" row and the Cmd+N keybind already do, or a
+    // stale per-profile selection silently keeps targeting the old profile.
+    $newChatProfile.set('analyst')
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/new')
+
+    expect($newChatProfile.get()).toBeNull()
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 })

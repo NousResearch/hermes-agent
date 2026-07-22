@@ -157,3 +157,92 @@ class TestClassifySummaryContent:
         content = "look at this:\n" + _MERGED_SUMMARY_DELIMITER + "\nnot a summary"
         assert ContextCompressor.classify_summary_content(content) is None
         assert ContextCompressor._is_context_summary_content(content) is False
+
+
+class TestClassifyAgreesWithPredicatesOnLiveEmissions:
+    """Behavior contract: classify_summary_content must agree with the
+    boolean summary predicates (``_is_context_summary_content`` and the
+    module-level ``is_compaction_summary_message``) on every handoff shape
+    the CURRENT compressor actually emits — not just hand-built fixtures.
+
+    If the emission format drifts (prefix rewording, new merge framing),
+    these tests fail on the real output rather than on a stale snapshot,
+    signalling that ACP replay flagging and the internal summary detectors
+    have diverged.
+    """
+
+    @staticmethod
+    def _live_compress(msgs):
+        # Match the emission-probe compressor shape (wide context, minimal
+        # protection) so the transcript geometry — not protection budgets —
+        # decides the merge-vs-standalone path deterministically.
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            cc = ContextCompressor(
+                model="test-model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        out = _compress(cc, msgs)
+        flagged = [
+            m for m in out
+            if isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        ]
+        return flagged
+
+    @staticmethod
+    def _assert_agreement(message):
+        from agent.context_compressor import is_compaction_summary_message
+
+        kind = ContextCompressor.classify_summary_content(message.get("content"))
+        detected = ContextCompressor._is_context_summary_content(
+            message.get("content")
+        )
+        assert (kind is not None) == detected
+        # is_compaction_summary_message also honors the metadata flag, so it
+        # must detect every message classify flags — and on a flag-stripped
+        # copy (the DB-reload shape) content classification alone must carry.
+        assert is_compaction_summary_message(message) is True
+        stripped = {
+            k: v for k, v in message.items()
+            if k != COMPRESSED_SUMMARY_METADATA_KEY
+        }
+        assert is_compaction_summary_message(stripped) == (kind is not None)
+        return kind
+
+    def test_merged_emission_classifies_merged_and_predicates_agree(self):
+        """Alternating transcripts take the merge-into-tail path on current
+        main — the emitted handoff must classify 'merged'."""
+        flagged = self._live_compress(_make_messages())
+        assert len(flagged) == 1
+        kind = self._assert_agreement(flagged[0])
+        assert kind == "merged"
+
+    def test_standalone_emission_classifies_standalone_and_predicates_agree(self):
+        """A degenerate all-user transcript forces the standalone-insertion
+        path — the emitted handoff must classify 'standalone'."""
+        msgs = [{"role": "system", "content": "sys"}]
+        msgs.extend(
+            {"role": "user", "content": f"user only {i} " + "x" * 400}
+            for i in range(60)
+        )
+        flagged = self._live_compress(msgs)
+        assert len(flagged) == 1
+        kind = self._assert_agreement(flagged[0])
+        assert kind == "standalone"
+
+    def test_non_summary_messages_agree_on_none(self):
+        from agent.context_compressor import is_compaction_summary_message
+
+        for msg in (
+            {"role": "user", "content": "plain question"},
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": None},
+        ):
+            assert ContextCompressor.classify_summary_content(msg["content"]) is None
+            assert ContextCompressor._is_context_summary_content(msg["content"]) is False
+            assert is_compaction_summary_message(msg) is False

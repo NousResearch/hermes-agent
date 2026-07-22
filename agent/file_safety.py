@@ -117,6 +117,22 @@ def _classify_write_denial(path: str) -> Optional[str]:
         except Exception:
             continue
 
+    # Also cover every inactive profile directory so a prompt-injected
+    # write_file call cannot target another profile's credential store
+    # (auth.json, mcp-tokens/, pairing/) when the agent is running under
+    # a different profile (#37617). The active profile and root are already
+    # in hermes_dirs; this loop adds the remainder.
+    try:
+        profiles_dir = _hermes_root_path() / "profiles"
+        if profiles_dir.is_dir():
+            for _entry in profiles_dir.iterdir():
+                if _entry.is_dir():
+                    _real = os.path.realpath(str(_entry))
+                    if _real not in hermes_dirs:
+                        hermes_dirs.append(_real)
+    except Exception:
+        pass
+
     for base_real in hermes_dirs:
         # Session transcripts are application-owned state.  Letting the agent's
         # generic file tools rewrite state.db or legacy JSON snapshots can

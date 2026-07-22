@@ -113,6 +113,52 @@ class TestWriteDenyPrefixes:
             assert _is_write_denied(target) is True
 
 
+class TestInactiveProfileWriteDeny:
+    """Inactive profile credential stores must be write-denied (#37617).
+
+    When an agent runs under one profile, prompt-injected write_file calls
+    must not be able to overwrite another profile's auth.json, mcp-tokens/,
+    or pairing/ directory.
+    """
+
+    def test_inactive_profile_auth_json(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes_root"
+        active = root / "profiles" / "default"
+        inactive = root / "profiles" / "hermes-security"
+        inactive.mkdir(parents=True)
+        active.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(active))
+        assert _is_write_denied(str(inactive / "auth.json")) is True
+
+    def test_inactive_profile_mcp_tokens(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes_root"
+        active = root / "profiles" / "default"
+        inactive = root / "profiles" / "hermes-security"
+        inactive.mkdir(parents=True)
+        active.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(active))
+        assert _is_write_denied(str(inactive / "mcp-tokens" / "slack.json")) is True
+
+    def test_inactive_profile_config_yaml(self, tmp_path, monkeypatch):
+        root = tmp_path / "hermes_root"
+        active = root / "profiles" / "default"
+        inactive = root / "profiles" / "hermes-security"
+        inactive.mkdir(parents=True)
+        active.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(active))
+        assert _is_write_denied(str(inactive / "config.yaml")) is True
+
+    def test_active_profile_still_denied(self, tmp_path, monkeypatch):
+        """Active profile credentials remain blocked (regression guard)."""
+        root = tmp_path / "hermes_root"
+        active = root / "profiles" / "default"
+        inactive = root / "profiles" / "other"
+        inactive.mkdir(parents=True)
+        active.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(active))
+        assert _is_write_denied(str(active / "auth.json")) is True
+
+
 class TestWriteAllowed:
     def test_tmp_file(self):
         assert _is_write_denied("/tmp/safe_file.txt") is False

@@ -392,17 +392,33 @@ def check_compression_model_feasibility(agent: Any) -> None:
         _raw_aux_key = getattr(client, "api_key", "")
         aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
 
+        _aux_ctx_config = getattr(agent, "_aux_compression_context_length_config", None)
         aux_context = get_model_context_length(
             aux_model,
             base_url=aux_base_url,
             api_key=aux_api_key,
-            config_context_length=getattr(agent, "_aux_compression_context_length_config", None),
+            config_context_length=_aux_ctx_config,
             # Each model must be resolved with its own provider so that
             # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
             # are invoked for the correct client, not inherited from the main model.
             provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")),
             custom_providers=agent._custom_providers,
         )
+
+        # Resolve the model's NATURAL context length (without config override)
+        # for the auto-lower check. When auxiliary.compression.context_length is
+        # explicitly set, it should only bound the compression model's input
+        # size — NOT trigger auto-lowering of the session threshold.
+        _natural_aux_context = aux_context
+        if _aux_ctx_config is not None:
+            _natural_aux_context = get_model_context_length(
+                aux_model,
+                base_url=aux_base_url,
+                api_key=aux_api_key,
+                config_context_length=None,
+                provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")),
+                custom_providers=agent._custom_providers,
+            )
 
         # Hard floor: the auxiliary compression model must have at least
         # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
@@ -423,7 +439,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
             )
 
         threshold = agent.context_compressor.threshold_tokens
-        if aux_context < threshold:
+        if _natural_aux_context < threshold:
             # Auto-correct: lower the live session threshold so
             # compression actually works this session.  The hard floor
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
@@ -434,7 +450,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
             # new_threshold == aux_context is safe: the request is
             # the raw messages plus a small summarisation instruction.
             old_threshold = threshold
-            new_threshold = aux_context
+            new_threshold = _natural_aux_context
             agent.context_compressor.threshold_tokens = new_threshold
             # Keep threshold_percent in sync so future main-model
             # context_length changes (update_model) re-derive from a
@@ -444,7 +460,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 agent.context_compressor.threshold_percent = (
                     new_threshold / main_ctx
                 )
-            safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+            safe_pct = int((_natural_aux_context / main_ctx) * 100) if main_ctx else 50
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
             # tell at a glance which provider each side is actually

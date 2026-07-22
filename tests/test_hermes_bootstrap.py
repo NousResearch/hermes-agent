@@ -396,3 +396,96 @@ class TestHardenImportPath:
             sys.path[:] = original
             if original_env is not None:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
+
+
+class TestPatchPlatformSyscmdVer:
+    """_patch_platform_syscmd_ver() wraps platform._syscmd_ver so that a
+    UnicodeDecodeError from the subprocess reader thread (triggered when
+    the Windows ``ver`` command outputs non-UTF-8 bytes under
+    PYTHONUTF8=1 / PEP 540) is caught gracefully."""
+
+    def test_patch_is_noop_on_posix(self, monkeypatch):
+        """On POSIX (faked by setting _IS_WINDOWS=False), the patch must
+        be a no-op — platform._syscmd_ver must remain unchanged."""
+        import platform
+
+        orig = platform._syscmd_ver
+        hb = _fresh_import()
+        hb._IS_WINDOWS = False
+        hb._patch_platform_syscmd_ver()
+        assert platform._syscmd_ver is orig, (
+            "platform._syscmd_ver was patched on a POSIX system"
+        )
+
+    def test_patch_catches_unicodedecodeerror(self, monkeypatch):
+        """When the original _syscmd_ver raises UnicodeDecodeError, the
+        patched version must return the input defaults instead of crashing."""
+        import platform
+
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+
+        def _broken_ver(*args, **kwargs):
+            raise UnicodeDecodeError(
+                "utf-8", b"\xe9\xa0\x80", 0, 3,
+                "'utf-8' codec can't decode byte 0xe9 in position 27"
+            )
+
+        monkeypatch.setattr(platform, "_syscmd_ver", _broken_ver)
+        hb._patch_platform_syscmd_ver()
+
+        # The patched version must not raise.
+        result = platform._syscmd_ver("win32", "10.0", "19045")
+        assert result == ("win32", "10.0", "19045"), (
+            f"Expected input defaults, got {result!r}"
+        )
+
+    def test_patch_preserves_normal_return(self, monkeypatch):
+        """When the original _syscmd_ver succeeds, the patched version
+        must return the original result unchanged."""
+        import platform
+
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+
+        def _working_ver(*args, **kwargs):
+            return ("Windows", "10", "10.0.19045")
+
+        monkeypatch.setattr(platform, "_syscmd_ver", _working_ver)
+        hb._patch_platform_syscmd_ver()
+
+        result = platform._syscmd_ver()
+        assert result == ("Windows", "10", "10.0.19045"), (
+            f"Expected original return value, got {result!r}"
+        )
+
+    def test_idempotent(self, monkeypatch):
+        """Calling _patch_platform_syscmd_ver() multiple times must not
+        double-wrap or raise."""
+        import platform
+
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+
+        hb._patch_platform_syscmd_ver()
+        first = platform._syscmd_ver
+
+        hb._patch_platform_syscmd_ver()
+        second = platform._syscmd_ver
+
+        assert first is second, (
+            "Second call replaced the patch — not idempotent"
+        )
+
+    def test_module_import_applies_patch(self, monkeypatch):
+        """When imported with _IS_WINDOWS=True, the patch must be applied
+        automatically by the module-level code."""
+        import platform
+
+        hb = _fresh_import()
+        hb._IS_WINDOWS = True
+        hb._patch_platform_syscmd_ver()
+
+        assert getattr(platform._syscmd_ver, "_hermes_patched", False), (
+            "platform._syscmd_ver was not patched by _patch_platform_syscmd_ver()"
+        )

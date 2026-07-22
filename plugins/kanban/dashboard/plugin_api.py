@@ -1163,6 +1163,13 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
 
     This is an *independent* iteration — per-task failures don't abort
     siblings. Returns per-id outcome so the UI can surface partials.
+
+    Within a single id, the first failed operation (refused archive,
+    refused status transition, or refused assignment) records the error
+    and skips the remaining field mutations for that row — mirroring the
+    single-task PATCH, which raises and commits nothing further. Without
+    this, a row whose status change was refused would still be silently
+    reprioritized or reassigned by the same request.
     """
     ids = [i for i in (payload.ids or []) if i]
     if not ids:
@@ -1182,6 +1189,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.archive:
                     if not kanban_db.archive_task(conn, tid):
                         entry.update(ok=False, error="archive refused")
+                        results.append(entry)
+                        continue
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
@@ -1219,6 +1228,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         continue
                     if not ok:
                         entry.update(ok=False, error=f"transition to {s!r} refused")
+                        results.append(entry)
+                        continue
                 if payload.assignee is not None:
                     try:
                         if payload.reclaim_first:
@@ -1232,8 +1243,12 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             )
                         if not ok:
                             entry.update(ok=False, error="assign refused")
+                            results.append(entry)
+                            continue
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))
+                        results.append(entry)
+                        continue
                 if payload.priority is not None:
                     with kanban_db.write_txn(conn):
                         conn.execute(

@@ -4633,6 +4633,44 @@ class TestBuildSchemaFromConfig:
         missing = set(list_memory_provider_names()) - options
         assert missing == set(), f"discovered providers missing from schema options: {missing}"
 
+    def test_dynamic_merge_recomputes_memory_provider_options(self, monkeypatch):
+        """The per-request schema merge re-discovers memory providers.
+
+        The import-time _SCHEMA_OVERRIDES freezes the list at server start;
+        _schema_with_dynamic_provider_options must recompute it so a provider
+        installed mid-session is selectable without a restart.
+        """
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"memory": {"provider": "honcho"}})
+        monkeypatch.setattr(
+            web_server,
+            "_memory_provider_options",
+            lambda: ["", "honcho", "hindsight", "freshly_installed"],
+        )
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        assert "freshly_installed" in fields["memory.provider"]["options"]
+        # The entry is copied, not mutated in place, and keeps its select type.
+        assert fields["memory.provider"]["type"] == "select"
+        assert web_server.CONFIG_SCHEMA["memory.provider"] is not fields["memory.provider"]
+
+    def test_dynamic_merge_preserves_configured_memory_provider(self, monkeypatch):
+        """A configured-but-undiscovered provider stays visible as the selection.
+
+        e.g. the plugin dir was removed but config still points at it — the
+        dropdown must not silently drop the active value.
+        """
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {"memory": {"provider": "gone_from_disk"}})
+        monkeypatch.setattr(web_server, "_memory_provider_options", lambda: ["", "honcho"])
+
+        fields = web_server._schema_with_dynamic_provider_options()
+
+        assert "gone_from_disk" in fields["memory.provider"]["options"]
+
     def test_approvals_mode_options_match_config_values(self):
         """approvals.mode select options must match the values accepted by config.py.
 

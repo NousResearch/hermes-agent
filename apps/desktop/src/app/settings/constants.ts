@@ -247,10 +247,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  // Built-in memory is not a provider plugin: the empty sentinel renders as
-  // "Built-in only" and a legacy literal `builtin` value is only kept visible
-  // via enumOptionsFor's current-value passthrough (#49513).
-  'memory.provider': ['', 'honcho', 'hindsight'],
+  // NOTE: memory.provider is intentionally NOT listed here. Its options are
+  // discovery-driven and served by the backend config schema (merged
+  // per-request in web_server._schema_with_dynamic_provider_options), so
+  // config-field consumes schema.options directly — a static list here would
+  // shadow that and hide user-installed/pip providers (#49513).
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).

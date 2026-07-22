@@ -19,7 +19,7 @@ permissions:
 jobs:
   check-freshness:
     if: github.repository == 'NousResearch/hermes-agent'
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 10
     steps:
       - name: Probe live index

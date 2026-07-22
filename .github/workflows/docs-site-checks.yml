@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   docs-site-checks:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -32,7 +32,7 @@ jobs:
       - name: Install ascii-guard
         uses: ./.github/actions/retry
         with:
-          command: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
+          command: python3 -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

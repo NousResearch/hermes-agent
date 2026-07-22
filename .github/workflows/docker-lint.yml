@@ -23,7 +23,7 @@ concurrency:
 jobs:
   hadolint:
     name: Lint Dockerfile (hadolint)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 5
     steps:
       - name: Checkout code
@@ -38,7 +38,7 @@ jobs:
 
   shellcheck:
     name: Lint docker/ shell scripts (shellcheck)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 5
     steps:
       - name: Checkout code

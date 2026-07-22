@@ -1,4 +1,4 @@
-name: Label rerun
+name: CI rerun coordinator
 
 # When the ``ci-reviewed`` label is added to a PR, rerun all failed jobs in
 # the latest CI run. This re-evaluates ``review-labels`` (which now sees the
@@ -9,17 +9,24 @@ name: Label rerun
 # to finish before rerunning (``gh run rerun`` only works on completed runs).
 # The wait can be long (20+ min for a full CI run), but it's better than
 # silently failing and leaving the reviewer stuck.
+#
+# The workflow also watches completed CI runs. When ARC reports a runner
+# shutdown, it retries failed jobs through five total attempts. This keeps
+# cheap spot capacity usable without retrying real test failures.
 
 on:
   pull_request:
     types: [labeled]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   actions: write
   pull-requests: read
 
 concurrency:
-  group: label-rerun-${{ github.event.pull_request.number }}
+  group: ci-rerun-${{ github.event.workflow_run.id || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -79,3 +86,54 @@ jobs:
           echo "Run completed. Rerunning all failed jobs..."
           gh run rerun "$RUN_ID" --repo "$REPO" --failed || true
           echo "Done. GitHub will rerun review-labels and all dependent jobs."
+
+  rerun-spot-interruption:
+    name: Retry ARC runner interruption
+    # Only react to failed PR CI runs. ``workflow_run`` always executes from
+    # the default branch, so this coordinator never executes PR code.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'CI' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Detect runner shutdown and retry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          # Read only GitHub's job metadata and logs. Do not checkout or run
+          # any code from the PR in this privileged workflow_run context.
+          shutdown_jobs=()
+          while IFS= read -r job_id; do
+            [ -z "$job_id" ] && continue
+            if gh api "repos/$REPO/actions/jobs/$job_id/logs" >"/tmp/job-$job_id.log" 2>/dev/null \
+              && grep -qF 'The runner has received a shutdown signal' "/tmp/job-$job_id.log"; then
+              shutdown_jobs+=("$job_id")
+            fi
+          done < <(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .id')
+
+          if [ "${#shutdown_jobs[@]}" -eq 0 ]; then
+            echo "No failed job reported an ARC runner shutdown; preserving the original failure."
+            exit 0
+          fi
+
+          {
+            echo '## ARC spot runner interruption'
+            echo
+            echo "Detected ${#shutdown_jobs[@]} failed job(s) whose runner received a shutdown signal."
+            echo "CI attempt: $RUN_ATTEMPT of 5."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RUN_ATTEMPT" -lt 5 ]; then
+            gh run rerun "$RUN_ID" --repo "$REPO" --failed
+          else
+            echo "Runner interruption retry budget exhausted after five attempts."
+          fi

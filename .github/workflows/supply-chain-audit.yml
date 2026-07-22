@@ -54,7 +54,7 @@ jobs:
   scan:
     name: Scan PR for critical supply chain risks
     if: inputs.scan
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.emit-status.outputs.review_status }}
@@ -187,7 +187,7 @@ jobs:
   dep-bounds:
     name: Check PyPI dependency upper bounds
     if: inputs.deps
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.emit-status.outputs.review_status }}
@@ -266,7 +266,7 @@ jobs:
     name: Aggregate review statuses
     needs: [scan, dep-bounds]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.merge.outputs.review_status }}

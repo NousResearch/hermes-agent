@@ -34,7 +34,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
@@ -280,7 +280,7 @@ jobs:
       # we don't require docker to pass rn because it's so slow lol
       # - docker
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 10
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
@@ -322,7 +322,7 @@ jobs:
     name: CI timing report
     needs: [all-checks-pass, docker]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     timeout-minutes: 10
     steps:
       - name: Checkout code

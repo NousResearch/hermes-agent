@@ -2136,10 +2136,32 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
 
 
 def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+    # Guard sensitive paths before attempting to resolve anything; a dangling
+    # symlink to a secret store should still be hidden from listings.
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+
     try:
         resolved = target.resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
+
+    # A dangling symlink (e.g. an external drive, a deleted target, or a
+    # Nix/Home Manager profile whose /nix/store target is unavailable)
+    # resolves to its target path on some platforms but does not exist.
+    # Surface it as a broken symlink entry instead of failing the whole
+    # directory or rejecting it as a root escape.
+    if target.is_symlink() and not resolved.exists():
+        return {
+            "name": target.name,
+            "path": str(target),
+            "is_directory": False,
+            "is_broken_symlink": True,
+            "size": None,
+            "mtime": None,
+            "mime_type": "inode/symlink-broken",
+        }
+
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 

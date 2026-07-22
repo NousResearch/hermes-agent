@@ -6796,9 +6796,11 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
+        # SIGTERM then SIGKILL. 30 s grace (was 5 s): a worker flushing its
+        # final kanban write can hit SQLITE_BUSY contention and need several
+        # retries; SIGKILL mid-write is exactly the corruption vector from
+        # the 2026-07-22 postmortem. Workers that want a cleaner shutdown
+        # can install their own SIGTERM handler before the grace expires.
         killed = False
         kill = signal_fn if signal_fn is not None else (
             os.kill if hasattr(os, "kill") else None
@@ -6809,7 +6811,7 @@ def enforce_max_runtime(
             except (ProcessLookupError, OSError):
                 pass
             # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
+            for _ in range(60):
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.5)

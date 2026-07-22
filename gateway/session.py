@@ -1051,13 +1051,64 @@ class SessionStore:
             getattr(config, "write_sessions_json", True)
         )
         
-        # Initialize SQLite session database
-        self._db = None
+        # Initialize SQLite session database.
+        # [LOCAL PATCH] Under multiplex, self._db must resolve to the CURRENT
+        # profile's state.db (per the ContextVar-scoped get_hermes_home), not a
+        # single default one — otherwise routed WhatsApp sessions physically
+        # land in the default profile's state.db and leak its history/memory
+        # into cgpt/yltc replies. We keep self._db as a PROPERTY (below) backed
+        # by a per-home cache, so none of the ~44 self._db.* call sites change.
+        self._db_default = None
+        self._db_by_home: Dict[str, Any] = {}
+        self._db_cache_lock = threading.Lock()
         try:
             from hermes_state import SessionDB
-            self._db = SessionDB()
+            self._db_default = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+    @property
+    def _db(self):
+        """The SessionDB for the CURRENT context's profile home.
+
+        Multiplex OFF (default): always the process-default SessionDB — behavior
+        byte-identical to before this patch. Multiplex ON: resolve/cache a
+        SessionDB opened at the ContextVar-scoped ``get_hermes_home()/state.db``,
+        so each routed profile reads+writes its OWN state.db. Falls back to the
+        default DB on any resolution error (never returns None if the default
+        opened successfully)."""
+        if not getattr(self.config, "multiplex_profiles", False):
+            return self._db_default
+        try:
+            from hermes_constants import get_hermes_home
+            home = str(get_hermes_home())
+        except Exception:
+            return self._db_default
+        # Fast path: the default home resolves to the default DB instance.
+        try:
+            from pathlib import Path
+            default_home = str(Path(self._db_default.db_path).parent) if (
+                self._db_default is not None and getattr(self._db_default, "db_path", None)
+            ) else None
+        except Exception:
+            default_home = None
+        if default_home is not None and home == default_home:
+            return self._db_default
+        cached = self._db_by_home.get(home)
+        if cached is not None:
+            return cached
+        with self._db_cache_lock:
+            cached = self._db_by_home.get(home)
+            if cached is not None:
+                return cached
+            try:
+                from pathlib import Path
+                from hermes_state import SessionDB
+                db = SessionDB(db_path=Path(home) / "state.db")
+                self._db_by_home[home] = db
+                return db
+            except Exception:
+                return self._db_default
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Return whether a session has active work, failing closed on registry errors."""
@@ -1368,6 +1419,34 @@ class SessionStore:
             return None
         if source is not None and source.profile:
             return source.profile
+        # [LOCAL PATCH] Consult gateway.profile_routes when source.profile is
+        # unset. Without this, a WhatsApp group routed via profile_routes still
+        # got the ACTIVE (default) namespace here — so its session/history/memory
+        # landed in the default profile's state.db even though its home/skills
+        # were scoped correctly, leaking default-profile data (e.g. IBKR
+        # positions) into routed replies. Stamps source.profile so home and
+        # session-key namespace agree. See run.py _profile_name_for_source.
+        if source is not None:
+            try:
+                routes = getattr(self.config, "profile_routes", None)
+                if routes:
+                    from gateway.profile_routing import match_profile_route
+                    matched = match_profile_route(
+                        routes,
+                        platform=source.platform.value,
+                        guild_id=getattr(source, "guild_id", None),
+                        chat_id=source.chat_id,
+                        thread_id=getattr(source, "thread_id", None),
+                        parent_chat_id=getattr(source, "parent_chat_id", None),
+                    )
+                    if matched:
+                        try:
+                            source.profile = matched.profile
+                        except Exception:
+                            pass
+                        return matched.profile
+            except Exception:
+                pass
         try:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"

@@ -9459,7 +9459,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # source.profile routes inbound turns to secondary profiles.
             if (
                 getattr(self.config, "multiplex_profiles", False)
-                and platform is Platform.RELAY
+                and platform in (Platform.RELAY, Platform.WHATSAPP)
             ):
                 continue
             try:
@@ -12011,7 +12011,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
+        # [LOCAL PATCH] Create the session INSIDE the routed profile's scope so
+        # SessionStore._db resolves to that profile's state.db (not default).
+        # Without this the session is physically created in the default profile's
+        # state.db — leaking default history/memory (e.g. IBKR agenda) into
+        # routed cgpt/yltc replies even though the agent run itself is scoped.
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            _pscope_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(_pscope_home):
+                session_entry = await self.async_session_store.get_or_create_session(source)
+        else:
+            session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""

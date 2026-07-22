@@ -411,6 +411,7 @@ def _handle_show(args: dict, **kw) -> str:
 
             return json.dumps({
                 "task": _task_dict(task),
+                "rollup": kb.task_rollup(conn, tid),
                 "parents": parents,
                 "children": children,
                 "comments": [

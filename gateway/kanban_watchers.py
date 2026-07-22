@@ -268,7 +268,7 @@ class GatewayKanbanWatchersMixin:
                                         sub.get("task_id"), platform or "<missing>",
                                     )
                                     continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                old_cursor, cursor, events = _kb.claim_unseen_lineage_events_for_sub(
                                     conn,
                                     task_id=sub["task_id"],
                                     platform=sub["platform"],
@@ -279,6 +279,17 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                outboxes = {}
+                                for ev in events:
+                                    event_task = _kb.get_task(conn, ev.task_id)
+                                    visible = ev.kind in {"blocked", "gave_up", "crashed", "timed_out"} or (
+                                        ev.kind == "completed" and ev.task_id == sub["task_id"]
+                                    )
+                                    if visible and event_task is not None:
+                                        lineage_sub = dict(sub, root_task_id=sub["task_id"], event_task_id=ev.task_id)
+                                        outboxes[ev.id] = _kb.enqueue_notify_outbox(
+                                            conn, sub=lineage_sub, event=ev, tenant=event_task.tenant,
+                                        )
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -289,6 +300,7 @@ class GatewayKanbanWatchersMixin:
                                     "cursor": cursor,
                                     "events": events,
                                     "task": task,
+                                    "outboxes": outboxes,
                                     "board": slug,
                                 })
                         finally:
@@ -338,10 +350,35 @@ class GatewayKanbanWatchersMixin:
                     board_tag = f"[{board_slug}] " if board_slug else ""
                     for ev in d["events"]:
                         kind = ev.kind
+                        outbox = d.get("outboxes", {}).get(ev.id)
+                        if outbox and outbox["state"] in {"sent", "acknowledged", "dead_letter"}:
+                            continue
+                        if (
+                            outbox and outbox["state"] == "failed"
+                            and int(outbox["next_attempt_at"] or 0) > int(time.time())
+                        ):
+                            await asyncio.to_thread(
+                                self._kanban_rewind, sub, d["cursor"],
+                                d.get("old_cursor", 0), board_slug,
+                            )
+                            break
+                        event_task = task
+                        if ev.task_id != sub["task_id"]:
+                            def _load_event_task():
+                                conn = _kb.connect(board=board_slug)
+                                try:
+                                    return _kb.get_task(conn, ev.task_id)
+                                finally:
+                                    conn.close()
+                            event_task = await asyncio.to_thread(_load_event_task)
+                        if kind == "completed" and ev.task_id != sub["task_id"]:
+                            continue
+                        if kind in {"status", "archived", "unblocked"}:
+                            continue
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
+                        who = (event_task.assignee if event_task and event_task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
@@ -369,7 +406,14 @@ class GatewayKanbanWatchersMixin:
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                            child_context = (
+                                f" on {event_task.title[:120]}"
+                                if event_task and ev.task_id != sub["task_id"] else ""
+                            )
+                            msg = (
+                                f"⏸ {board_tag}{tag}Kanban blocked — needs your input"
+                                f"{child_context}{reason}\nReply to this message with the answer."
+                            )
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
@@ -413,9 +457,22 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            outbox = d.get("outboxes", {}).get(ev.id)
+                            if outbox:
+                                receipt = getattr(send_result, "message_id", None)
+                                def _mark_sent():
+                                    conn = _kb.connect(board=board_slug)
+                                    try:
+                                        _kb.mark_notify_outbox(
+                                            conn, outbox["id"], state="sent",
+                                            receipt=str(receipt) if receipt else None,
+                                        )
+                                    finally:
+                                        conn.close()
+                                await asyncio.to_thread(_mark_sent)
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -446,6 +503,18 @@ class GatewayKanbanWatchersMixin:
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
+                            outbox = d.get("outboxes", {}).get(ev.id)
+                            if outbox:
+                                def _mark_failed():
+                                    conn = _kb.connect(board=board_slug)
+                                    try:
+                                        _kb.mark_notify_outbox(
+                                            conn, outbox["id"], state="failed",
+                                            error=str(exc)[:500],
+                                        )
+                                    finally:
+                                        conn.close()
+                                await asyncio.to_thread(_mark_failed)
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
                             logger.warning(

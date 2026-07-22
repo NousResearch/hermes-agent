@@ -3802,7 +3802,15 @@ def probe_api_models(
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    # Filter out models with non-available status (Shutdown,
+                    # Retiring, etc.) so the /model picker only shows usable
+                    # models.  See: NousResearch/hermes-agent#68536
+                    "models": [
+                        m.get("id", "")
+                        for m in data.get("data", [])
+                        if m.get("status", "available").lower()
+                        not in {"shutdown", "retiring", "unavailable", "offline"}
+                    ],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,

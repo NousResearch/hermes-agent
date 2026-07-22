@@ -2391,6 +2391,80 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_explicit_empty_scope_blocks_sequential_dispatch(self, agent):
+        """An explicit empty toolset is a deny-all boundary, not ``None``.
+
+        A provider may still emit a stale or fabricated tool call even when no
+        schemas were sent. Dispatch must reject it before registry or inline
+        runtime handlers can execute.
+        """
+        agent.enabled_toolsets = []
+        agent.tools = []
+        agent.valid_tool_names = set()
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"blocked"}', call_id="deny-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value="must not run") as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_hfc.assert_not_called()
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "deny-1"
+        assert "not available in this session" in messages[0]["content"].lower()
+
+    def test_explicit_empty_scope_blocks_concurrent_dispatch(self, agent):
+        """The concurrent executor enforces the same deny-all boundary."""
+        agent.enabled_toolsets = []
+        agent.tools = []
+        agent.valid_tool_names = set()
+        calls = [
+            _mock_tool_call(name="web_search", arguments='{"q":"one"}', call_id="deny-c1"),
+            _mock_tool_call(name="web_search", arguments='{"q":"two"}', call_id="deny-c2"),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=calls)
+        messages = []
+
+        with patch.object(agent, "_invoke_tool", return_value="must not run") as invoke:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        invoke.assert_not_called()
+        assert [message["tool_call_id"] for message in messages] == ["deny-c1", "deny-c2"]
+        assert all("not available in this session" in message["content"].lower() for message in messages)
+
+    def test_exact_scope_blocks_sequential_dispatch_after_live_allowlist_mutation(self, agent):
+        """A mutable schema refresh cannot authorize outside immutable admission."""
+        agent.enabled_toolsets = []
+        agent.valid_tool_names = {"web_search", "terminal"}
+        agent._exact_allowed_tool_names = frozenset({"web_search"})
+        tc = _mock_tool_call(name="terminal", arguments='{"command":"true"}', call_id="exact-s1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value="must not run") as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_hfc.assert_not_called()
+        assert "not available in this session" in messages[0]["content"].lower()
+
+    def test_exact_scope_blocks_concurrent_dispatch_after_live_allowlist_mutation(self, agent):
+        """Concurrent dispatch consults immutable exact admission too."""
+        agent.enabled_toolsets = []
+        agent.valid_tool_names = {"web_search", "terminal"}
+        agent._exact_allowed_tool_names = frozenset({"web_search"})
+        calls = [
+            _mock_tool_call(name="terminal", arguments='{"command":"true"}', call_id="exact-c1"),
+            _mock_tool_call(name="terminal", arguments='{"command":"true"}', call_id="exact-c2"),
+        ]
+        mock_msg = _mock_assistant_msg(content="", tool_calls=calls)
+        messages = []
+
+        with patch.object(agent, "_invoke_tool", return_value="must not run") as invoke:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        invoke.assert_not_called()
+        assert all("not available in this session" in message["content"].lower() for message in messages)
+
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
         tc = _mock_tool_call(

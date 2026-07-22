@@ -28,6 +28,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
+    _ExactCapabilityPolicy,
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
@@ -663,6 +664,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
     app.router.add_post(
@@ -4399,6 +4401,20 @@ def _make_routing_adapter(routes) -> APIServerAdapter:
     return APIServerAdapter(config)
 
 
+def _exact_capability_policy(**overrides):
+    policy = {
+        "version": 1,
+        "mode": "exact",
+        "model_route": "exact",
+        "fallback": "disabled",
+        "skills": [],
+        "tools": [],
+        "toolsets": [],
+    }
+    policy.update(overrides)
+    return policy
+
+
 def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     """Stub out every external dependency of _create_agent."""
     monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
@@ -4477,6 +4493,47 @@ class TestModelRoutesModelsEndpoint:
             assert "minimax-m2" in ids
             assert "gpt-5" in ids
 
+    def test_authenticated_discovery_reads_gateway_api_server_config(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "gateway": {
+                    "api_server": {"discover_authenticated_models": True},
+                },
+            },
+        ):
+            adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+
+        assert adapter._discover_authenticated_models is True
+
+    @pytest.mark.asyncio
+    async def test_models_endpoint_lists_authenticated_dynamic_routes(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={"discover_authenticated_models": True},
+        )
+        adapter = APIServerAdapter(config)
+        discovered = {
+            "gpt-5.6-sol": {"model": "gpt-5.6-sol", "provider": "openai-codex"},
+            "grok-4.5": {"model": "grok-4.5", "provider": "xai-oauth"},
+        }
+        app = _create_app(adapter)
+        with patch(
+            "gateway.platforms.api_server._discover_authenticated_model_routes",
+            return_value=discovered,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/models")
+                assert resp.status == 200
+                data = await resp.json()
+
+        by_id = {entry["id"]: entry for entry in data["data"]}
+        assert by_id["gpt-5.6-sol"]["root"] == "gpt-5.6-sol"
+        assert by_id["gpt-5.6-sol"]["owned_by"] == "openai-codex"
+        assert by_id["gpt-5.6-sol"]["provider"] == "openai-codex"
+        assert by_id["gpt-5.6-sol"]["exact_capability_policy"] is True
+        assert by_id["grok-4.5"]["owned_by"] == "xai-oauth"
+
     @pytest.mark.asyncio
     async def test_models_endpoint_route_alias_fields_and_no_secrets(self):
         routes = {"my-alias": {"model": "openai/gpt-5", "api_key": "sk-route-secret"}}
@@ -4488,8 +4545,257 @@ class TestModelRoutesModelsEndpoint:
             alias_entry = next(m for m in data["data"] if m["id"] == "my-alias")
             assert alias_entry["root"] == "openai/gpt-5"
             assert alias_entry["parent"] == adapter._model_name
+            assert alias_entry["exact_capability_policy"] is True
             # per-route api_key must never leak through the discovery endpoint
             assert "sk-route-secret" not in json.dumps(data)
+
+
+class TestExactCapabilityPolicy:
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_every_exact_boundary(self):
+        adapter = _make_routing_adapter(
+            {"exact-model": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            features = (await resp.json())["features"]
+
+        assert features["exact_capability_policy_v1"] is True
+        assert features["exact_model_route"] is True
+        assert features["exact_skill_preload"] is True
+        assert features["exact_tool_allowlist"] is True
+        assert features["exact_toolsets"] is True
+        assert features["model_fallback_disabled"] is True
+        assert features["session_model_override_disabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_exact_model_is_rejected_before_agent_run(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        run_agent = AsyncMock(return_value=("must not run", {}))
+        with patch.object(adapter, "_run_agent", run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "unknown",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "capability_policy": _exact_capability_policy(),
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "unknown_model_route"
+        run_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_incomplete_policy_is_rejected_fail_closed_for_runs(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        policy = _exact_capability_policy()
+        del policy["fallback"]
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"model": "known", "input": "hello", "capability_policy": policy},
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_capability_policy"
+        assert not adapter._active_run_tasks
+
+    @pytest.mark.asyncio
+    async def test_duplicate_scope_member_is_rejected(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "known",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "capability_policy": _exact_capability_policy(
+                        toolsets=["web", "web"]
+                    ),
+                },
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_capability_policy"
+
+    @pytest.mark.asyncio
+    async def test_unknown_toolset_is_rejected_before_agent_run(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        run_agent = AsyncMock(return_value=("must not run", {}))
+        with patch.object(adapter, "_run_agent", run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "known",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "capability_policy": _exact_capability_policy(
+                            toolsets=["does-not-exist"]
+                        ),
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "unknown_capability_toolset"
+        run_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_raw_tool_is_rejected_before_agent_run(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        run_agent = AsyncMock(return_value=("must not run", {}))
+        with patch.object(adapter, "_run_agent", run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "known",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "capability_policy": _exact_capability_policy(
+                            tools=["does-not-exist"]
+                        ),
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "unknown_capability_tool"
+        run_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_known_raw_tool_is_admitted_exactly(self):
+        route = {"model": "provider/model", "provider": "provider"}
+        adapter = _make_routing_adapter({"known": route})
+        schema = {
+            "type": "function",
+            "function": {"name": "web_search", "description": "search", "parameters": {}},
+        }
+        with patch("model_tools.get_tool_definitions", return_value=[schema]):
+            policy, admitted_route, error = await adapter._prepare_exact_capability_policy(
+                {
+                    "model": "known",
+                    "capability_policy": _exact_capability_policy(tools=["web_search"]),
+                }
+            )
+
+        assert error is None
+        assert admitted_route == route
+        assert policy is not None
+        assert policy.tools == ("web_search",)
+        assert policy.allowed_tool_names == frozenset({"web_search"})
+        assert policy.tool_schemas == (schema,)
+
+    @pytest.mark.asyncio
+    async def test_known_but_unavailable_raw_tool_is_rejected_before_agent_run(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        run_agent = AsyncMock(return_value=("must not run", {}))
+        with (
+            patch.object(adapter, "_run_agent", run_agent),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "known",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "capability_policy": _exact_capability_policy(tools=["web_search"]),
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 409
+        assert data["error"]["code"] == "unavailable_capability_tool"
+        run_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_skill_is_rejected_before_agent_run(self):
+        adapter = _make_routing_adapter(
+            {"known": {"model": "provider/model", "provider": "provider"}}
+        )
+        app = _create_app(adapter)
+        run_agent = AsyncMock(return_value=("must not run", {}))
+        with (
+            patch.object(adapter, "_run_agent", run_agent),
+            patch(
+                "agent.skill_commands.build_preloaded_skills_prompt",
+                return_value=("", [], ["missing-skill"]),
+            ),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "known",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "capability_policy": _exact_capability_policy(
+                            skills=["missing-skill"]
+                        ),
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "unknown_capability_skill"
+        run_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exact_policy_and_route_are_forwarded_to_agent_run(self):
+        route = {"model": "provider/model", "provider": "provider"}
+        adapter = _make_routing_adapter({"known": route})
+        app = _create_app(adapter)
+        run_agent = AsyncMock(
+            return_value=(
+                {"final_response": "answer", "completed": True},
+                {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            )
+        )
+        with patch.object(adapter, "_run_agent", run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "known",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "capability_policy": _exact_capability_policy(),
+                    },
+                )
+
+        assert resp.status == 200
+        call = run_agent.await_args
+        assert call is not None
+        kwargs = call.kwargs
+        assert kwargs["route"] == route
+        assert kwargs["exact_policy"].model_alias == "known"
+        assert kwargs["exact_policy"].skills == ()
+        assert kwargs["exact_policy"].tools == ()
+        assert kwargs["exact_policy"].toolsets == ()
+        assert kwargs["exact_policy"].allowed_tool_names == frozenset()
 
 
 class TestModelRoutesHandlers:
@@ -4553,6 +4859,112 @@ class TestModelRoutesHandlers:
 
 
 class TestModelRoutesAgentCreation:
+    def test_exact_policy_ignores_session_and_global_fallback_and_filters_tools(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "memory"}},
+                ]
+                self.valid_tool_names = {"web_search", "memory"}
+                self.enabled_toolsets = None
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            lambda provider: {
+                "provider": provider,
+                "api_key": f"key-for-{provider}",
+                "base_url": f"https://{provider}.example/v1",
+                "model": "ambient/model-that-must-not-win",
+            },
+        )
+
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("legacy fallback/session resolution must not run")
+
+        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", must_not_run)
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(must_not_run),
+        )
+
+        route = {"model": "exact/model", "provider": "exact-provider"}
+        adapter = _make_routing_adapter({"exact": route})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", must_not_run)
+        policy = _ExactCapabilityPolicy(
+            model_alias="exact",
+            provider="exact-provider",
+            model="exact/model",
+            skills=("native-skill",),
+            loaded_skills=("native-skill",),
+            tools=(),
+            toolsets=("web",),
+            allowed_tool_names=frozenset({"web_search"}),
+            skill_prompt="trusted skill prompt",
+            tool_schemas=(
+                {"type": "function", "function": {"name": "web_search"}},
+            ),
+        )
+
+        agent = adapter._create_agent(
+            ephemeral_system_prompt="request instructions",
+            session_id="session-with-stale-override",
+            gateway_session_key="stable-key",
+            route=route,
+            exact_policy=policy,
+        )
+
+        assert captured["model"] == "exact/model"
+        assert captured["provider"] == "exact-provider"
+        assert captured["fallback_model"] is None
+        assert captured["enabled_toolsets"] == ["web"]
+        assert captured["ephemeral_system_prompt"] == (
+            "trusted skill prompt\n\nrequest instructions"
+        )
+        assert [tool["function"]["name"] for tool in agent.tools] == ["web_search"]
+        assert agent.valid_tool_names == {"web_search"}
+        assert agent._exact_capability_policy["model_route"]["alias"] == "exact"
+
+        captured.clear()
+        raw_tool_policy = _ExactCapabilityPolicy(
+            model_alias="exact",
+            provider="exact-provider",
+            model="exact/model",
+            skills=(),
+            loaded_skills=(),
+            tools=("web_search",),
+            toolsets=(),
+            allowed_tool_names=frozenset({"web_search"}),
+            tool_schemas=(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "search",
+                        "parameters": {},
+                    },
+                },
+            ),
+        )
+        raw_tool_agent = adapter._create_agent(
+            session_id="raw-tool-session",
+            gateway_session_key="raw-tool-key",
+            route=route,
+            exact_policy=raw_tool_policy,
+        )
+        assert captured["enabled_toolsets"] == ["all"]
+        assert [tool["function"]["name"] for tool in raw_tool_agent.tools] == ["web_search"]
+        assert raw_tool_agent.valid_tool_names == {"web_search"}
+        assert raw_tool_agent._exact_allowed_tool_names == frozenset({"web_search"})
+        assert raw_tool_agent._exact_capability_policy["tools"] == ["web_search"]
+
     def test_route_overrides_model_and_credentials(self, monkeypatch):
         captured = {}
 

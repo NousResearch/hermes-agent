@@ -3152,6 +3152,11 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible API server platform
         # (gateway/platforms/api_server.py).
         "api_server": {
+            # Optional credential-aware model catalog. When enabled, /v1/models
+            # advertises only text-generation routes that Hermes' authenticated
+            # provider picker currently considers usable. Credentials are never
+            # returned. Keep disabled unless clients require exact route binding.
+            "discover_authenticated_models": False,
             # Maximum number of agent runs the API server will service
             # concurrently. Requests to /v1/chat/completions, /v1/responses,
             # and /v1/runs that arrive while this many runs are already

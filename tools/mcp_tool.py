@@ -6060,6 +6060,25 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Exact API requests pin an immutable tool admission set. A late MCP
+    # connection, explicit reload, memory-provider injector, or context-engine
+    # refresh may rebuild the snapshot, but it must not expose schemas outside
+    # that set or make them dispatchable. Malformed markers fail closed.
+    exact_allowed = getattr(agent, "_exact_allowed_tool_names", None)
+    if exact_allowed is not None:
+        try:
+            admitted = frozenset(exact_allowed)
+        except TypeError:
+            admitted = frozenset()
+        new_defs = [
+            tool
+            for tool in new_defs
+            if isinstance(tool, dict)
+            and tool.get("function", {}).get("name") in admitted
+        ]
+        new_names.intersection_update(admitted)
+        staged_engine_names.intersection_update(admitted)
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

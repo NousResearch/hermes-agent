@@ -54,6 +54,7 @@ import sqlite3
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -129,6 +130,136 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+
+_EXACT_CAPABILITY_POLICY_KEYS = frozenset(
+    {"version", "mode", "model_route", "fallback", "skills", "tools", "toolsets"}
+)
+_CAPABILITY_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_DYNAMIC_SKILL_TOOLS = frozenset({"skill_view", "skill_manage"})
+_NON_TEXT_MODEL_MARKERS = (
+    "image",
+    "imagine",
+    "video",
+    "embedding",
+    "embed-",
+    "whisper",
+    "realtime",
+    "text-to-speech",
+    "tts-",
+)
+
+
+@dataclass(frozen=True)
+class _ExactCapabilityPolicy:
+    """Validated, immutable request-time execution boundary.
+
+    ``skills`` controls only automatic native skill prompt preloading.  It is
+    not a filesystem sandbox.  Dynamic skill-loading tools are therefore
+    refused whenever this contract is active, while the resolved toolset scope
+    is independently enforced at dispatch time.
+    """
+
+    model_alias: str
+    provider: str
+    model: str
+    skills: tuple[str, ...]
+    loaded_skills: tuple[str, ...]
+    tools: tuple[str, ...]
+    toolsets: tuple[str, ...]
+    allowed_tool_names: frozenset[str]
+    skill_prompt: str = field(default="", repr=False)
+    tool_schemas: tuple[Dict[str, Any], ...] = field(default=(), repr=False)
+
+    def public_dict(self) -> Dict[str, Any]:
+        """Return a secret-free attestation safe for API responses/status."""
+        return {
+            "version": 1,
+            "mode": "exact",
+            "enforcement": "enforced",
+            "model_route": {
+                "alias": self.model_alias,
+                "provider": self.provider,
+                "model": self.model,
+            },
+            "fallback": "disabled",
+            "skills": list(self.skills),
+            "loaded_skills": list(self.loaded_skills),
+            "tools": list(self.tools),
+            "toolsets": list(self.toolsets),
+            "allowed_tools": sorted(self.allowed_tool_names),
+        }
+
+
+def _is_text_generation_model(model_id: str) -> bool:
+    """Conservatively exclude known non-chat model families from /v1/models."""
+    lowered = str(model_id or "").strip().lower()
+    return bool(lowered) and not any(marker in lowered for marker in _NON_TEXT_MODEL_MARKERS)
+
+
+def _discover_authenticated_model_routes(default_alias: str = "") -> Dict[str, Dict[str, str]]:
+    """Build exact routes from Hermes' own authenticated provider inventory.
+
+    The picker inventory is already credential-aware and contains curated
+    agentic model IDs.  Unique model IDs keep their short name; collisions are
+    provider-qualified so selecting an alias can never silently choose another
+    authenticated provider.  No credential material is returned or logged.
+    """
+    try:
+        from hermes_cli.inventory import load_picker_context
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        ctx = load_picker_context()
+        rows = list_authenticated_providers(
+            current_provider=ctx.current_provider,
+            current_base_url=ctx.current_base_url,
+            current_model=ctx.current_model,
+            user_providers=ctx.user_providers,
+            custom_providers=ctx.custom_providers,
+            excluded_providers=ctx.excluded_providers or [],
+            max_models=None,
+            probe_custom_providers=False,
+        )
+    except Exception as exc:
+        logger.debug("api_server authenticated model discovery unavailable: %s", exc)
+        return {}
+
+    provider_models: list[tuple[str, str]] = []
+    model_provider_counts: Dict[str, int] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        provider = str(row.get("slug") or "").strip()
+        if not provider:
+            continue
+        for raw_model in row.get("models") or []:
+            model = str(raw_model or "").strip()
+            if not _is_text_generation_model(model):
+                continue
+            pair = (provider, model)
+            if pair in provider_models:
+                continue
+            provider_models.append(pair)
+            model_provider_counts[model] = model_provider_counts.get(model, 0) + 1
+
+    routes: Dict[str, Dict[str, str]] = {}
+    for provider, model in provider_models:
+        alias = model if model_provider_counts.get(model) == 1 else f"{provider}/{model}"
+        if len(alias) <= 256:
+            routes[alias] = {"model": model, "provider": provider}
+
+    current_provider = str(getattr(ctx, "current_provider", "") or "").strip()
+    current_model = str(getattr(ctx, "current_model", "") or "").strip()
+    if (
+        default_alias
+        and current_provider
+        and _is_text_generation_model(current_model)
+        and (current_provider, current_model) in provider_models
+    ):
+        routes[str(default_alias).strip()] = {
+            "model": current_model,
+            "provider": current_provider,
+        }
+    return routes
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1037,6 +1168,21 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
+        # Optional authenticated-provider discovery exposes only routes Hermes'
+        # own picker currently considers usable. Static routes win on alias
+        # collisions. Discovery is opt-in for backwards compatibility.
+        self._discover_authenticated_models = self._resolve_authenticated_model_discovery(
+            extra.get("discover_authenticated_models"),
+        )
+        self._discovered_model_routes: Dict[str, Dict[str, Any]] = {}
+        self._model_routes_refreshed_at = 0.0
+        try:
+            self._model_routes_cache_ttl = max(
+                5.0,
+                min(3600.0, float(extra.get("model_routes_cache_ttl", 60.0))),
+            )
+        except (TypeError, ValueError):
+            self._model_routes_cache_ttl = 60.0
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1176,6 +1322,32 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    @staticmethod
+    def _resolve_authenticated_model_discovery(explicit: Any) -> bool:
+        """Resolve credential-aware route discovery from adapter or config.
+
+        Platform adapter extras are authoritative when supplied.  Normal
+        installations configure behavioral API-server settings under
+        ``gateway.api_server`` in config.yaml, so read the same supported
+        source used by the concurrency limit when the adapter has no explicit
+        override.  Every missing or malformed value remains fail-closed.
+        """
+        if explicit is not None:
+            return _coerce_request_bool(explicit, default=False)
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            configured = cfg_get(
+                load_config(),
+                "gateway",
+                "api_server",
+                "discover_authenticated_models",
+                default=False,
+            )
+        except Exception:
+            return False
+        return _coerce_request_bool(configured, default=False)
 
     @staticmethod
     def _resolve_max_concurrent_runs() -> int:
@@ -1792,11 +1964,28 @@ class APIServerAdapter(BasePlatformAdapter):
             routes[alias_str] = route
         return routes
 
+    def _all_model_routes(self) -> Dict[str, Dict[str, Any]]:
+        """Return static plus cached authenticated routes (static wins)."""
+        if self._discover_authenticated_models:
+            now = time.monotonic()
+            if (
+                self._model_routes_refreshed_at == 0.0
+                or now - self._model_routes_refreshed_at >= self._model_routes_cache_ttl
+            ):
+                discovered = self._parse_model_routes(
+                    _discover_authenticated_model_routes(self._model_name)
+                )
+                self._discovered_model_routes = discovered
+                self._model_routes_refreshed_at = now
+        routes = dict(self._discovered_model_routes)
+        routes.update(self._model_routes)
+        return routes
+
     def _resolve_route(self, model_alias: Any) -> Optional[Dict[str, Any]]:
-        """Return the model_routes entry for *model_alias*, or None."""
-        if not self._model_routes or not isinstance(model_alias, str):
+        """Return the exact route entry for *model_alias*, or None."""
+        if not isinstance(model_alias, str):
             return None
-        return self._model_routes.get(model_alias)
+        return self._all_model_routes().get(model_alias)
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """Return the gateway's session ``/model`` override for *session_key*, if any.
@@ -1819,6 +2008,209 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
+    @staticmethod
+    def _capability_policy_error(
+        message: str,
+        *,
+        code: str = "invalid_capability_policy",
+        status: int = 400,
+    ) -> "web.Response":
+        return web.json_response(
+            _openai_error(
+                message,
+                param="capability_policy",
+                code=code,
+            ),
+            status=status,
+        )
+
+    @staticmethod
+    def _parse_capability_identifiers(value: Any, field_name: str) -> tuple[str, ...]:
+        if not isinstance(value, list) or len(value) > 64:
+            raise ValueError(f"capability_policy.{field_name} must be an array of at most 64 identifiers")
+        normalized: list[str] = []
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError(f"capability_policy.{field_name} entries must be strings")
+            identifier = raw.strip()
+            if not _CAPABILITY_IDENTIFIER_RE.fullmatch(identifier):
+                raise ValueError(f"capability_policy.{field_name} contains an invalid identifier")
+            if identifier in normalized:
+                raise ValueError(f"capability_policy.{field_name} contains a duplicate identifier")
+            normalized.append(identifier)
+        return tuple(normalized)
+
+    async def _prepare_exact_capability_policy(
+        self,
+        body: Dict[str, Any],
+        *,
+        task_id: Optional[str] = None,
+    ) -> tuple[
+        Optional[_ExactCapabilityPolicy],
+        Optional[Dict[str, Any]],
+        Optional["web.Response"],
+    ]:
+        """Validate and preload the optional exact request policy.
+
+        Absence preserves the legacy API contract. Presence is versioned and
+        fail-closed: every field is mandatory, unknown fields are refused, and
+        model/skill/toolset resolution completes before an agent is created.
+        """
+        if "capability_policy" not in body:
+            return None, self._resolve_route(body.get("model")), None
+
+        raw = body.get("capability_policy")
+        if not isinstance(raw, dict) or set(raw) != _EXACT_CAPABILITY_POLICY_KEYS:
+            return None, None, self._capability_policy_error(
+                "capability_policy must contain exactly version, mode, model_route, fallback, skills, tools, and toolsets"
+            )
+        if type(raw.get("version")) is not int or raw.get("version") != 1:
+            return None, None, self._capability_policy_error(
+                "Unsupported capability_policy version"
+            )
+        if (
+            raw.get("mode") != "exact"
+            or raw.get("model_route") != "exact"
+            or raw.get("fallback") != "disabled"
+        ):
+            return None, None, self._capability_policy_error(
+                "capability_policy requires mode=exact, model_route=exact, and fallback=disabled"
+            )
+
+        model_alias = body.get("model")
+        if not isinstance(model_alias, str) or not model_alias.strip() or len(model_alias) > 256:
+            return None, None, self._capability_policy_error(
+                "An exact configured model alias is required",
+                code="unknown_model_route",
+            )
+        model_alias = model_alias.strip()
+        route = self._resolve_route(model_alias)
+        if not route or not route.get("model") or not route.get("provider"):
+            return None, None, self._capability_policy_error(
+                "The requested exact model route is not configured",
+                code="unknown_model_route",
+            )
+
+        if body.get("tools") not in (None, []):
+            return None, None, self._capability_policy_error(
+                "OpenAI tools cannot be combined with an exact capability_policy",
+                code="conflicting_capability_policy",
+            )
+        if body.get("tool_choice") not in (None, "none"):
+            return None, None, self._capability_policy_error(
+                "tool_choice must be 'none' when capability_policy is exact",
+                code="conflicting_capability_policy",
+            )
+
+        try:
+            skills = self._parse_capability_identifiers(raw.get("skills"), "skills")
+            tools = self._parse_capability_identifiers(raw.get("tools"), "tools")
+            toolsets = self._parse_capability_identifiers(raw.get("toolsets"), "toolsets")
+        except ValueError as exc:
+            return None, None, self._capability_policy_error(str(exc))
+
+        from toolsets import resolve_toolset, validate_toolset
+
+        known_tool_names = set(resolve_toolset("all"))
+        unknown_tools = [tool for tool in tools if tool not in known_tool_names]
+        if unknown_tools:
+            return None, None, self._capability_policy_error(
+                "The requested capability tool is not configured",
+                code="unknown_capability_tool",
+            )
+
+        allowed_tool_names: set[str] = set(tools)
+        for toolset in toolsets:
+            if not validate_toolset(toolset):
+                return None, None, self._capability_policy_error(
+                    "The requested capability toolset is not configured",
+                    code="unknown_capability_toolset",
+                )
+            allowed_tool_names.update(resolve_toolset(toolset))
+        if allowed_tool_names & _DYNAMIC_SKILL_TOOLS:
+            return None, None, self._capability_policy_error(
+                "Exact skill preloading cannot be combined with dynamic skill loading or mutation tools",
+                code="conflicting_capability_policy",
+            )
+
+        tool_schemas: tuple[Dict[str, Any], ...] = ()
+        if allowed_tool_names:
+            try:
+                import copy
+                from model_tools import get_tool_definitions
+
+                # A raw-tool grant may name tools from any registered toolset;
+                # a toolset-only grant can resolve only the requested bundles.
+                schema_toolsets = ["all"] if tools else list(toolsets)
+                available_defs = await asyncio.to_thread(
+                    get_tool_definitions,
+                    enabled_toolsets=schema_toolsets,
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+                available_by_name = {
+                    definition.get("function", {}).get("name"): definition
+                    for definition in (available_defs or [])
+                    if isinstance(definition, dict)
+                    and isinstance(definition.get("function"), dict)
+                    and isinstance(definition["function"].get("name"), str)
+                }
+            except Exception:
+                logger.exception("api_server exact tool schema resolution failed")
+                return None, None, self._capability_policy_error(
+                    "Exact tool schema resolution is temporarily unavailable",
+                    code="capability_policy_unavailable",
+                    status=503,
+                )
+            if not allowed_tool_names.issubset(available_by_name):
+                return None, None, self._capability_policy_error(
+                    "One or more requested capability tools are unavailable",
+                    code="unavailable_capability_tool",
+                    status=409,
+                )
+            tool_schemas = tuple(
+                copy.deepcopy(available_by_name[name])
+                for name in sorted(allowed_tool_names)
+            )
+
+        skill_prompt = ""
+        loaded_skills: list[str] = []
+        if skills:
+            try:
+                from agent.skill_commands import build_preloaded_skills_prompt
+
+                skill_prompt, loaded_skills, missing = await asyncio.to_thread(
+                    build_preloaded_skills_prompt,
+                    list(skills),
+                    task_id,
+                )
+            except Exception:
+                logger.exception("api_server exact skill preload failed")
+                return None, None, self._capability_policy_error(
+                    "Exact skill preloading is temporarily unavailable",
+                    code="capability_policy_unavailable",
+                    status=503,
+                )
+            if missing:
+                return None, None, self._capability_policy_error(
+                    "One or more requested capability skills are unavailable",
+                    code="unknown_capability_skill",
+                )
+
+        policy = _ExactCapabilityPolicy(
+            model_alias=model_alias,
+            provider=str(route["provider"]),
+            model=str(route["model"]),
+            skills=skills,
+            loaded_skills=tuple(loaded_skills),
+            tools=tools,
+            toolsets=toolsets,
+            allowed_tool_names=frozenset(allowed_tool_names),
+            skill_prompt=skill_prompt,
+            tool_schemas=tool_schemas,
+        )
+        return policy, route, None
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -1829,6 +2221,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        exact_policy: Optional[_ExactCapabilityPolicy] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1848,88 +2241,112 @@ class APIServerAdapter(BasePlatformAdapter):
         ``route`` is an optional ``model_routes`` entry (per-client model
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
-        global defaults for this agent instance only.
+        global defaults for this agent instance only. When ``exact_policy``
+        is present, the route wins over session state, provider/model fallback
+        is disabled, and only its prevalidated native skills/toolsets apply.
         """
         from run_agent import AIAgent
         from gateway.run import (
             _checkpoint_agent_kwargs,
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
             _resolve_gateway_model,
             _load_gateway_config,
             GatewayRunner,
         )
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        user_config = _load_gateway_config()
+        max_iterations = _current_max_iterations()
 
-        # When the primary provider's auth fails (expired token / 429 quota
-        # cap), _resolve_runtime_agent_kwargs() falls through to the fallback
-        # provider chain, whose runtime dict carries its own ``model`` key.
-        # Pop it and let it override the config model, mirroring the native
-        # gateway path (_resolve_session_agent_runtime in run.py). Otherwise
-        # the explicit ``model=model`` below collides with the ``**runtime_kwargs``
-        # spread → "got multiple values for keyword argument 'model'", 500ing
-        # every /v1/chat/completions request while a fallback is active.
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            model = runtime_model
+        if exact_policy is not None:
+            if (
+                not route
+                or str(route.get("provider") or "") != exact_policy.provider
+                or str(route.get("model") or "") != exact_policy.model
+            ):
+                raise RuntimeError("Exact capability model route changed after admission")
 
-        # Per-client model routing (model_routes config).  The route was
-        # resolved from the request's ``model`` field by the HTTP handler.
-        # Precedence (highest first): session ``/model`` override → model_routes
-        # route → global config — an explicit user-issued ``/model`` on the
-        # session always beats static per-client route config.
-        session_override = self._session_model_override_for(
-            gateway_session_key or session_id
-        )
-        if route and not session_override:
-            if route.get("provider"):
-                # Resolve real credentials for the routed provider (mirrors
-                # the channel_overrides path in gateway/run.py) so a route
-                # without an explicit api_key/base_url still gets the right
-                # provider auth instead of the default provider's key.
-                try:
-                    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
-                    provider_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        route["provider"]
-                    )
-                    provider_kwargs.pop("model", None)
-                    runtime_kwargs.update(provider_kwargs)
-                except Exception:
-                    # Fall back to just switching the provider name; explicit
-                    # per-route api_key/base_url below can still complete auth.
-                    runtime_kwargs["provider"] = route["provider"]
-            if route.get("model"):
-                model = route["model"]
-            # Per-route secrets are upstream provider credentials. Never log
-            # them (compare _check_auth: caller auth stays the global bearer
-            # key checked with hmac.compare_digest).
+            # Resolve only the admitted provider. Unlike the legacy path this
+            # never asks the global resolver, which may choose a fallback
+            # provider before the explicit route is applied.
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                    exact_policy.provider
+                )
+            except Exception:
+                if not (route.get("api_key") and route.get("base_url")):
+                    raise
+                runtime_kwargs = {"provider": exact_policy.provider}
+            runtime_kwargs.pop("model", None)
+            model = exact_policy.model
             if route.get("api_key"):
                 runtime_kwargs["api_key"] = route["api_key"]
             if route.get("base_url"):
                 runtime_kwargs["base_url"] = route["base_url"]
+            # Raw tools do not map to an AIAgent constructor argument. Build the
+            # complete schema set once, then strip it to the exact admitted union
+            # before the first model turn. Dispatch independently checks the same
+            # immutable ``valid_tool_names`` set in tool_executor.py.
+            enabled_toolsets = ["all"] if exact_policy.tools else list(exact_policy.toolsets)
+            fallback_model = None
+            reasoning_config = GatewayRunner._load_reasoning_config(model=model)
+            prompt_parts = [exact_policy.skill_prompt, ephemeral_system_prompt or ""]
+            effective_system_prompt = "\n\n".join(
+                part for part in prompt_parts if part.strip()
+            )
             logger.debug(
-                "api_server model route applied: model=%s provider=%s",
+                "api_server exact route applied: alias=%s model=%s provider=%s",
+                exact_policy.model_alias,
                 model,
-                runtime_kwargs.get("provider"),
+                exact_policy.provider,
             )
-        elif route and session_override:
-            logger.debug(
-                "api_server model route skipped: session /model override wins for %s",
-                gateway_session_key or session_id,
+        else:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            reasoning_config = GatewayRunner._load_reasoning_config()
+            model = _resolve_gateway_model()
+
+            # When the primary provider's auth fails, the global runtime may
+            # carry a fallback model. Preserve that legacy behavior only when
+            # no exact policy was requested.
+            runtime_model = runtime_kwargs.pop("model", None)
+            if runtime_model:
+                model = runtime_model
+
+            # Legacy precedence: session /model override → static route → global.
+            session_override = self._session_model_override_for(
+                gateway_session_key or session_id
             )
-
-        user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
-
-        max_iterations = _current_max_iterations()
-
-        # Load fallback provider chain so the API server platform has the
-        # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        fallback_model = GatewayRunner._load_fallback_model()
+            if route and not session_override:
+                if route.get("provider"):
+                    try:
+                        provider_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                            route["provider"]
+                        )
+                        provider_kwargs.pop("model", None)
+                        runtime_kwargs.update(provider_kwargs)
+                    except Exception:
+                        runtime_kwargs["provider"] = route["provider"]
+                if route.get("model"):
+                    model = route["model"]
+                if route.get("api_key"):
+                    runtime_kwargs["api_key"] = route["api_key"]
+                if route.get("base_url"):
+                    runtime_kwargs["base_url"] = route["base_url"]
+                logger.debug(
+                    "api_server model route applied: model=%s provider=%s",
+                    model,
+                    runtime_kwargs.get("provider"),
+                )
+            elif route and session_override:
+                logger.debug(
+                    "api_server model route skipped: session /model override wins for %s",
+                    gateway_session_key or session_id,
+                )
+            enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+            fallback_model = GatewayRunner._load_fallback_model()
+            effective_system_prompt = ephemeral_system_prompt or ""
 
         agent = AIAgent(
             model=model,
@@ -1938,7 +2355,7 @@ class APIServerAdapter(BasePlatformAdapter):
             max_iterations=max_iterations,
             quiet_mode=True,
             verbose_logging=False,
-            ephemeral_system_prompt=ephemeral_system_prompt or None,
+            ephemeral_system_prompt=effective_system_prompt,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",
@@ -1951,6 +2368,18 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
+        if exact_policy is not None:
+            # Reuse the exact dependency-checked schema snapshot admitted
+            # above. Constructor context discovery and Tool Search assembly
+            # cannot add, remove, or substitute model-visible capabilities.
+            import copy
+
+            scoped_tools = [copy.deepcopy(tool) for tool in exact_policy.tool_schemas]
+            setattr(agent, "tools", scoped_tools)
+            setattr(agent, "valid_tool_names", set(exact_policy.allowed_tool_names))
+            setattr(agent, "enabled_toolsets", list(exact_policy.toolsets))
+            setattr(agent, "_exact_allowed_tool_names", exact_policy.allowed_tool_names)
+            setattr(agent, "_exact_capability_policy", exact_policy.public_dict())
         return agent
 
     # ------------------------------------------------------------------
@@ -2041,31 +2470,38 @@ class APIServerAdapter(BasePlatformAdapter):
             if _api_request_profile.get()
             else self._model_name
         )
+        all_routes = self._all_model_routes()
+        primary_route = all_routes.get(model_name, {})
         models = [
             {
                 "id": model_name,
                 "object": "model",
                 "created": now,
-                "owned_by": "hermes",
+                "owned_by": primary_route.get("provider", "hermes"),
+                "provider": primary_route.get("provider", "hermes"),
                 "permission": [],
-                "root": model_name,
+                "root": primary_route.get("model", model_name),
                 "parent": None,
+                "exact_capability_policy": bool(
+                    primary_route.get("provider") and primary_route.get("model")
+                ),
             }
         ]
-        # Expose configured model route aliases so clients can discover them.
-        # Only the alias and resolved model name are exposed — never provider
-        # credentials.
-        for alias, route_cfg in self._model_routes.items():
+        # Expose configured/authenticated exact route aliases. Only public
+        # provider/model identifiers are returned — never credentials.
+        for alias, route_cfg in all_routes.items():
             if alias == model_name:
                 continue  # already listed above
             models.append({
                 "id": alias,
                 "object": "model",
                 "created": now,
-                "owned_by": "hermes",
+                "owned_by": route_cfg.get("provider", "hermes"),
+                "provider": route_cfg.get("provider", "hermes"),
                 "permission": [],
                 "root": route_cfg.get("model", alias),
                 "parent": model_name,
+                "exact_capability_policy": True,
             })
 
         return web.json_response({"object": "list", "data": models})
@@ -2119,6 +2555,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                # Versioned fail-closed contract accepted by both chat and
+                # /v1/runs. Each flag is independently machine-checkable by
+                # orchestrators that refuse partial enforcement.
+                "exact_capability_policy_v1": True,
+                "exact_model_route": True,
+                "exact_skill_preload": True,
+                "exact_tool_allowlist": True,
+                "exact_toolsets": True,
+                "model_fallback_disabled": True,
+                "session_model_override_disabled": True,
+                "capability_policy_attestation": True,
+                "authenticated_model_routes": self._discover_authenticated_models,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -2857,10 +3305,14 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
-        # Per-client model routing: if the requested model matches a
-        # configured model_routes alias, this request's agent is created
-        # with that route's model/provider instead of the global default.
-        route = self._resolve_route(model_name)
+        # The optional exact contract resolves every scope before agent
+        # construction. Legacy requests keep model_routes behavior unchanged.
+        exact_policy, route, policy_err = await self._prepare_exact_capability_policy(
+            body,
+            task_id=session_id,
+        )
+        if policy_err is not None:
+            return policy_err
 
         if stream:
             import queue as _q
@@ -2945,6 +3397,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                exact_policy=exact_policy,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2954,6 +3407,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                exact_policy=exact_policy,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -2965,11 +3419,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                exact_policy=exact_policy,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream", "capability_policy"],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -3010,6 +3468,9 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if exact_policy is not None:
+            response_headers["X-Hermes-Capability-Policy"] = "exact-v1"
+            response_headers["X-Hermes-Model-Route"] = exact_policy.model_alias
 
         # Hard-fail path: no usable assistant text AND a real failure → 5xx
         # with OpenAI-style error envelope so SDK clients raise instead of
@@ -3025,6 +3486,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "partial": is_partial,
                 "failed": is_failed,
             }
+            if exact_policy is not None:
+                err_body["error"]["hermes"]["capability_policy"] = (
+                    exact_policy.public_dict()
+                )
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             return web.json_response(err_body, status=502, headers=response_headers)
@@ -3066,12 +3531,19 @@ class APIServerAdapter(BasePlatformAdapter):
             if err_msg:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
 
+        if exact_policy is not None:
+            response_data.setdefault("hermes", {})["capability_policy"] = (
+                exact_policy.public_dict()
+            )
+
         return web.json_response(response_data, headers=response_headers)
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
-        created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        created: int, stream_q, agent_task, agent_ref=None,
+        session_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None,
+        exact_policy: Optional[_ExactCapabilityPolicy] = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -3086,6 +3558,9 @@ class APIServerAdapter(BasePlatformAdapter):
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         }
+        if exact_policy is not None:
+            sse_headers["X-Hermes-Capability-Policy"] = "exact-v1"
+            sse_headers["X-Hermes-Model-Route"] = exact_policy.model_alias
         # CORS middleware can't inject headers into StreamResponse after
         # prepare() flushes them, so resolve CORS headers up front.
         origin = request.headers.get("Origin", "")
@@ -4748,6 +5223,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        exact_policy: Optional[_ExactCapabilityPolicy] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4758,6 +5234,9 @@ class APIServerAdapter(BasePlatformAdapter):
         *route* is an optional ``model_routes`` entry (resolved from the
         request's ``model`` field) that overrides the global model/provider
         for this specific request.
+
+        *exact_policy* is the immutable admission result shared with agent
+        construction; it disables all legacy route/fallback precedence.
 
         If *agent_ref* is a one-element list, the AIAgent instance is stored
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
@@ -4789,6 +5268,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        exact_policy=exact_policy,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
@@ -4976,6 +5456,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        exact_policy, route, policy_err = await self._prepare_exact_capability_policy(
+            body,
+            task_id=session_id,
+        )
+        if policy_err is not None:
+            return policy_err
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple
@@ -5013,16 +5499,15 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-        self._set_run_status(
-            run_id,
-            "queued",
-            created_at=created_at,
-            session_id=session_id,
-            model=body.get("model", self._model_name),
-        )
+        status_fields: Dict[str, Any] = {
+            "created_at": created_at,
+            "session_id": session_id,
+            "model": body.get("model", self._model_name),
+        }
+        if exact_policy is not None:
+            status_fields["capability_policy"] = exact_policy.public_dict()
+        self._set_run_status(run_id, "queued", **status_fields)
 
-        # Per-client model routing for /v1/runs (see model_routes).
-        route = self._resolve_route(body.get("model"))
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
@@ -5050,6 +5535,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        exact_policy=exact_policy,
                     )
                 self._active_run_agents[run_id] = agent
 
@@ -5242,8 +5728,13 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = (
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
+        response_body: Dict[str, Any] = {"run_id": run_id, "status": "started"}
+        if exact_policy is not None:
+            response_headers["X-Hermes-Capability-Policy"] = "exact-v1"
+            response_headers["X-Hermes-Model-Route"] = exact_policy.model_alias
+            response_body["capability_policy"] = exact_policy.public_dict()
         return web.json_response(
-            {"run_id": run_id, "status": "started"},
+            response_body,
             status=202,
             headers=response_headers,
         )

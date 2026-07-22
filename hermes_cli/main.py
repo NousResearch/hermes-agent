@@ -4714,7 +4714,7 @@ _UPDATE_CRITICAL_FILES = (
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=cwd,
             capture_output=True,
@@ -6808,8 +6808,16 @@ def _update_via_zip(args):
         _kill_stale_dashboard_processes()
 
 
+def _run_update_subprocess(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run update subprocesses with safe text decoding on non-UTF-8 Windows."""
+    if kwargs.get("text") is True or kwargs.get("universal_newlines") is True:
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    return subprocess.run(cmd, **kwargs)
+
+
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    status = subprocess.run(
+    status = _run_update_subprocess(
         git_cmd + ["status", "--porcelain"],
         cwd=cwd,
         capture_output=True,
@@ -6823,7 +6831,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     # git stash will fail with "needs merge / could not write index".  Clear the
     # conflict state with `git reset` so the stash can proceed.  Working-tree
     # changes are preserved; only the index conflict markers are dropped.
-    unmerged = subprocess.run(
+    unmerged = _run_update_subprocess(
         git_cmd + ["ls-files", "--unmerged"],
         cwd=cwd,
         capture_output=True,
@@ -6831,7 +6839,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     )
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
-        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+        _run_update_subprocess(git_cmd + ["reset"], cwd=cwd, capture_output=True)
 
     from datetime import datetime, timezone
 
@@ -6839,12 +6847,12 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
-    subprocess.run(
+    _run_update_subprocess(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         check=True,
     )
-    stash_ref = subprocess.run(
+    stash_ref = _run_update_subprocess(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
         cwd=cwd,
         capture_output=True,
@@ -6857,7 +6865,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 def _resolve_stash_selector(
     git_cmd: list[str], cwd: Path, stash_ref: str
 ) -> Optional[str]:
-    stash_list = subprocess.run(
+    stash_list = _run_update_subprocess(
         git_cmd + ["stash", "list", "--format=%gd %H"],
         cwd=cwd,
         capture_output=True,
@@ -6912,7 +6920,7 @@ def _restore_stashed_changes(
             return False
 
     print("→ Restoring local changes...")
-    restore = subprocess.run(
+    restore = _run_update_subprocess(
         git_cmd + ["stash", "apply", stash_ref],
         cwd=cwd,
         capture_output=True,
@@ -6920,7 +6928,7 @@ def _restore_stashed_changes(
     )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
-    unmerged = subprocess.run(
+    unmerged = _run_update_subprocess(
         git_cmd + ["diff", "--name-only", "--diff-filter=U"],
         cwd=cwd,
         capture_output=True,
@@ -6948,7 +6956,7 @@ def _restore_stashed_changes(
         # Always reset to clean state — leaving conflict markers in source
         # files makes hermes completely unrunnable (SyntaxError on import).
         # The user's changes are safe in the stash for manual recovery.
-        subprocess.run(
+        _run_update_subprocess(
             git_cmd + ["reset", "--hard", "HEAD"],
             cwd=cwd,
             capture_output=True,
@@ -6970,7 +6978,7 @@ def _restore_stashed_changes(
         )
         _print_stash_cleanup_guidance(stash_ref)
     else:
-        drop = subprocess.run(
+        drop = _run_update_subprocess(
             git_cmd + ["stash", "drop", stash_selector],
             cwd=cwd,
             capture_output=True,
@@ -7022,7 +7030,7 @@ def _discard_stashed_changes(
         _print_stash_cleanup_guidance(stash_ref)
         return False
 
-    drop = subprocess.run(
+    drop = _run_update_subprocess(
         git_cmd + ["stash", "drop", stash_selector],
         cwd=cwd,
         capture_output=True,
@@ -7059,7 +7067,7 @@ SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     """Get the URL of the origin remote, or None if not set."""
     try:
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["remote", "get-url", "origin"],
             cwd=cwd,
             capture_output=True,
@@ -7092,7 +7100,7 @@ def _is_fork(origin_url: Optional[str]) -> bool:
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     """Check if an 'upstream' remote already exists."""
     try:
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["remote", "get-url", "upstream"],
             cwd=cwd,
             capture_output=True,
@@ -7106,7 +7114,7 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     """Add the official repo as the 'upstream' remote. Returns True on success."""
     try:
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["remote", "add", "upstream", OFFICIAL_REPO_URL],
             cwd=cwd,
             capture_output=True,
@@ -7120,7 +7128,7 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> int:
     """Count commits on `head` that are not on `base`. Returns -1 on error."""
     try:
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["rev-list", "--count", f"{base}..{head}"],
             cwd=cwd,
             capture_output=True,
@@ -7156,7 +7164,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     Returns True if push succeeded, False otherwise.
     """
     try:
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["push", "origin", "main", "--force-with-lease"],
             cwd=cwd,
             capture_output=True,
@@ -8288,7 +8296,7 @@ def _verify_core_dependencies_installed(
             "print('\\n'.join(missing))\n"
         )
         try:
-            result = subprocess.run(
+            result = _run_update_subprocess(
                 [str(venv_python), "-c", check_script, *applicable],
                 capture_output=True,
                 text=True,
@@ -9027,7 +9035,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # would then report a huge bogus "behind" number. Detect shallow up front:
     # fetch with --depth 1 to preserve the boundary and report presence-only.
     is_shallow = (
-        subprocess.run(
+        _run_update_subprocess(
             git_cmd + ["rev-parse", "--is-shallow-repository"],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -9039,7 +9047,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
 
     if branch == "main":
         print("→ Fetching from upstream...")
-        fetch_result = subprocess.run(
+        fetch_result = _run_update_subprocess(
             git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -9048,7 +9056,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
+            fetch_result = _run_update_subprocess(
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
@@ -9062,7 +9070,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
+        fetch_result = _run_update_subprocess(
             git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -9087,7 +9095,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
     # (with check=True) raises CalledProcessError, surfacing a Python
     # traceback. Friendlier to detect-and-report.
-    verify_result = subprocess.run(
+    verify_result = _run_update_subprocess(
         git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -9100,11 +9108,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
         # report presence-only (mirrors the banner's _check_via_local_git).
-        head_sha = subprocess.run(
+        head_sha = _run_update_subprocess(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
         ).stdout.strip()
-        target_sha = subprocess.run(
+        target_sha = _run_update_subprocess(
             git_cmd + ["rev-parse", compare_branch],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
         ).stdout.strip()
@@ -9117,7 +9125,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 
-    rev_result = subprocess.run(
+    rev_result = _run_update_subprocess(
         git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -9170,7 +9178,7 @@ def _ensure_fhs_path_guard() -> None:
     # which is the exact scenario where RHEL root loses /usr/local/bin.
     home = os.environ.get("HOME") or "/root"
     try:
-        probe = subprocess.run(
+        probe = _run_update_subprocess(
             [
                 "env",
                 "-i",
@@ -9891,7 +9899,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
     Best-effort; only ever touches files named ``package-lock.json``.
     """
     try:
-        diff = subprocess.run(
+        diff = _run_update_subprocess(
             git_cmd + ["diff", "--name-only"],
             cwd=repo_root,
             capture_output=True,
@@ -9912,7 +9920,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         ]
         if not dirty:
             return
-        subprocess.run(
+        _run_update_subprocess(
             git_cmd + ["checkout", "--", *dirty],
             cwd=repo_root,
             capture_output=True,
@@ -10208,7 +10216,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _resolve_update_branch(args)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
+        fetch_result = _run_update_subprocess(
             git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -10232,7 +10240,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -10255,7 +10263,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            checkout_result = subprocess.run(
+            checkout_result = _run_update_subprocess(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
@@ -10266,7 +10274,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # it up as a tracking branch of origin/<branch>. This is
                 # the common case when the requested branch exists upstream
                 # but was never checked out locally.
-                track_result = subprocess.run(
+                track_result = _run_update_subprocess(
                     git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
@@ -10297,7 +10305,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
         # Check if there are updates
-        result = subprocess.run(
+        result = _run_update_subprocess(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -10323,7 +10331,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     input_fn=gw_input_fn,
                 )
             if current_branch not in {branch, "HEAD"}:
-                subprocess.run(
+                _run_update_subprocess(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
@@ -10395,7 +10403,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
+            pull_result = _run_update_subprocess(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
@@ -10408,7 +10416,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
-                reset_result = subprocess.run(
+                reset_result = _run_update_subprocess(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
@@ -10444,7 +10452,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if pre_pull_sha:
                     print()
                     print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-                    rollback_result = subprocess.run(
+                    rollback_result = _run_update_subprocess(
                         git_cmd + ["reset", "--hard", pre_pull_sha],
                         cwd=PROJECT_ROOT,
                         capture_output=True,
@@ -11010,7 +11018,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 deadline = _time.monotonic() + max(timeout, 0.5)
                 while True:
                     try:
-                        _verify = subprocess.run(
+                        _verify = _run_update_subprocess(
                             scope_cmd_ + ["is-active", svc_name_],
                             capture_output=True,
                             text=True,
@@ -11038,7 +11046,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 conclude the unit didn't relaunch.
                 """
                 try:
-                    _show = subprocess.run(
+                    _show = _run_update_subprocess(
                         scope_cmd_
                         + [
                             "show",
@@ -11185,7 +11193,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     ("system", ["systemctl"]),
                 ]:
                     try:
-                        result = subprocess.run(
+                        result = _run_update_subprocess(
                             scope_cmd
                             + [
                                 "list-units",
@@ -11209,7 +11217,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 continue
                             svc_name = unit.removesuffix(".service")
                             # Check if active
-                            check = subprocess.run(
+                            check = _run_update_subprocess(
                                 scope_cmd + ["is-active", svc_name],
                                 capture_output=True,
                                 text=True,
@@ -11236,7 +11244,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # exit; systemd's Restart=always respawns the unit.
                             _main_pid = 0
                             try:
-                                _show = subprocess.run(
+                                _show = _run_update_subprocess(
                                     scope_cmd
                                     + [
                                         "show",
@@ -11295,13 +11303,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # auto-restart still relaunches the unit after
                                 # RestartSec, no privileges required.
                                 if _manage_cmd is not None:
-                                    subprocess.run(
+                                    _run_update_subprocess(
                                         _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=10,
                                     )
-                                    subprocess.run(
+                                    _run_update_subprocess(
                                         _manage_cmd + ["start", svc_name],
                                         capture_output=True,
                                         text=True,
@@ -11384,13 +11392,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # the restart idempotent.  Mirrors the recovery
                             # path in `hermes gateway restart`
                             # (`systemd_restart()`) as of PR #20949.
-                            subprocess.run(
+                            _run_update_subprocess(
                                 _manage_cmd + ["reset-failed", svc_name],
                                 capture_output=True,
                                 text=True,
                                 timeout=10,
                             )
-                            restart = subprocess.run(
+                            restart = _run_update_subprocess(
                                 _manage_cmd + ["restart", svc_name],
                                 capture_output=True,
                                 text=True,
@@ -11416,13 +11424,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     print(
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
-                                    subprocess.run(
+                                    _run_update_subprocess(
                                         _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=10,
                                     )
-                                    subprocess.run(
+                                    _run_update_subprocess(
                                         _manage_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
@@ -11472,7 +11480,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                     plist_path = get_launchd_plist_path()
                     if plist_path.exists():
-                        check = subprocess.run(
+                        check = _run_update_subprocess(
                             ["launchctl", "list", get_launchd_label()],
                             capture_output=True,
                             text=True,

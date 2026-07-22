@@ -77,6 +77,16 @@ _CLONE_ALL_STRIP: list[str] = [
     "processes.json",
 ]
 
+
+def _run_captured_text(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Capture subprocess text without relying on the Windows locale codec."""
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    return subprocess.run(cmd, **kwargs)
+
+
 # Infrastructure artifacts excluded from --clone-all when the source is the
 # default profile (``~/.hermes``).  Named profiles never contain these
 # directories at root, so the exclusion is gated to avoid silently dropping
@@ -1200,13 +1210,13 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         }
     project_root = Path(__file__).parent.parent.resolve()
     try:
-        result = subprocess.run(
+        result = _run_captured_text(
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
             cwd=str(project_root),
-            capture_output=True, text=True, timeout=60,
+            timeout=60,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())

@@ -283,6 +283,15 @@ class _InstallResult:
     stderr: str
 
 
+def _run_captured_text(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Capture subprocess text without relying on the Windows locale codec."""
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    return subprocess.run(cmd, **kwargs)
+
+
 # =============================================================================
 # Internals
 # =============================================================================
@@ -664,9 +673,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_bin = shutil.which("uv")
         if uv_bin:
             try:
-                r = subprocess.run(
+                r = _run_captured_text(
                     [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
-                    capture_output=True, text=True, timeout=timeout, env=uv_env,
+                    timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                 )
                 if r.returncode == 0:
@@ -680,18 +689,18 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         # Tier 2: python -m pip (with ensurepip bootstrap if needed)
         pip_cmd = [sys.executable, "-m", "pip"]
         try:
-            probe = subprocess.run(
+            probe = _run_captured_text(
                 pip_cmd + ["--version"],
-                capture_output=True, text=True, timeout=15,
+                timeout=15,
                 stdin=subprocess.DEVNULL,
             )
             if probe.returncode != 0:
                 raise FileNotFoundError("pip not in venv")
         except (subprocess.TimeoutExpired, FileNotFoundError):
             try:
-                subprocess.run(
+                _run_captured_text(
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    capture_output=True, text=True, timeout=120, check=True,
+                    timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -699,9 +708,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                                       f"pip not available and ensurepip failed: {e}")
 
         try:
-            r = subprocess.run(
+            r = _run_captured_text(
                 pip_cmd + ["install", *target_args, *constraint_args, *specs],
-                capture_output=True, text=True, timeout=timeout,
+                timeout=timeout,
                 stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0 and target is not None:

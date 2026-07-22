@@ -532,4 +532,88 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     // …then the OSC-11 answer lands and is cached into the env slot.
     expect(defaultThemeForCurrentBackground({ HERMES_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
   })
+
+  it('gives tool + thinking their own keys, defaulting to accent + muted', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    // Independent override: recoloring tool/thinking doesn't leak into accent.
+    // (Values flow through #20379's contrast adaptation, so assert the
+    //  independence contract, not raw pre-adaptation hexes.)
+    const themed = fromSkin({ ui_accent: '#3aa0ff', ui_tool: '#ff0000', ui_thinking: '#00ff00' }, {})
+    const baseline = fromSkin({ ui_accent: '#3aa0ff' }, {})
+    expect(themed.color.tool).toBe('#ff0000')
+    expect(themed.color.thinking).toBe('#00ff00')
+    expect(themed.color.tool).not.toBe(themed.color.accent)
+    expect(themed.color.accent).toBe(baseline.color.accent) // override didn't touch accent
+
+    // Default: tool follows accent, thinking follows muted — same source →
+    // identical after adaptation.
+    const fallback = fromSkin({ ui_accent: '#3aa0ff', banner_dim: '#8a8a8a' }, {})
+    expect(fallback.color.tool).toBe(fallback.color.accent)
+    expect(fallback.color.thinking).toBe(fallback.color.muted)
+  })
+
+  it('gives code syntax its own keys, defaulting to accent/text/border/muted', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const themed = fromSkin(
+      { syntax_string: '#aa0000', syntax_number: '#00aa00', syntax_keyword: '#0000aa', syntax_comment: '#888888' },
+      {}
+    )
+
+    expect(themed.color.syntaxString).toBe('#aa0000')
+    expect(themed.color.syntaxNumber).toBe('#00aa00')
+    expect(themed.color.syntaxKeyword).toBe('#0000aa')
+    expect(themed.color.syntaxComment).toBe('#888888')
+
+    const fallback = fromSkin({ ui_accent: '#abcdef' }, {})
+    expect(fallback.color.syntaxString).toBe('#abcdef') // string follows accent
+  })
+
+  it('lets skins override diff colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      { diff_added: '#0a0', diff_removed: '#a00', diff_added_word: '#0f0', diff_removed_word: '#f00' },
+      {}
+    )
+
+    expect(color.diffAdded).toBe('#0a0')
+    expect(color.diffRemoved).toBe('#a00')
+    expect(color.diffAddedWord).toBe('#0f0')
+    expect(color.diffRemovedWord).toBe('#f00')
+  })
+
+  it('maps the status bar from skin status_bar_* keys', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      {
+        status_bar_bg: '#101020',
+        status_bar_text: '#e0e0e0',
+        status_bar_bad: '#ff8800',
+        status_bar_critical: '#ff0000'
+      },
+      {}
+    )
+
+    expect(color.statusBg).toBe('#101020')
+    expect(color.statusFg).toBe('#e0e0e0')
+    expect(color.statusBad).toBe('#ff8800')
+    expect(color.statusCritical).toBe('#ff0000')
+  })
+
+  it('falls the status bar back to background + semantic colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { color } = fromSkin({ background: '#0a0a0a', banner_text: '#fafafa', ui_error: '#dd2222' }, {})
+
+    // background paints the surface → status/completion bg; banner_text → status
+    // fg; ui_error → critical. Semantic hues flow through contrast adaptation,
+    // so `statusCritical` is asserted to track `ui_error` identically rather
+    // than pinning an adapted hex.
+    expect(color.statusBg).toBe('#0a0a0a')
+    expect(color.completionBg).toBe('#0a0a0a')
+    expect(color.statusFg).toBe('#fafafa')
+    expect(color.statusCritical).toBe(fromSkin({ ui_error: '#dd2222' }, {}).color.error)
+  })
 })

@@ -18,6 +18,7 @@ import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
+import { setTerminalBackground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, detectLightMode, fromSkin, type Theme } from '../theme.js'
@@ -119,6 +120,10 @@ const themesEqual = (a: Theme, b: Theme) => {
 const applySkin = (s: GatewaySkin) => {
   lastSkin = s
   commitTheme(themeForSkin(s))
+  // Paint the whole terminal from the skin's `background` (empty ⇒ restore the
+  // terminal default), so Hermes owns its background instead of inheriting it.
+  // Opt-in: a skin with no `background` leaves the terminal untouched.
+  setTerminalBackground(s.colors?.background ?? '')
 }
 
 /** Re-derive the theme from current detection signals (env overrides, cached

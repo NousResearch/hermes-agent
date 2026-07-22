@@ -1,8 +1,14 @@
-"""Hermes CLI skin/theme engine.
+"""Hermes skin/theme engine — the theme SDK for every surface.
 
-A data-driven skin system that lets users customize the CLI's visual appearance.
-Skins are defined as YAML files in ~/.hermes/skins/ or as built-in presets.
+A data-driven skin system that lets users (and Hermes itself) customize the
+visual appearance across the CLI, the TUI, and the desktop GUI from a single
+file. Skins are defined as YAML files in ~/.hermes/skins/ or as built-in presets.
 No code changes are needed to add a new skin.
+
+This module is the source of truth: it resolves the active skin, and the gateway
+pushes the resolved palette to the TUI and desktop (see tui_gateway's
+``resolve_skin`` / ``skin.changed``). A skin dropped in ~/.hermes/skins/ therefore
+themes all three surfaces at once — the theme analogue of the plugin SDK.
 
 SKIN YAML SCHEMA
 ================
@@ -17,6 +23,9 @@ All fields are optional. Missing values inherit from the ``default`` skin.
 
     # Colors: hex values for Rich markup (banner, UI, response box)
     colors:
+      background: "#0e0e12"               # App/base surface — the seed the TUI
+                                          # status bar and the desktop GUI derive
+                                          # their whole palette from (see below).
       banner_border: "#CD7F32"            # Panel border color
       banner_title: "#FFD700"             # Panel title text color
       banner_accent: "#FFBF00"            # Section headers (Available Tools, etc.)
@@ -27,6 +36,16 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       ui_ok: "#4caf50"                   # Success indicators
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
+      ui_tool: "#FFBF00"                 # Tool-call markers (● / spinner); falls back to ui_accent
+      ui_thinking: "#CC9B1F"             # Reasoning/thinking text; falls back to banner_dim
+      diff_added: "#dcffdc"              # Diff added-line background (TUI)
+      diff_removed: "#ffdcdc"            # Diff removed-line background
+      diff_added_word: "#248a3d"         # Diff added word-level foreground
+      diff_removed_word: "#cf222e"       # Diff removed word-level foreground
+      syntax_string: "#FFBF00"           # Code strings; falls back to ui_accent
+      syntax_number: "#FFF8DC"           # Code numbers; falls back to ui_text
+      syntax_keyword: "#CD7F32"          # Code keywords; falls back to ui_border
+      syntax_comment: "#CC9B1F"          # Code comments; falls back to banner_dim
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)

@@ -1,3 +1,4 @@
+from hermes_state import AsyncSessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
@@ -53,11 +54,11 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = MagicMock()
-    runner._session_db.get_session_title.return_value = None
+    runner._session_db = AsyncSessionDB(MagicMock())
+    runner._session_db._db.get_session_title.return_value = None
     # Default: no DB row → /status reports 0 tokens.  Tests that exercise
     # the populated path override this.
-    runner._session_db.get_session.return_value = None
+    runner._session_db._db.get_session.return_value = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -86,7 +87,7 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
     )
     runner = _make_runner(session_entry)
     # Token total comes from the SQLite SessionDB, not SessionEntry.
-    runner._session_db.get_session.return_value = {
+    runner._session_db._db.get_session.return_value = {
         "input_tokens": 200,
         "output_tokens": 121,
         "cache_read_tokens": 0,
@@ -118,7 +119,7 @@ async def test_status_command_includes_session_title_when_present():
         total_tokens=321,
     )
     runner = _make_runner(session_entry)
-    runner._session_db.get_session_title.return_value = "My titled session"
+    runner._session_db._db.get_session_title.return_value = "My titled session"
 
     result = await runner._handle_message(_make_event("/status"))
 
@@ -141,7 +142,7 @@ async def test_status_command_reads_token_totals_from_session_db():
         total_tokens=0,  # SessionEntry never gets written to — always 0.
     )
     runner = _make_runner(session_entry)
-    runner._session_db.get_session.return_value = {
+    runner._session_db._db.get_session.return_value = {
         "input_tokens": 1000,
         "output_tokens": 250,
         "cache_read_tokens": 500,
@@ -169,7 +170,7 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
         total_tokens=999,  # This should be ignored.
     )
     runner = _make_runner(session_entry)
-    runner._session_db.get_session.return_value = None
+    runner._session_db._db.get_session.return_value = None
 
     result = await runner._handle_message(_make_event("/status"))
 
@@ -188,7 +189,7 @@ async def test_status_command_includes_live_agent_model_and_context():
         total_tokens=0,
     )
     runner = _make_runner(session_entry)
-    runner._session_db.get_session.return_value = {
+    runner._session_db._db.get_session.return_value = {
         "input_tokens": 1000,
         "output_tokens": 250,
         "cache_read_tokens": 0,
@@ -228,7 +229,7 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
         last_prompt_tokens=24_000,
     )
     runner = _make_runner(session_entry)
-    runner._session_db.get_session.return_value = {
+    runner._session_db._db.get_session.return_value = {
         "input_tokens": 2000,
         "output_tokens": 500,
         "cache_read_tokens": 0,
@@ -669,6 +670,92 @@ async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path
 
     assert "**Profile:** `coder`" in result
     assert f"**Home:** `{profile_home}`" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_path):
+    """On a multiplexed gateway, /profile reports the profile SERVING the
+    source (source.profile — URL prefix / per-credential adapter / room map),
+    not the multiplexer's active profile, which is always the default and
+    made /profile answer "default" in every persona chat."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "milo"
+    profile_home.mkdir(parents=True)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.config.multiplex_profiles = True
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    event = _make_event("/profile")
+    event.source.profile = "milo"
+
+    result = await runner._handle_profile_command(event)
+
+    assert "**Profile:** `milo`" in result
+    assert f"**Home:** `{profile_home}`" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_command_ignores_stamp_when_multiplexing_off(monkeypatch, tmp_path):
+    """Without ``gateway.multiplex_profiles`` a stamped source is ignored:
+    /profile keeps reporting the active profile and the default home,
+    mirroring the multiplex gating in ``_run_agent`` and
+    ``_reset_notice_session_info``."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "milo"
+    profile_home.mkdir(parents=True)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    assert runner.config.multiplex_profiles is False
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    event = _make_event("/profile")
+    event.source.profile = "milo"
+
+    result = await runner._handle_profile_command(event)
+
+    assert "**Profile:** `default`" in result
+    assert f"**Home:** `{hermes_home}`" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_command_unstamped_source_unchanged(monkeypatch, tmp_path):
+    """Single-profile behavior is untouched: an unstamped source reports the
+    active profile and the default home."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    result = await runner._handle_profile_command(_make_event("/profile"))
+
+    assert "**Profile:** `default`" in result
+    assert f"**Home:** `{hermes_home}`" in result
 
 
 @pytest.mark.asyncio

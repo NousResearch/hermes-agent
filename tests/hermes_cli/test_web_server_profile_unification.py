@@ -161,6 +161,30 @@ class TestProfileScopedMcp:
         listing = client.get("/api/mcp/servers").json()
         assert not any(s["name"] == "scoped-srv" for s in listing["servers"])
 
+    def test_mcp_bearer_secret_is_profile_scoped(self, client, isolated_profiles):
+        secret = "worker-only-secret"
+        response = client.post(
+            "/api/mcp/servers",
+            params={"profile": "worker_beta"},
+            json={
+                "name": "profile-bearer",
+                "url": "https://example.com/mcp",
+                "auth": "header",
+                "bearer_token": secret,
+            },
+        )
+
+        assert response.status_code == 200
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        assert worker_cfg["mcp_servers"]["profile-bearer"]["headers"] == {
+            "Authorization": "Bearer ${MCP_PROFILE_BEARER_API_KEY}",
+        }
+        assert secret in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert not (isolated_profiles["default"] / ".env").exists()
+        assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
+            "mcp_servers", {}
+        )
+
     def test_mcp_enabled_toggle_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  srv1:\n    url: http://x/sse\n", encoding="utf-8"
@@ -188,7 +212,7 @@ class TestProfileScopedMcp:
         )
         seen = {}
 
-        def fake_probe(name, config, connect_timeout=30):
+        def fake_probe(name, config, connect_timeout=30, details=None):
             seen["home"] = str(get_hermes_home())
             return [("tool-a", "desc")]
 
@@ -199,6 +223,39 @@ class TestProfileScopedMcp:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
         assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+    def test_mcp_test_oauth_server_without_token_is_not_ok(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """An `auth: oauth` server that serves tools/list anonymously must not
+        false-green: a successful probe with no token on disk reports needs-auth."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mcp_config,
+            "_probe_single_server",
+            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
+        )
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: False)
+
+        resp = client.post(
+            "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert "oauth" in body["error"].lower()
+
+        # With a token present, the same probe is genuinely authenticated.
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: True)
+        resp = client.post(
+            "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.json()["ok"] is True
 
     def test_mcp_remove_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
@@ -282,6 +339,36 @@ class TestProfileScopedModel:
     def test_model_options_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
+
+    def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["explicit_only"] is False
+        assert calls[-1]["include_unconfigured"] is False
+
+        resp = client.get("/api/model/options", params={"explicit_only": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["explicit_only"] is True
+
+        resp = client.get("/api/model/options", params={"include_unconfigured": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["include_unconfigured"] is True
 
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
@@ -395,7 +482,9 @@ class TestProfileScopedGateway:
             return None
 
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", fake_get_running_pid)
+        # get_status probes via the TTL-cached wrapper (PR #53511 salvage);
+        # patch the cached name so the fake still intercepts the probe.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", fake_get_running_pid)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -430,7 +519,7 @@ class TestProfileScopedGateway:
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(web_server, "read_runtime_status", lambda: runtime)
         monkeypatch.setattr(
             web_server, "get_runtime_status_running_pid", lambda payload: 4242

@@ -46,10 +46,15 @@ import pytest
     ("nvidia/nemotron-3-ultra-550b-a55b", 600.0),
     ("nvidia/nemotron-3-super-120b-a12b", 600.0),
     ("nvidia/nemotron-3-nano-30b-a3b", 300.0),
-    # DeepSeek R1 + DeepSeek reasoner.
+    # DeepSeek R1 + DeepSeek reasoner + V4 reasoning series.
+    # V4 emits reasoning_content in a separate delta before final
+    # content (same shape as R1), so it needs the same 600s floor.
     ("deepseek/deepseek-r1", 600.0),
     ("deepseek/deepseek-r1-distill-llama-70b", 600.0),
     ("deepseek/deepseek-reasoner", 600.0),
+    ("deepseek/deepseek-v4-flash", 600.0),
+    ("deepseek/deepseek-v4-pro", 600.0),
+    ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),
@@ -72,6 +77,7 @@ import pytest
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
+    ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
@@ -104,6 +110,10 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     "x-ai/grok-code-fast-1",
     # Qwen2 must not match Qwen3 (different family).
     "qwen2-72b-instruct",
+    # Non-reasoning DeepSeek chat must not match the v4 reasoning entries.
+    "deepseek-chat",
+    "deepseek/deepseek-chat",
+    "some-deepseek-v4-flash",     # embedded v4 slug, NOT start of slug
     # Empty / None / non-string inputs — must return None, not raise.
     "",
     None,
@@ -161,11 +171,13 @@ def test_reasoning_floor_applies_to_nemotron_3_ultra(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
-    # Clear any cached config from prior tests in this session.
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
+    # Isolate the floor path from leaked provider config: with no per-model /
+    # per-provider stale_timeout_seconds, the resolver falls through to the
+    # reasoning floor.  Patch the lookup to return None deterministically
+    # rather than relying on importlib.reload of shared config modules, which
+    # races other tests in the same xdist worker (#52217 flake).
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
         tmp_path,
@@ -190,10 +202,9 @@ def test_reasoning_floor_applies_to_opus_4_thinking(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
+    # Deterministic floor path — see test_reasoning_floor_applies_to_nemotron_3_ultra.
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
         tmp_path,
@@ -216,19 +227,12 @@ def test_reasoning_floor_never_overrides_explicit_user_config(monkeypatch, tmp_p
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
-    _write_config(tmp_path, """\
-providers:
-  nvidia:
-    models:
-      nvidia/nemotron-3-ultra-550b-a55b:
-        stale_timeout_seconds: 60
-""")
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
 
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
+    # Explicit per-model config resolves to 60s (priority 1). The resolver
+    # must short-circuit on this and never consult the reasoning floor.
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 60.0)
 
     agent = _make_agent(
         tmp_path,
@@ -251,10 +255,9 @@ def test_reasoning_floor_loses_to_env_var_when_no_floor_match(monkeypatch, tmp_p
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "300")
     _write_config(tmp_path, "")
 
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
+    # No provider config -> resolver consults the env var (priority 3).
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
         tmp_path,
@@ -274,10 +277,9 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
+    # No provider config, no env var, no floor match -> 90s implicit default.
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
         tmp_path,

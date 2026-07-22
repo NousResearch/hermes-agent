@@ -509,18 +509,21 @@ def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkey
 
 
 def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
-    """hermes auth add xai-oauth must write providers singleton and set active_provider.
+    """hermes auth add xai-oauth must set active_provider and write a pool entry.
 
-    Previously pool.add_entry() was called directly, which wrote only the
-    credential-pool entry without setting active_provider. _model_section_has_credentials()
-    checks get_active_provider() first; with it unset, the setup wizard would
-    report "No inference provider configured" after a successful OAuth login.
+    Regression history:
+    - Early path called ``pool.add_entry()`` without ``active_provider``, so
+      the setup wizard reported "No inference provider configured".
+    - Intermediate path fixed that by routing through ``_save_xai_oauth_tokens``
+      (singleton), which set active_provider but collapsed multi-account adds.
+    - Current path mirrors openai-codex: pool-only ``manual:device_code`` entry
+      plus ``mark_provider_active_if_unset`` on first add.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     access_token = "xai-test-access-token"
     monkeypatch.setattr(
-        "hermes_cli.auth._xai_oauth_loopback_login",
+        "hermes_cli.auth._xai_oauth_device_code_login",
         lambda **kwargs: {
             "tokens": {
                 "access_token": access_token,
@@ -529,10 +532,10 @@ def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
                 "token_type": "Bearer",
             },
             "discovery": {"token_endpoint": "https://auth.x.ai/token"},
-            "redirect_uri": "http://127.0.0.1:7777/callback",
+            "redirect_uri": "",
             "base_url": "https://api.x.ai/v1",
             "last_refresh": "2026-06-02T10:00:00Z",
-            "source": "oauth-loopback",
+            "source": "oauth-device-code",
         },
     )
 
@@ -545,19 +548,108 @@ def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
         label = None
         timeout = None
         no_browser = False
-        manual_paste = False
 
     auth_add_command(_Args())
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    # active_provider must be set — the core of this regression
+    # active_provider must be set — the core of the original regression
     assert payload["active_provider"] == "xai-oauth"
-    # providers singleton written by _save_xai_oauth_tokens
-    assert payload["providers"]["xai-oauth"]["tokens"]["access_token"] == access_token
-    # pool seeded from singleton by _seed_from_singletons("xai-oauth")
+    # Pool-only multi-account path: no providers.xai-oauth singleton write
+    assert "xai-oauth" not in payload.get("providers", {})
     entries = payload["credential_pool"]["xai-oauth"]
-    entry = next(item for item in entries if item["source"] == "loopback_pkce")
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["access_token"] == access_token
     assert entry["refresh_token"] == "xai-refresh-token"
+    assert entry["base_url"] == "https://api.x.ai/v1"
+
+
+def test_auth_add_xai_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
+    """Two ``hermes auth add xai-oauth`` runs must produce independent pool entries.
+
+    Regression for the same collapse class as #39236 / #42316 for Codex: the
+    add path used to route through the singleton ``_save_xai_oauth_tokens``
+    save, so the second login overwrote the first account's singleton-mirrored
+    ``device_code`` entry instead of adding a second independent one.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    first_token = "xai-access-token-account-a"
+    second_token = "xai-access-token-account-b"
+    logins = iter(
+        [
+            {
+                "tokens": {
+                    "access_token": first_token,
+                    "refresh_token": "first-xai-refresh",
+                    "id_token": "",
+                    "token_type": "Bearer",
+                },
+                "discovery": {"token_endpoint": "https://auth.x.ai/token"},
+                "redirect_uri": "",
+                "base_url": "https://api.x.ai/v1",
+                "last_refresh": "2026-07-10T10:00:00Z",
+                "source": "oauth-device-code",
+            },
+            {
+                "tokens": {
+                    "access_token": second_token,
+                    "refresh_token": "second-xai-refresh",
+                    "id_token": "",
+                    "token_type": "Bearer",
+                },
+                "discovery": {"token_endpoint": "https://auth.x.ai/token"},
+                "redirect_uri": "",
+                "base_url": "https://api.x.ai/v1",
+                "last_refresh": "2026-07-10T10:05:00Z",
+                "source": "oauth-device-code",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_device_code_login",
+        lambda **kwargs: next(logins),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "xai-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        timeout = None
+        no_browser = False
+
+    # Distinct labels so order is unambiguous even without JWT email claims.
+    class _ArgsA(_Args):
+        label = "xai-heavy"
+
+    class _ArgsB(_Args):
+        label = "xai-premium"
+
+    auth_add_command(_ArgsA())
+    auth_add_command(_ArgsB())
+
+    pool = load_pool("xai-oauth")
+    entries = pool.entries()
+
+    assert [entry.source for entry in entries] == [
+        "manual:device_code",
+        "manual:device_code",
+    ]
+    assert [entry.label for entry in entries] == ["xai-heavy", "xai-premium"]
+    assert [entry.access_token for entry in entries] == [first_token, second_token]
+    assert [entry.refresh_token for entry in entries] == [
+        "first-xai-refresh",
+        "second-xai-refresh",
+    ]
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    # No singleton block — the add path is now pool-only.
+    assert "xai-oauth" not in payload.get("providers", {})
+    # First add activated the provider; second add left it as-is.
+    assert payload["active_provider"] == "xai-oauth"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
@@ -1859,7 +1951,7 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
         return_value=("ghp_fake", "gh"),
     ), patch(
         "hermes_cli.copilot_auth.get_copilot_api_token",
-        return_value="ghu_fake_api",
+        return_value=("ghu_fake_api", None),
     ):
         auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 

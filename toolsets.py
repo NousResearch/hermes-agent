@@ -78,6 +78,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Database tools
+    "sqlite_query", "database_schema",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -255,6 +257,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "database": {
+        "description": "SQLite database tools: query and schema inspection",
+        "tools": ["sqlite_query", "database_schema"],
         "includes": []
     },
 

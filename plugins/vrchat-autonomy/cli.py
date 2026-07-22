@@ -191,7 +191,7 @@ def vrchat_autonomy_command(args: argparse.Namespace) -> int:
                 cmd.append("--retry-on-failure")
             if args.once:
                 cmd.append("--once")
-            return subprocess.call(cmd)
+            return subprocess.call(cmd, stdin=subprocess.DEVNULL)
         else:
             print(f"unknown neuro subcommand: {neuro_cmd}")
             return 2

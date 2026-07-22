@@ -1367,7 +1367,9 @@ def _apply_main_model_assignment(
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
+    elif (model_cfg.get("api_key") or model_cfg.get("api")) and (
+        new_provider != prev_provider or base_url_changed
+    ):
         # A stale endpoint secret can live under the legacy ``api`` alias with
         # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
         # the switch-clears-the-key path must trigger on either field — else the
@@ -6528,9 +6530,27 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 )
             with _profile_scope(target_profile):
                 provider, model = _normalize_main_model_assignment(provider, model)
+            providers_cfg = cfg.get("providers")
+            provider_entry = (
+                providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+            )
+            if (
+                not base_url
+                and isinstance(provider_entry, dict)
+                and provider_entry.get("base_url")
+            ):
+                base_url = str(provider_entry.get("base_url") or "").strip()
             model_cfg = _apply_main_model_assignment(
                 cfg.get("model", {}), provider, model, base_url, api_key
             )
+            # Fall back to the provider entry's stored key only when the request
+            # didn't carry one — same precedence as the base_url fill above.
+            if (
+                not api_key
+                and isinstance(provider_entry, dict)
+                and provider_entry.get("api_key")
+            ):
+                model_cfg["api_key"] = provider_entry["api_key"]
             cfg["model"] = model_cfg
             if provider.strip().lower().startswith("custom"):
                 _register_custom_provider_assignment(

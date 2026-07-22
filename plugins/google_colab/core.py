@@ -459,7 +459,7 @@ def _sft_template_source(values: dict[str, Any]) -> str:
             "transformers",
             "trl",
         ]
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", *REQUIRED])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", *REQUIRED], stdin=subprocess.DEVNULL)
 
         import torch
         from datasets import load_dataset

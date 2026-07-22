@@ -1112,9 +1112,19 @@ def test_reap_unsupervised_orphans_returns_false_when_none_found(monkeypatch):
 
 
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
+    import builtins
+
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
     monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
     monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "psutil" or name.startswith("psutil."):
+            raise ImportError("psutil disabled for wmic case-variant test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
 
     def fake_run(cmd, **kwargs):
         if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:

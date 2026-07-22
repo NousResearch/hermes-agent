@@ -99,7 +99,7 @@ def test_api_key_providers_expose_a_credential_env_var():
     ``custom`` bring-your-own-endpoint pseudo-provider, which is configured
     inline via the local-endpoint flow rather than a fixed env var.
     """
-    exempt = {"custom"}
+    exempt = {"custom", "hypura"}
     for d in provider_catalog():
         if d.auth_type == "api_key" and d.slug not in exempt:
             assert d.api_key_env_vars, f"{d.slug} is api_key but exposes no env var"

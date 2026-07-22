@@ -1295,8 +1295,8 @@ DEFAULT_CONFIG = {
 
     "web": {
         "backend": "cloakbrowser",           # shared fallback — stealth browser search+extract
-        "search_backend": "cloakbrowser",    # per-capability override for web_search
-        "extract_backend": "cloakbrowser",   # per-capability override for web_extract
+        "search_backend": "",    # per-capability override for web_search
+        "extract_backend": "",   # per-capability override for web_extract
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 

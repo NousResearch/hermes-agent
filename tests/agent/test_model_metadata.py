@@ -1259,7 +1259,8 @@ class TestStripProviderPrefix:
         """
         mock_fetch.return_value = {}
         with patch("agent.model_metadata.fetch_endpoint_model_metadata") as mock_ep, \
-             patch("agent.model_metadata._is_custom_endpoint", return_value=True):
+             patch("agent.model_metadata._is_custom_endpoint", return_value=True), \
+             patch("agent.model_metadata._is_known_provider_base_url", return_value=False):
             mock_ep.return_value = {"qwen3.5:27b": {"context_length": 32768}}
             result = get_model_context_length(
                 "qwen3.5:27b",

@@ -175,6 +175,7 @@ def test_copilot_gh_cli_probe_hides_gh_windows(monkeypatch):
 def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
     from hermes_cli import gateway
     from hermes_cli import _subprocess_compat
+    import builtins
 
     captured = []
 
@@ -184,6 +185,16 @@ def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
             return _Completed(stdout="", returncode=1)
         return _Completed(stdout="CommandLine=hermes gateway\nProcessId=123\n")
 
+    # Force the wmic/PowerShell path: production prefers psutil when installed,
+    # which would skip the console-spawn contract this test guards.
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "psutil" or name.startswith("psutil."):
+            raise ImportError("psutil disabled for window-hide contract test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
     monkeypatch.setattr(gateway.shutil, "which", lambda name: name)
     monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)

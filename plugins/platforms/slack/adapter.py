@@ -498,6 +498,30 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+def _slack_dedup_ttl_seconds() -> float:
+    """Dedup window for redelivered Socket Mode events (#4777).
+
+    Slack buffers un-acked Socket Mode events and replays them when the
+    websocket reconnects. The replay can arrive several minutes after the
+    original — well past the 300s default TTL — which would otherwise be
+    treated as a new message and produce a duplicate bot reply. Memory is
+    bounded by ``MessageDeduplicator(max_size=...)`` (LRU pruning), not by
+    the TTL, so the window can safely span the worst-case reconnect gap.
+    Override with ``SLACK_DEDUP_TTL_SECONDS``.
+    """
+    raw = os.getenv("SLACK_DEDUP_TTL_SECONDS", "")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            logger.warning(
+                "[Slack] Invalid SLACK_DEDUP_TTL_SECONDS=%r; using default", raw
+            )
+    return 3600.0  # 1 hour — covers Slack reconnect redelivery windows
+
+
 # Map Slack audio mimetypes to the file extension that matches the actual
 # container bytes.  Critically, Slack's in-app "record a clip" voice messages
 # arrive as MP4/AAC containers (``audio/mp4``, filename ``audio_message*.mp4``),
@@ -643,8 +667,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}  # channel_id → team_id
         # Dedup cache: prevents duplicate bot responses when Socket Mode
-        # reconnects redeliver events.
-        self._dedup = MessageDeduplicator()
+        # reconnects redeliver events (#4777). The TTL must outlast Slack's
+        # worst-case reconnect-redelivery gap, not just a few seconds — the
+        # 300s default let replays that landed >5 min later slip through and
+        # produce a second reply. max_size bounds memory, so the long window
+        # is safe.
+        self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}

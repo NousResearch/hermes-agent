@@ -100,13 +100,21 @@ export function cleanStaleAppOutDir(appOutDir) {
 
   const backupDir = staleBackupPath(appOutDir)
 
-  // Remove a leftover backup from a *previous* failed build so we can rename
-  // the current directory cleanly.
+  // RETRY-SAFE: when a backup already exists AND appOutDir exists, preserve
+  // the known-good backup and delete only the current (possibly partial)
+  // build output. This fixes the race where cmd_gui retries the pack after
+  // failure and the first failed attempt would have overwritten the
+  // last-good backup.
   if (existsSync(backupDir)) {
     try {
-      rmSync(backupDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
-    } catch (_) {
-      // If we can't even clean the old backup, fall through to rmSync below.
+      rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      return { removed: true, backedUp: true }
+    } catch (rmErr) {
+      console.warn(
+        `[before-pack] could not clean partial output ${appOutDir} (${rmErr.message}); ` +
+          `continuing — existing backup preserved`
+      )
+      return { removed: false, backedUp: true }
     }
   }
 

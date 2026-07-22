@@ -2417,6 +2417,7 @@ def cmd_chat(args):
     use_tui = _resolve_use_tui(args)
 
     _apply_safe_mode(args)
+    _apply_sandbox(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -13233,6 +13234,7 @@ def _prepare_agent_startup(args) -> None:
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
+    _apply_sandbox(args)
 
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
@@ -13307,6 +13309,19 @@ def _apply_safe_mode(args) -> None:
     os.environ["HERMES_IGNORE_RULES"] = "1"
 
 
+def _apply_sandbox(args) -> None:
+    """Bridge --sandbox to the terminal-jail plugin's env var.
+
+    The plugin reads HERMES_TERMINAL_JAIL_ENABLED (default "true" upstream);
+    the CLI flag is an explicit opt-in that force-enables it for this process
+    and any children (TUI, gateway workers).  Persistent enablement lives in
+    config.yaml as terminal.jail_enabled (bridged via TERMINAL_CONFIG_ENV_MAP).
+    """
+    if not getattr(args, "sandbox", False):
+        return
+    os.environ["HERMES_TERMINAL_JAIL_ENABLED"] = "true"
+
+
 def _set_chat_arg_defaults(args) -> None:
     for attr, default in [
         ("query", None),
@@ -13317,6 +13332,7 @@ def _set_chat_arg_defaults(args) -> None:
         ("resume", None),
         ("continue_last", None),
         ("worktree", False),
+        ("sandbox", False),
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)

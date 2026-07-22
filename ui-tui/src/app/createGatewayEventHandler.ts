@@ -34,6 +34,42 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
+type VoiceSubmitMode = 'direct' | 'draft'
+
+interface VoiceRefineResponse {
+  changed?: boolean
+  reason?: string
+  text?: string
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
+  typeof value === 'string' && value.trim().toLowerCase() === 'draft' ? 'draft' : 'direct'
+
+const isVoiceRefineEnabled = (value: unknown): boolean => {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  const enabled = value.enabled
+
+  if (typeof enabled === 'boolean') {
+    return enabled
+  }
+
+  if (typeof enabled === 'number') {
+    return enabled !== 0
+  }
+
+  if (typeof enabled === 'string') {
+    return ['1', 'true', 'yes', 'on'].includes(enabled.trim().toLowerCase())
+  }
+
+  return false
+}
+
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 // The last gateway skin, kept so the theme can be re-derived when the OSC-11
@@ -372,6 +408,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
   let startupPromptSubmitted = false
+  let voiceTranscriptChain: Promise<void> = Promise.resolve()
 
   // Request IDs of clarify prompts we've already flushed to the transcript as
   // an abandoned-prompt record, so the tool.complete and message.complete
@@ -451,6 +488,55 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     fullConfigPromise ??= rpc<ConfigFullResponse>('config.get', { key: 'full' }).catch(() => null)
 
     return fullConfigPromise
+  }
+
+  const finishVoiceTranscript = (text: string, submitMode: VoiceSubmitMode) => {
+    if (submitMode === 'draft') {
+      setInput(text)
+
+      return
+    }
+
+    // We can't branch on composer input from inside a setInput updater
+    // (React strict mode double-invokes it, duplicating the submit).
+    // Just clear + defer submit so the cleared input is committed before
+    // submit reads it.
+    setInput('')
+    setTimeout(() => submitRef.current(text), 0)
+  }
+
+  const processVoiceTranscript = async (rawText: string) => {
+    const cfg = await getFullConfigOnce()
+    const voiceCfg = cfg?.config?.voice
+    const voiceRecord = isRecord(voiceCfg) ? voiceCfg : {}
+    const submitMode = normalizeVoiceSubmitMode(voiceRecord.submit_mode)
+    let text = rawText
+
+    if (isVoiceRefineEnabled(voiceRecord.refine)) {
+      setVoiceProcessing(true)
+
+      try {
+        const refined = await rpc<VoiceRefineResponse>('voice.refine', { text: rawText })
+        const refinedText = typeof refined?.text === 'string' ? refined.text.trim() : ''
+
+        if (refinedText) {
+          text = refinedText
+        }
+      } catch (err) {
+        sys(`voice refine failed; using original transcript (${rpcErrorMessage(err)})`)
+      } finally {
+        setVoiceProcessing(false)
+      }
+    }
+
+    finishVoiceTranscript(text, submitMode)
+  }
+
+  const handleVoiceTranscript = (rawText: string) => {
+    voiceTranscriptChain = voiceTranscriptChain
+      .catch(() => undefined)
+      .then(() => processVoiceTranscript(rawText))
+      .catch(err => sys(`voice transcript handling failed (${rpcErrorMessage(err)})`))
   }
 
   // ── Nudge toward /agents on delegation ───────────────────────────────
@@ -900,16 +986,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // CLI parity: _pending_input.put(transcript) unconditionally feeds
-        // the transcript to the agent as its next turn — draft handling
-        // doesn't apply because voice-mode users are speaking, not typing.
-        //
-        // We can't branch on composer input from inside a setInput updater
-        // (React strict mode double-invokes it, duplicating the submit).
-        // Just clear + defer submit so the cleared input is committed before
-        // submit reads it.
-        setInput('')
-        setTimeout(() => submitRef.current(text), 0)
+        // Default remains CLI parity: direct submit.  When users opt into
+        // voice.submit_mode=draft, leave the transcript editable in the
+        // composer.  Optional voice.refine cleanup happens asynchronously via
+        // the backend auxiliary LLM router and falls back to the original text.
+        handleVoiceTranscript(text)
 
         return
       }

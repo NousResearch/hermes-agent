@@ -17,6 +17,18 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 
 const ref = <T>(current: T) => ({ current })
 
+const deferred = <T>() => {
+  let reject!: (reason?: unknown) => void
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, reject, resolve }
+}
+
 const buildCtx = (appended: Msg[]) =>
   ({
     composer: {
@@ -64,6 +76,110 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('keeps voice transcripts as editable drafts when voice.submit_mode is draft', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { voice: { refine: { enabled: false }, submit_mode: 'draft' } } }
+      }
+
+      return null
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: '  please check this  ' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.composer.setInput).toHaveBeenCalledWith('please check this'))
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', { key: 'full' })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalledWith('voice.refine', expect.anything())
+  })
+
+  it('refines voice transcripts before direct submit when enabled', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async (method: string, params: any) => {
+      if (method === 'config.get') {
+        return { config: { voice: { refine: { enabled: true }, submit_mode: 'direct' } } }
+      }
+
+      if (method === 'voice.refine') {
+        expect(params.text).toBe('um please please test this')
+
+        return { changed: true, text: 'please test this' }
+      }
+
+      return null
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'um please please test this' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.refine', { text: 'um please please test this' }))
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('please test this'))
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+  })
+
+  it('serializes refined voice transcripts so submissions keep speech order', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const refineCalls: Array<ReturnType<typeof deferred<{ text: string }>> & { rawText: string }> = []
+    ctx.gateway.rpc = vi.fn((method: string, params: any) => {
+      if (method === 'config.get') {
+        return Promise.resolve({ config: { voice: { refine: { enabled: true }, submit_mode: 'direct' } } })
+      }
+
+      if (method === 'voice.refine') {
+        const call = { ...deferred<{ text: string }>(), rawText: params.text }
+        refineCalls.push(call)
+
+        return call.promise
+      }
+
+      return Promise.resolve(null)
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'first raw' }, type: 'voice.transcript' } as any)
+    onEvent({ payload: { text: 'second raw' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(refineCalls).toHaveLength(1))
+    expect(refineCalls[0].rawText).toBe('first raw')
+    refineCalls[0].resolve({ text: 'first refined' })
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('first refined'))
+    await vi.waitFor(() => expect(refineCalls).toHaveLength(2))
+    expect(refineCalls[1].rawText).toBe('second raw')
+    refineCalls[1].resolve({ text: 'second refined' })
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('second refined'))
+    expect(ctx.submission.submitRef.current).toHaveBeenNthCalledWith(1, 'first refined')
+    expect(ctx.submission.submitRef.current).toHaveBeenNthCalledWith(2, 'second refined')
+  })
+
+  it('falls back to the original voice transcript when refine fails', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { voice: { refine: { enabled: true }, submit_mode: 'direct' } } }
+      }
+
+      if (method === 'voice.refine') {
+        throw new Error('provider offline')
+      }
+
+      return null
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'keep original' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('keep original'))
+    expect(ctx.system.sys).toHaveBeenCalledWith(expect.stringContaining('voice refine failed'))
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

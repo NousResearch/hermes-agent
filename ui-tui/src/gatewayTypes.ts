@@ -105,9 +105,11 @@ export interface ConfigDisplayConfig {
 }
 
 export interface ConfigVoiceConfig {
-  // Raw `yaml.safe_load()` value from config; may be non-string if hand-edited.
-  // Callers must normalize/validate at runtime (parseVoiceRecordKey()).
+  // Raw `yaml.safe_load()` values from config; may be non-string if hand-edited.
+  // Callers must normalize/validate at runtime.
   record_key?: unknown
+  refine?: unknown
+  submit_mode?: unknown
 }
 
 export interface ConfigFullResponse {

@@ -9,11 +9,13 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -263,6 +265,7 @@ _LONG_HANDLERS = frozenset(
         "shell.exec",
         "skills.manage",
         "slash.exec",
+        "voice.refine",
     }
 )
 
@@ -15275,6 +15278,212 @@ def _voice_record_key() -> str:
     record_key = _voice_cfg_dict().get("record_key")
 
     return str(record_key) if isinstance(record_key, str) and record_key else "ctrl+b"
+
+
+_VOICE_REFINE_TASK = "voice_refine"
+_VOICE_REFINE_MODES = {"light", "medium", "strict"}
+_VOICE_REFINE_DEFAULT_MODE = "medium"
+_VOICE_REFINE_DEFAULT_MIN_CHARS = 40
+_VOICE_REFINE_SYSTEM_PROMPT = """You are a conservative dictation transcript cleaner.
+
+Return only the cleaned transcript. No explanations. No Markdown.
+
+You are cleaning speech-to-text dictation, not rewriting prose.
+
+Cleanup intensity: {mode}
+- light: minimal cleanup only; fix punctuation, capitalization, spacing, and obvious transcript artifacts.
+- medium: remove clear disfluencies, hesitation sounds, filler phrases, accidental repeats, false starts, and immediate self-corrections while preserving the speaker's style.
+- strict: remove more disfluencies than medium, but still never rewrite, summarize, translate, or polish the content.
+
+Core goals:
+- Preserve the speaker's meaning, intent, tone, style, language, and order of ideas.
+- Keep the output in the same language or mix of languages as the input.
+- Improve readability only where the change is clearly a transcript cleanup.
+
+Allowed:
+- Remove clear speech disfluencies, hesitation sounds, filler words, filler phrases, accidental repeated words, false starts, and immediate self-corrections.
+- Add or fix punctuation, capitalization, paragraph breaks, and spacing when obvious.
+- Correct obvious speech-to-text errors only when the intended wording is highly certain from context.
+- Keep casual wording casual and formal wording formal.
+
+Forbidden:
+- Do not translate.
+- Do not summarize.
+- Do not paraphrase.
+- Do not make the text more professional, polite, concise, persuasive, or polished.
+- Do not reorder ideas.
+- Do not add context, explanations, assumptions, or inferred intent.
+- Do not remove content unless it is clearly filler, repetition, or a false start.
+- Do not change names, numbers, URLs, code, file paths, commands, quoted text, handles, or domain-specific terms unless the correction is obvious.
+
+When uncertain, keep the original wording.
+
+Priority:
+Meaning preservation > readability > filler removal.
+A slightly messy faithful transcript is better than a fluent rewrite."""
+
+# Tokens whose accidental loss is more harmful than a slightly messy transcript.
+# This is intentionally language-agnostic: protect structured facts, not filler
+# vocabularies.  The model owns language-specific cleanup decisions.
+_VOICE_REFINE_PROTECTED_RE = re.compile(
+    r"(?ix)"
+    r"(?:https?://\S+|www\.\S+)"
+    r"|(?:[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})"
+    r"|(?:`[^`]+`)"
+    r"|(?:[$€£¥]\s?\d[\d.,]*(?:[kKmMbB])?)"
+    r"|(?:\b\d+(?:[.,:]\d+)*(?:[%kKmMbB])?\b)"
+    r"|(?:@[A-Z0-9_][A-Z0-9_.-]*)"
+    r"|(?:\B\#[A-Z0-9_][A-Z0-9_.-]*)"
+    r"|(?:(?<!\w)(?:~?/|\.\.?/)[^\s]+)"
+    r"|(?:\b[A-Z]:\\[^\s]+)"
+)
+
+
+def _voice_refine_cfg_dict() -> dict:
+    refine = _voice_cfg_dict().get("refine")
+    return refine if isinstance(refine, dict) else {}
+
+
+def _voice_refine_enabled() -> bool:
+    return is_truthy_value(_voice_refine_cfg_dict().get("enabled", False))
+
+
+def _voice_refine_mode(raw: Any = None) -> str:
+    mode = str(raw or _voice_refine_cfg_dict().get("mode") or "").strip().lower()
+    return mode if mode in _VOICE_REFINE_MODES else _VOICE_REFINE_DEFAULT_MODE
+
+
+def _voice_refine_min_chars() -> int:
+    raw = _voice_refine_cfg_dict().get("min_chars", _VOICE_REFINE_DEFAULT_MIN_CHARS)
+    if isinstance(raw, bool):
+        return _VOICE_REFINE_DEFAULT_MIN_CHARS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _VOICE_REFINE_DEFAULT_MIN_CHARS
+    return max(0, min(value, 10_000))
+
+
+def _voice_refine_prompt(mode: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": _VOICE_REFINE_SYSTEM_PROMPT.format(mode=mode)},
+        {
+            "role": "user",
+            "content": (
+                "Clean this speech-to-text transcript. Return only the cleaned transcript.\n\n"
+                "Transcript:\n{transcript}"
+            ),
+        },
+    ]
+
+
+def _voice_refine_messages(text: str, mode: str) -> list[dict[str, str]]:
+    messages = _voice_refine_prompt(mode)
+    messages[1] = {
+        **messages[1],
+        "content": messages[1]["content"].format(transcript=text),
+    }
+    return messages
+
+
+def _voice_refine_extract_response_text(response: Any) -> str:
+    try:
+        content = response.choices[0].message.content
+    except Exception:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts).strip()
+    return ""
+
+
+def _voice_refine_protected_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for match in _VOICE_REFINE_PROTECTED_RE.finditer(text):
+        token = match.group(0).strip().strip(".,;:!?)]}\"'")
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _voice_refine_meta_leak(text: str) -> bool:
+    lowered = text.strip().lower()
+    return lowered.startswith(
+        (
+            "here is",
+            "here's",
+            "cleaned transcript",
+            "the cleaned transcript",
+            "sure,",
+            "```",
+        )
+    )
+
+
+def _voice_refine_valid(original: str, cleaned: str) -> bool:
+    if not cleaned or _voice_refine_meta_leak(cleaned):
+        return False
+    if len(original) >= 80 and len(cleaned) < max(20, int(len(original) * 0.35)):
+        return False
+    if len(cleaned) > len(original) * 2 + 120:
+        return False
+
+    cleaned_tokens = Counter(_voice_refine_protected_tokens(cleaned))
+    for token, count in Counter(_voice_refine_protected_tokens(original)).items():
+        if cleaned_tokens[token] < count:
+            return False
+    return True
+
+
+@method("voice.refine")
+def _(rid, params: dict) -> dict:
+    """Conservatively clean a voice transcript using the auxiliary LLM router.
+
+    The TUI calls this only when ``voice.refine.enabled`` is true.  The method
+    still checks the gate itself so direct RPC calls cannot accidentally spend
+    tokens.  All language-specific cleanup is delegated to the configured model;
+    local validation only protects structured tokens and obvious meta-output.
+    """
+    original = str(params.get("text") or "").strip()
+    if not original:
+        return _err(rid, 4021, "text required")
+    if not _voice_refine_enabled():
+        return _ok(rid, {"text": original, "changed": False, "reason": "disabled"})
+
+    min_chars = _voice_refine_min_chars()
+    if min_chars and len(original) < min_chars:
+        return _ok(rid, {"text": original, "changed": False, "reason": "too_short"})
+
+    mode = _voice_refine_mode(params.get("mode"))
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task=_VOICE_REFINE_TASK,
+            messages=_voice_refine_messages(original, mode),
+            temperature=0,
+            max_tokens=min(2048, max(128, len(original) // 2 + 64)),
+        )
+        cleaned = _voice_refine_extract_response_text(response)
+    except Exception as e:
+        logger.warning("voice.refine failed; using original transcript: %s", e)
+        return _ok(rid, {"text": original, "changed": False, "reason": "llm_error"})
+
+    if not _voice_refine_valid(original, cleaned):
+        logger.warning("voice.refine rejected unsafe cleanup; using original transcript")
+        return _ok(rid, {"text": original, "changed": False, "reason": "validation_failed"})
+
+    if cleaned == original:
+        return _ok(rid, {"text": original, "changed": False, "reason": "unchanged", "mode": mode})
+
+    return _ok(rid, {"text": cleaned, "changed": True, "reason": "refined", "mode": mode})
 
 
 @method("voice.toggle")

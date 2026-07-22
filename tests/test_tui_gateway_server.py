@@ -1219,6 +1219,198 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     assert tts_resp["result"]["tts"] is True
 
 
+def _voice_refine_llm_response(text: str):
+    return types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text))]
+    )
+
+
+def test_voice_refine_disabled_returns_original_without_llm(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"refine": {"enabled": False}}})
+
+    def fail_call_llm(**_kwargs):
+        raise AssertionError("voice.refine should not call an LLM when disabled")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(call_llm=fail_call_llm),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "voice-refine-disabled",
+            "method": "voice.refine",
+            "params": {"text": "  ähm bitte morgen testen  "},
+        }
+    )
+
+    assert resp is not None
+    assert "result" in resp
+    assert resp["result"] == {
+        "changed": False,
+        "reason": "disabled",
+        "text": "ähm bitte morgen testen",
+    }
+
+
+def test_voice_refine_dispatch_runs_on_long_handler_pool(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"refine": {"enabled": True, "mode": "medium", "min_chars": 1}}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(
+            call_llm=lambda **_kwargs: _voice_refine_llm_response("clean transcript"),
+        ),
+    )
+
+    written: list[dict] = []
+    done = threading.Event()
+
+    class CaptureTransport:
+        def write(self, obj: dict) -> bool:
+            written.append(obj)
+            done.set()
+            return True
+
+        def close(self) -> None:
+            return None
+
+    resp = server.dispatch(
+        {
+            "id": "voice-refine-pooled",
+            "method": "voice.refine",
+            "params": {"text": "um clean transcript"},
+        },
+        transport=CaptureTransport(),
+    )
+
+    assert resp is None
+    assert done.wait(2)
+    assert written[0]["id"] == "voice-refine-pooled"
+    assert written[0]["result"]["text"] == "clean transcript"
+
+
+def test_voice_refine_uses_auxiliary_llm_with_language_agnostic_prompt(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"refine": {"enabled": True, "mode": "medium", "min_chars": 1}}},
+    )
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _voice_refine_llm_response("Kannst du morgen die App testen?")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(call_llm=fake_call_llm),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "voice-refine",
+            "method": "voice.refine",
+            "params": {"text": "Ähm kannst du morgen morgen die App testen?"},
+        }
+    )
+
+    assert resp is not None
+    assert "result" in resp
+    assert resp["result"] == {
+        "changed": True,
+        "mode": "medium",
+        "reason": "refined",
+        "text": "Kannst du morgen die App testen?",
+    }
+    assert captured["task"] == "voice_refine"
+    assert captured["temperature"] == 0
+    assert captured["max_tokens"] >= 128
+    system_prompt = captured["messages"][0]["content"]
+    assert "same language" in system_prompt
+    assert "Do not translate" in system_prompt
+    assert "When uncertain, keep the original wording" in system_prompt
+    assert "ähm" not in system_prompt.lower()
+
+
+def test_voice_refine_rejects_output_that_drops_protected_tokens(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"refine": {"enabled": True, "mode": "strict", "min_chars": 1}}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(
+            call_llm=lambda **_kwargs: _voice_refine_llm_response("Bitte deployen."),
+        ),
+    )
+
+    original = "Bitte deploye /tmp/app auf Port 443 und ping ops@example.com."
+    resp = server.handle_request(
+        {
+            "id": "voice-refine-protected",
+            "method": "voice.refine",
+            "params": {"text": original},
+        }
+    )
+
+    assert resp is not None
+    assert "result" in resp
+    assert resp["result"] == {
+        "changed": False,
+        "reason": "validation_failed",
+        "text": original,
+    }
+
+
+@pytest.mark.parametrize(
+    ("original", "cleaned"),
+    [
+        ("Bitte nutze 5 statt 15.", "Bitte nutze 15."),
+        ("Bitte zahle €5 statt €15.", "Bitte zahle €15."),
+        ("Bitte öffne /tmp/app statt /tmp/application.", "Bitte öffne /tmp/application."),
+    ],
+)
+def test_voice_refine_rejects_structured_token_substring_changes(
+    monkeypatch, original, cleaned
+):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"refine": {"enabled": True, "mode": "strict", "min_chars": 1}}},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.auxiliary_client",
+        types.SimpleNamespace(
+            call_llm=lambda **_kwargs: _voice_refine_llm_response(cleaned),
+        ),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "voice-refine-substring-token",
+            "method": "voice.refine",
+            "params": {"text": original},
+        }
+    )
+
+    assert resp is not None
+    assert resp["result"] == {
+        "changed": False,
+        "reason": "validation_failed",
+        "text": original,
+    }
+
+
 def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
 

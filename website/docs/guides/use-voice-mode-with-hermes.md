@@ -166,11 +166,16 @@ If you skip that install or it fails, the wizard falls back to Edge TTS.
 ```yaml
 voice:
   record_key: "ctrl+b"
+  submit_mode: "direct"   # TUI: direct | draft
   max_recording_seconds: 120
   auto_tts: false
   beep_enabled: true
   silence_threshold: 200
   silence_duration: 3.0
+  refine:
+    enabled: false       # TUI: opt-in model cleanup of STT transcripts
+    mode: "medium"      # light | medium | strict
+    min_chars: 40
 
 stt:
   provider: "local"
@@ -291,6 +296,42 @@ If `Ctrl+B` conflicts with your terminal or tmux habits:
 ```yaml
 voice:
   record_key: "ctrl+space"
+```
+
+### TUI draft/refine flow
+
+The TUI submits transcripts immediately by default, matching the CLI. If you
+want to review voice input before sending it, use draft mode:
+
+```yaml
+voice:
+  submit_mode: "draft"
+```
+
+For optional model-backed cleanup of dictated transcripts, enable `voice.refine`:
+
+```yaml
+voice:
+  refine:
+    enabled: true
+    mode: "medium"   # light | medium | strict
+    min_chars: 40
+```
+
+The cleanup prompt is language-agnostic and conservative: it removes obvious
+speech disfluencies, repeats, and false starts while preserving language, tone,
+order, names, numbers, URLs, file paths, and commands. If the cleanup model
+fails or fails validation, Hermes uses the original transcript.
+
+Route that auxiliary LLM call with `auxiliary.voice_refine` when you want a
+specific provider/model:
+
+```yaml
+auxiliary:
+  voice_refine:
+    provider: "auto"
+    model: ""
+    timeout: 30
 ```
 
 ## Use case 2: voice replies in Telegram or Discord

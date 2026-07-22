@@ -355,6 +355,25 @@ export class LogUpdate {
       moveCursorTo(screen, x, y)
 
       if (added) {
+        // Some terminals retain the previous combining-mark state when a
+        // multi-codepoint, single-column grapheme is overwritten in place.
+        // Clear the physical cell first, then return to it before drawing the
+        // replacement. Keep the common single-codepoint path byte-for-byte
+        // unchanged.
+        if (
+          removed &&
+          !isEmptyCellAt(prev.screen, x, y) &&
+          removed.char !== added.char &&
+          removed.width === CellWidth.Narrow &&
+          added.width === CellWidth.Narrow &&
+          (hasMultipleCodePoints(removed.char) || hasMultipleCodePoints(added.char))
+        ) {
+          currentStyleId = transitionStyle(screen.diff, stylePool, currentStyleId, stylePool.none)
+          currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, undefined)
+          screen.diff.push({ type: 'stdout', content: ' ' })
+          screen.diff.push({ type: 'cursorTo', col: screen.cursor.x + 1 })
+        }
+
         const targetHyperlink = added.hyperlink
         currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, targetHyperlink)
         const styleStr = stylePool.transition(currentStyleId, added.styleId)
@@ -724,6 +743,17 @@ function needsWidthCompensation(char: string): boolean {
   }
 
   return false
+}
+
+/** Whether a grapheme contains more than one Unicode code point. */
+function hasMultipleCodePoints(char: string): boolean {
+  const first = char.codePointAt(0)
+
+  if (first === undefined) {
+    return false
+  }
+
+  return char.length > (first > 0xffff ? 2 : 1)
 }
 
 class VirtualScreen {

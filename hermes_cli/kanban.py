@@ -649,6 +649,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Permanently delete already-archived task ids from the board",
     )
 
+    p_delete = sub.add_parser(
+        "delete",
+        help="Permanently delete already-archived tasks",
+    )
+    p_delete.add_argument(
+        "task_ids",
+        nargs="+",
+        help="Already-archived task ids to permanently delete",
+    )
+
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
     p_tail.add_argument("task_id")
@@ -1007,6 +1017,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
+            "delete":   _cmd_delete,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
             "daemon":   _cmd_daemon,
@@ -2264,6 +2275,19 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                 print(f"cannot archive {tid}", file=sys.stderr)
             else:
                 print(f"Archived {tid}")
+    return 0 if not failed else 1
+
+
+def _cmd_delete(args: argparse.Namespace) -> int:
+    """Permanently delete archived tasks via the explicit CLI verb."""
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in args.task_ids:
+            if not kb.delete_archived_task(conn, tid):
+                failed.append(tid)
+                print(f"cannot delete {tid} (must already be archived)", file=sys.stderr)
+            else:
+                print(f"Deleted {tid}")
     return 0 if not failed else 1
 
 

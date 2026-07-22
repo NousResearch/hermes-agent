@@ -51,6 +51,35 @@ class TestFormatSessionInfo:
         assert "32K" in info
         assert "config" in info
 
+    def test_custom_provider_model_context_length_overrides_top_level(self, runner, tmp_path):
+        config = """
+model:
+  default: gpt-5.5
+  provider: custom
+  base_url: http://10.10.1.4:8317/v1
+  context_length: 1000000
+custom_providers:
+- name: 10.10.1.4:8317
+  base_url: http://10.10.1.4:8317/v1
+  models:
+    gpt-5.4:
+      context_length: 1000000
+    gpt-5.5:
+      context_length: 272000
+"""
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            config,
+            "gpt-5.5",
+            {"provider": "custom", "base_url": "http://10.10.1.4:8317/v1", "api_key": "***"},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+
+        assert "272K" in info
+        assert "1.0M" not in info
+        assert "model config" in info
+
     def test_default_fallback_hint(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: unknown-model-xyz\n",
                                   "unknown-model-xyz",
